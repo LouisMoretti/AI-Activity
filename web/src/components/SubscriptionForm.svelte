@@ -52,6 +52,7 @@
     </label>
     <label>Plan<input required maxlength="80" placeholder="Max" bind:value={plan} /></label>
     <label>Amount<input required type="number" min="0" step="0.01" inputmode="decimal" bind:value={amount} /></label>
+    <!-- pattern is a JS string: a bare {3} would be parsed as a Svelte expression. -->
     <label>Currency<input required maxlength="3" pattern={"[A-Za-z]{3}"} bind:value={currency} /></label>
     <label>From<input type="date" bind:value={start} /></label>
     <label>To<input type="date" min={start || undefined} bind:value={end} /></label>

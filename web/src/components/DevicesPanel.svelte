@@ -117,8 +117,9 @@
   button { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 6px 12px; }
   button:disabled { opacity: .5; cursor: default; }
   .danger:hover { color: var(--warn); border-color: var(--warn); }
-  .key { margin: 12px 0 6px; padding: 12px 14px; border: 1px solid var(--demo-line); background: var(--demo-bg); border-radius: var(--radius-sm); }
-  .key p { font-size: 13px; color: var(--demo-text); }
+  /* Accent, not the --demo-* palette: this is a real key, never demo data. */
+  .key { margin: 12px 0 6px; padding: 12px 14px; border: 1px solid var(--accent); background: var(--surface-2); border-radius: var(--radius-sm); }
+  .key p { font-size: 13px; color: var(--text); }
   .key .row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
   code { flex: 1; min-width: 0; overflow-wrap: anywhere; color: var(--text); }
   .error { color: var(--warn); margin-top: 8px; font-size: 13px; }
