@@ -1,7 +1,7 @@
 // Typed client for the dashboard JSON API (same origin, cookie session).
 import type {
-  Account, ActivityResponse, AdminUser, AuthStatus, Invite, Profile, ProfilesResponse, BillingResponse, Device, QuotasResponse,
-  SessionsResponse, StatsResponse, Subscription, SummaryResponse,
+  Account, ActivityResponse, AdminUser, AuthStatus, Invite, Profile, ProfilesResponse, Device, QuotasResponse,
+  SessionsResponse, StatsResponse, SummaryResponse,
 } from "../../../shared/types.ts";
 
 export class UnauthorizedError extends Error {
@@ -40,9 +40,6 @@ export interface NewAccount {
   password: string;
 }
 
-export type NewSubscription =
-  Pick<Subscription, "tool" | "plan_name" | "amount" | "currency" | "period_start" | "period_end" | "note">;
-
 const toolQuery = (tool: string | null) => (tool ? `&tool=${encodeURIComponent(tool)}` : "");
 const profileBase = (username: string) => `/api/u/${encodeURIComponent(username)}`;
 
@@ -80,10 +77,8 @@ export const api = {
     get<SummaryResponse>(`${profileBase(username)}/summary?x=1${toolQuery(tool)}`),
   sessions: (username: string, limit: number, tool: string | null, offset: number) =>
     get<SessionsResponse>(`${profileBase(username)}/sessions?limit=${limit}&offset=${offset}${toolQuery(tool)}`),
-  billing: () => get<BillingResponse>("/api/billing"),
   devices: () => get<{ devices: Device[] }>("/api/devices"),
   /** The full key is only ever returned here, once. */
   createDevice: (name: string) => post<{ id: number; key: string }>("/api/devices", { name }),
   revokeDevice: (id: number) => post<{ ok: true }>(`/api/devices/${id}/revoke`),
-  addSubscription: (s: NewSubscription) => post<{ id: number }>("/api/billing/subscription", s),
 };

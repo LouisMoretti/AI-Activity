@@ -75,7 +75,7 @@ export class Dashboard {
   private inFlight = false;
   private reloadQueued = false;
 
-  /** True on the signed-in viewer's own profile, where private data is shown. */
+  /** True on the signed-in viewer's own profile. */
   own = $derived(this.route.page === "profile" && same(this.route.username, this.account?.username));
 
   vm = $derived<DashboardVM | null>(
@@ -129,20 +129,17 @@ export class Dashboard {
 
   private async loadProfile(username: string): Promise<void> {
     const tool = this.provider === "all" ? null : this.provider;
-    const mine = same(username, this.account?.username);
-    const [profile, summary, activity, quotas, sessions, billing] = await Promise.all([
+    const [profile, summary, activity, quotas, sessions] = await Promise.all([
       api.profile(username),
       api.summary(username, tool),
       api.activity(username, ACTIVITY_DAYS, tool),
       api.quotas(username),
       fetchSessions(username, this.sessionsLimit, tool),
-      // Costs are private: only on the viewer's own page.
-      mine ? api.billing() : null,
     ]);
     // Navigated elsewhere while this was in flight: its queued reload wins.
     if (this.route.page !== "profile" || this.route.username !== username) return;
     this.shown = profile;
-    this.live = { summary, activity, quotas, sessions, billing };
+    this.live = { summary, activity, quotas, sessions };
     this.status = "ready";
   }
 

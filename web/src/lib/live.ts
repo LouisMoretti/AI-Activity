@@ -1,12 +1,11 @@
 // Maps measured API responses into the view model. Missing data stays
 // null ("—" / "Unavailable"); nothing is interpolated.
 import type {
-  ActivityResponse, BillingResponse, Breakdown, QuotasResponse, SessionsResponse, SummaryResponse,
+  ActivityResponse, Breakdown, QuotasResponse, SessionsResponse, SummaryResponse,
 } from "../../../shared/types.ts";
-import { fmtMoney, fmtMoneyTotals } from "./format.ts";
 import { denseSeries, streaks } from "./series.ts";
 import {
-  toolsFor, WINDOW_SPANS, type CostCardVM, type DashboardVM, type FigureVM, type Provider,
+  toolsFor, WINDOW_SPANS, type DashboardVM, type FigureVM, type Provider,
   type QuotaToolVM, type SessionVM, type ToolKey,
 } from "./view-model.ts";
 
@@ -15,8 +14,6 @@ export interface LiveData {
   activity: ActivityResponse;
   quotas: QuotasResponse;
   sessions: SessionsResponse;
-  /** Only for the viewer's own profile: costs are private. */
-  billing: BillingResponse | null;
 }
 
 export const ACTIVITY_DAYS = 364;
@@ -57,34 +54,6 @@ const codexNotConnected: QuotaToolVM = {
   ],
 };
 
-function costCards(b: BillingResponse): CostCardVM[] {
-  const subs = b.subscriptions;
-  const actual = b.billing_records.filter((r) => r.kind === "api_actual");
-  return [
-    {
-      label: "Paid subscriptions",
-      value: subs.length ? fmtMoneyTotals(subs) : null,
-      note: subs.length
-        ? subs.map((s) => `${s.plan_name} · ${fmtMoney(s.amount, s.currency)}`).join(", ")
-        : "Add what you actually paid, including promotions and currency.",
-    },
-    {
-      label: "Actual API charges",
-      value: actual.length ? fmtMoneyTotals(actual) : null,
-      note: actual.length
-        ? `${actual.length} provider invoice record(s).`
-        : "Provider invoices only. Empty until an invoice source is connected.",
-    },
-    {
-      label: "API-rate estimate",
-      value: b.estimated_available ? fmtMoney(b.estimated_api_equivalent_usd) : null,
-      note: b.estimated_available
-        ? "From measured tokens at list prices. Neither an invoice nor a saving."
-        : "No cost data received yet. Neither an invoice nor a saving.",
-    },
-  ];
-}
-
 const asTool = (t: string): ToolKey =>
   t === "codex" || t === "opencode" ? t : "claude-code";
 
@@ -116,6 +85,5 @@ export function liveDashboard(d: LiveData, provider: Provider): DashboardVM {
     codex: codexNotConnected,
     sessions,
     sessionsTotal: d.sessions.total,
-    cost: d.billing ? costCards(d.billing) : null,
   };
 }

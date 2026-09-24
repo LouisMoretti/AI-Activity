@@ -40,14 +40,13 @@ describe("basics (signed in as the test admin)", () => {
 
   test("measured event shows up in stats, activity and sessions", async () => {
     const before = await stats();
-    const ev = event({ session_id: "sess-A", cost_estimated_usd_delta: 0.5 });
+    const ev = event({ session_id: "sess-A" });
     const r = await req(srv.base, "POST", "/api/ingest", { body: ev, key });
     assert.equal(r.json.stored, true);
     assert.equal(r.json.deduped, false);
     const after = await stats();
     assert.equal(after.total_tokens - before.total_tokens, 180);
     assert.equal(after.events - before.events, 1);
-    assert.ok(Math.abs(after.estimated_usd - before.estimated_usd - 0.5) < 1e-9);
     assert.equal(after.has_data, true);
     const sessions = (await req(srv.base, "GET", "/api/sessions?limit=50")).json.sessions;
     assert.ok(sessions.some((s) => s.session_id === "sess-A" && s.tokens === 180));
@@ -87,7 +86,7 @@ describe("basics (signed in as the test admin)", () => {
     assert.ok(q.some((x) => x.account_ref === "empty-acct" && x.used_pct === 12));
   });
 
-  test("raw statusLine shape accepted; cumulative total_cost_usd ignored", async () => {
+  test("raw statusLine shape accepted; cost fields ignored", async () => {
     const before = await stats();
     const r = await req(srv.base, "POST", "/api/ingest", {
       key,
@@ -101,7 +100,10 @@ describe("basics (signed in as the test admin)", () => {
     assert.equal(r.json.stored, true);
     const after = await stats();
     assert.equal(after.total_tokens - before.total_tokens, 1001);
-    assert.equal(after.estimated_usd, before.estimated_usd);
+    assert.equal(after.estimated_usd, undefined);
+    // A cost-only snapshot is not usage.
+    const costOnly = await req(srv.base, "POST", "/api/ingest", { key, body: { session_id: "raw-sess", cost_estimated_usd_delta: 0.5 } });
+    assert.equal(costOnly.json.stored, false);
   });
 
   test("two devices on the same account: latest quota snapshot wins, never summed", async () => {
@@ -198,42 +200,15 @@ describe("basics (signed in as the test admin)", () => {
     assert.equal(past.total, all.total);
   });
 
+  test("cost and subscription routes are gone", async () => {
+    assert.equal((await req(srv.base, "GET", "/api/billing")).status, 404);
+    assert.equal((await req(srv.base, "POST", "/api/billing/subscription", { body: { tool: "claude-code" } })).status, 404);
+  });
+
   test("tool filter on stats", async () => {
     const r = (await req(srv.base, "GET", "/api/stats?days=30&tool=codex")).json;
     assert.equal(r.events, 0);
     assert.equal(r.has_data, false);
-  });
-
-  test("billing: subscription entry and estimate disclaimer", async () => {
-    assert.equal((await req(srv.base, "POST", "/api/billing/subscription", { body: { tool: "claude-code" } })).status, 400);
-    const ok = await req(srv.base, "POST", "/api/billing/subscription", {
-      body: { tool: "claude-code", plan_name: "Max", amount: 90, currency: "EUR" },
-    });
-    assert.equal(ok.json.ok, true);
-    const b = (await req(srv.base, "GET", "/api/billing")).json;
-    assert.ok(b.subscriptions.some((s) => s.plan_name === "Max" && s.currency === "EUR"));
-    assert.deepEqual(b.billing_records, []);
-    assert.match(b.disclaimer, /neither an invoice nor a saving/);
-  });
-
-  test("billing: invalid subscriptions are rejected", async () => {
-    const post = (over) => req(srv.base, "POST", "/api/billing/subscription", {
-      body: { tool: "claude-code", plan_name: "Pro", amount: 20, ...over },
-    });
-    assert.equal((await post({ amount: -5 })).status, 400);
-    assert.equal((await post({ amount: "" })).status, 400);
-    for (const amount of [null, true, [5]]) assert.equal((await post({ amount })).status, 400);
-    assert.equal((await post({ amount: "12.5" })).status, 200);
-    assert.equal((await post({ currency: "euros" })).status, 400);
-    assert.equal((await post({ currency: "ABC" })).status, 400);
-    assert.equal((await post({ plan_name: "   " })).status, 400);
-    assert.equal((await post({ tool: 123 })).status, 400);
-    assert.equal((await post({ period_start: "2026-02-30" })).status, 400);
-    assert.equal((await post({ period_start: "2026-03-01", period_end: "2026-02-01" })).status, 400);
-    const ok = await post({ currency: "eur", period_start: "2026-09-01", period_end: "2026-09-30" });
-    assert.equal(ok.status, 200);
-    const b = (await req(srv.base, "GET", "/api/billing")).json;
-    assert.ok(b.subscriptions.some((s) => s.id === ok.json.id && s.currency === "EUR"));
   });
 
   test("device list never exposes key hashes", async () => {
@@ -325,7 +300,7 @@ describe("accounts", () => {
     try {
       assert.deepEqual((await req(srv.base, "GET", "/api/auth/status")).json,
         { authenticated: false, user: null, setup_required: true });
-      for (const p of ["/api/stats", "/api/summary", "/api/profiles", "/api/devices", "/api/billing"]) {
+      for (const p of ["/api/stats", "/api/summary", "/api/profiles", "/api/devices"]) {
         assert.equal((await req(srv.base, "GET", p)).status, 401, p);
       }
       assert.equal((await req(srv.base, "POST", "/api/devices", { body: { name: "x" } })).status, 401);
@@ -361,7 +336,7 @@ describe("accounts", () => {
     }
   });
 
-  test("each user only sees their own devices, usage, quotas and costs", async () => {
+  test("each user only sees their own devices, usage and quotas", async () => {
     const srv = await startServer({ password: "admin-pass" });
     try {
       assert.equal((await userCli(srv.dbPath, ["add", "bob"], "bob-password")).code, 0);
@@ -370,10 +345,9 @@ describe("accounts", () => {
       const adminDev = await newDevice(srv.base, "admin-laptop", admin);
       const bobDev = await newDevice(srv.base, "bob-laptop", bob);
       await req(srv.base, "POST", "/api/ingest", { key: bobDev.key, body: event({
-        session_id: "bob-s", cost_estimated_usd_delta: 0.5,
+        session_id: "bob-s",
         rate_limits: { five_hour: { used_percentage: 42, resets_at: 1999999999 } },
       }) });
-      await req(srv.base, "POST", "/api/billing/subscription", { cookie: bob, body: { tool: "claude-code", plan_name: "Pro", amount: 20 } });
 
       const get = async (p, cookie) => (await req(srv.base, "GET", p, { cookie })).json;
       assert.equal((await get("/api/stats?days=730", admin)).events, 0);
@@ -381,8 +355,6 @@ describe("accounts", () => {
       assert.deepEqual((await get("/api/quotas", admin)).quotas, []);
       assert.equal((await get("/api/quotas", bob)).quotas.length, 1);
       assert.equal((await get("/api/sessions", admin)).total, 0);
-      assert.equal((await get("/api/billing", admin)).subscriptions.length, 0);
-      assert.equal((await get("/api/billing", bob)).subscriptions.length, 1);
       assert.deepEqual((await get("/api/devices", admin)).devices.map((d) => d.name), ["admin-laptop"]);
       assert.deepEqual((await get("/api/devices", bob)).devices.map((d) => d.name), ["bob-laptop"]);
       // Revoking another user's device looks like an unknown id.
@@ -594,10 +566,9 @@ describe("public profile pages", () => {
       const bob = await login(srv.base, "bob", "bob-password");
       const dev = await newDevice(srv.base, "admin-laptop", admin);
       await req(srv.base, "POST", "/api/ingest", { key: dev.key, body: event({
-        session_id: "admin-s", cost_estimated_usd_delta: 0.3,
+        session_id: "admin-s",
         rate_limits: { five_hour: { used_percentage: 12, resets_at: 1999999999 } },
       }) });
-      await req(srv.base, "POST", "/api/billing/subscription", { cookie: admin, body: { tool: "claude-code", plan_name: "Max", amount: 100 } });
 
       // Signed out, and signed in as someone else: same public view.
       for (const cookie of [undefined, bob]) {
@@ -612,7 +583,7 @@ describe("public profile pages", () => {
         assert.equal((await get("/api/u/nobody")).status, 404);
         assert.equal((await get("/api/u/gone/summary")).status, 404);
         // Nothing private has a public route (401 or 404, never data).
-        for (const p of ["/api/u/admin/billing", "/api/u/admin/devices"]) {
+        for (const p of ["/api/u/admin/devices", "/api/u/admin/users"]) {
           assert.ok([401, 404].includes((await get(p)).status), p);
         }
       }
@@ -620,7 +591,6 @@ describe("public profile pages", () => {
       const mine = (p) => req(srv.base, "GET", p, { cookie: bob });
       assert.equal((await mine("/api/stats?days=730&user=admin")).json.events, 0);
       assert.deepEqual((await mine("/api/devices")).json.devices, []);
-      assert.equal((await mine("/api/billing")).json.subscriptions.length, 0);
       // The account list is for signed-in users only.
       assert.deepEqual((await mine("/api/profiles")).json.profiles,
         [{ username: "admin", display_name: "admin" }, { username: "bob", display_name: "Bob" }]);
@@ -675,12 +645,6 @@ describe("summary, sessions and context (redesign APIs)", () => {
     const noCtx = (await req(srv.base, "GET", "/api/sessions?limit=50")).json.sessions.find((s) => s.session_id === "a");
     assert.equal(noCtx.context_used_pct, null);
     assert.equal((await req(srv.base, "GET", "/api/sessions?tool=codex")).json.total, 0);
-  });
-
-  test("estimate is flagged unavailable until a cost delta arrives", async () => {
-    assert.equal((await req(srv.base, "GET", "/api/billing")).json.estimated_available, false);
-    await req(srv.base, "POST", "/api/ingest", { key, body: event({ cost_estimated_usd_delta: 0.02 }) });
-    assert.equal((await req(srv.base, "GET", "/api/billing")).json.estimated_available, true);
   });
 });
 

@@ -47,7 +47,6 @@ export interface SessionVM {
   context: { pct: number; size: number | null } | null; // only when reported
 }
 
-export interface CostCardVM { label: string; value: string | null; note: string }
 
 export interface DashboardVM {
   demo: boolean;
@@ -60,8 +59,6 @@ export interface DashboardVM {
   codex: QuotaToolVM;
   sessions: SessionVM[];
   sessionsTotal: number;
-  /** Null on someone else's profile page: costs are private. */
-  cost: CostCardVM[] | null;
 }
 
 export const TOOL_META: Record<ToolKey, { name: string; icon: string }> = {

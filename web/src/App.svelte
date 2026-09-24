@@ -4,7 +4,6 @@
   import ClaudeCodeCard from "./components/ClaudeCodeCard.svelte";
   import CodexCard from "./components/CodexCard.svelte";
   import Conversations from "./components/Conversations.svelte";
-  import CostPanel from "./components/CostPanel.svelte";
   import DevicesPanel from "./components/DevicesPanel.svelte";
   import InviteSignup from "./components/InviteSignup.svelte";
   import LoginBar from "./components/LoginBar.svelte";
@@ -17,7 +16,6 @@
   import Section from "./components/Section.svelte";
   import Segmented from "./components/Segmented.svelte";
   import StatsRow from "./components/StatsRow.svelte";
-  import SubscriptionForm from "./components/SubscriptionForm.svelte";
   import UsersPanel from "./components/UsersPanel.svelte";
   import { Dashboard } from "./lib/dashboard.svelte.ts";
   import type { Provider } from "./lib/view-model.ts";
@@ -102,16 +100,12 @@
       {/key}
     </Section>
 
-    <Section title="Subscriptions" subtitle="What you actually paid, shown on your profile only">
-      <SubscriptionForm onadded={() => {}} />
-    </Section>
-
     <Section title="Devices" subtitle="One ingestion key per machine">
       <DevicesPanel />
     </Section>
 
     {#if dash.account.is_admin}
-      <Section title="Users" subtitle="Profile pages are public; devices, costs and settings stay private">
+      <Section title="Users" subtitle="Profile pages are public; devices and settings stay private">
         <UsersPanel selfId={dash.account.id} />
       </Section>
     {/if}
@@ -139,16 +133,6 @@
     <Section title="Conversations" subtitle="Most recent first">
       <Conversations sessions={vm.sessions} total={vm.sessionsTotal} onmore={() => dash.showMoreSessions()} />
     </Section>
-
-    <!-- Costs are private: only on the viewer's own page (vm.cost is null elsewhere). -->
-    {#if vm.cost}
-      <Section title="Cost" subtitle="Only you see this section">
-        <CostPanel cards={vm.cost} />
-        {#if !vm.demo}
-          <p class="hint">Add what you paid in <button type="button" onclick={() => dash.go("/settings")}>Settings</button>.</p>
-        {/if}
-      </Section>
-    {/if}
   {/if}
 </main>
 
@@ -162,8 +146,6 @@
   .gate button, .settings-head button, .signin { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 4px 10px; font-size: 12px; color: var(--text); }
   .settings-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
   .settings-head h2 { font-size: 17px; font-weight: 600; }
-  .hint { margin-top: 10px; font-size: 12px; color: var(--muted); }
-  .hint button { color: var(--text); text-decoration: underline; text-underline-offset: 3px; font-size: 12px; }
   .badge { border: 1px solid var(--line); color: var(--muted); font-size: 12px; padding: 5px 10px; border-radius: var(--radius-sm); }
   .badge.demo { border-color: var(--demo-line); background: var(--demo-bg); color: var(--demo-text); }
   .toolbar { display: flex; justify-content: center; margin-bottom: 8px; }
