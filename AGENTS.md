@@ -249,6 +249,7 @@ Viewer (cookie session after `POST /api/auth/login {password}`; open if no
   `estimated_available: false` means no cost delta was ever received, shown
   as "Unavailable", not 0)
 - `POST /api/billing/subscription` `{tool, plan_name, amount, currency, period_start, period_end, note}`
+  (amount >= 0, ISO 4217 currency, YYYY-MM-DD dates with start <= end; 400 otherwise)
 - `GET /api/devices`, `POST /api/devices {name}` (returns key once),
   `POST /api/devices/:id/revoke`
 

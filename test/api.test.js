@@ -200,6 +200,21 @@ describe("open server (no viewer password)", () => {
     assert.match(b.disclaimer, /neither an invoice nor a saving/);
   });
 
+  test("billing: invalid subscriptions are rejected", async () => {
+    const post = (over) => req(srv.base, "POST", "/api/billing/subscription", {
+      body: { tool: "claude-code", plan_name: "Pro", amount: 20, ...over },
+    });
+    assert.equal((await post({ amount: -5 })).status, 400);
+    assert.equal((await post({ amount: "" })).status, 400);
+    assert.equal((await post({ currency: "euros" })).status, 400);
+    assert.equal((await post({ period_start: "2026-02-30" })).status, 400);
+    assert.equal((await post({ period_start: "2026-03-01", period_end: "2026-02-01" })).status, 400);
+    const ok = await post({ currency: "eur", period_start: "2026-09-01", period_end: "2026-09-30" });
+    assert.equal(ok.status, 200);
+    const b = (await req(srv.base, "GET", "/api/billing")).json;
+    assert.ok(b.subscriptions.some((s) => s.id === ok.json.id && s.currency === "EUR"));
+  });
+
   test("device list never exposes key hashes", async () => {
     const devices = (await req(srv.base, "GET", "/api/devices")).json.devices;
     assert.ok(devices.length > 0);
