@@ -235,7 +235,8 @@ Viewer (cookie session after `POST /api/auth/login {password}`; open if no
 
 - `GET /api/auth/status`, `POST /api/auth/logout`
 - Login is throttled: 10 failures per client (`CF-Connecting-IP` behind the
-  tunnel) or 50 in total per 15 min → `429` with `Retry-After`. The session
+  tunnel) or 50 in total per 15 min → `429` with `Retry-After` (the global
+  cap locks everyone out, owner included, until the window ends). The session
   cookie is `Secure` when the request is HTTPS (incl. `X-Forwarded-Proto`).
 - `GET /api/stats?days=30&tool=claude-code`
 - `GET /api/activity?days=364&tool=...` (daily buckets for the heatmap)
