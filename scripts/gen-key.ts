@@ -1,8 +1,8 @@
-import { openDb, getDefaultUserId, createDevice } from "../db.js";
-import path from "node:path";
+import { loadConfig } from "../server/config.ts";
+import { createDevice, getDefaultUserId } from "../server/db/queries.ts";
+import { openDb } from "../server/db/schema.ts";
 
-const dbPath = process.env.DB_PATH || path.join(process.cwd(), "data", "dashboard.db");
-const db = openDb(dbPath);
+const db = openDb(loadConfig().dbPath);
 const name = process.argv[2] || "unnamed device";
 const { id, key } = createDevice(db, { userId: getDefaultUserId(db), name });
 console.log(`Device #${id} (${name}) created.`);

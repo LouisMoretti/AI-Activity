@@ -35,6 +35,10 @@ Health check: `GET /api/health` → `{"ok":true}`.
 
 Tests: `npm test` boots the real server on a temp DB and exercises the HTTP
 API black-box (`test/api.test.js`), so they must stay green across refactors.
+Types: `npm run typecheck`. Node >= 22.18 runs the TypeScript server directly
+(type stripping, no build step), so only erasable TS syntax is allowed (no
+`enum`, no parameter properties) and relative imports keep their `.ts`
+extension.
 
 ## 3. Architecture
 
@@ -42,10 +46,24 @@ API black-box (`test/api.test.js`), so they must stay green across refactors.
 Claude Code statusLine (bash POST, on the user's device, NOT this repo)
    │  HTTPS  Authorization: Bearer <device key> (never in the URL)
    ▼
-Node server (server.js, no framework) + SQLite (better-sqlite3, db.js)
-   │  serves public/ + JSON APIs
+Node server (Hono + TypeScript, server/) + SQLite (better-sqlite3)
+   │  serves the static web root (STATIC_DIR, default public/) + JSON APIs
    ▼
 Browser dashboard (public/index.html, app.js, style.css)
+```
+
+```
+server/
+  index.ts          boot: config, DB, listen
+  app.ts            Hono app: /api mount, viewer-auth gate, static + SPA fallback
+  config.ts         env → Config (PORT, DB_PATH, DASHBOARD_PASSWORD, STATIC_DIR)
+  db/schema.ts      open + migrate
+  db/queries.ts     every SQL statement lives here
+  lib/ingest.ts     payload normalization (flat + raw statusLine shapes)
+  lib/viewer-auth.ts, lib/http.ts
+  routes/           auth, ingest, usage (stats/activity/quotas/sessions),
+                    billing, devices
+shared/types.ts     API response types shared with the web client
 ```
 
 - The server derives the user from the ingestion key (`devices.key_hash`).

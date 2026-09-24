@@ -8,7 +8,7 @@ import net from "node:net";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-export const SERVER_ENTRY = path.join(ROOT, "server.js");
+export const SERVER_ENTRY = path.join(ROOT, "server", "index.ts");
 
 function freePort() {
   return new Promise((resolve, reject) => {

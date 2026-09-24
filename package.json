@@ -4,18 +4,26 @@
   "description": "Personal multi-user dashboard for real AI tool usage data (Claude Code first). Demo values are never presented as real measurements.",
   "type": "module",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js",
-    "gen-key": "node scripts/gen-key.js",
+    "start": "node server/index.ts",
+    "dev": "node --watch server/index.ts",
+    "gen-key": "node scripts/gen-key.ts",
+    "typecheck": "tsc -p tsconfig.json",
     "test": "node --test test/*.test.js"
   },
   "dependencies": {
-    "better-sqlite3": "^11.10.0"
+    "@hono/node-server": "^2.1.1",
+    "better-sqlite3": "^11.10.0",
+    "hono": "^4.13.9"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.18"
   },
   "allowScripts": {
     "better-sqlite3@11.10.0": true
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.6.2",
+    "typescript": "^7.0.2"
   }
 }

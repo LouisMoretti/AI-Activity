@@ -170,6 +170,13 @@ describe("open server (no viewer password)", () => {
     assert.match(home.headers.get("content-type"), /text\/html/);
     assert.equal((await req(srv.base, "GET", "/api/nope")).status, 404);
   });
+
+  test("static serving never escapes the web root", async () => {
+    for (const p of ["/%2e%2e/package.json", "/..%2fpackage.json", "/%2e%2e%2f.env.example"]) {
+      const r = await req(srv.base, "GET", p);
+      assert.doesNotMatch(r.text, /"dependencies"|DASHBOARD_PASSWORD/, p);
+    }
+  });
 });
 
 describe("locked server (viewer password)", () => {
