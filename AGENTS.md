@@ -54,7 +54,8 @@ every PR and push to main.
 
 Tests: `npm test` boots the real server on a temp DB and exercises the HTTP
 API black-box (`test/api.test.js`), so they must stay green across refactors;
-`test/series.test.js` covers the pure chart helpers of the web client.
+`test/series.test.js` and `test/format.test.js` cover pure helpers of the web
+client.
 Types: `npm run typecheck` (tsc for server, svelte-check for web). Node >= 22.18 runs the TypeScript server directly
 (type stripping, no build step), so only erasable TS syntax is allowed (no
 `enum`, no parameter properties) and relative imports keep their `.ts`
