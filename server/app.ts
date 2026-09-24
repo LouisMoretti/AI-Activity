@@ -14,7 +14,8 @@ import { deviceRoutes } from "./routes/devices.ts";
 import { ingestRoutes } from "./routes/ingest.ts";
 import { usageRoutes } from "./routes/usage.ts";
 
-export function createApp(db: DB, config: Config) {
+/** setupCode: one-time code for creating the first account from the browser (null once one exists). */
+export function createApp(db: DB, config: Config, setupCode: string | null = null) {
   const auth = createViewerAuth(db);
 
   const api = new Hono()
@@ -24,7 +25,7 @@ export function createApp(db: DB, config: Config) {
       c.header("cache-control", "no-store");
     })
     .get("/health", (c) => c.json({ ok: true }))
-    .route("/auth", authRoutes(db, auth))
+    .route("/auth", authRoutes(db, auth, setupCode))
     .route("/ingest", ingestRoutes(db))
     // Everything below requires a viewer session.
     .use(auth.require)

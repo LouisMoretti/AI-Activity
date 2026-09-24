@@ -1,6 +1,6 @@
 // Typed client for the dashboard JSON API (same origin, cookie session).
 import type {
-  Account, ActivityResponse, AdminUser, AuthStatus, ProfilesResponse, BillingResponse, Device, QuotasResponse,
+  Account, ActivityResponse, AdminUser, AuthStatus, Invite, ProfilesResponse, BillingResponse, Device, QuotasResponse,
   SessionsResponse, StatsResponse, Subscription, SummaryResponse,
 } from "../../../shared/types.ts";
 
@@ -33,6 +33,13 @@ async function post<T>(path: string, body: unknown = {}): Promise<T> {
   return json as T;
 }
 
+/** What someone types to create their account. */
+export interface NewAccount {
+  username: string;
+  display_name: string;
+  password: string;
+}
+
 export type NewSubscription =
   Pick<Subscription, "tool" | "plan_name" | "amount" | "currency" | "period_start" | "period_end" | "note">;
 
@@ -45,6 +52,15 @@ export const api = {
   /** Resolves on success; throws with the server's message otherwise. */
   login: (username: string, password: string) => post<{ ok: true }>("/api/auth/login", { username, password }),
   logout: () => post<{ ok: true }>("/api/auth/logout"),
+  /** First account, with the setup code from the server log; signs in. */
+  setup: (setup_code: string, a: NewAccount) => post<{ ok: true }>("/api/auth/setup", { setup_code, ...a }),
+  inviteStatus: (token: string) =>
+    get<{ valid: boolean; expires_at: number | null }>(`/api/auth/invite/${encodeURIComponent(token)}`),
+  /** Account from an invite link; signs in. */
+  signup: (invite: string, a: NewAccount) => post<{ ok: true }>("/api/auth/signup", { invite, ...a }),
+  invites: () => get<{ invites: Invite[] }>("/api/users/invites"),
+  createInvite: () => post<{ id: number; token: string; expires_at: number }>("/api/users/invites"),
+  revokeInvite: (id: number) => post<{ ok: true }>(`/api/users/invites/${id}/revoke`),
   updateProfile: (display_name: string) => post<{ user: Account }>("/api/account", { display_name }),
   changePassword: (current_password: string, new_password: string) =>
     post<{ ok: true }>("/api/account/password", { current_password, new_password }),

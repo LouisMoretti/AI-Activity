@@ -132,6 +132,16 @@ function migrate(db: DB): void {
       created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_viewer_sessions_user ON viewer_sessions(user_id);
+    CREATE TABLE IF NOT EXISTS invites (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      token_hash TEXT NOT NULL UNIQUE,
+      created_by INTEGER NOT NULL REFERENCES users(id),
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      used_by INTEGER REFERENCES users(id),
+      used_at INTEGER,
+      revoked INTEGER NOT NULL DEFAULT 0
+    );
   `);
 
   // Ensure at least one user exists: before any account is set up, every

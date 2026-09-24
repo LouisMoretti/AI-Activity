@@ -1,15 +1,19 @@
 import { Hono, type MiddlewareHandler } from "hono";
 import type { Account, AdminUser } from "../../shared/types.ts";
+import { randomBytes } from "node:crypto";
+import type { Invite } from "../../shared/types.ts";
 import {
-  createAccount, deleteUserSessions, findUserByUsername, getUser, listAdminUsers, setDisplayName,
-  setPasswordHash, setUserDisabled, toAccount,
+  createAccount, createInvite, deleteUserSessions, findUserByUsername, getUser, hashKey, listAdminUsers,
+  listPendingInvites, revokeInvite, setDisplayName, setPasswordHash, setUserDisabled, toAccount,
 } from "../db/queries.ts";
+import { nowSec } from "../db/schema.ts";
 import type { DB } from "../db/schema.ts";
 import { readJson } from "../lib/http.ts";
 import { hashPassword, passwordProblem, usernameProblem, verifyPassword } from "../lib/passwords.ts";
 import type { ViewerAuth, ViewerEnv } from "../lib/viewer-auth.ts";
 
 const DISPLAY_NAME_MAX = 60;
+const INVITE_SEC = 7 * 86400;
 
 /** Trimmed display name, or null to fall back to the username. */
 const displayName = (v: unknown) =>
@@ -57,6 +61,16 @@ export function userRoutes(db: DB) {
   return new Hono<ViewerEnv>()
     .use(requireAdmin)
     .get("/", (c) => c.json<{ users: AdminUser[] }>({ users: listAdminUsers(db) }))
+    .get("/invites", (c) => c.json<{ invites: Invite[] }>({ invites: listPendingInvites(db) }))
+    // The token is returned once; only its hash is stored.
+    .post("/invites", (c) => {
+      const token = randomBytes(24).toString("base64url");
+      const expires_at = nowSec() + INVITE_SEC;
+      const id = createInvite(db, hashKey(token), c.get("userId"), expires_at);
+      return c.json({ ok: true, id, token, expires_at });
+    })
+    .post("/invites/:id{[0-9]+}/revoke", (c) =>
+      revokeInvite(db, Number(c.req.param("id"))) ? c.json({ ok: true }) : c.json({ error: "invite not found" }, 404))
     .post("/", async (c) => {
       const body = await readJson(c);
       const username = typeof body.username === "string" ? body.username.trim() : "";

@@ -1,11 +1,15 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import type { AdminUser } from "../../../shared/types.ts";
+  import type { AdminUser, Invite } from "../../../shared/types.ts";
   import { api } from "../lib/api.ts";
 
   let { selfId }: { selfId: number } = $props();
 
   let users = $state<AdminUser[] | null>(null);
+  let invites = $state<Invite[]>([]);
+  /** Shown once right after creation: only its hash is stored. */
+  let newLink = $state<string | null>(null);
+  let copied = $state(false);
   let error = $state("");
   let notice = $state("");
   let busy = $state(false);
@@ -22,7 +26,7 @@
 
   async function refresh() {
     try {
-      users = (await api.users()).users;
+      [users, invites] = await Promise.all([api.users().then((r) => r.users), api.invites().then((r) => r.invites)]);
     } catch (e) {
       error = (e as Error).message;
     }
@@ -43,6 +47,24 @@
       return false;
     } finally {
       busy = false;
+    }
+  }
+
+  async function invite() {
+    await act(async () => {
+      const { token } = await api.createInvite();
+      newLink = `${location.origin}/invite/${encodeURIComponent(token)}`;
+      copied = false;
+    }, "Invite link created. Send it privately: it works once, for 7 days.");
+  }
+
+  async function copyLink() {
+    if (!newLink) return;
+    try {
+      await navigator.clipboard.writeText(newLink);
+      copied = true;
+    } catch {
+      copied = false;
     }
   }
 
@@ -109,6 +131,35 @@
     </ul>
   {/if}
 
+  <div class="invites">
+    <div class="invites-head">
+      <div>
+        <strong>Invite links</strong>
+        <small>The invited person picks their own username and password.</small>
+      </div>
+      <button type="button" disabled={busy} onclick={invite}>Create invite link</button>
+    </div>
+    {#if newLink}
+      <div class="link" role="status">
+        <code class="mono">{newLink}</code>
+        <button type="button" onclick={copyLink}>{copied ? "Copied" : "Copy"}</button>
+        <button type="button" onclick={() => (newLink = null)}>Done</button>
+      </div>
+    {/if}
+    {#if invites.length}
+      <ul class="pending">
+        {#each invites as i (i.id)}
+          <li>
+            <small>Link #{i.id} by @{i.created_by} · expires {fmtDate(i.expires_at)}</small>
+            <button type="button" class="danger" disabled={busy}
+              onclick={() => act(() => api.revokeInvite(i.id), `Invite link #${i.id} revoked.`)}>Revoke</button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </div>
+
+  <p class="or">Or create an account with an initial password:</p>
   <form class="create" onsubmit={create}>
     <input placeholder="Username" autocomplete="off" autocapitalize="none" spellcheck="false" required maxlength="32" pattern={"[A-Za-z0-9][A-Za-z0-9._\\-]{1,31}"} aria-label="Username" bind:value={username} />
     <input placeholder="Display name (optional)" maxlength="60" aria-label="Display name" bind:value={displayName} />
@@ -131,6 +182,13 @@
   small { color: var(--muted); font-size: 12px; }
   .row-actions { display: flex; gap: 8px; }
   .reset { flex-basis: 100%; display: flex; gap: 8px; flex-wrap: wrap; }
+  .invites { border-top: 1px solid var(--line); padding-top: 12px; }
+  .invites-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+  /* Accent, not the --demo-* palette: a real one-time link. */
+  .link { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; padding: 10px 12px; border: 1px solid var(--accent); background: var(--surface-2); border-radius: var(--radius-sm); }
+  .link code { flex: 1; min-width: 0; overflow-wrap: anywhere; color: var(--text); }
+  .pending li { padding: 6px 0; }
+  .or { margin-top: 14px; font-size: 12px; color: var(--muted); }
   .create { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
   input:not([type="checkbox"]) { flex: 1; min-width: 150px; background: var(--bg); border: 1px solid var(--line); color: var(--text); border-radius: var(--radius-sm); padding: 6px 10px; font: inherit; }
   .check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }

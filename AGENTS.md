@@ -37,9 +37,13 @@ cp .env.example .env        # set PORT, DB_PATH (loaded by npm start/dev/
 npm start                   # http://localhost:3000
 ```
 
-Viewer accounts (nothing is viewable until the first one exists; that
-first account is an admin and owns the data collected so far; collectors
-keep posting with `gen-key` keys meanwhile):
+Viewer accounts. Nothing is viewable until the first one exists; that first
+account is an admin and owns the data collected so far (collectors keep
+posting with `gen-key` keys meanwhile). Create it in the browser with the
+one-time **setup code** the server prints at start (new on every start, only
+while no account exists), or from the CLI. Admins then invite others from
+the Users section: a single-use link valid 7 days, where the invited person
+picks their own username and password. There is no open sign-up.
 
 ```bash
 npm run user -- add louis --name "Louis"   # password prompt (or piped stdin)
@@ -102,6 +106,7 @@ server/
   lib/viewer-auth.ts  viewer sessions + login throttling
   lib/passwords.ts    scrypt hashing, username/password rules
   lib/accounts.ts     DASHBOARD_PASSWORD → first account migration
+  lib/setup.ts        one-time setup code for the first account
   lib/http.ts
   routes/           auth, ingest, usage (stats/activity/quotas/sessions),
                     billing, devices, account (profile + admin users)
@@ -116,7 +121,8 @@ web/
   src/components/         StatsBar, ActivityChart (Heatmap, TrendChart),
                           QuotaCard, SessionList, BillingCards, LoginBar,
                           DevicesPanel, SubscriptionForm, AccountMenu,
-                          ProfilePanel, ProfileSwitcher, UsersPanel, …
+                          ProfilePanel, ProfileSwitcher, UsersPanel,
+                          NewAccountForm, InviteSignup, …
   src/styles/tokens.css   design tokens — components only use these variables
 public/             legacy UI, removed at the switch-over
 ```
@@ -271,6 +277,14 @@ account exists):
 - `GET /api/auth/status` → `{authenticated, user, setup_required}` (`user` is
   `{id, username, display_name, is_admin}` or null; `setup_required` while no
   account exists), `POST /api/auth/logout`
+- `POST /api/auth/setup {setup_code, username, password, display_name}`:
+  first account only (`409` once one exists), throttled like a login; the
+  code ignores case, spaces and dashes. Signs in.
+- `GET /api/auth/invite/:token` → `{valid, expires_at}`;
+  `POST /api/auth/signup {invite, username, password, display_name}` creates
+  a non-admin account and uses the invite up atomically (`404` if invalid,
+  used, revoked or expired; `409` if the username is taken, invite kept).
+  Signs in.
 - `GET /api/profiles` → enabled accounts `{username, display_name}`.
 - Profile pages: `stats`, `activity`, `quotas`, `summary` and `sessions`
   accept `&user=<username>` to read another profile (`404` if unknown or
@@ -283,14 +297,18 @@ account exists):
   cookie is `Secure` when the request is HTTPS (incl. `X-Forwarded-Proto`).
 - `POST /api/account {display_name}` (empty → falls back to the username),
   `POST /api/account/password {current_password, new_password}` (throttled
-  like a login; signs out the user's other sessions). `409` while no account
-  exists.
+  like a login; signs out the user's other sessions).
 - Admin only (`403` otherwise): `GET /api/users`, `POST /api/users
   {username, password, display_name, is_admin}`, `POST /api/users/:id/password
   {password}` (signs that user out; not for the admin's own account, which
-  goes through `/api/account/password` so a stolen session cannot take it over), `POST /api/users/:id/disable|enable`.
-  A disabled account cannot sign in and its device keys are rejected at
-  ingest; admins cannot disable themselves, so one enabled admin remains.
+  goes through `/api/account/password` so a stolen session cannot take it
+  over), `POST /api/users/:id/disable|enable`. A disabled account cannot sign
+  in and its device keys are rejected at ingest; admins cannot disable
+  themselves, so one enabled admin remains.
+- Invites (admin only): `GET /api/users/invites` (pending only, never the
+  token), `POST /api/users/invites` → `{id, token, expires_at}` (token shown
+  once, stored hashed; the link is `/invite/<token>`),
+  `POST /api/users/invites/:id/revoke`.
 - `GET /api/stats?days=30&tool=claude-code`
 - `GET /api/activity?days=364&tool=...` (daily buckets for the heatmap)
 - `GET /api/quotas` (latest snapshot per account + limit type)
@@ -328,7 +346,8 @@ account exists):
 6. Payload after `resets_at` passed → new snapshot replaces the old window.
 7. `?demo=1` still shows labeled fictional data (after sign-in); normal view
    never does.
-8. Signed out (or no account yet): only the sign-in screen, no data.
+8. Signed out (or no account yet): only the sign-in (or first-account)
+   screen, no data. Invite links work once.
 9. `/u/<other>` shows that profile's usage read-only, without its cost,
    devices or account sections.
 
@@ -359,7 +378,8 @@ After `npm start` works locally:
    ```
 3. Copy the public URL (`https://<random>.trycloudflare.com`).
 4. **Send that link to the user for testing** and keep the tunnel running
-   while they test. Mention which account to sign in with and that `?demo=1`
+   while they test. Mention which account to sign in with (or the setup code
+   from the server log if none exists yet) and that `?demo=1`
    shows the labeled fictional dataset.
 5. Revoke/replace device keys if a test key leaks; never put keys in URLs.
 

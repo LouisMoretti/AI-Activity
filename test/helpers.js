@@ -44,7 +44,9 @@ export async function startServer({ password = "", env = {}, autoLogin = true } 
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stderr = "";
+  let stdout = "";
   proc.stderr.on("data", (c) => (stderr += c));
+  proc.stdout.on("data", (c) => (stdout += c));
   const base = `http://127.0.0.1:${port}`;
   for (let i = 0; i < 100; i++) {
     try {
@@ -57,6 +59,8 @@ export async function startServer({ password = "", env = {}, autoLogin = true } 
   return {
     base,
     dbPath,
+    /** The one-time setup code the server printed, or null. */
+    setupCode: () => stdout.match(/Setup code: (\S+)/)?.[1] ?? null,
     /** Sends SIGTERM and resolves with the exit code once the server is gone. */
     async kill() {
       if (proc.exitCode !== null || proc.signalCode !== null) return proc.exitCode;

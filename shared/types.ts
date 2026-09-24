@@ -152,6 +152,15 @@ export interface AuthStatus {
   setup_required: boolean;
 }
 
+/** A pending invite link, as listed for admins (the token is never listed). */
+export interface Invite {
+  id: number;
+  created_at: number;
+  expires_at: number;
+  /** Username of the admin who created it. */
+  created_by: string;
+}
+
 /** A profile page anyone signed in can open (read-only usage). */
 export interface Profile {
   username: string;

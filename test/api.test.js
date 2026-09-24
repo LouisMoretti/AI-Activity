@@ -511,6 +511,78 @@ describe("profiles and user management", () => {
 
 });
 
+describe("creating accounts from the site", () => {
+  test("the first account needs the setup code from the server log", async () => {
+    const srv = await startServer({ autoLogin: false });
+    try {
+      const code = srv.setupCode();
+      assert.match(code, /^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/);
+      const key = await genKey(srv.dbPath, "pre-accounts");
+      await req(srv.base, "POST", "/api/ingest", { key, body: event() });
+      const setup = (body) => req(srv.base, "POST", "/api/auth/setup", { body });
+      const me = { username: "louis", password: "first-pass", display_name: "Louis" };
+      assert.equal((await setup({ ...me, setup_code: "AAAA-BBBB-CCCC" })).status, 401);
+      assert.equal((await setup({ ...me, password: "short", setup_code: code })).status, 400);
+      // Case, spaces and dashes do not matter.
+      const ok = await setup({ ...me, setup_code: ` ${code.toLowerCase().replace(/-/g, "")} ` });
+      assert.equal(ok.status, 200);
+      const cookie = ok.headers.get("set-cookie").split(";")[0];
+      const st = (await req(srv.base, "GET", "/api/auth/status", { cookie })).json;
+      assert.deepEqual(st.user, { id: 1, username: "louis", display_name: "Louis", is_admin: true });
+      assert.equal((await req(srv.base, "GET", "/api/stats?days=730", { cookie })).json.events, 1);
+      assert.equal((await setup({ ...me, username: "second", setup_code: code })).status, 409);
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  test("a server that already has accounts prints no setup code", async () => {
+    const srv = await startServer();
+    try {
+      assert.equal(srv.setupCode(), null);
+      assert.equal((await req(srv.base, "POST", "/api/auth/setup", {
+        body: { setup_code: "x", username: "evil", password: "evil-password" },
+      })).status, 409);
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  test("admins hand out single-use invite links", async () => {
+    const srv = await startServer();
+    try {
+      const inv = await req(srv.base, "POST", "/api/users/invites");
+      assert.equal(inv.status, 200);
+      const { token, id } = inv.json;
+      assert.equal((await req(srv.base, "GET", `/api/auth/invite/${token}`, { anon: true })).json.valid, true);
+      assert.equal((await req(srv.base, "GET", "/api/auth/invite/nope", { anon: true })).json.valid, false);
+      assert.equal((await req(srv.base, "GET", "/api/users/invites")).json.invites.length, 1);
+
+      const signup = (body) => req(srv.base, "POST", "/api/auth/signup", { body, anon: true });
+      // A taken username does not use the invite up.
+      assert.equal((await signup({ invite: token, username: "admin", password: "zoe-password" })).status, 409);
+      assert.equal((await signup({ invite: token, username: "zoe", password: "short" })).status, 400);
+      const ok = await signup({ invite: token, username: "zoe", password: "zoe-password", display_name: "Zoé" });
+      assert.equal(ok.status, 200);
+      const zoe = ok.headers.get("set-cookie").split(";")[0];
+      const st = (await req(srv.base, "GET", "/api/auth/status", { cookie: zoe })).json;
+      assert.equal(st.user.username, "zoe");
+      assert.equal(st.user.is_admin, false);
+      assert.equal((await req(srv.base, "POST", "/api/users/invites", { cookie: zoe })).status, 403);
+      // Single use, and no longer listed.
+      assert.equal((await signup({ invite: token, username: "zoe2", password: "zoe-password" })).status, 404);
+      assert.equal((await req(srv.base, "GET", "/api/users/invites")).json.invites.length, 0);
+      assert.equal((await req(srv.base, "POST", `/api/users/invites/${id}/revoke`)).status, 404);
+
+      const other = (await req(srv.base, "POST", "/api/users/invites")).json;
+      assert.equal((await req(srv.base, "POST", `/api/users/invites/${other.id}/revoke`)).status, 200);
+      assert.equal((await signup({ invite: other.token, username: "yan", password: "yan-password" })).status, 404);
+    } finally {
+      await srv.stop();
+    }
+  });
+});
+
 describe("profile pages", () => {
   test("any signed-in user reads another profile's usage, never its private data", async () => {
     const srv = await startServer();

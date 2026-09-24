@@ -6,8 +6,10 @@
   import Conversations from "./components/Conversations.svelte";
   import CostPanel from "./components/CostPanel.svelte";
   import DevicesPanel from "./components/DevicesPanel.svelte";
+  import InviteSignup from "./components/InviteSignup.svelte";
   import LoginBar from "./components/LoginBar.svelte";
   import Logo from "./components/Logo.svelte";
+  import NewAccountForm from "./components/NewAccountForm.svelte";
   import OpenCodeCard from "./components/OpenCodeCard.svelte";
   import ProfilePanel from "./components/ProfilePanel.svelte";
   import ProfileSwitcher from "./components/ProfileSwitcher.svelte";
@@ -52,13 +54,20 @@
     {/if}
   </header>
 
-  {#if dash.status === "signed-out"}
+  {#if dash.status === "signed-out" && dash.invite}
+    <InviteSignup token={dash.invite} oncreate={(a, c) => dash.createAccount(a, c)} onsignin={() => dash.leaveInvite()} />
+  {:else if dash.status === "signed-out"}
     <LoginBar onlogin={(u, p) => dash.login(u, p)} />
   {:else if dash.status === "setup"}
-    <p class="gate">
-      No account exists yet, so there is nothing to show. On the server, run
-      <code class="mono">npm run user -- add &lt;username&gt;</code> to create the first one: it becomes the
-      admin and keeps the data collected so far.
+    <NewAccountForm withSetupCode title="Create the first account"
+      intro="No account exists yet. The setup code is printed in the server log. This account becomes the admin and keeps the data collected so far."
+      submitLabel="Create admin account" oncreate={(a, c) => dash.createAccount(a, c)} />
+  {/if}
+
+  {#if signedIn && dash.invite}
+    <p class="viewing">
+      <span>This is an invite link for someone else: open it signed out, e.g. in a private window.</span>
+      <button type="button" onclick={() => dash.leaveInvite()}>Dismiss</button>
     </p>
   {/if}
 
@@ -143,7 +152,6 @@
   h1 { font-size: 19px; font-weight: 600; letter-spacing: -0.4px; }
   .top-right { display: flex; align-items: center; gap: 12px; min-width: 0; flex-wrap: wrap; justify-content: flex-end; }
   .gate { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 20px; color: var(--muted); font-size: 13px; line-height: 1.6; }
-  .gate code { color: var(--text); }
   .viewing { display: flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap; font-size: 13px; color: var(--muted); margin-bottom: 14px; }
   .viewing strong { color: var(--text); font-weight: 500; }
   .viewing button, .gate button { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 3px 10px; font-size: 12px; }

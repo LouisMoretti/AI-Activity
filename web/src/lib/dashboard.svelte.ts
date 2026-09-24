@@ -2,7 +2,7 @@
 // viewer's own at /), data source (live or ?demo=1), provider filter,
 // session paging, and the 15 s auto-refresh (skipped while hidden or
 // already in flight).
-import { api, NotFoundError, UnauthorizedError } from "./api.ts";
+import { api, NotFoundError, UnauthorizedError, type NewAccount } from "./api.ts";
 import { demoDashboard } from "./demo.ts";
 import { ACTIVITY_DAYS, liveDashboard, type LiveData } from "./live.ts";
 import type { DashboardVM, Provider } from "./view-model.ts";
@@ -34,6 +34,12 @@ function profileFromPath(): string | null {
   return m ? decodeURIComponent(m[1]) : null;
 }
 
+/** Token from /invite/<token>, or null. */
+function inviteFromPath(): string | null {
+  const m = location.pathname.match(/^\/invite\/([^/]+)\/?$/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
 export const profilePath = (username: string | null) =>
   username ? `/u/${encodeURIComponent(username)}` : "/";
 
@@ -47,6 +53,8 @@ export class Dashboard {
   profiles = $state<Profile[]>([]);
   /** Username in the URL; null (or the viewer's own name) means the own page. */
   viewing = $state<string | null>(profileFromPath());
+  /** Invite token from the URL, used to create an account while signed out. */
+  invite = $state<string | null>(inviteFromPath());
   private live = $state<LiveData | null>(null);
   private inFlight = false;
   private reloadQueued = false;
@@ -153,6 +161,27 @@ export class Dashboard {
     }
     await this.load();
     return null;
+  }
+
+  /** Create the first account (setup code) or one from an invite; signs in. */
+  async createAccount(a: NewAccount, setupCode: string | null): Promise<string | null> {
+    try {
+      if (setupCode !== null) await api.setup(setupCode, a);
+      else await api.signup(this.invite ?? "", a);
+    } catch (e) {
+      // The only 401 here is a wrong setup code.
+      return e instanceof UnauthorizedError ? "Wrong setup code: copy it from the server log." : (e as Error).message;
+    }
+    this.leaveInvite();
+    await this.load();
+    return null;
+  }
+
+  /** Drop the invite from the URL (used, or not for this signed-in viewer). */
+  leaveInvite(): void {
+    if (!this.invite) return;
+    this.invite = null;
+    history.replaceState(null, "", "/" + location.search);
   }
 
   async logout(): Promise<void> {
