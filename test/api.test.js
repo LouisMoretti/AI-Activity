@@ -206,6 +206,8 @@ describe("open server (no viewer password)", () => {
     });
     assert.equal((await post({ amount: -5 })).status, 400);
     assert.equal((await post({ amount: "" })).status, 400);
+    for (const amount of [null, true, [5]]) assert.equal((await post({ amount })).status, 400);
+    assert.equal((await post({ amount: "12.5" })).status, 200);
     assert.equal((await post({ currency: "euros" })).status, 400);
     assert.equal((await post({ currency: "ABC" })).status, 400);
     assert.equal((await post({ plan_name: "   " })).status, 400);

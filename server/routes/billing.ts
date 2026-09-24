@@ -40,7 +40,10 @@ function parseSubscription(body: Record<string, unknown>): Parameters<typeof ins
   const text = (v: unknown, max: number) => (typeof v === "string" ? v.trim().slice(0, max) : "");
   const tool = text(body.tool, 40);
   const plan_name = text(body.plan_name, 80);
-  const amount = typeof body.amount === "string" && body.amount.trim() === "" ? NaN : Number(body.amount);
+  // Only a number or a numeric string: Number(null / true / [5]) would coerce.
+  const amount = typeof body.amount === "number" ? body.amount
+    : typeof body.amount === "string" && body.amount.trim() !== "" ? Number(body.amount)
+      : NaN;
   if (!tool || !plan_name || !Number.isFinite(amount)) {
     return "tool and plan_name (non-empty strings) and a numeric amount are required";
   }
