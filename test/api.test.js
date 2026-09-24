@@ -183,6 +183,20 @@ describe("open server (no viewer password)", () => {
     assert.equal(s.model, "claude-opus-5-5");
   });
 
+  test("sessions page with offset past the per-request cap", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    for (let i = 0; i < 5; i++) {
+      await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: `page-${i}`, occurred_at: now + i }) });
+    }
+    const all = (await req(srv.base, "GET", "/api/sessions?limit=200")).json;
+    const p1 = (await req(srv.base, "GET", "/api/sessions?limit=2")).json.sessions;
+    const p2 = (await req(srv.base, "GET", "/api/sessions?limit=2&offset=2")).json.sessions;
+    assert.deepEqual([...p1, ...p2].map((s) => s.session_id), all.sessions.slice(0, 4).map((s) => s.session_id));
+    const past = (await req(srv.base, "GET", `/api/sessions?limit=5&offset=${all.total}`)).json;
+    assert.deepEqual(past.sessions, []);
+    assert.equal(past.total, all.total);
+  });
+
   test("tool filter on stats", async () => {
     const r = (await req(srv.base, "GET", "/api/stats?days=30&tool=codex")).json;
     assert.equal(r.events, 0);

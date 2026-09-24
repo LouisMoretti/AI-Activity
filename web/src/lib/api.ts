@@ -47,8 +47,8 @@ export const api = {
   activity: (days: number, tool: string | null) => get<ActivityResponse>(`/api/activity?days=${days}${toolQuery(tool)}`),
   quotas: () => get<QuotasResponse>("/api/quotas"),
   summary: (tool: string | null) => get<SummaryResponse>(`/api/summary?x=1${toolQuery(tool)}`),
-  sessions: (limit: number, tool: string | null) =>
-    get<SessionsResponse>(`/api/sessions?limit=${limit}${toolQuery(tool)}`),
+  sessions: (limit: number, tool: string | null, offset = 0) =>
+    get<SessionsResponse>(`/api/sessions?limit=${limit}&offset=${offset}${toolQuery(tool)}`),
   billing: () => get<BillingResponse>("/api/billing"),
   devices: () => get<{ devices: Device[] }>("/api/devices"),
   /** The full key is only ever returned here, once. */

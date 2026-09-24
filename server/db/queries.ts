@@ -227,7 +227,9 @@ const TOKENS = "input_tokens + output_tokens + cache_read_tokens + cache_write_t
  * latest event that reported them (the model in use now, not MAX(model) by
  * string order; context is a gauge at that moment, never summed).
  */
-export function recentSessions(db: DB, userId: number, limit: number, tool: string | null): Session[] {
+export function recentSessions(
+  db: DB, userId: number, limit: number, tool: string | null, offset = 0
+): Session[] {
   return db
     .prepare(
       `SELECT s.*,
@@ -242,7 +244,7 @@ export function recentSessions(db: DB, userId: number, limit: number, tool: stri
          FROM usage_events
          WHERE user_id = ? AND session_id IS NOT NULL AND (? IS NULL OR tool = ?)
          GROUP BY session_id, tool
-         ORDER BY last_seen DESC LIMIT ?
+         ORDER BY last_seen DESC, session_id LIMIT ? OFFSET ?
        ) s
        LEFT JOIN (
          SELECT session_id, tool, context_used_pct, context_window_size,
@@ -252,9 +254,9 @@ export function recentSessions(db: DB, userId: number, limit: number, tool: stri
          FROM usage_events
          WHERE user_id = ? AND context_used_pct IS NOT NULL
        ) c ON c.session_id = s.session_id AND c.tool = s.tool AND c.rn = 1
-       ORDER BY s.last_seen DESC`
+       ORDER BY s.last_seen DESC, s.session_id`
     )
-    .all(userId, userId, tool, tool, limit, userId) as Session[];
+    .all(userId, userId, tool, tool, limit, offset, userId) as Session[];
 }
 
 export function countSessions(db: DB, userId: number, tool: string | null): number {

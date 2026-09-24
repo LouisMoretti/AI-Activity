@@ -245,7 +245,7 @@ Viewer (cookie session after `POST /api/auth/login {password}`; open if no
 - `GET /api/quotas` (latest snapshot per account + limit type)
 - `GET /api/summary?tool=...` (all-time and current-UTC-day tokens,
   sessions, events, each split `by_model` and `by_tool`)
-- `GET /api/sessions?limit=10&tool=...` (grouped by unique session id, with
+- `GET /api/sessions?limit=10&offset=0&tool=...` (grouped by unique session id, with
   latest `context_used_pct` / `context_window_size`, plus `total` for paging)
 - `GET /api/billing` (paid vs actual vs estimated, with disclaimer;
   `estimated_available: false` means no cost delta was ever received, shown
