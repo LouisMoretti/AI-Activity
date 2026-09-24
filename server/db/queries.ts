@@ -138,7 +138,26 @@ export function insertUsageEvent(db: DB, ev: UsageEventInput): { inserted: boole
   }
 }
 
+/**
+ * Record a quota snapshot. The statusLine re-sends the same window values on
+ * every fire, so an unchanged value (same used_pct and resets_at as the
+ * latest row) only moves that row's measured_at forward instead of adding
+ * a new row.
+ */
 export function insertQuotaSnapshot(db: DB, q: QuotaSnapshotInput): void {
+  const latest = db
+    .prepare(
+      `SELECT id, used_pct, resets_at FROM quota_snapshots
+       WHERE user_id = ? AND account_ref = ? AND limit_type = ?
+       ORDER BY measured_at DESC, id DESC LIMIT 1`
+    )
+    .get(q.user_id, q.account_ref, q.limit_type) as
+    { id: number; used_pct: number; resets_at: number | null } | undefined;
+  if (latest && latest.used_pct === q.used_pct && latest.resets_at === q.resets_at) {
+    db.prepare("UPDATE quota_snapshots SET measured_at = MAX(measured_at, ?) WHERE id = ?")
+      .run(q.measured_at, latest.id);
+    return;
+  }
   db.prepare(
     `INSERT INTO quota_snapshots
       (device_id, user_id, account_ref, tool, limit_type, used_pct, resets_at, measured_at)

@@ -130,6 +130,18 @@ describe("open server (no viewer password)", () => {
     assert.equal(quotas[0].used_pct, 60);
   });
 
+  test("an unchanged quota value refreshes its measured_at", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const q = { seven_day: { used_percentage: 12, resets_at: now + 86400 } };
+    await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "same", rate_limits: q, occurred_at: now - 60 }) });
+    await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "same", rate_limits: q, occurred_at: now }) });
+    await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "same", rate_limits: q, occurred_at: now - 30 }) });
+    const rows = (await req(srv.base, "GET", "/api/quotas")).json.quotas.filter((x) => x.account_ref === "same");
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].used_pct, 12);
+    assert.equal(rows[0].measured_at, now);
+  });
+
   test("payload without rate_limits creates no quota rows", async () => {
     const before = (await req(srv.base, "GET", "/api/quotas")).json.quotas.length;
     await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "no-limits" }) });
