@@ -246,6 +246,9 @@ describe("open server (no viewer password)", () => {
     assert.equal(home.status, 200);
     assert.match(home.headers.get("content-type"), /text\/html/);
     assert.equal((await req(srv.base, "GET", "/api/nope")).status, 404);
+    const deep = await req(srv.base, "GET", "/some/client/route");
+    assert.equal(deep.status, 200);
+    assert.equal(deep.text, home.text);
   });
 
   test("static serving never escapes the web root", async () => {
