@@ -71,11 +71,13 @@ export function createViewerAuth(password: string) {
     /** Constant-time comparison; records failures for throttling. */
     check(c: Context, candidate: string): boolean {
       if (!password) return true;
+      resetWindowIfDue();
+      const id = clientId(c);
       const ok = timingSafeEqual(digest(candidate), expected);
       if (ok) {
-        fails.delete(clientId(c));
+        fails.delete(id);
       } else {
-        fails.set(clientId(c), (fails.get(clientId(c)) ?? 0) + 1);
+        fails.set(id, (fails.get(id) ?? 0) + 1);
         failsTotal += 1;
       }
       return ok;
