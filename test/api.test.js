@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { startServer, req, newDevice, event } from "./helpers.js";
@@ -374,6 +375,23 @@ describe("shutdown", () => {
       assert.ok(!fs.existsSync(`${srv.dbPath}-wal`));
     } finally {
       await srv.stop();
+    }
+  });
+});
+
+describe("web root without index.html", () => {
+  test("client routes return 404 instead of a stale or broken page", async () => {
+    const root = fs.mkdtempSync(`${os.tmpdir()}/ai-usage-empty-`);
+    const srv = await startServer({ env: { STATIC_DIR: root } });
+    try {
+      assert.equal((await req(srv.base, "GET", "/some/client/route")).status, 404);
+      fs.writeFileSync(`${root}/index.html`, "<!doctype html><p>built</p>");
+      const r = await req(srv.base, "GET", "/some/client/route");
+      assert.equal(r.status, 200);
+      assert.match(r.text, /built/);
+    } finally {
+      await srv.stop();
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 });

@@ -21,12 +21,12 @@ function freePort() {
   });
 }
 
-export async function startServer({ password = "" } = {}) {
+export async function startServer({ password = "", env = {} } = {}) {
   const port = await freePort();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ai-usage-test-"));
   const dbPath = path.join(dir, "t.db");
   const proc = spawn(process.execPath, [SERVER_ENTRY], {
-    env: { ...process.env, PORT: String(port), DB_PATH: dbPath, DASHBOARD_PASSWORD: password },
+    env: { ...process.env, PORT: String(port), DB_PATH: dbPath, DASHBOARD_PASSWORD: password, ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stderr = "";
