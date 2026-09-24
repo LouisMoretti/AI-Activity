@@ -583,8 +583,8 @@ describe("creating accounts from the site", () => {
   });
 });
 
-describe("profile pages", () => {
-  test("any signed-in user reads another profile's usage, never its private data", async () => {
+describe("public profile pages", () => {
+  test("anyone reads a profile's usage by username, never its private data", async () => {
     const srv = await startServer();
     try {
       const admin = await login(srv.base, TEST_ADMIN.username, TEST_ADMIN.password);
@@ -599,25 +599,33 @@ describe("profile pages", () => {
       }) });
       await req(srv.base, "POST", "/api/billing/subscription", { cookie: admin, body: { tool: "claude-code", plan_name: "Max", amount: 100 } });
 
-      const get = async (p) => (await req(srv.base, "GET", p, { cookie: bob }));
-      assert.deepEqual((await get("/api/profiles")).json.profiles,
+      // Signed out, and signed in as someone else: same public view.
+      for (const cookie of [undefined, bob]) {
+        const get = (p) => req(srv.base, "GET", p, cookie ? { cookie } : { anon: true });
+        assert.deepEqual((await get("/api/u/admin")).json, { username: "admin", display_name: "admin" });
+        assert.equal((await get("/api/u/ADMIN/stats?days=730")).json.events, 1);
+        assert.equal((await get("/api/u/admin/summary")).json.total.sessions, 1);
+        assert.equal((await get("/api/u/admin/activity")).json.days.length, 1);
+        assert.equal((await get("/api/u/admin/quotas")).json.quotas[0].used_pct, 12);
+        assert.equal((await get("/api/u/admin/sessions")).json.sessions[0].session_id, "admin-s");
+        // Unknown and disabled profiles do not exist.
+        assert.equal((await get("/api/u/nobody")).status, 404);
+        assert.equal((await get("/api/u/gone/summary")).status, 404);
+        // Nothing private has a public route (401 or 404, never data).
+        for (const p of ["/api/u/admin/billing", "/api/u/admin/devices"]) {
+          assert.ok([401, 404].includes((await get(p)).status), p);
+        }
+      }
+      // Bob's own endpoints stay his, whatever the query says.
+      const mine = (p) => req(srv.base, "GET", p, { cookie: bob });
+      assert.equal((await mine("/api/stats?days=730&user=admin")).json.events, 0);
+      assert.deepEqual((await mine("/api/devices")).json.devices, []);
+      assert.equal((await mine("/api/billing")).json.subscriptions.length, 0);
+      // The account list is for signed-in users only.
+      assert.deepEqual((await mine("/api/profiles")).json.profiles,
         [{ username: "admin", display_name: "admin" }, { username: "bob", display_name: "Bob" }]);
-      // Own view is empty, admin's profile shows admin's usage.
-      assert.equal((await get("/api/stats?days=730")).json.events, 0);
-      assert.equal((await get("/api/stats?days=730&user=admin")).json.events, 1);
-      assert.equal((await get("/api/summary?user=ADMIN")).json.total.sessions, 1);
-      assert.equal((await get("/api/activity?user=admin")).json.days.length, 1);
-      assert.equal((await get("/api/quotas?user=admin")).json.quotas[0].used_pct, 12);
-      assert.equal((await get("/api/sessions?user=admin")).json.sessions[0].session_id, "admin-s");
-      // Devices, billing and account settings ignore ?user and stay private.
-      assert.deepEqual((await get("/api/devices?user=admin")).json.devices, []);
-      assert.equal((await get("/api/billing?user=admin")).json.subscriptions.length, 0);
-      assert.equal((await get("/api/billing?user=admin")).json.estimated_available, false);
-      // Unknown and disabled profiles do not exist.
-      assert.equal((await get("/api/stats?user=nobody")).status, 404);
-      assert.equal((await get("/api/stats?user=gone")).status, 404);
-      // Signed out: no profile is readable.
-      assert.equal((await req(srv.base, "GET", "/api/stats?user=admin", { anon: true })).status, 401);
+      assert.equal((await req(srv.base, "GET", "/api/profiles", { anon: true })).status, 401);
+      assert.equal((await req(srv.base, "GET", "/api/stats", { anon: true })).status, 401);
     } finally {
       await srv.stop();
     }

@@ -1,37 +1,27 @@
 import { Hono, type Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type {
-  ActivityResponse, ProfilesResponse, QuotasResponse, SessionsResponse, StatsResponse, SummaryResponse,
+  ActivityResponse, Profile, ProfilesResponse, QuotasResponse, SessionsResponse, StatsResponse,
+  SummaryResponse,
 } from "../../shared/types.ts";
 import {
   breakdown, countSessions, dailyBuckets, findUserByUsername, latestQuotas, listProfiles, recentSessions,
-  usageTotals,
+  toAccount, usageTotals,
 } from "../db/queries.ts";
 import { nowSec, type DB } from "../db/schema.ts";
 import { intParam } from "../lib/http.ts";
 import type { ViewerEnv } from "../lib/viewer-auth.ts";
 
-/**
- * Whose usage to show: `?user=<username>` opens another profile (read-only,
- * any signed-in viewer), otherwise the viewer's own. Devices, billing and
- * account settings never take this parameter.
- */
-function profileUserId(db: DB, c: Context<ViewerEnv>): number {
-  const username = c.req.query("user");
-  if (!username) return c.get("userId");
-  const user = findUserByUsername(db, username);
-  if (!user || user.disabled || !user.password_hash) throw new HTTPException(404, { message: "profile not found" });
-  return user.id;
-}
+/** Whose usage a request reads. */
+type Owner = (c: Context) => number;
 
 /** Read-only measured usage: stats, heatmap buckets, quotas, sessions. */
-export function usageRoutes(db: DB) {
-  return new Hono<ViewerEnv>()
-    .get("/profiles", (c) => c.json<ProfilesResponse>({ profiles: listProfiles(db) }))
+function usage(db: DB, owner: Owner) {
+  return new Hono()
     .get("/stats", (c) => {
       const days = intParam(c, "days", 30, 1, 730);
       const tool = c.req.query("tool") || null;
-      const totals = usageTotals(db, profileUserId(db, c), nowSec() - days * 86400, tool);
+      const totals = usageTotals(db, owner(c), nowSec() - days * 86400, tool);
       return c.json<StatsResponse>({
         range_days: days,
         tool,
@@ -45,17 +35,17 @@ export function usageRoutes(db: DB) {
       const days = intParam(c, "days", 364, 1, 730);
       const tool = c.req.query("tool") || null;
       return c.json<ActivityResponse>({
-        days: dailyBuckets(db, profileUserId(db, c), nowSec() - days * 86400, tool),
+        days: dailyBuckets(db, owner(c), nowSec() - days * 86400, tool),
         provenance: "measured device events",
       });
     })
     .get("/quotas", (c) =>
       c.json<QuotasResponse>({
-        quotas: latestQuotas(db, profileUserId(db, c)),
+        quotas: latestQuotas(db, owner(c)),
         provenance: "latest snapshot provided by the account (never summed across devices)",
       }))
     .get("/summary", (c) => {
-      const uid = profileUserId(db, c);
+      const uid = owner(c);
       const tool = c.req.query("tool") || null;
       const now = new Date();
       // "Today" is the current UTC day, matching the activity buckets.
@@ -69,7 +59,7 @@ export function usageRoutes(db: DB) {
       });
     })
     .get("/sessions", (c) => {
-      const uid = profileUserId(db, c);
+      const uid = owner(c);
       const tool = c.req.query("tool") || null;
       return c.json<SessionsResponse>({
         sessions: recentSessions(
@@ -79,4 +69,30 @@ export function usageRoutes(db: DB) {
         provenance: "grouped by unique session id from device events",
       });
     });
+}
+
+/** The signed-in viewer's own usage (/api/stats, /api/summary, …). */
+export function usageRoutes(db: DB) {
+  return new Hono<ViewerEnv>()
+    .get("/profiles", (c) => c.json<ProfilesResponse>({ profiles: listProfiles(db) }))
+    .route("/", usage(db, (c) => (c as Context<ViewerEnv>).get("userId")));
+}
+
+/**
+ * Public profile pages (/api/u/<username>/…): anyone, signed in or not, can
+ * read an enabled account's usage. Only usage: cost, devices and account
+ * settings have no public route.
+ */
+export function publicProfileRoutes(db: DB) {
+  const owner = (c: Context) => {
+    const user = findUserByUsername(db, c.req.param("username") ?? "");
+    if (!user || user.disabled || !user.password_hash) throw new HTTPException(404, { message: "profile not found" });
+    return user;
+  };
+  return new Hono()
+    .get("/", (c) => {
+      const { username, display_name } = toAccount(owner(c));
+      return c.json<Profile>({ username, display_name });
+    })
+    .route("/", usage(db, (c) => owner(c).id));
 }

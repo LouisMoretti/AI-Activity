@@ -11,6 +11,7 @@
   import Logo from "./components/Logo.svelte";
   import NewAccountForm from "./components/NewAccountForm.svelte";
   import OpenCodeCard from "./components/OpenCodeCard.svelte";
+  import ProfileHeader from "./components/ProfileHeader.svelte";
   import ProfilePanel from "./components/ProfilePanel.svelte";
   import ProfileSwitcher from "./components/ProfileSwitcher.svelte";
   import Section from "./components/Section.svelte";
@@ -24,12 +25,11 @@
   const dash = new Dashboard();
   $effect(() => dash.start());
   $effect(() => {
-    document.title = !dash.account ? "AI Activity"
-      : dash.demo ? "AI Activity · Demo"
-      : dash.shown && !dash.own ? `AI Activity · ${dash.shown.display_name}`
+    const page = dash.route.page;
+    document.title = page === "settings" ? "Settings · AI Activity"
+      : page === "profile" && dash.shown ? `${dash.shown.display_name} · AI Activity${dash.vm?.demo ? " · Demo" : ""}`
         : "AI Activity";
   });
-  const signedIn = $derived(Boolean(dash.account));
 
   const providers: { value: Provider; label: string }[] = [
     { value: "all", label: "All tools" },
@@ -37,25 +37,40 @@
     { value: "codex", label: "Codex" },
     { value: "opencode", label: "OpenCode" },
   ];
+
+  /** Back to the sign-in screen, then here. */
+  const signInHere = () => dash.go(`/?next=${encodeURIComponent(location.pathname)}`);
 </script>
 
 <main>
   <header class="top">
-    <div class="brand"><Logo /><h1>AI Activity</h1></div>
-    {#if dash.account}
-      <div class="top-right">
-        <span class="badge" class:demo={dash.demo} class:live={!dash.demo}>{dash.demo ? "Demonstration data" : "Live data"}</span>
-        {#if !dash.demo}
-          <ProfileSwitcher profiles={dash.profiles} current={dash.viewing ?? dash.account.username}
+    <a class="brand" href="/" onclick={(e) => { e.preventDefault(); dash.go("/"); }}><Logo /><h1>AI Activity</h1></a>
+    <div class="top-right">
+      {#if dash.vm}
+        <span class="badge" class:demo={dash.vm.demo} class:live={!dash.vm.demo}>{dash.vm.demo ? "Demonstration data" : "Live data"}</span>
+      {/if}
+      {#if dash.account}
+        {#if dash.profiles.length > 1}
+          <ProfileSwitcher profiles={dash.profiles}
+            current={dash.route.page === "profile" ? dash.route.username : dash.account.username}
             self={dash.account.username} onchange={(u) => dash.openProfile(u)} />
         {/if}
-        <AccountMenu account={dash.account} onlogout={() => dash.logout()} />
-      </div>
-    {/if}
+        <AccountMenu account={dash.account} onnavigate={(p) => dash.go(p)} onlogout={() => dash.logout()} />
+      {:else if dash.route.page === "profile"}
+        <button type="button" class="signin" onclick={signInHere}>Sign in</button>
+      {/if}
+    </div>
   </header>
 
-  {#if dash.status === "signed-out" && dash.invite}
-    <InviteSignup token={dash.invite} oncreate={(a, c) => dash.createAccount(a, c)} onsignin={() => dash.leaveInvite()} />
+  {#if dash.route.page === "invite"}
+    {#if dash.status === "signed-out"}
+      <InviteSignup token={dash.route.token} oncreate={(a, c) => dash.createAccount(a, c)} onsignin={() => dash.go("/")} />
+    {:else if dash.account}
+      <p class="gate">
+        This is an invite link for someone else: open it signed out, e.g. in a private window.
+        <button type="button" onclick={() => dash.go("/")}>Go to your profile</button>
+      </p>
+    {/if}
   {:else if dash.status === "signed-out"}
     <LoginBar onlogin={(u, p) => dash.login(u, p)} />
   {:else if dash.status === "setup"}
@@ -64,41 +79,52 @@
       submitLabel="Create admin account" oncreate={(a, c) => dash.createAccount(a, c)} />
   {/if}
 
-  {#if signedIn && dash.invite}
-    <p class="viewing">
-      <span>This is an invite link for someone else: open it signed out, e.g. in a private window.</span>
-      <button type="button" onclick={() => dash.leaveInvite()}>Dismiss</button>
-    </p>
-  {/if}
-
-  {#if signedIn && !dash.own && !dash.demo && dash.status !== "missing"}
-    <p class="viewing">
-      <span>Viewing <strong>{dash.shown?.display_name ?? dash.viewing}</strong>'s profile, read-only.</span>
-      <button type="button" onclick={() => dash.openProfile(null)}>Back to yours</button>
-    </p>
-  {/if}
-
   {#if dash.status === "missing"}
     <p class="gate">
-      No profile named <span class="mono">@{dash.viewing}</span>.
-      <button type="button" onclick={() => dash.openProfile(null)}>Back to yours</button>
+      No profile named <span class="mono">@{dash.route.page === "profile" ? dash.route.username : ""}</span>.
+      {#if dash.account}<button type="button" onclick={() => dash.go("/")}>Go to your profile</button>{/if}
     </p>
-  {/if}
-
-  {#if signedIn && dash.status !== "missing"}
-    <div class="toolbar">
-      <Segmented label="Tools" options={providers} value={dash.provider} onchange={(p) => dash.setProvider(p)} />
-    </div>
   {/if}
 
   {#if dash.status === "error"}
     <p class="notice" role="alert">Could not reach the server. Retrying every 15 seconds.</p>
   {/if}
 
-  {#if dash.vm}
+  {#if dash.route.page === "settings" && dash.account && dash.status === "ready"}
+    <div class="settings-head">
+      <h2>Settings</h2>
+      <button type="button" onclick={() => dash.go("/")}>Back to your profile</button>
+    </div>
+
+    <Section title="Account" subtitle="Your profile and password">
+      {#key dash.account.id}
+        <ProfilePanel account={dash.account} onchange={() => dash.load()} />
+      {/key}
+    </Section>
+
+    <Section title="Subscriptions" subtitle="What you actually paid, shown on your profile only">
+      <SubscriptionForm onadded={() => {}} />
+    </Section>
+
+    <Section title="Devices" subtitle="One ingestion key per machine">
+      <DevicesPanel />
+    </Section>
+
+    {#if dash.account.is_admin}
+      <Section title="Users" subtitle="Profile pages are public; devices, costs and settings stay private">
+        <UsersPanel selfId={dash.account.id} />
+      </Section>
+    {/if}
+  {/if}
+
+  {#if dash.vm && dash.shown}
     {@const vm = dash.vm}
-    <!-- Management only acts on the viewer's own real data, never on demo data or another profile. -->
-    {@const canManage = !vm.demo && dash.own}
+    <ProfileHeader profile={dash.shown} own={dash.own} />
+
+    <div class="toolbar">
+      <Segmented label="Tools" options={providers} value={dash.provider} onchange={(p) => dash.setProvider(p)} />
+    </div>
+
     <ActivityChart series={vm.series} today={vm.today} demo={vm.demo} hasActivity={vm.hasActivity} />
     <StatsRow stats={vm.stats} />
 
@@ -114,33 +140,14 @@
       <Conversations sessions={vm.sessions} total={vm.sessionsTotal} onmore={() => dash.showMoreSessions()} />
     </Section>
 
+    <!-- Costs are private: only on the viewer's own page (vm.cost is null elsewhere). -->
     {#if vm.cost}
-      <Section title="Cost" subtitle="Paid and estimated stay separate">
+      <Section title="Cost" subtitle="Only you see this section">
         <CostPanel cards={vm.cost} />
-        {#if canManage}
-          <SubscriptionForm onadded={() => dash.load()} />
+        {#if !vm.demo}
+          <p class="hint">Add what you paid in <button type="button" onclick={() => dash.go("/settings")}>Settings</button>.</p>
         {/if}
       </Section>
-    {/if}
-
-    {#if canManage}
-      <Section title="Devices" subtitle="One ingestion key per machine">
-        <DevicesPanel />
-      </Section>
-
-      {#if dash.account}
-        <Section title="Account" subtitle="Your profile and password">
-          {#key dash.account.id}
-            <ProfilePanel account={dash.account} onchange={() => dash.load()} />
-          {/key}
-        </Section>
-      {/if}
-
-      {#if dash.account?.is_admin}
-        <Section title="Users" subtitle="Usage pages are visible to every account; devices and costs stay private">
-          <UsersPanel selfId={dash.account.id} />
-        </Section>
-      {/if}
     {/if}
   {/if}
 </main>
@@ -148,13 +155,15 @@
 <style>
   main { max-width: 1080px; margin: 0 auto; padding: 44px 42px 56px; }
   .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 28px; }
-  .brand { display: flex; align-items: center; gap: 11px; }
+  .brand { display: flex; align-items: center; gap: 11px; color: inherit; text-decoration: none; }
   h1 { font-size: 19px; font-weight: 600; letter-spacing: -0.4px; }
   .top-right { display: flex; align-items: center; gap: 12px; min-width: 0; flex-wrap: wrap; justify-content: flex-end; }
   .gate { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 20px; color: var(--muted); font-size: 13px; line-height: 1.6; }
-  .viewing { display: flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap; font-size: 13px; color: var(--muted); margin-bottom: 14px; }
-  .viewing strong { color: var(--text); font-weight: 500; }
-  .viewing button, .gate button { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 3px 10px; font-size: 12px; }
+  .gate button, .settings-head button, .signin { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 4px 10px; font-size: 12px; color: var(--text); }
+  .settings-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
+  .settings-head h2 { font-size: 17px; font-weight: 600; }
+  .hint { margin-top: 10px; font-size: 12px; color: var(--muted); }
+  .hint button { color: var(--text); text-decoration: underline; text-underline-offset: 3px; font-size: 12px; }
   .badge { border: 1px solid var(--line); color: var(--muted); font-size: 12px; padding: 5px 10px; border-radius: var(--radius-sm); }
   .badge.demo { border-color: var(--demo-line); background: var(--demo-bg); color: var(--demo-text); }
   .toolbar { display: flex; justify-content: center; margin-bottom: 8px; }

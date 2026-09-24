@@ -1,14 +1,23 @@
-// Dashboard state: sign-in, which profile is shown (/u/<username>, or the
-// viewer's own at /), data source (live or ?demo=1), provider filter,
-// session paging, and the 15 s auto-refresh (skipped while hidden or
-// already in flight).
+// App state: sign-in, the current page (sign-in at /, a public profile at
+// /u/<username>, /settings, /invite/<token>), data source (live or
+// ?demo=1), provider filter, session paging, and the 15 s auto-refresh
+// (skipped while hidden or already in flight).
 import { api, NotFoundError, UnauthorizedError, type NewAccount } from "./api.ts";
 import { demoDashboard } from "./demo.ts";
 import { ACTIVITY_DAYS, liveDashboard, type LiveData } from "./live.ts";
 import type { DashboardVM, Provider } from "./view-model.ts";
 import type { Account, Profile, SessionsResponse } from "../../../shared/types.ts";
 
-/** "signed-out": login screen; "setup": no account exists yet; "missing": unknown profile. */
+export type Route =
+  | { page: "home" }
+  | { page: "profile"; username: string }
+  | { page: "settings" }
+  | { page: "invite"; token: string };
+
+/**
+ * "signed-out": sign-in screen; "setup": no account exists yet;
+ * "missing": unknown profile.
+ */
 export type Status = "loading" | "ready" | "signed-out" | "setup" | "missing" | "error";
 
 const REFRESH_MS = 15000;
@@ -17,101 +26,94 @@ const SESSIONS_MAX_PAGE = 200;
 export const SESSIONS_PAGE = 10;
 
 /** The first `limit` sessions, in as many server pages as needed. */
-async function fetchSessions(limit: number, tool: string | null, user: string | null): Promise<SessionsResponse> {
-  const first = await api.sessions(Math.min(limit, SESSIONS_MAX_PAGE), tool, 0, user);
+async function fetchSessions(username: string, limit: number, tool: string | null): Promise<SessionsResponse> {
+  const first = await api.sessions(username, Math.min(limit, SESSIONS_MAX_PAGE), tool, 0);
   const sessions = [...first.sessions];
   while (sessions.length < Math.min(limit, first.total)) {
-    const page = await api.sessions(Math.min(limit - sessions.length, SESSIONS_MAX_PAGE), tool, sessions.length, user);
+    const page = await api.sessions(username, Math.min(limit - sessions.length, SESSIONS_MAX_PAGE), tool, sessions.length);
     if (!page.sessions.length) break;
     sessions.push(...page.sessions);
   }
   return { ...first, sessions };
 }
 
-/** Username from /u/<username>, or null for the viewer's own page. */
-function profileFromPath(): string | null {
-  const m = location.pathname.match(/^\/u\/([^/]+)\/?$/);
-  return m ? decodeURIComponent(m[1]) : null;
+function routeFromPath(): Route {
+  const path = location.pathname;
+  const profile = path.match(/^\/u\/([^/]+)\/?$/);
+  if (profile) return { page: "profile", username: decodeURIComponent(profile[1]) };
+  const invite = path.match(/^\/invite\/([^/]+)\/?$/);
+  if (invite) return { page: "invite", token: decodeURIComponent(invite[1]) };
+  if (/^\/settings\/?$/.test(path)) return { page: "settings" };
+  return { page: "home" };
 }
 
-/** Token from /invite/<token>, or null. */
-function inviteFromPath(): string | null {
-  const m = location.pathname.match(/^\/invite\/([^/]+)\/?$/);
-  return m ? decodeURIComponent(m[1]) : null;
+export const profilePath = (username: string) => `/u/${encodeURIComponent(username)}`;
+
+/** Where to go after signing in: a same-site path from ?next=, if any. */
+function nextPath(): string | null {
+  const next = new URLSearchParams(location.search).get("next");
+  // "//host" and "/\host" would leave the site (pushState then throws).
+  return next && /^\/(?![/\\])/.test(next) ? next : null;
 }
 
-export const profilePath = (username: string | null) =>
-  username ? `/u/${encodeURIComponent(username)}` : "/";
+const same = (a: string | undefined, b: string | undefined) =>
+  a !== undefined && b !== undefined && a.toLowerCase() === b.toLowerCase();
 
 export class Dashboard {
   readonly demo = new URLSearchParams(location.search).get("demo") === "1";
+  route = $state<Route>(routeFromPath());
   provider = $state<Provider>("all");
   status = $state<Status>("loading");
   sessionsLimit = $state(SESSIONS_PAGE);
   /** The signed-in account; null when signed out. */
   account = $state<Account | null>(null);
+  /** Every profile, for the switcher (signed in only). */
   profiles = $state<Profile[]>([]);
-  /** Username in the URL; null (or the viewer's own name) means the own page. */
-  viewing = $state<string | null>(profileFromPath());
-  /** Invite token from the URL, used to create an account while signed out. */
-  invite = $state<string | null>(inviteFromPath());
+  /** The profile on screen. */
+  shown = $state<Profile | null>(null);
   private live = $state<LiveData | null>(null);
   private inFlight = false;
   private reloadQueued = false;
 
-  /** True on the viewer's own page, where private sections are shown. */
-  own = $derived(!this.viewing || this.viewing.toLowerCase() === this.account?.username.toLowerCase());
-  /** The profile being shown, for titles. */
-  shown = $derived<Profile | null>(
-    this.own
-      ? (this.account && { username: this.account.username, display_name: this.account.display_name })
-      : (this.profiles.find((p) => p.username.toLowerCase() === this.viewing?.toLowerCase()) ?? null)
-  );
+  /** True on the signed-in viewer's own profile, where private data is shown. */
+  own = $derived(this.route.page === "profile" && same(this.route.username, this.account?.username));
 
   vm = $derived<DashboardVM | null>(
-    !this.account ? null
-      : this.demo ? demoDashboard(this.provider)
+    this.route.page !== "profile" ? null
+      // Demo data only on the viewer's own page, and only once signed in.
+      : this.demo && this.own ? demoDashboard(this.provider)
         : this.live ? liveDashboard(this.live, this.provider)
           : null
   );
 
   async load(): Promise<void> {
     if (this.inFlight) {
-      // A filter, paging or profile change during a refresh must not be lost.
+      // A filter, paging or page change during a refresh must not be lost.
       this.reloadQueued = true;
       return;
     }
     this.inFlight = true;
-    const tool = this.provider === "all" ? null : this.provider;
-    const target = this.viewing;
+    const route = this.route;
     try {
-      // Nothing, demo included, is shown without a signed-in account.
       const auth = await api.authStatus();
-      if (!auth.user) {
-        this.signedOut(auth.setup_required ? "setup" : "signed-out");
-        return;
-      }
       this.account = auth.user;
-      if (this.demo) {
-        this.status = "ready";
+      if (!auth.user) {
+        this.profiles = [];
+        if (route.page === "profile") await this.loadProfile(route.username);
+        else if (route.page === "settings") this.go(`/?next=${encodeURIComponent("/settings")}`, true);
+        else this.status = auth.setup_required ? "setup" : "signed-out";
         return;
       }
-      const user = this.own ? null : target;
-      const [profiles, summary, activity, quotas, sessions, billing] = await Promise.all([
-        api.profiles(),
-        api.summary(tool, user),
-        api.activity(ACTIVITY_DAYS, tool, user),
-        api.quotas(user),
-        fetchSessions(this.sessionsLimit, tool, user),
-        user ? null : api.billing(),
-      ]);
-      // A profile switch while this was in flight: its queued reload wins.
-      if (target !== this.viewing) return;
-      this.profiles = profiles.profiles;
-      this.live = { summary, activity, quotas, sessions, billing };
-      this.status = "ready";
+      if (route.page === "home") {
+        // Signed in: the address bar shows the shareable profile link.
+        this.go(nextPath() ?? profilePath(auth.user.username) + (this.demo ? "?demo=1" : ""), true);
+        return;
+      }
+      this.profiles = (await api.profiles()).profiles;
+      if (route.page === "profile") await this.loadProfile(route.username);
+      else this.status = "ready";
     } catch (e) {
-      if (e instanceof UnauthorizedError) this.signedOut("signed-out");
+      if (e instanceof UnauthorizedError) this.signedOut();
       else if (e instanceof NotFoundError) {
         this.live = null;
         this.status = "missing";
@@ -125,6 +127,25 @@ export class Dashboard {
     }
   }
 
+  private async loadProfile(username: string): Promise<void> {
+    const tool = this.provider === "all" ? null : this.provider;
+    const mine = same(username, this.account?.username);
+    const [profile, summary, activity, quotas, sessions, billing] = await Promise.all([
+      api.profile(username),
+      api.summary(username, tool),
+      api.activity(username, ACTIVITY_DAYS, tool),
+      api.quotas(username),
+      fetchSessions(username, this.sessionsLimit, tool),
+      // Costs are private: only on the viewer's own page.
+      mine ? api.billing() : null,
+    ]);
+    // Navigated elsewhere while this was in flight: its queued reload wins.
+    if (this.route.page !== "profile" || this.route.username !== username) return;
+    this.shown = profile;
+    this.live = { summary, activity, quotas, sessions, billing };
+    this.status = "ready";
+  }
+
   setProvider(p: Provider): void {
     this.provider = p;
     this.sessionsLimit = SESSIONS_PAGE;
@@ -136,17 +157,22 @@ export class Dashboard {
     void this.load();
   }
 
-  /** Show a profile (null: the viewer's own) and record it in the URL. */
-  openProfile(username: string | null): void {
-    const own = !username || username.toLowerCase() === this.account?.username.toLowerCase();
-    history.pushState(null, "", profilePath(own ? null : username) + location.search);
+  /** Navigate within the app (path may carry a query string). */
+  go(path: string, replace = false): void {
+    if (replace) history.replaceState(null, "", path);
+    else history.pushState(null, "", path);
     this.showPath();
   }
 
-  /** Sync with the URL (after openProfile, or back/forward). */
+  openProfile(username: string): void {
+    this.go(profilePath(username));
+  }
+
+  /** Sync with the URL (after go(), or back/forward). */
   private showPath(): void {
-    this.viewing = profileFromPath();
+    this.route = routeFromPath();
     this.live = null;
+    this.shown = null;
     this.sessionsLimit = SESSIONS_PAGE;
     this.status = "loading";
     void this.load();
@@ -159,7 +185,7 @@ export class Dashboard {
     } catch (e) {
       return e instanceof UnauthorizedError ? "Wrong username or password." : (e as Error).message;
     }
-    await this.load();
+    this.go(nextPath() ?? "/", true);
     return null;
   }
 
@@ -167,35 +193,28 @@ export class Dashboard {
   async createAccount(a: NewAccount, setupCode: string | null): Promise<string | null> {
     try {
       if (setupCode !== null) await api.setup(setupCode, a);
-      else await api.signup(this.invite ?? "", a);
+      else await api.signup(this.route.page === "invite" ? this.route.token : "", a);
     } catch (e) {
       // The only 401 here is a wrong setup code.
       return e instanceof UnauthorizedError ? "Wrong setup code: copy it from the server log." : (e as Error).message;
     }
-    this.leaveInvite();
-    await this.load();
+    this.go("/", true);
     return null;
-  }
-
-  /** Drop the invite from the URL (used, or not for this signed-in viewer). */
-  leaveInvite(): void {
-    if (!this.invite) return;
-    this.invite = null;
-    history.replaceState(null, "", "/" + location.search);
   }
 
   async logout(): Promise<void> {
     await api.logout().catch(() => {});
-    this.signedOut("signed-out");
+    this.signedOut();
+    this.go("/");
   }
 
   /** Drop everything the previous account could see. */
-  private signedOut(status: "signed-out" | "setup"): void {
+  private signedOut(): void {
     this.account = null;
-    this.live = null;
     this.profiles = [];
+    this.live = null;
     this.sessionsLimit = SESSIONS_PAGE;
-    this.status = status;
+    this.status = "signed-out";
   }
 
   /** Starts polling; returns a cleanup function. */
@@ -203,7 +222,10 @@ export class Dashboard {
     void this.load();
     const onPop = () => this.showPath();
     window.addEventListener("popstate", onPop);
-    const tick = () => { if (!document.hidden && !this.demo) void this.load(); };
+    // Only profile pages show live data worth refreshing.
+    const tick = () => {
+      if (!document.hidden && !this.demo && this.route.page === "profile") void this.load();
+    };
     const id = setInterval(tick, REFRESH_MS);
     document.addEventListener("visibilitychange", tick);
     return () => {

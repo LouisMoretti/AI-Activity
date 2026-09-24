@@ -12,7 +12,7 @@ import { authRoutes } from "./routes/auth.ts";
 import { billingRoutes } from "./routes/billing.ts";
 import { deviceRoutes } from "./routes/devices.ts";
 import { ingestRoutes } from "./routes/ingest.ts";
-import { usageRoutes } from "./routes/usage.ts";
+import { publicProfileRoutes, usageRoutes } from "./routes/usage.ts";
 
 /** setupCode: one-time code for creating the first account from the browser (null once one exists). */
 export function createApp(db: DB, config: Config, setupCode: string | null = null) {
@@ -27,6 +27,8 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
     .get("/health", (c) => c.json({ ok: true }))
     .route("/auth", authRoutes(db, auth, setupCode))
     .route("/ingest", ingestRoutes(db))
+    // Public, read-only: profile pages are shareable links.
+    .route("/u/:username", publicProfileRoutes(db))
     // Everything below requires a viewer session.
     .use(auth.require)
     .route("/", usageRoutes(db))

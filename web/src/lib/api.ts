@@ -1,6 +1,6 @@
 // Typed client for the dashboard JSON API (same origin, cookie session).
 import type {
-  Account, ActivityResponse, AdminUser, AuthStatus, Invite, ProfilesResponse, BillingResponse, Device, QuotasResponse,
+  Account, ActivityResponse, AdminUser, AuthStatus, Invite, Profile, ProfilesResponse, BillingResponse, Device, QuotasResponse,
   SessionsResponse, StatsResponse, Subscription, SummaryResponse,
 } from "../../../shared/types.ts";
 
@@ -44,8 +44,7 @@ export type NewSubscription =
   Pick<Subscription, "tool" | "plan_name" | "amount" | "currency" | "period_start" | "period_end" | "note">;
 
 const toolQuery = (tool: string | null) => (tool ? `&tool=${encodeURIComponent(tool)}` : "");
-/** Another profile's usage; null for the viewer's own. */
-const userQuery = (user: string | null) => (user ? `&user=${encodeURIComponent(user)}` : "");
+const profileBase = (username: string) => `/api/u/${encodeURIComponent(username)}`;
 
 export const api = {
   authStatus: () => get<AuthStatus>("/api/auth/status"),
@@ -72,13 +71,15 @@ export const api = {
   resetPassword: (id: number, password: string) => post<{ ok: true }>(`/api/users/${id}/password`, { password }),
   profiles: () => get<ProfilesResponse>("/api/profiles"),
   stats: (days: number, tool: string | null) => get<StatsResponse>(`/api/stats?days=${days}${toolQuery(tool)}`),
-  activity: (days: number, tool: string | null, user: string | null) =>
-    get<ActivityResponse>(`/api/activity?days=${days}${toolQuery(tool)}${userQuery(user)}`),
-  quotas: (user: string | null) => get<QuotasResponse>(`/api/quotas?x=1${userQuery(user)}`),
-  summary: (tool: string | null, user: string | null) =>
-    get<SummaryResponse>(`/api/summary?x=1${toolQuery(tool)}${userQuery(user)}`),
-  sessions: (limit: number, tool: string | null, offset: number, user: string | null) =>
-    get<SessionsResponse>(`/api/sessions?limit=${limit}&offset=${offset}${toolQuery(tool)}${userQuery(user)}`),
+  // A profile's usage, public by username (the viewer's own page uses it too).
+  profile: (username: string) => get<Profile>(profileBase(username)),
+  activity: (username: string, days: number, tool: string | null) =>
+    get<ActivityResponse>(`${profileBase(username)}/activity?days=${days}${toolQuery(tool)}`),
+  quotas: (username: string) => get<QuotasResponse>(`${profileBase(username)}/quotas`),
+  summary: (username: string, tool: string | null) =>
+    get<SummaryResponse>(`${profileBase(username)}/summary?x=1${toolQuery(tool)}`),
+  sessions: (username: string, limit: number, tool: string | null, offset: number) =>
+    get<SessionsResponse>(`${profileBase(username)}/sessions?limit=${limit}&offset=${offset}${toolQuery(tool)}`),
   billing: () => get<BillingResponse>("/api/billing"),
   devices: () => get<{ devices: Device[] }>("/api/devices"),
   /** The full key is only ever returned here, once. */
