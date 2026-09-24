@@ -17,7 +17,9 @@ export function deviceRoutes(db: DB, userId: () => number) {
       return c.json({ ok: true, id: created.id, key: created.key });
     })
     .post("/:id{[0-9]+}/revoke", (c) => {
-      revokeDevice(db, Number(c.req.param("id")));
+      if (!revokeDevice(db, userId(), Number(c.req.param("id")))) {
+        return c.json({ error: "device not found" }, 404);
+      }
       return c.json({ ok: true });
     });
 }

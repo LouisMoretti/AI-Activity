@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import os from "node:os";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { startServer, req, newDevice, event } from "./helpers.js";
@@ -24,6 +26,9 @@ describe("open server (no viewer password)", () => {
     assert.equal((await req(srv.base, "POST", "/api/ingest", { body: event(), key: d.key })).status, 200);
     assert.equal((await req(srv.base, "POST", `/api/devices/${d.id}/revoke`)).status, 200);
     assert.equal((await req(srv.base, "POST", "/api/ingest", { body: event(), key: d.key })).status, 401);
+    // Idempotent: SQLite counts matched rows even when the value is unchanged.
+    assert.equal((await req(srv.base, "POST", `/api/devices/${d.id}/revoke`)).status, 200);
+    assert.equal((await req(srv.base, "POST", "/api/devices/999999/revoke")).status, 404);
   });
 
   test("ingest rejects bad JSON, oversized bodies and unsupported tools", async () => {
@@ -130,6 +135,18 @@ describe("open server (no viewer password)", () => {
     assert.equal(quotas[0].used_pct, 60);
   });
 
+  test("an unchanged quota value refreshes its measured_at", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const q = { seven_day: { used_percentage: 12, resets_at: now + 86400 } };
+    await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "same", rate_limits: q, occurred_at: now - 60 }) });
+    await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "same", rate_limits: q, occurred_at: now }) });
+    await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "same", rate_limits: q, occurred_at: now - 30 }) });
+    const rows = (await req(srv.base, "GET", "/api/quotas")).json.quotas.filter((x) => x.account_ref === "same");
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].used_pct, 12);
+    assert.equal(rows[0].measured_at, now);
+  });
+
   test("payload without rate_limits creates no quota rows", async () => {
     const before = (await req(srv.base, "GET", "/api/quotas")).json.quotas.length;
     await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "no-limits" }) });
@@ -158,6 +175,29 @@ describe("open server (no viewer password)", () => {
     assert.ok(s.last_seen >= now);
   });
 
+  test("a session reports its latest model, not the largest name", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: "switch", model: "claude-sonnet-5", occurred_at: now - 60 }) });
+    await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: "switch", model: "claude-opus-5-5", occurred_at: now }) });
+    await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: "switch", model: "claude-haiku-4-5", occurred_at: now - 30 }) });
+    const s = (await req(srv.base, "GET", "/api/sessions?limit=200")).json.sessions.find((x) => x.session_id === "switch");
+    assert.equal(s.model, "claude-opus-5-5");
+  });
+
+  test("sessions page with offset past the per-request cap", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    for (let i = 0; i < 5; i++) {
+      await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: `page-${i}`, occurred_at: now + i }) });
+    }
+    const all = (await req(srv.base, "GET", "/api/sessions?limit=200")).json;
+    const p1 = (await req(srv.base, "GET", "/api/sessions?limit=2")).json.sessions;
+    const p2 = (await req(srv.base, "GET", "/api/sessions?limit=2&offset=2")).json.sessions;
+    assert.deepEqual([...p1, ...p2].map((s) => s.session_id), all.sessions.slice(0, 4).map((s) => s.session_id));
+    const past = (await req(srv.base, "GET", `/api/sessions?limit=5&offset=${all.total}`)).json;
+    assert.deepEqual(past.sessions, []);
+    assert.equal(past.total, all.total);
+  });
+
   test("tool filter on stats", async () => {
     const r = (await req(srv.base, "GET", "/api/stats?days=30&tool=codex")).json;
     assert.equal(r.events, 0);
@@ -176,6 +216,26 @@ describe("open server (no viewer password)", () => {
     assert.match(b.disclaimer, /neither an invoice nor a saving/);
   });
 
+  test("billing: invalid subscriptions are rejected", async () => {
+    const post = (over) => req(srv.base, "POST", "/api/billing/subscription", {
+      body: { tool: "claude-code", plan_name: "Pro", amount: 20, ...over },
+    });
+    assert.equal((await post({ amount: -5 })).status, 400);
+    assert.equal((await post({ amount: "" })).status, 400);
+    for (const amount of [null, true, [5]]) assert.equal((await post({ amount })).status, 400);
+    assert.equal((await post({ amount: "12.5" })).status, 200);
+    assert.equal((await post({ currency: "euros" })).status, 400);
+    assert.equal((await post({ currency: "ABC" })).status, 400);
+    assert.equal((await post({ plan_name: "   " })).status, 400);
+    assert.equal((await post({ tool: 123 })).status, 400);
+    assert.equal((await post({ period_start: "2026-02-30" })).status, 400);
+    assert.equal((await post({ period_start: "2026-03-01", period_end: "2026-02-01" })).status, 400);
+    const ok = await post({ currency: "eur", period_start: "2026-09-01", period_end: "2026-09-30" });
+    assert.equal(ok.status, 200);
+    const b = (await req(srv.base, "GET", "/api/billing")).json;
+    assert.ok(b.subscriptions.some((s) => s.id === ok.json.id && s.currency === "EUR"));
+  });
+
   test("device list never exposes key hashes", async () => {
     const devices = (await req(srv.base, "GET", "/api/devices")).json.devices;
     assert.ok(devices.length > 0);
@@ -187,6 +247,9 @@ describe("open server (no viewer password)", () => {
     assert.equal(home.status, 200);
     assert.match(home.headers.get("content-type"), /text\/html/);
     assert.equal((await req(srv.base, "GET", "/api/nope")).status, 404);
+    const deep = await req(srv.base, "GET", "/some/client/route");
+    assert.equal(deep.status, 200);
+    assert.equal(deep.text, home.text);
   });
 
   test("static serving never escapes the web root", async () => {
@@ -222,6 +285,30 @@ describe("locked server (viewer password)", () => {
     assert.equal((await req(srv.base, "POST", "/api/ingest", { body: event(), key: d.key })).json.stored, true);
     await req(srv.base, "POST", "/api/auth/logout", { cookie });
     assert.equal((await req(srv.base, "GET", "/api/stats", { cookie })).status, 401);
+  });
+
+  test("session cookie is Secure only over HTTPS", async () => {
+    const plain = await req(srv.base, "POST", "/api/auth/login", { body: { password: "hunter2" } });
+    assert.doesNotMatch(plain.headers.get("set-cookie"), /Secure/);
+    const r = await fetch(srv.base + "/api/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-proto": "https" },
+      body: JSON.stringify({ password: "hunter2" }),
+    });
+    assert.match(r.headers.get("set-cookie"), /Secure/);
+  });
+
+  test("repeated failed logins from one client are throttled", async () => {
+    const attempt = (password, ip) => fetch(srv.base + "/api/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": ip },
+      body: JSON.stringify({ password }),
+    });
+    for (let i = 0; i < 10; i++) assert.equal((await attempt("nope", "203.0.113.9")).status, 401);
+    const blocked = await attempt("hunter2", "203.0.113.9");
+    assert.equal(blocked.status, 429);
+    assert.ok(Number(blocked.headers.get("retry-after")) > 0);
+    assert.equal((await attempt("hunter2", "203.0.113.10")).status, 200);
   });
 });
 
@@ -274,5 +361,37 @@ describe("summary, sessions and context (redesign APIs)", () => {
     assert.equal((await req(srv.base, "GET", "/api/billing")).json.estimated_available, false);
     await req(srv.base, "POST", "/api/ingest", { key, body: event({ cost_estimated_usd_delta: 0.02 }) });
     assert.equal((await req(srv.base, "GET", "/api/billing")).json.estimated_available, true);
+  });
+});
+
+describe("shutdown", () => {
+  test("SIGTERM closes the server and checkpoints the SQLite WAL", async () => {
+    const srv = await startServer();
+    try {
+      const { key } = await newDevice(srv.base);
+      await req(srv.base, "POST", "/api/ingest", { key, body: event() });
+      assert.ok(fs.existsSync(`${srv.dbPath}-wal`));
+      assert.equal(await srv.kill(), 0);
+      assert.ok(!fs.existsSync(`${srv.dbPath}-wal`));
+    } finally {
+      await srv.stop();
+    }
+  });
+});
+
+describe("web root without index.html", () => {
+  test("client routes return 404 instead of a stale or broken page", async () => {
+    const root = fs.mkdtempSync(`${os.tmpdir()}/ai-usage-empty-`);
+    const srv = await startServer({ env: { STATIC_DIR: root } });
+    try {
+      assert.equal((await req(srv.base, "GET", "/some/client/route")).status, 404);
+      fs.writeFileSync(`${root}/index.html`, "<!doctype html><p>built</p>");
+      const r = await req(srv.base, "GET", "/some/client/route");
+      assert.equal(r.status, 200);
+      assert.match(r.text, /built/);
+    } finally {
+      await srv.stop();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

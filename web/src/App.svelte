@@ -4,12 +4,14 @@
   import CodexCard from "./components/CodexCard.svelte";
   import Conversations from "./components/Conversations.svelte";
   import CostPanel from "./components/CostPanel.svelte";
+  import DevicesPanel from "./components/DevicesPanel.svelte";
   import LoginBar from "./components/LoginBar.svelte";
   import Logo from "./components/Logo.svelte";
   import OpenCodeCard from "./components/OpenCodeCard.svelte";
   import Section from "./components/Section.svelte";
   import Segmented from "./components/Segmented.svelte";
   import StatsRow from "./components/StatsRow.svelte";
+  import SubscriptionForm from "./components/SubscriptionForm.svelte";
   import { Dashboard } from "./lib/dashboard.svelte.ts";
   import type { Provider } from "./lib/view-model.ts";
 
@@ -45,6 +47,8 @@
 
   {#if dash.vm}
     {@const vm = dash.vm}
+    <!-- Management only acts on the real server, never on demo data. -->
+    {@const canManage = !vm.demo && dash.status !== "locked"}
     <ActivityChart series={vm.series} today={vm.today} demo={vm.demo} hasActivity={vm.hasActivity} />
     <StatsRow stats={vm.stats} />
 
@@ -62,7 +66,16 @@
 
     <Section title="Cost" subtitle="Paid and estimated stay separate">
       <CostPanel cards={vm.cost} />
+      {#if canManage}
+        <SubscriptionForm onadded={() => dash.load()} />
+      {/if}
     </Section>
+
+    {#if canManage}
+      <Section title="Devices" subtitle="One ingestion key per machine">
+        <DevicesPanel />
+      </Section>
+    {/if}
   {/if}
 </main>
 

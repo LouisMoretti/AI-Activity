@@ -34,21 +34,35 @@ export function createApp(db: DB, config: Config) {
     .route("/devices", deviceRoutes(db, userId));
 
   const indexFile = path.join(config.staticDir, "index.html");
+  // Served from memory; an async stat per request picks up a rebuilt web
+  // root (new hashed asset names) without a restart or blocking I/O.
+  let index: { mtimeMs: number; html: string } | null = null;
+  const loadIndex = async (): Promise<string | null> => {
+    try {
+      const { mtimeMs } = await fs.promises.stat(indexFile);
+      if (index?.mtimeMs !== mtimeMs) index = { mtimeMs, html: await fs.promises.readFile(indexFile, "utf8") };
+      return index.html;
+    } catch {
+      index = null;
+      return null;
+    }
+  };
 
   const app = new Hono()
     .route("/api", api)
     .all("/api/*", (c) => c.json({ error: "not found" }, 404))
     .use("*", serveStatic({ root: config.staticDir }))
     // SPA fallback for unknown non-API paths.
-    .get("*", (c) =>
-      fs.existsSync(indexFile)
-        ? c.html(fs.readFileSync(indexFile, "utf8"))
-        : c.text("not found", 404));
+    .get("*", async (c) => {
+      const html = await loadIndex();
+      return html === null ? c.text("not found", 404) : c.html(html);
+    });
 
   app.onError((err, c) => {
     if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
+    // Details stay in the server log; the public tunnel only sees a generic error.
     console.error(err);
-    return c.json({ error: String(err?.message || err) }, 500);
+    return c.json({ error: "internal server error" }, 500);
   });
 
   return app;

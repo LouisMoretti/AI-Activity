@@ -13,7 +13,8 @@
   const elapsedPct = $derived(elapsed === null ? null : (elapsed / w.spanSec) * 100);
   const fill = $derived(pct === null ? 0 : Math.max(0, Math.min(100, pct)));
 
-  // Where we are in the window, matching the marker on the bar.
+  // Where we are in the window: only in the marker's tooltip, since the
+  // footer's reset countdown already implies it.
   const position = $derived.by(() => {
     if (elapsed === null) return "";
     if (w.spanSec >= 86400) return `Day ${Math.min(7, Math.floor(elapsed / 86400) + 1)} of ${w.spanSec / 86400}`;
@@ -36,13 +37,10 @@
     aria-valuemin="0" aria-valuemax="100" aria-valuenow={pct === null ? undefined : Math.round(fill)}>
     <div class="fill {tone}" class:high={fill >= 85} style:width="{fill}%"></div>
     {#if elapsedPct !== null}
-      <div class="mark" style:left="{elapsedPct}%" title="{position} of the window elapsed"></div>
+      <div class="mark" style:left="{elapsedPct}%" title="{position} elapsed"></div>
     {/if}
   </div>
-  <div class="foot">
-    <span>{reset}</span>
-    {#if position}<span class="pos">{position}</span>{/if}
-  </div>
+  <div class="foot">{reset}</div>
 </div>
 
 <style>
@@ -55,6 +53,5 @@
   .fill.high { background: var(--warn); }
   /* Time elapsed in the window: fill past this mark = spending faster than time passes. */
   .mark { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--text); box-shadow: 0 0 0 2px var(--surface); }
-  .foot { display: flex; justify-content: space-between; gap: 8px; margin-top: 9px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
-  .pos { color: var(--faint); }
+  .foot { margin-top: 9px; font-size: 12px; color: var(--muted); }
 </style>

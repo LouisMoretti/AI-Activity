@@ -78,8 +78,9 @@ export function createDevice(db: DB, { userId, name }: { userId: number; name: s
   return { id: Number(info.lastInsertRowid), key: raw, prefix };
 }
 
-export function revokeDevice(db: DB, id: number): void {
-  db.prepare("UPDATE devices SET revoked = 1 WHERE id = ?").run(id);
+/** Revoke one of the user's devices; false when no such device exists. */
+export function revokeDevice(db: DB, userId: number, id: number): boolean {
+  return db.prepare("UPDATE devices SET revoked = 1 WHERE id = ? AND user_id = ?").run(id, userId).changes > 0;
 }
 
 export function listDevices(db: DB, userId: number): Device[] {
@@ -138,7 +139,26 @@ export function insertUsageEvent(db: DB, ev: UsageEventInput): { inserted: boole
   }
 }
 
+/**
+ * Record a quota snapshot. The statusLine re-sends the same window values on
+ * every fire, so an unchanged value (same used_pct and resets_at as the
+ * latest row) only moves that row's measured_at forward instead of adding
+ * a new row.
+ */
 export function insertQuotaSnapshot(db: DB, q: QuotaSnapshotInput): void {
+  const latest = db
+    .prepare(
+      `SELECT id, used_pct, resets_at FROM quota_snapshots
+       WHERE user_id = ? AND account_ref = ? AND limit_type = ?
+       ORDER BY measured_at DESC, id DESC LIMIT 1`
+    )
+    .get(q.user_id, q.account_ref, q.limit_type) as
+    { id: number; used_pct: number; resets_at: number | null } | undefined;
+  if (latest && latest.used_pct === q.used_pct && latest.resets_at === q.resets_at) {
+    db.prepare("UPDATE quota_snapshots SET measured_at = MAX(measured_at, ?) WHERE id = ?")
+      .run(q.measured_at, latest.id);
+    return;
+  }
   db.prepare(
     `INSERT INTO quota_snapshots
       (device_id, user_id, account_ref, tool, limit_type, used_pct, resets_at, measured_at)
@@ -203,20 +223,28 @@ export function dailyBuckets(db: DB, userId: number, sinceSec: number, tool: str
 const TOKENS = "input_tokens + output_tokens + cache_read_tokens + cache_write_tokens";
 
 /**
- * Most recent sessions. Context fill comes from the session's latest event
- * that reported it (a gauge at that moment, never summed).
+ * Most recent sessions. Model and context fill come from the session's
+ * latest event that reported them (the model in use now, not MAX(model) by
+ * string order; context is a gauge at that moment, never summed).
  */
-export function recentSessions(db: DB, userId: number, limit: number, tool: string | null): Session[] {
+export function recentSessions(
+  db: DB, userId: number, limit: number, tool: string | null, offset = 0
+): Session[] {
   return db
     .prepare(
-      `SELECT s.*, c.context_used_pct, c.context_window_size FROM (
-         SELECT session_id, tool, MAX(model) AS model,
+      `SELECT s.*,
+         (SELECT model FROM usage_events m
+          WHERE m.user_id = ? AND m.session_id = s.session_id AND m.tool = s.tool
+            AND m.model IS NOT NULL
+          ORDER BY m.occurred_at DESC, m.received_at DESC LIMIT 1) AS model,
+         c.context_used_pct, c.context_window_size FROM (
+         SELECT session_id, tool,
                 SUM(${TOKENS}) AS tokens,
                 MAX(occurred_at) AS last_seen, COUNT(*) AS events
          FROM usage_events
          WHERE user_id = ? AND session_id IS NOT NULL AND (? IS NULL OR tool = ?)
          GROUP BY session_id, tool
-         ORDER BY last_seen DESC LIMIT ?
+         ORDER BY last_seen DESC, session_id LIMIT ? OFFSET ?
        ) s
        LEFT JOIN (
          SELECT session_id, tool, context_used_pct, context_window_size,
@@ -226,9 +254,9 @@ export function recentSessions(db: DB, userId: number, limit: number, tool: stri
          FROM usage_events
          WHERE user_id = ? AND context_used_pct IS NOT NULL
        ) c ON c.session_id = s.session_id AND c.tool = s.tool AND c.rn = 1
-       ORDER BY s.last_seen DESC`
+       ORDER BY s.last_seen DESC, s.session_id`
     )
-    .all(userId, tool, tool, limit, userId) as Session[];
+    .all(userId, userId, tool, tool, limit, offset, userId) as Session[];
 }
 
 export function countSessions(db: DB, userId: number, tool: string | null): number {

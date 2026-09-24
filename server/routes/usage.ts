@@ -53,7 +53,9 @@ export function usageRoutes(db: DB, userId: () => number) {
     .get("/sessions", (c) => {
       const tool = c.req.query("tool") || null;
       return c.json<SessionsResponse>({
-        sessions: recentSessions(db, userId(), intParam(c, "limit", 10, 1, 200), tool),
+        sessions: recentSessions(
+          db, userId(), intParam(c, "limit", 10, 1, 200), tool, intParam(c, "offset", 0, 0, Number.MAX_SAFE_INTEGER),
+        ),
         total: countSessions(db, userId(), tool),
         provenance: "grouped by unique session id from device events",
       });

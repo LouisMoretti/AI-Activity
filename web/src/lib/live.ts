@@ -3,7 +3,7 @@
 import type {
   ActivityResponse, BillingResponse, Breakdown, QuotasResponse, SessionsResponse, SummaryResponse,
 } from "../../../shared/types.ts";
-import { fmtMoney } from "./format.ts";
+import { fmtMoney, fmtMoneyTotals } from "./format.ts";
 import { denseSeries, streaks } from "./series.ts";
 import {
   toolsFor, WINDOW_SPANS, type CostCardVM, type DashboardVM, type FigureVM, type Provider,
@@ -59,18 +59,17 @@ const codexNotConnected: QuotaToolVM = {
 function costCards(b: BillingResponse): CostCardVM[] {
   const subs = b.subscriptions;
   const actual = b.billing_records.filter((r) => r.kind === "api_actual");
-  const sum = (xs: { amount: number }[]) => xs.reduce((a, x) => a + Number(x.amount || 0), 0);
   return [
     {
       label: "Paid subscriptions",
-      value: subs.length ? fmtMoney(sum(subs), subs[0].currency) : null,
+      value: subs.length ? fmtMoneyTotals(subs) : null,
       note: subs.length
         ? subs.map((s) => `${s.plan_name} · ${fmtMoney(s.amount, s.currency)}`).join(", ")
         : "Add what you actually paid, including promotions and currency.",
     },
     {
       label: "Actual API charges",
-      value: actual.length ? fmtMoney(sum(actual), actual[0].currency) : null,
+      value: actual.length ? fmtMoneyTotals(actual) : null,
       note: actual.length
         ? `${actual.length} provider invoice record(s).`
         : "Provider invoices only. Empty until an invoice source is connected.",

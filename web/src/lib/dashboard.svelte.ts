@@ -5,11 +5,26 @@ import { api, UnauthorizedError } from "./api.ts";
 import { demoDashboard } from "./demo.ts";
 import { ACTIVITY_DAYS, liveDashboard, type LiveData } from "./live.ts";
 import type { DashboardVM, Provider } from "./view-model.ts";
+import type { SessionsResponse } from "../../../shared/types.ts";
 
 export type Status = "loading" | "ready" | "locked" | "error";
 
 const REFRESH_MS = 15000;
+/** Server-side cap on one /api/sessions page. */
+const SESSIONS_MAX_PAGE = 200;
 export const SESSIONS_PAGE = 10;
+
+/** The first `limit` sessions, in as many server pages as needed. */
+async function fetchSessions(limit: number, tool: string | null): Promise<SessionsResponse> {
+  const first = await api.sessions(Math.min(limit, SESSIONS_MAX_PAGE), tool);
+  const sessions = [...first.sessions];
+  while (sessions.length < Math.min(limit, first.total)) {
+    const page = await api.sessions(Math.min(limit - sessions.length, SESSIONS_MAX_PAGE), tool, sessions.length);
+    if (!page.sessions.length) break;
+    sessions.push(...page.sessions);
+  }
+  return { ...first, sessions };
+}
 
 export class Dashboard {
   readonly demo = new URLSearchParams(location.search).get("demo") === "1";
@@ -43,7 +58,7 @@ export class Dashboard {
         api.summary(tool),
         api.activity(ACTIVITY_DAYS, tool),
         api.quotas(),
-        api.sessions(this.sessionsLimit, tool),
+        fetchSessions(this.sessionsLimit, tool),
         api.billing(),
       ]);
       this.live = { summary, activity, quotas, sessions, billing };

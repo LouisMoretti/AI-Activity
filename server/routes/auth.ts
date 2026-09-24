@@ -11,7 +11,12 @@ export function authRoutes(auth: ViewerAuth) {
       try {
         password = String(JSON.parse((await c.req.text()) || "{}").password || "");
       } catch { /* treated as empty password */ }
-      if (!auth.check(password)) return c.json({ error: "invalid password" }, 401);
+      const wait = auth.throttled(c);
+      if (wait) {
+        c.header("retry-after", String(wait));
+        return c.json({ error: "too many failed attempts, try again later" }, 429);
+      }
+      if (!auth.check(c, password)) return c.json({ error: "invalid password" }, 401);
       auth.login(c);
       return c.json({ ok: true });
     })

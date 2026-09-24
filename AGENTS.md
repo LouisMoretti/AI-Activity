@@ -54,7 +54,8 @@ every PR and push to main.
 
 Tests: `npm test` boots the real server on a temp DB and exercises the HTTP
 API black-box (`test/api.test.js`), so they must stay green across refactors;
-`test/series.test.js` covers the pure chart helpers of the web client.
+`test/series.test.js` and `test/format.test.js` cover pure helpers of the web
+client.
 Types: `npm run typecheck` (tsc for server, svelte-check for web). Node >= 22.18 runs the TypeScript server directly
 (type stripping, no build step), so only erasable TS syntax is allowed (no
 `enum`, no parameter properties) and relative imports keep their `.ts`
@@ -92,7 +93,8 @@ web/
   src/lib/series.ts       pure helpers: dense UTC series, streaks, calendar grid
   src/lib/dashboard.svelte.ts  state: provider, auth status, 15 s refresh
   src/components/         StatsBar, ActivityChart (Heatmap, TrendChart),
-                          QuotaCard, SessionList, BillingCards, LoginBar, …
+                          QuotaCard, SessionList, BillingCards, LoginBar,
+                          DevicesPanel, SubscriptionForm, …
   src/styles/tokens.css   design tokens — components only use these variables
 public/             legacy UI, removed at the switch-over
 ```
@@ -234,17 +236,22 @@ Viewer (cookie session after `POST /api/auth/login {password}`; open if no
 `DASHBOARD_PASSWORD` is set):
 
 - `GET /api/auth/status`, `POST /api/auth/logout`
+- Login is throttled: 10 failures per client (`CF-Connecting-IP` behind the
+  tunnel) or 50 in total per 15 min → `429` with `Retry-After` (the global
+  cap locks everyone out, owner included, until the window ends). The session
+  cookie is `Secure` when the request is HTTPS (incl. `X-Forwarded-Proto`).
 - `GET /api/stats?days=30&tool=claude-code`
 - `GET /api/activity?days=364&tool=...` (daily buckets for the heatmap)
 - `GET /api/quotas` (latest snapshot per account + limit type)
 - `GET /api/summary?tool=...` (all-time and current-UTC-day tokens,
   sessions, events, each split `by_model` and `by_tool`)
-- `GET /api/sessions?limit=10&tool=...` (grouped by unique session id, with
+- `GET /api/sessions?limit=10&offset=0&tool=...` (grouped by unique session id, with
   latest `context_used_pct` / `context_window_size`, plus `total` for paging)
 - `GET /api/billing` (paid vs actual vs estimated, with disclaimer;
   `estimated_available: false` means no cost delta was ever received, shown
   as "Unavailable", not 0)
 - `POST /api/billing/subscription` `{tool, plan_name, amount, currency, period_start, period_end, note}`
+  (amount >= 0, ISO 4217 currency, YYYY-MM-DD dates with start <= end; 400 otherwise)
 - `GET /api/devices`, `POST /api/devices {name}` (returns key once),
   `POST /api/devices/:id/revoke`
 
