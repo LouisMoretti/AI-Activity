@@ -15,21 +15,14 @@ const DISPLAY_NAME_MAX = 60;
 const displayName = (v: unknown) =>
   typeof v === "string" && v.trim() ? v.trim().slice(0, DISPLAY_NAME_MAX) : null;
 
-/** Account routes need a signed-in account: the open (no accounts) mode has none. */
-const requireAccount: MiddlewareHandler<ViewerEnv> = async (c, next) => {
-  if (!c.get("account")) return c.json({ error: "no accounts yet: create one with npm run user -- add" }, 409);
-  await next();
-};
-
 const requireAdmin: MiddlewareHandler<ViewerEnv> = async (c, next) => {
-  if (!c.get("account")?.is_admin) return c.json({ error: "admin only" }, 403);
+  if (!c.get("account").is_admin) return c.json({ error: "admin only" }, 403);
   await next();
 };
 
 /** The signed-in user's own profile. */
 export function accountRoutes(db: DB, auth: ViewerAuth) {
   return new Hono<ViewerEnv>()
-    .use(requireAccount)
     .post("/", async (c) => {
       const body = await readJson(c);
       const id = c.get("userId");

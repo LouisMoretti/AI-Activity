@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
-  Account, ActivityDay, AdminUser, BillingRecord, Breakdown, BreakdownRow, Device, Quota, Session, Subscription,
+  Account, ActivityDay, AdminUser, Profile, BillingRecord, Breakdown, BreakdownRow, Device, Quota, Session, Subscription,
 } from "../../shared/types.ts";
 import { nowSec, type DB } from "./schema.ts";
 
@@ -88,6 +88,13 @@ export function findUserByUsername(db: DB, username: string): UserRow | null {
 
 export function listUsers(db: DB): UserRow[] {
   return db.prepare("SELECT * FROM users WHERE username IS NOT NULL ORDER BY id").all() as UserRow[];
+}
+
+/** Accounts that can sign in, i.e. whose profile page exists. */
+export function listProfiles(db: DB): Profile[] {
+  return (db
+    .prepare("SELECT * FROM users WHERE password_hash IS NOT NULL AND disabled = 0 ORDER BY username COLLATE NOCASE")
+    .all() as UserRow[]).map((u) => ({ username: u.username ?? "", display_name: toAccount(u).display_name }));
 }
 
 export function getUser(db: DB, id: number): UserRow | null {

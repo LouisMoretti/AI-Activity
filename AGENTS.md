@@ -18,9 +18,15 @@ components), recent conversations (10 + "Show more"), cost. Palette: the
 original dark theme; type: Geist, with Geist Mono only for ids and model
 names. Quota bars carry a mark for how far into the window we are.
 
+**Access:** nothing is viewable without signing in, demo included. Each
+account has a profile page, `/` for your own and `/u/<username>` for anyone's
+(header switcher). Any signed-in account can open another profile, read-only:
+activity, stats, tools/quotas and conversations. Cost, devices, account
+settings and user management only ever appear on your own page.
+
 **Hard rule:** the old demo dataset was fictional and deterministic. It is only
-visible via `?demo=1`, always labeled "Demonstration data", and never presented
-as a real measurement.
+visible via `?demo=1` (once signed in), always labeled "Demonstration data",
+and never presented as a real measurement.
 
 ## 2. Quick start
 
@@ -31,8 +37,9 @@ cp .env.example .env        # set PORT, DB_PATH (loaded by npm start/dev/
 npm start                   # http://localhost:3000
 ```
 
-Viewer accounts (the dashboard is open until the first one exists; that
-first account is an admin and owns the data collected so far):
+Viewer accounts (nothing is viewable until the first one exists; that
+first account is an admin and owns the data collected so far; collectors
+keep posting with `gen-key` keys meanwhile):
 
 ```bash
 npm run user -- add louis --name "Louis"   # password prompt (or piped stdin)
@@ -109,7 +116,7 @@ web/
   src/components/         StatsBar, ActivityChart (Heatmap, TrendChart),
                           QuotaCard, SessionList, BillingCards, LoginBar,
                           DevicesPanel, SubscriptionForm, AccountMenu,
-                          ProfilePanel, UsersPanel, …
+                          ProfilePanel, ProfileSwitcher, UsersPanel, …
   src/styles/tokens.css   design tokens — components only use these variables
 public/             legacy UI, removed at the switch-over
 ```
@@ -258,10 +265,16 @@ echo "[$?] claude"   # visible status line stays minimal
 ## 6. Viewer + device APIs
 
 Viewer (cookie session after `POST /api/auth/login {username, password}`;
-open, as the single pre-accounts user, while no account exists):
+every viewer API answers `401` without one, including before the first
+account exists):
 
-- `GET /api/auth/status` → `{locked, authenticated, user}` (`user` is
-  `{id, username, display_name, is_admin}` or null), `POST /api/auth/logout`
+- `GET /api/auth/status` → `{authenticated, user, setup_required}` (`user` is
+  `{id, username, display_name, is_admin}` or null; `setup_required` while no
+  account exists), `POST /api/auth/logout`
+- `GET /api/profiles` → enabled accounts `{username, display_name}`.
+- Profile pages: `stats`, `activity`, `quotas`, `summary` and `sessions`
+  accept `&user=<username>` to read another profile (`404` if unknown or
+  disabled). `billing`, `devices`, `account` and `users` never take it.
 - Unknown usernames and wrong passwords get the same `401` and the same
   hashing cost.
 - Login is throttled: 10 failures per client (`CF-Connecting-IP` behind the
@@ -313,7 +326,11 @@ open, as the single pre-accounts user, while no account exists):
    ordered correctly by event time.
 5. Payload without `rate_limits` → quota card shows "Unavailable".
 6. Payload after `resets_at` passed → new snapshot replaces the old window.
-7. `?demo=1` still shows labeled fictional data; normal view never does.
+7. `?demo=1` still shows labeled fictional data (after sign-in); normal view
+   never does.
+8. Signed out (or no account yet): only the sign-in screen, no data.
+9. `/u/<other>` shows that profile's usage read-only, without its cost,
+   devices or account sections.
 
 ```bash
 # manual test example
@@ -342,7 +359,7 @@ After `npm start` works locally:
    ```
 3. Copy the public URL (`https://<random>.trycloudflare.com`).
 4. **Send that link to the user for testing** and keep the tunnel running
-   while they test. Mention which account to sign in with (if any) and that `?demo=1`
+   while they test. Mention which account to sign in with and that `?demo=1`
    shows the labeled fictional dataset.
 5. Revoke/replace device keys if a test key leaks; never put keys in URLs.
 

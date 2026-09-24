@@ -145,11 +145,21 @@ export interface AdminUser extends Account {
 }
 
 export interface AuthStatus {
-  /** False while no account exists: the dashboard is open. */
-  locked: boolean;
   authenticated: boolean;
-  /** The signed-in account; null when open or signed out. */
+  /** The signed-in account; null when signed out. */
   user: Account | null;
+  /** No account exists yet: the first one is created on the server (CLI). */
+  setup_required: boolean;
+}
+
+/** A profile page anyone signed in can open (read-only usage). */
+export interface Profile {
+  username: string;
+  display_name: string;
+}
+
+export interface ProfilesResponse {
+  profiles: Profile[];
 }
 
 export interface IngestResult {

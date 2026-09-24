@@ -2,9 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { startServer, req, newDevice, event, userCli, login } from "./helpers.js";
+import { startServer, req, newDevice, event, userCli, login, genKey, TEST_ADMIN } from "./helpers.js";
 
-describe("open server (no viewer password)", () => {
+describe("basics (signed in as the test admin)", () => {
   let srv, key;
   const stats = async () => (await req(srv.base, "GET", "/api/stats?days=730")).json;
 
@@ -271,7 +271,7 @@ describe("locked server (DASHBOARD_PASSWORD bootstraps an admin account)", () =>
     assert.equal((await req(srv.base, "POST", "/api/devices", { body: { name: "x" } })).status, 401);
     assert.equal((await req(srv.base, "POST", "/api/ingest", { body: event(), key: "ak_nope" })).status, 401);
     const st = (await req(srv.base, "GET", "/api/auth/status")).json;
-    assert.deepEqual(st, { locked: true, authenticated: false, user: null });
+    assert.deepEqual(st, { authenticated: false, user: null, setup_required: false });
   });
 
   test("login / logout cycle", async () => {
@@ -320,23 +320,29 @@ describe("locked server (DASHBOARD_PASSWORD bootstraps an admin account)", () =>
 });
 
 describe("accounts", () => {
-  test("open until the first account, which claims the existing data", async () => {
-    const srv = await startServer();
+  test("nothing is viewable without an account; the first one claims the existing data", async () => {
+    const srv = await startServer({ autoLogin: false });
     try {
       assert.deepEqual((await req(srv.base, "GET", "/api/auth/status")).json,
-        { locked: false, authenticated: true, user: null });
-      const { key } = await newDevice(srv.base, "pre-accounts");
-      await req(srv.base, "POST", "/api/ingest", { key, body: event() });
+        { authenticated: false, user: null, setup_required: true });
+      for (const p of ["/api/stats", "/api/summary", "/api/profiles", "/api/devices", "/api/billing"]) {
+        assert.equal((await req(srv.base, "GET", p)).status, 401, p);
+      }
+      assert.equal((await req(srv.base, "POST", "/api/devices", { body: { name: "x" } })).status, 401);
       assert.equal((await req(srv.base, "POST", "/api/auth/login", { body: { username: "x", password: "y" } })).status, 400);
+      // Collectors keep working before any account exists (keys from the CLI).
+      const key = await genKey(srv.dbPath, "pre-accounts");
+      assert.equal((await req(srv.base, "POST", "/api/ingest", { key, body: event() })).json.stored, true);
 
       const add = await userCli(srv.dbPath, ["add", "louis", "--name", "Louis"], "correct horse");
       assert.equal(add.code, 0, add.out);
-      assert.equal((await req(srv.base, "GET", "/api/stats")).status, 401);
       const cookie = await login(srv.base, "louis", "correct horse");
       const st = (await req(srv.base, "GET", "/api/auth/status", { cookie })).json;
-      assert.deepEqual(st.user, { id: 1, username: "louis", display_name: "Louis", is_admin: true });
+      assert.deepEqual(st, {
+        authenticated: true, setup_required: false,
+        user: { id: 1, username: "louis", display_name: "Louis", is_admin: true },
+      });
       assert.equal((await req(srv.base, "GET", "/api/stats?days=730", { cookie })).json.events, 1);
-      // Existing device keys keep working.
       assert.equal((await req(srv.base, "POST", "/api/ingest", { key, body: event() })).json.stored, true);
     } finally {
       await srv.stop();
@@ -408,7 +414,7 @@ describe("accounts", () => {
       const first = await startServer({ password: "admin-pass", env });
       const cookie = await login(first.base, "admin", "admin-pass");
       await first.stop();
-      const second = await startServer({ env });
+      const second = await startServer({ env, autoLogin: false });
       try {
         assert.equal((await req(second.base, "GET", "/api/stats", { cookie })).status, 200);
       } finally {
@@ -503,13 +509,45 @@ describe("profiles and user management", () => {
     assert.equal((await post("/api/users/1/password", { password: "taken-over" }, admin)).status, 400);
   });
 
-  test("the open dashboard has no profile and no admin", async () => {
-    const open = await startServer();
+});
+
+describe("profile pages", () => {
+  test("any signed-in user reads another profile's usage, never its private data", async () => {
+    const srv = await startServer();
     try {
-      assert.equal((await req(open.base, "POST", "/api/account", { body: { display_name: "x" } })).status, 409);
-      assert.equal((await req(open.base, "GET", "/api/users")).status, 403);
+      const admin = await login(srv.base, TEST_ADMIN.username, TEST_ADMIN.password);
+      await req(srv.base, "POST", "/api/users", { cookie: admin, body: { username: "bob", password: "bob-password", display_name: "Bob" } });
+      const off = await req(srv.base, "POST", "/api/users", { cookie: admin, body: { username: "gone", password: "gone-password" } });
+      await req(srv.base, "POST", `/api/users/${off.json.id}/disable`, { cookie: admin });
+      const bob = await login(srv.base, "bob", "bob-password");
+      const dev = await newDevice(srv.base, "admin-laptop", admin);
+      await req(srv.base, "POST", "/api/ingest", { key: dev.key, body: event({
+        session_id: "admin-s", cost_estimated_usd_delta: 0.3,
+        rate_limits: { five_hour: { used_percentage: 12, resets_at: 1999999999 } },
+      }) });
+      await req(srv.base, "POST", "/api/billing/subscription", { cookie: admin, body: { tool: "claude-code", plan_name: "Max", amount: 100 } });
+
+      const get = async (p) => (await req(srv.base, "GET", p, { cookie: bob }));
+      assert.deepEqual((await get("/api/profiles")).json.profiles,
+        [{ username: "admin", display_name: "admin" }, { username: "bob", display_name: "Bob" }]);
+      // Own view is empty, admin's profile shows admin's usage.
+      assert.equal((await get("/api/stats?days=730")).json.events, 0);
+      assert.equal((await get("/api/stats?days=730&user=admin")).json.events, 1);
+      assert.equal((await get("/api/summary?user=ADMIN")).json.total.sessions, 1);
+      assert.equal((await get("/api/activity?user=admin")).json.days.length, 1);
+      assert.equal((await get("/api/quotas?user=admin")).json.quotas[0].used_pct, 12);
+      assert.equal((await get("/api/sessions?user=admin")).json.sessions[0].session_id, "admin-s");
+      // Devices, billing and account settings ignore ?user and stay private.
+      assert.deepEqual((await get("/api/devices?user=admin")).json.devices, []);
+      assert.equal((await get("/api/billing?user=admin")).json.subscriptions.length, 0);
+      assert.equal((await get("/api/billing?user=admin")).json.estimated_available, false);
+      // Unknown and disabled profiles do not exist.
+      assert.equal((await get("/api/stats?user=nobody")).status, 404);
+      assert.equal((await get("/api/stats?user=gone")).status, 404);
+      // Signed out: no profile is readable.
+      assert.equal((await req(srv.base, "GET", "/api/stats?user=admin", { anon: true })).status, 401);
     } finally {
-      await open.stop();
+      await srv.stop();
     }
   });
 });

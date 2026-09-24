@@ -14,7 +14,7 @@ const server = serve({ fetch: createApp(db, config).fetch, port: config.port }, 
   console.log(`DB: ${config.dbPath}`);
   if (bootstrapped) console.log(`Created account "${bootstrapped}" from DASHBOARD_PASSWORD`);
   if (!accountsExist(db)) {
-    console.log("Viewer auth: disabled (no account yet; npm run user -- add <username>)");
+    console.log("No account yet: nothing is viewable until you run npm run user -- add <username>");
   }
 });
 

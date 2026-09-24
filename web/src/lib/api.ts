@@ -1,6 +1,6 @@
 // Typed client for the dashboard JSON API (same origin, cookie session).
 import type {
-  Account, ActivityResponse, AdminUser, AuthStatus, BillingResponse, Device, QuotasResponse,
+  Account, ActivityResponse, AdminUser, AuthStatus, ProfilesResponse, BillingResponse, Device, QuotasResponse,
   SessionsResponse, StatsResponse, Subscription, SummaryResponse,
 } from "../../../shared/types.ts";
 
@@ -8,9 +8,14 @@ export class UnauthorizedError extends Error {
   constructor() { super("unauthorized"); }
 }
 
+export class NotFoundError extends Error {
+  constructor() { super("not found"); }
+}
+
 async function get<T>(path: string): Promise<T> {
   const r = await fetch(path);
   if (r.status === 401) throw new UnauthorizedError();
+  if (r.status === 404) throw new NotFoundError();
   if (!r.ok) throw new Error(`request failed: ${r.status}`);
   return r.json() as Promise<T>;
 }
@@ -32,6 +37,8 @@ export type NewSubscription =
   Pick<Subscription, "tool" | "plan_name" | "amount" | "currency" | "period_start" | "period_end" | "note">;
 
 const toolQuery = (tool: string | null) => (tool ? `&tool=${encodeURIComponent(tool)}` : "");
+/** Another profile's usage; null for the viewer's own. */
+const userQuery = (user: string | null) => (user ? `&user=${encodeURIComponent(user)}` : "");
 
 export const api = {
   authStatus: () => get<AuthStatus>("/api/auth/status"),
@@ -47,12 +54,15 @@ export const api = {
   setUserDisabled: (id: number, disabled: boolean) =>
     post<{ ok: true }>(`/api/users/${id}/${disabled ? "disable" : "enable"}`),
   resetPassword: (id: number, password: string) => post<{ ok: true }>(`/api/users/${id}/password`, { password }),
+  profiles: () => get<ProfilesResponse>("/api/profiles"),
   stats: (days: number, tool: string | null) => get<StatsResponse>(`/api/stats?days=${days}${toolQuery(tool)}`),
-  activity: (days: number, tool: string | null) => get<ActivityResponse>(`/api/activity?days=${days}${toolQuery(tool)}`),
-  quotas: () => get<QuotasResponse>("/api/quotas"),
-  summary: (tool: string | null) => get<SummaryResponse>(`/api/summary?x=1${toolQuery(tool)}`),
-  sessions: (limit: number, tool: string | null, offset = 0) =>
-    get<SessionsResponse>(`/api/sessions?limit=${limit}&offset=${offset}${toolQuery(tool)}`),
+  activity: (days: number, tool: string | null, user: string | null) =>
+    get<ActivityResponse>(`/api/activity?days=${days}${toolQuery(tool)}${userQuery(user)}`),
+  quotas: (user: string | null) => get<QuotasResponse>(`/api/quotas?x=1${userQuery(user)}`),
+  summary: (tool: string | null, user: string | null) =>
+    get<SummaryResponse>(`/api/summary?x=1${toolQuery(tool)}${userQuery(user)}`),
+  sessions: (limit: number, tool: string | null, offset: number, user: string | null) =>
+    get<SessionsResponse>(`/api/sessions?limit=${limit}&offset=${offset}${toolQuery(tool)}${userQuery(user)}`),
   billing: () => get<BillingResponse>("/api/billing"),
   devices: () => get<{ devices: Device[] }>("/api/devices"),
   /** The full key is only ever returned here, once. */

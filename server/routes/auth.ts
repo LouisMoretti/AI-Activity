@@ -11,9 +11,9 @@ export function authRoutes(db: DB, auth: ViewerAuth) {
     .get("/status", (c) => {
       const who = auth.resolve(c);
       return c.json<AuthStatus>({
-        locked: accountsExist(db),
         authenticated: Boolean(who),
         user: who?.account ?? null,
+        setup_required: !accountsExist(db),
       });
     })
     .post("/login", async (c) => {
@@ -25,7 +25,9 @@ export function authRoutes(db: DB, auth: ViewerAuth) {
         c.header("retry-after", String(wait));
         return c.json({ error: "too many failed attempts, try again later" }, 429);
       }
-      if (!accountsExist(db)) return c.json({ error: "no accounts yet: the dashboard is open" }, 400);
+      if (!accountsExist(db)) {
+        return c.json({ error: "no account yet: create one on the server with npm run user -- add <username>" }, 400);
+      }
       const user = username ? findUserByUsername(db, username) : null;
       const usable = user && !user.disabled ? user.password_hash : null;
       // Always hash, even for unknown users, so timing does not reveal them.

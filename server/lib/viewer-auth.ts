@@ -3,10 +3,7 @@ import { getConnInfo } from "@hono/node-server/conninfo";
 import type { Context, MiddlewareHandler } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import type { Account } from "../../shared/types.ts";
-import {
-  accountsExist, deleteViewerSession, getDefaultUserId, insertViewerSession, toAccount,
-  viewerSessionUser,
-} from "../db/queries.ts";
+import { deleteViewerSession, insertViewerSession, toAccount, viewerSessionUser } from "../db/queries.ts";
 import { nowSec, type DB } from "../db/schema.ts";
 
 const COOKIE = "dash_session";
@@ -20,9 +17,9 @@ const FAILS_TOTAL = 50;
 /** Hono env of every viewer route: who the request acts for. */
 export type ViewerEnv = {
   Variables: {
+    /** The signed-in viewer. */
     userId: number;
-    /** The signed-in account; null while the dashboard is open (no accounts). */
-    account: Account | null;
+    account: Account;
   };
 };
 
@@ -48,8 +45,8 @@ const isHttps = (c: Context) =>
 
 /**
  * Per-user viewer sessions, stored hashed in SQLite so they survive a
- * restart. Until the first account exists the dashboard is open and every
- * request acts for the default user.
+ * restart. Every viewer API needs one: with no account yet, nothing is
+ * readable until the first account is created (npm run user -- add).
  */
 export function createViewerAuth(db: DB) {
   let fails = new Map<string, number>(); // client → failures in window
@@ -66,8 +63,7 @@ export function createViewerAuth(db: DB) {
   const cookieToken = (c: Context) => getCookie(c, COOKIE) || null;
 
   /** Who this request acts for, or null when it needs a login. */
-  const resolve = (c: Context): { userId: number; account: Account | null } | null => {
-    if (!accountsExist(db)) return { userId: getDefaultUserId(db), account: null };
+  const resolve = (c: Context): { userId: number; account: Account } | null => {
     const token = cookieToken(c);
     const user = token ? viewerSessionUser(db, tokenHash(token)) : null;
     return user ? { userId: user.id, account: toAccount(user) } : null;

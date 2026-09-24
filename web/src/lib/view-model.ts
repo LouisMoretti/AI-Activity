@@ -60,7 +60,8 @@ export interface DashboardVM {
   codex: QuotaToolVM;
   sessions: SessionVM[];
   sessionsTotal: number;
-  cost: CostCardVM[];
+  /** Null on someone else's profile page: costs are private. */
+  cost: CostCardVM[] | null;
 }
 
 export const TOOL_META: Record<ToolKey, { name: string; icon: string }> = {
