@@ -46,7 +46,9 @@ export function ingestRoutes(db: DB) {
       })
       : { inserted: false, deduped: false };
 
-    // Quotas are snapshots: latest value wins, never summed.
+    // Quotas are snapshots: latest value wins, never summed. They are dated
+    // by the event time (already capped at now), so a replayed offline spool
+    // cannot overwrite a newer snapshot with its stale rate_limits.
     for (const q of ev.quotas) {
       insertQuotaSnapshot(db, {
         device_id: device.id,
@@ -56,7 +58,7 @@ export function ingestRoutes(db: DB) {
         limit_type: q.limit_type,
         used_pct: q.used_pct,
         resets_at: q.resets_at,
-        measured_at: received,
+        measured_at: ev.occurred_at,
       });
     }
     return c.json<IngestResult>({

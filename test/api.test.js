@@ -120,6 +120,16 @@ describe("open server (no viewer password)", () => {
     assert.equal(rows[0].used_pct, 11);
   });
 
+  test("a replayed stale snapshot does not replace a newer quota", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const q = (pct) => ({ five_hour: { used_percentage: pct, resets_at: now + 3600 } });
+    await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "replay", rate_limits: q(60), occurred_at: now }) });
+    await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "replay", rate_limits: q(10), occurred_at: now - 7200 }) });
+    const quotas = (await req(srv.base, "GET", "/api/quotas")).json.quotas.filter((x) => x.account_ref === "replay");
+    assert.equal(quotas.length, 1);
+    assert.equal(quotas[0].used_pct, 60);
+  });
+
   test("payload without rate_limits creates no quota rows", async () => {
     const before = (await req(srv.base, "GET", "/api/quotas")).json.quotas.length;
     await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "no-limits" }) });
@@ -138,6 +148,14 @@ describe("open server (no viewer password)", () => {
     const iso = (s) => new Date(s * 1000).toISOString().slice(0, 10);
     assert.ok(days.includes(iso(now - 3 * day)));
     assert.ok(days.includes(iso(now - 10 * day)));
+  });
+
+  test("occurred_at in the future is clamped to the receive time", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: "future", occurred_at: now + 400 * 86400 }) });
+    const s = (await req(srv.base, "GET", "/api/sessions?limit=200")).json.sessions.find((x) => x.session_id === "future");
+    assert.ok(s.last_seen <= Math.floor(Date.now() / 1000));
+    assert.ok(s.last_seen >= now);
   });
 
   test("tool filter on stats", async () => {

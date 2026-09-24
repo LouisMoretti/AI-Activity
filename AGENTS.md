@@ -49,6 +49,9 @@ STATIC_DIR=web/dist npm start   # serve the built UI (default is still public/
                                 # until the redesign switch-over)
 ```
 
+CI (`.github/workflows/ci.yml`) runs typecheck, tests and the web build on
+every PR and push to main.
+
 Tests: `npm test` boots the real server on a temp DB and exercises the HTTP
 API black-box (`test/api.test.js`), so they must stay green across refactors;
 `test/series.test.js` covers the pure chart helpers of the web client.
@@ -174,7 +177,9 @@ Notes:
 - Offline recovery: the collector spools unsent payloads with their original
   `occurred_at` and replays them in order; the server orders by `occurred_at`.
 - Quotas: every window with a numeric `used_percentage` becomes a snapshot
-  row. The dashboard reads the latest row per `(account_ref, limit_type)`.
+  row dated by the event's `occurred_at` (so spool replays never overwrite a
+  newer value). The dashboard reads the latest row per
+  `(account_ref, limit_type)`.
 
 ### Claude Code statusLine → payload mapping
 

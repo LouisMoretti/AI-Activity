@@ -127,7 +127,9 @@ export function normalizeIngest(body: unknown): NormalizedEvent {
     cost_estimated_usd: costOk ? costDelta : null,
     context_window_size: ctxSize !== null && ctxSize > 0 ? Math.floor(ctxSize) : null,
     context_used_pct: ctxPct,
-    occurred_at: src.occurred_at !== undefined ? toSec(src.occurred_at, now) : now,
+    // A skewed device clock must not put usage in the future (heatmap,
+    // streaks, "today"); spooled events keep their older time.
+    occurred_at: src.occurred_at !== undefined ? Math.min(toSec(src.occurred_at, now), now) : now,
     account_ref: typeof src.account_ref === "string" && src.account_ref
       ? src.account_ref
       : "default",
