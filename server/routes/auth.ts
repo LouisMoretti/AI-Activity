@@ -73,15 +73,20 @@ export function authRoutes(db: DB, auth: ViewerAuth, setupCode: string | null) {
       const fields = newAccountFields(body);
       if (typeof fields === "string") return c.json({ error: fields }, 400);
       if (findUserByUsername(db, fields.username)) return c.json({ error: "that username is taken" }, 409);
-      const password_hash = await hashPassword(fields.password);
+      // Reserve the slot before hashing: concurrent requests must not all
+      // pass the check while the password hashes.
+      const window = signups;
+      window.set(client, (window.get(client) ?? 0) + 1);
+      const release = () => window.set(client, Math.max(0, (window.get(client) ?? 1) - 1));
       let id: number;
       try {
+        const password_hash = await hashPassword(fields.password);
         id = createAccount(db, { username: fields.username, display_name: fields.display_name, password_hash, is_admin: false });
       } catch (err) {
+        release();
         if (isTaken(err)) return c.json({ error: "that username is taken" }, 409);
         throw err;
       }
-      signups.set(client, (signups.get(client) ?? 0) + 1);
       auth.login(c, id);
       return c.json({ ok: true });
     })

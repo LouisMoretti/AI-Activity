@@ -602,9 +602,10 @@ describe("open sign-up and admin panel", () => {
   test("one client cannot create accounts in bulk", async () => {
     const srv = await startServer();
     try {
-      for (let i = 0; i < 5; i++) {
-        assert.equal((await register(srv.base, { username: `bulk${i}`, password: "bulk-password" }, "203.0.113.50")).status, 200);
-      }
+      // Concurrent requests cannot slip past the limit while passwords hash.
+      const burst = await Promise.all([0, 1, 2, 3, 4, 5, 6].map((i) =>
+        register(srv.base, { username: `race${i}`, password: "bulk-password" }, "203.0.113.50")));
+      assert.deepEqual(burst.map((r) => r.status).sort(), [200, 200, 200, 200, 200, 429, 429]);
       const blocked = await register(srv.base, { username: "bulk5", password: "bulk-password" }, "203.0.113.50");
       assert.equal(blocked.status, 429);
       assert.ok(Number(blocked.headers.get("retry-after")) > 0);
