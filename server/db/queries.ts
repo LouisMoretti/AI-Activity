@@ -222,14 +222,20 @@ export function dailyBuckets(db: DB, userId: number, sinceSec: number, tool: str
 const TOKENS = "input_tokens + output_tokens + cache_read_tokens + cache_write_tokens";
 
 /**
- * Most recent sessions. Context fill comes from the session's latest event
- * that reported it (a gauge at that moment, never summed).
+ * Most recent sessions. Model and context fill come from the session's
+ * latest event that reported them (the model in use now, not MAX(model) by
+ * string order; context is a gauge at that moment, never summed).
  */
 export function recentSessions(db: DB, userId: number, limit: number, tool: string | null): Session[] {
   return db
     .prepare(
-      `SELECT s.*, c.context_used_pct, c.context_window_size FROM (
-         SELECT session_id, tool, MAX(model) AS model,
+      `SELECT s.*,
+         (SELECT model FROM usage_events m
+          WHERE m.user_id = ? AND m.session_id = s.session_id AND m.tool = s.tool
+            AND m.model IS NOT NULL
+          ORDER BY m.occurred_at DESC, m.received_at DESC LIMIT 1) AS model,
+         c.context_used_pct, c.context_window_size FROM (
+         SELECT session_id, tool,
                 SUM(${TOKENS}) AS tokens,
                 MAX(occurred_at) AS last_seen, COUNT(*) AS events
          FROM usage_events
@@ -247,7 +253,7 @@ export function recentSessions(db: DB, userId: number, limit: number, tool: stri
        ) c ON c.session_id = s.session_id AND c.tool = s.tool AND c.rn = 1
        ORDER BY s.last_seen DESC`
     )
-    .all(userId, tool, tool, limit, userId) as Session[];
+    .all(userId, userId, tool, tool, limit, userId) as Session[];
 }
 
 export function countSessions(db: DB, userId: number, tool: string | null): number {

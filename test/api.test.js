@@ -170,6 +170,15 @@ describe("open server (no viewer password)", () => {
     assert.ok(s.last_seen >= now);
   });
 
+  test("a session reports its latest model, not the largest name", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: "switch", model: "claude-sonnet-5", occurred_at: now - 60 }) });
+    await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: "switch", model: "claude-opus-5-5", occurred_at: now }) });
+    await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: "switch", model: "claude-haiku-4-5", occurred_at: now - 30 }) });
+    const s = (await req(srv.base, "GET", "/api/sessions?limit=200")).json.sessions.find((x) => x.session_id === "switch");
+    assert.equal(s.model, "claude-opus-5-5");
+  });
+
   test("tool filter on stats", async () => {
     const r = (await req(srv.base, "GET", "/api/stats?days=30&tool=codex")).json;
     assert.equal(r.events, 0);
