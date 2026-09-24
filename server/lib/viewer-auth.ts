@@ -75,6 +75,8 @@ export function createViewerAuth(password: string) {
       const id = clientId(c);
       const ok = timingSafeEqual(digest(candidate), expected);
       if (ok) {
+        // That client was mistyping, not guessing: stop counting it globally.
+        failsTotal = Math.max(0, failsTotal - (fails.get(id) ?? 0));
         fails.delete(id);
       } else {
         fails.set(id, (fails.get(id) ?? 0) + 1);
