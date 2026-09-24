@@ -18,11 +18,14 @@ components), recent conversations (10 + "Show more"), cost. Palette: the
 original dark theme; type: Geist, with Geist Mono only for ids and model
 names. Quota bars carry a mark for how far into the window we are.
 
-**Access:** nothing is viewable without signing in, demo included. Each
-account has a profile page, `/` for your own and `/u/<username>` for anyone's
-(header switcher). Any signed-in account can open another profile, read-only:
-activity, stats, tools/quotas and conversations. Cost, devices, account
-settings and user management only ever appear on your own page.
+**Pages:** `/` is the sign-in screen (or first-account setup); once signed
+in it redirects to `/u/<you>`, so the address bar is the shareable link.
+`/u/<username>` is **public and read-only**, no account needed: activity,
+stats, tools/quotas and conversations ("Copy link" in the profile header).
+Your own page adds the Cost section, visible only to you. Clicking the
+avatar opens Your profile / Settings / Sign out; `/settings` (signed in
+only) holds Account, Subscriptions, Devices and Users (admins). The demo
+(`?demo=1`) needs a sign-in and only replaces your own page.
 
 **Hard rule:** the old demo dataset was fictional and deterministic. It is only
 visible via `?demo=1` (once signed in), always labeled "Demonstration data",
@@ -121,7 +124,7 @@ web/
   src/components/         StatsBar, ActivityChart (Heatmap, TrendChart),
                           QuotaCard, SessionList, BillingCards, LoginBar,
                           DevicesPanel, SubscriptionForm, AccountMenu,
-                          ProfilePanel, ProfileSwitcher, UsersPanel,
+                          ProfilePanel, ProfileSwitcher, ProfileHeader, UsersPanel,
                           NewAccountForm, InviteSignup, …
   src/styles/tokens.css   design tokens — components only use these variables
 public/             legacy UI, removed at the switch-over
@@ -285,10 +288,13 @@ account exists):
   a non-admin account and uses the invite up atomically (`404` if invalid,
   used, revoked or expired; `409` if the username is taken, invite kept).
   Signs in.
-- `GET /api/profiles` → enabled accounts `{username, display_name}`.
-- Profile pages: `stats`, `activity`, `quotas`, `summary` and `sessions`
-  accept `&user=<username>` to read another profile (`404` if unknown or
-  disabled). `billing`, `devices`, `account` and `users` never take it.
+- `GET /api/profiles` → enabled accounts `{username, display_name}`
+  (signed in only, so visitors cannot list accounts).
+- Public profile pages, **no session needed**: `GET /api/u/:username` →
+  `{username, display_name}`, and `/api/u/:username/stats|activity|quotas|summary|sessions`
+  (same shapes as the viewer's own routes; `404` if unknown or disabled).
+  Nothing private has a public route: billing, devices, account and users
+  always need a session and only ever act on the signed-in user.
 - Unknown usernames and wrong passwords get the same `401` and the same
   hashing cost.
 - Login is throttled: 10 failures per client (`CF-Connecting-IP` behind the
@@ -346,10 +352,11 @@ account exists):
 6. Payload after `resets_at` passed → new snapshot replaces the old window.
 7. `?demo=1` still shows labeled fictional data (after sign-in); normal view
    never does.
-8. Signed out (or no account yet): only the sign-in (or first-account)
-   screen, no data. Invite links work once.
-9. `/u/<other>` shows that profile's usage read-only, without its cost,
-   devices or account sections.
+8. `/` signed out: sign-in (or first-account) screen; signed in: redirect
+   to `/u/<you>`. `/settings` signed out: sign-in, then back to settings.
+   Invite links work once.
+9. `/u/<name>` opens without an account and shows usage only: no cost,
+   devices or account sections, for visitors and other accounts alike.
 
 ```bash
 # manual test example
