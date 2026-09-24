@@ -1,0 +1,21 @@
+{
+  "name": "ai-usage-dashboard",
+  "version": "0.1.0",
+  "description": "Personal multi-user dashboard for real AI tool usage data (Claude Code first). Demo values are never presented as real measurements.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "gen-key": "node scripts/gen-key.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "allowScripts": {
+    "better-sqlite3@11.10.0": true
+  }
+}
