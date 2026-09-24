@@ -85,10 +85,15 @@ export class Dashboard {
     void this.load();
   }
 
-  async login(password: string): Promise<boolean> {
-    if (!(await api.login(password))) return false;
+  /** An error message, or null once signed in. */
+  async login(username: string, password: string): Promise<string | null> {
+    try {
+      await api.login(username, password);
+    } catch (e) {
+      return e instanceof UnauthorizedError ? "Wrong username or password." : (e as Error).message;
+    }
     await this.load();
-    return true;
+    return null;
   }
 
   /** Starts polling; returns a cleanup function. */

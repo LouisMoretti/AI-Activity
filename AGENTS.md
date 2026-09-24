@@ -26,15 +26,26 @@ as a real measurement.
 
 ```bash
 npm install
-cp .env.example .env        # set PORT, DB_PATH, DASHBOARD_PASSWORD (loaded by
-                            # npm start/dev/gen-key; real env vars win)
+cp .env.example .env        # set PORT, DB_PATH (loaded by npm start/dev/
+                            # gen-key/user; real env vars win)
 npm start                   # http://localhost:3000
 ```
 
-Create a device ingestion key (printed once, stored hashed):
+Viewer accounts (the dashboard is open until the first one exists; that
+first account is an admin and owns the data collected so far):
 
 ```bash
-npm run gen-key -- "laptop-louis"
+npm run user -- add louis --name "Louis"   # password prompt (or piped stdin)
+npm run user -- add alice [--admin]
+npm run user -- passwd louis               # also signs that user out
+npm run user -- list
+```
+
+Create a device ingestion key (printed once, stored hashed), for the first
+account unless `--user` says otherwise:
+
+```bash
+npm run gen-key -- "laptop-louis" [--user alice]
 ```
 
 Health check: `GET /api/health` → `{"ok":true}`.
@@ -77,11 +88,14 @@ Browser dashboard (web/: Svelte 5 + TypeScript, built by Vite)
 server/
   index.ts          boot: config, DB, listen
   app.ts            Hono app: /api mount, viewer-auth gate, static + SPA fallback
-  config.ts         env → Config (PORT, DB_PATH, DASHBOARD_PASSWORD, STATIC_DIR)
+  config.ts         env → Config (PORT, DB_PATH, DASHBOARD_USER/PASSWORD, STATIC_DIR)
   db/schema.ts      open + migrate
   db/queries.ts     every SQL statement lives here
   lib/ingest.ts     payload normalization (flat + raw statusLine shapes)
-  lib/viewer-auth.ts, lib/http.ts
+  lib/viewer-auth.ts  viewer sessions + login throttling
+  lib/passwords.ts    scrypt hashing, username/password rules
+  lib/accounts.ts     DASHBOARD_PASSWORD → first account migration
+  lib/http.ts
   routes/           auth, ingest, usage (stats/activity/quotas/sessions),
                     billing, devices
 shared/types.ts     API response types shared with the web client
@@ -102,14 +116,24 @@ public/             legacy UI, removed at the switch-over
 Components never branch on live vs demo: both sources map into the same
 `DashboardVM`, so the "demo is always labeled" rule lives in `demo.ts` only.
 
-- The server derives the user from the ingestion key (`devices.key_hash`).
-  Schema already has `users` / `devices.user_id`; viewer login is a shared
-  `DASHBOARD_PASSWORD` for the testing phase (multi-user login comes later).
+- The server derives the user from the ingestion key (`devices.key_hash`);
+  viewers are users with a username + scrypt password hash, and every viewer
+  API is scoped to the signed-in user (`c.get("userId")`, set by
+  `viewer-auth.ts`). Sessions live in `viewer_sessions` (token stored as a
+  SHA-256 hash), so they survive restarts.
+- Migration from the shared-password phase: if `DASHBOARD_PASSWORD` is set
+  and no account exists, boot creates an admin account named
+  `DASHBOARD_USER` (default `admin`) with that password. After that the
+  variable is ignored.
 - The local collector is just a bash `POST` from the Claude Code statusLine.
   This repo only provides the endpoint plus the documented contract below.
 - Never transmit prompts, transcripts, or provider keys — metrics only.
 
 ## 4. Data model (SQLite, `data/dashboard.db`)
+
+- `users` — viewer accounts (`username` unique, case-insensitive;
+  `password_hash`, `is_admin`, `disabled`). Every other table carries
+  `user_id`. `viewer_sessions` holds hashed session tokens with expiry.
 
 - `usage_events` — one row per **incremental** consumption event: tokens
   consumed since the last event, model, session/task id, device, date.
@@ -232,10 +256,13 @@ echo "[$?] claude"   # visible status line stays minimal
 
 ## 6. Viewer + device APIs
 
-Viewer (cookie session after `POST /api/auth/login {password}`; open if no
-`DASHBOARD_PASSWORD` is set):
+Viewer (cookie session after `POST /api/auth/login {username, password}`;
+open, as the single pre-accounts user, while no account exists):
 
-- `GET /api/auth/status`, `POST /api/auth/logout`
+- `GET /api/auth/status` → `{locked, authenticated, user}` (`user` is
+  `{id, username, display_name, is_admin}` or null), `POST /api/auth/logout`
+- Unknown usernames and wrong passwords get the same `401` and the same
+  hashing cost.
 - Login is throttled: 10 failures per client (`CF-Connecting-IP` behind the
   tunnel) or 50 in total per 15 min → `429` with `Retry-After` (the global
   cap locks everyone out, owner included, until the window ends). The session
@@ -304,7 +331,7 @@ After `npm start` works locally:
    ```
 3. Copy the public URL (`https://<random>.trycloudflare.com`).
 4. **Send that link to the user for testing** and keep the tunnel running
-   while they test. Mention the viewer password (if set) and that `?demo=1`
+   while they test. Mention which account to sign in with (if any) and that `?demo=1`
    shows the labeled fictional dataset.
 5. Revoke/replace device keys if a test key leaks; never put keys in URLs.
 
@@ -330,4 +357,3 @@ dev server can read to `web/`, `shared/` and `node_modules/`, so `data/`
 - OpenCode connector (`opencode stats`, session/message DB, local server
   events; record provider + billing mode per session; no 5h/weekly quota
   unless the provider exposes one).
-- Per-user viewer login replacing the shared password.

@@ -108,8 +108,34 @@ function migrate(db: DB): void {
     db.exec("ALTER TABLE usage_events ADD COLUMN context_used_pct REAL");
   }
 
-  // Ensure at least one default user exists (multi-user comes later;
-  // every device maps to a user, currently user 1).
+  // Accounts: the pre-accounts single user (id 1) keeps all its data and
+  // gets a username once the first account is set up.
+  const userCols = new Set(
+    (db.prepare("PRAGMA table_info(users)").all() as { name: string }[]).map((c) => c.name)
+  );
+  for (const [col, type] of [
+    ["username", "TEXT"],
+    ["display_name", "TEXT"],
+    ["password_hash", "TEXT"],
+    ["is_admin", "INTEGER NOT NULL DEFAULT 0"],
+    ["disabled", "INTEGER NOT NULL DEFAULT 0"],
+  ]) {
+    if (!userCols.has(col)) db.exec(`ALTER TABLE users ADD COLUMN ${col} ${type}`);
+  }
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username
+      ON users(username COLLATE NOCASE) WHERE username IS NOT NULL;
+    CREATE TABLE IF NOT EXISTS viewer_sessions (
+      token_hash TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_viewer_sessions_user ON viewer_sessions(user_id);
+  `);
+
+  // Ensure at least one user exists: before any account is set up, the open
+  // dashboard (and every device) maps to user 1.
   const row = db.prepare("SELECT id FROM users ORDER BY id LIMIT 1").get();
   if (!row) {
     db.prepare("INSERT INTO users (created_at) VALUES (?)").run(nowSec());

@@ -35,14 +35,8 @@ const toolQuery = (tool: string | null) => (tool ? `&tool=${encodeURIComponent(t
 
 export const api = {
   authStatus: () => get<AuthStatus>("/api/auth/status"),
-  async login(password: string): Promise<boolean> {
-    const r = await fetch("/api/auth/login", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ password }),
-    });
-    return r.ok;
-  },
+  /** Resolves on success; throws with the server's message otherwise. */
+  login: (username: string, password: string) => post<{ ok: true }>("/api/auth/login", { username, password }),
   stats: (days: number, tool: string | null) => get<StatsResponse>(`/api/stats?days=${days}${toolQuery(tool)}`),
   activity: (days: number, tool: string | null) => get<ActivityResponse>(`/api/activity?days=${days}${toolQuery(tool)}`),
   quotas: () => get<QuotasResponse>("/api/quotas"),

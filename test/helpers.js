@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const SERVER_ENTRY = path.join(ROOT, "server", "index.ts");
+const USER_CLI = path.join(ROOT, "scripts", "user.ts");
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -90,4 +91,26 @@ export function event(over = {}) {
     occurred_at: Math.floor(Date.now() / 1000),
     ...over,
   };
+}
+
+/** Run `npm run user -- <args>` against a test DB, piping the password on stdin. */
+export function userCli(dbPath, args, password = "") {
+  return new Promise((resolve) => {
+    const proc = spawn(process.execPath, [USER_CLI, ...args], {
+      env: { ...process.env, DB_PATH: dbPath },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let out = "";
+    proc.stdout.on("data", (c) => (out += c));
+    proc.stderr.on("data", (c) => (out += c));
+    proc.stdin.end(`${password}\n`);
+    proc.on("exit", (code) => resolve({ code, out }));
+  });
+}
+
+/** Log in and return the session cookie ("name=value"). */
+export async function login(base, username, password) {
+  const r = await req(base, "POST", "/api/auth/login", { body: { username, password } });
+  if (r.status !== 200) throw new Error(`login failed: ${r.status} ${r.text}`);
+  return r.headers.get("set-cookie").split(";")[0];
 }

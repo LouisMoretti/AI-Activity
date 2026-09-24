@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { startServer, req, newDevice, event } from "./helpers.js";
+import { startServer, req, newDevice, event, userCli, login } from "./helpers.js";
 
 describe("open server (no viewer password)", () => {
   let srv, key;
@@ -260,7 +260,7 @@ describe("open server (no viewer password)", () => {
   });
 });
 
-describe("locked server (viewer password)", () => {
+describe("locked server (DASHBOARD_PASSWORD bootstraps an admin account)", () => {
   let srv;
   before(async () => { srv = await startServer({ password: "hunter2" }); });
   after(() => srv.stop());
@@ -271,16 +271,23 @@ describe("locked server (viewer password)", () => {
     assert.equal((await req(srv.base, "POST", "/api/devices", { body: { name: "x" } })).status, 401);
     assert.equal((await req(srv.base, "POST", "/api/ingest", { body: event(), key: "ak_nope" })).status, 401);
     const st = (await req(srv.base, "GET", "/api/auth/status")).json;
-    assert.deepEqual(st, { locked: true, authenticated: false });
+    assert.deepEqual(st, { locked: true, authenticated: false, user: null });
   });
 
   test("login / logout cycle", async () => {
-    assert.equal((await req(srv.base, "POST", "/api/auth/login", { body: { password: "wrong" } })).status, 401);
-    const ok = await req(srv.base, "POST", "/api/auth/login", { body: { password: "hunter2" } });
+    const bad = (body) => req(srv.base, "POST", "/api/auth/login", { body });
+    assert.equal((await bad({ username: "admin", password: "wrong" })).status, 401);
+    assert.equal((await bad({ password: "hunter2" })).status, 401);
+    // Unknown user and wrong password are indistinguishable.
+    assert.deepEqual((await bad({ username: "nobody", password: "hunter2" })).json,
+      (await bad({ username: "admin", password: "nope" })).json);
+    const ok = await req(srv.base, "POST", "/api/auth/login", { body: { username: "ADMIN", password: "hunter2" } });
     assert.equal(ok.status, 200);
     const cookie = ok.headers.get("set-cookie").split(";")[0];
     assert.match(ok.headers.get("set-cookie"), /HttpOnly/);
     assert.equal((await req(srv.base, "GET", "/api/stats", { cookie })).status, 200);
+    const me = (await req(srv.base, "GET", "/api/auth/status", { cookie })).json;
+    assert.deepEqual(me.user, { id: 1, username: "admin", display_name: "admin", is_admin: true });
     const d = await newDevice(srv.base, "locked-dev", cookie);
     assert.equal((await req(srv.base, "POST", "/api/ingest", { body: event(), key: d.key })).json.stored, true);
     await req(srv.base, "POST", "/api/auth/logout", { cookie });
@@ -288,12 +295,12 @@ describe("locked server (viewer password)", () => {
   });
 
   test("session cookie is Secure only over HTTPS", async () => {
-    const plain = await req(srv.base, "POST", "/api/auth/login", { body: { password: "hunter2" } });
+    const plain = await req(srv.base, "POST", "/api/auth/login", { body: { username: "admin", password: "hunter2" } });
     assert.doesNotMatch(plain.headers.get("set-cookie"), /Secure/);
     const r = await fetch(srv.base + "/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json", "x-forwarded-proto": "https" },
-      body: JSON.stringify({ password: "hunter2" }),
+      body: JSON.stringify({ username: "admin", password: "hunter2" }),
     });
     assert.match(r.headers.get("set-cookie"), /Secure/);
   });
@@ -302,13 +309,113 @@ describe("locked server (viewer password)", () => {
     const attempt = (password, ip) => fetch(srv.base + "/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json", "cf-connecting-ip": ip },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ username: "admin", password }),
     });
     for (let i = 0; i < 10; i++) assert.equal((await attempt("nope", "203.0.113.9")).status, 401);
     const blocked = await attempt("hunter2", "203.0.113.9");
     assert.equal(blocked.status, 429);
     assert.ok(Number(blocked.headers.get("retry-after")) > 0);
     assert.equal((await attempt("hunter2", "203.0.113.10")).status, 200);
+  });
+});
+
+describe("accounts", () => {
+  test("open until the first account, which claims the existing data", async () => {
+    const srv = await startServer();
+    try {
+      assert.deepEqual((await req(srv.base, "GET", "/api/auth/status")).json,
+        { locked: false, authenticated: true, user: null });
+      const { key } = await newDevice(srv.base, "pre-accounts");
+      await req(srv.base, "POST", "/api/ingest", { key, body: event() });
+      assert.equal((await req(srv.base, "POST", "/api/auth/login", { body: { username: "x", password: "y" } })).status, 400);
+
+      const add = await userCli(srv.dbPath, ["add", "louis", "--name", "Louis"], "correct horse");
+      assert.equal(add.code, 0, add.out);
+      assert.equal((await req(srv.base, "GET", "/api/stats")).status, 401);
+      const cookie = await login(srv.base, "louis", "correct horse");
+      const st = (await req(srv.base, "GET", "/api/auth/status", { cookie })).json;
+      assert.deepEqual(st.user, { id: 1, username: "louis", display_name: "Louis", is_admin: true });
+      assert.equal((await req(srv.base, "GET", "/api/stats?days=730", { cookie })).json.events, 1);
+      // Existing device keys keep working.
+      assert.equal((await req(srv.base, "POST", "/api/ingest", { key, body: event() })).json.stored, true);
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  test("CLI rejects weak passwords, bad usernames and duplicates", async () => {
+    const srv = await startServer();
+    try {
+      assert.notEqual((await userCli(srv.dbPath, ["add", "louis"], "short")).code, 0);
+      assert.notEqual((await userCli(srv.dbPath, ["add", "no spaces"], "long enough")).code, 0);
+      assert.equal((await userCli(srv.dbPath, ["add", "louis"], "long enough")).code, 0);
+      assert.notEqual((await userCli(srv.dbPath, ["add", "LOUIS"], "long enough")).code, 0);
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  test("each user only sees their own devices, usage, quotas and costs", async () => {
+    const srv = await startServer({ password: "admin-pass" });
+    try {
+      assert.equal((await userCli(srv.dbPath, ["add", "bob"], "bob-password")).code, 0);
+      const admin = await login(srv.base, "admin", "admin-pass");
+      const bob = await login(srv.base, "bob", "bob-password");
+      const adminDev = await newDevice(srv.base, "admin-laptop", admin);
+      const bobDev = await newDevice(srv.base, "bob-laptop", bob);
+      await req(srv.base, "POST", "/api/ingest", { key: bobDev.key, body: event({
+        session_id: "bob-s", cost_estimated_usd_delta: 0.5,
+        rate_limits: { five_hour: { used_percentage: 42, resets_at: 1999999999 } },
+      }) });
+      await req(srv.base, "POST", "/api/billing/subscription", { cookie: bob, body: { tool: "claude-code", plan_name: "Pro", amount: 20 } });
+
+      const get = async (p, cookie) => (await req(srv.base, "GET", p, { cookie })).json;
+      assert.equal((await get("/api/stats?days=730", admin)).events, 0);
+      assert.equal((await get("/api/stats?days=730", bob)).events, 1);
+      assert.deepEqual((await get("/api/quotas", admin)).quotas, []);
+      assert.equal((await get("/api/quotas", bob)).quotas.length, 1);
+      assert.equal((await get("/api/sessions", admin)).total, 0);
+      assert.equal((await get("/api/billing", admin)).subscriptions.length, 0);
+      assert.equal((await get("/api/billing", bob)).subscriptions.length, 1);
+      assert.deepEqual((await get("/api/devices", admin)).devices.map((d) => d.name), ["admin-laptop"]);
+      assert.deepEqual((await get("/api/devices", bob)).devices.map((d) => d.name), ["bob-laptop"]);
+      // Revoking another user's device looks like an unknown id.
+      assert.equal((await req(srv.base, "POST", `/api/devices/${bobDev.id}/revoke`, { cookie: admin })).status, 404);
+      assert.equal((await req(srv.base, "POST", `/api/devices/${adminDev.id}/revoke`, { cookie: admin })).status, 200);
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  test("sessions survive a server restart", async () => {
+    const dir = fs.mkdtempSync(`${os.tmpdir()}/ai-usage-restart-`);
+    const env = { DB_PATH: `${dir}/t.db` };
+    try {
+      const first = await startServer({ password: "admin-pass", env });
+      const cookie = await login(first.base, "admin", "admin-pass");
+      await first.stop();
+      const second = await startServer({ env });
+      try {
+        assert.equal((await req(second.base, "GET", "/api/stats", { cookie })).status, 200);
+      } finally {
+        await second.stop();
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("changing a password from the CLI signs that user out", async () => {
+    const srv = await startServer({ password: "admin-pass" });
+    try {
+      const cookie = await login(srv.base, "admin", "admin-pass");
+      assert.equal((await userCli(srv.dbPath, ["passwd", "admin"], "new-admin-pass")).code, 0);
+      assert.equal((await req(srv.base, "GET", "/api/stats", { cookie })).status, 401);
+      assert.equal((await req(srv.base, "POST", "/api/auth/login", { body: { username: "admin", password: "admin-pass" } })).status, 401);
+      await login(srv.base, "admin", "new-admin-pass");
+    } finally {
+      await srv.stop();
+    }
   });
 });
 

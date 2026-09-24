@@ -4,7 +4,6 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { Config } from "./config.ts";
-import { getDefaultUserId } from "./db/queries.ts";
 import type { DB } from "./db/schema.ts";
 import { limitBody } from "./lib/http.ts";
 import { createViewerAuth } from "./lib/viewer-auth.ts";
@@ -15,8 +14,7 @@ import { ingestRoutes } from "./routes/ingest.ts";
 import { usageRoutes } from "./routes/usage.ts";
 
 export function createApp(db: DB, config: Config) {
-  const auth = createViewerAuth(config.viewerPassword);
-  const userId = () => getDefaultUserId(db); // multi-user login comes later
+  const auth = createViewerAuth(db);
 
   const api = new Hono()
     .use(limitBody(256 * 1024))
@@ -25,13 +23,13 @@ export function createApp(db: DB, config: Config) {
       c.header("cache-control", "no-store");
     })
     .get("/health", (c) => c.json({ ok: true }))
-    .route("/auth", authRoutes(auth))
+    .route("/auth", authRoutes(db, auth))
     .route("/ingest", ingestRoutes(db))
     // Everything below requires a viewer session.
     .use(auth.require)
-    .route("/", usageRoutes(db, userId))
-    .route("/billing", billingRoutes(db, userId))
-    .route("/devices", deviceRoutes(db, userId));
+    .route("/", usageRoutes(db))
+    .route("/billing", billingRoutes(db))
+    .route("/devices", deviceRoutes(db));
 
   const indexFile = path.join(config.staticDir, "index.html");
   // Served from memory; an async stat per request picks up a rebuilt web

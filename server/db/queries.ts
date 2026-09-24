@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
-  ActivityDay, BillingRecord, Breakdown, BreakdownRow, Device, Quota, Session, Subscription,
+  Account, ActivityDay, BillingRecord, Breakdown, BreakdownRow, Device, Quota, Session, Subscription,
 } from "../../shared/types.ts";
 import { nowSec, type DB } from "./schema.ts";
 
@@ -56,6 +56,95 @@ export function hashKey(rawKey: string): string {
 
 export function getDefaultUserId(db: DB): number {
   return (db.prepare("SELECT id FROM users ORDER BY id LIMIT 1").get() as { id: number }).id;
+}
+
+export interface UserRow {
+  id: number;
+  username: string | null;
+  display_name: string | null;
+  password_hash: string | null;
+  is_admin: number;
+  disabled: number;
+}
+
+export function toAccount(u: UserRow): Account {
+  return {
+    id: u.id,
+    username: u.username ?? "",
+    display_name: u.display_name || u.username || "",
+    is_admin: Boolean(u.is_admin),
+  };
+}
+
+/** True once at least one account can log in; before that the dashboard is open. */
+export function accountsExist(db: DB): boolean {
+  return Boolean(db.prepare("SELECT 1 FROM users WHERE password_hash IS NOT NULL LIMIT 1").get());
+}
+
+export function findUserByUsername(db: DB, username: string): UserRow | null {
+  return (db.prepare("SELECT * FROM users WHERE username = ? COLLATE NOCASE").get(username) as UserRow | undefined)
+    ?? null;
+}
+
+export function listUsers(db: DB): UserRow[] {
+  return db.prepare("SELECT * FROM users WHERE username IS NOT NULL ORDER BY id").all() as UserRow[];
+}
+
+/**
+ * Create a login account. The very first account claims the pre-accounts
+ * user (the one that already owns every device and event) instead of
+ * starting empty.
+ */
+export function createAccount(
+  db: DB,
+  a: { username: string; display_name: string | null; password_hash: string; is_admin: boolean }
+): number {
+  return db.transaction(() => {
+    const unclaimed = accountsExist(db) ? undefined : db
+      .prepare("SELECT id FROM users WHERE username IS NULL ORDER BY id LIMIT 1")
+      .get() as { id: number } | undefined;
+    if (unclaimed) {
+      db.prepare(
+        "UPDATE users SET username = ?, display_name = ?, password_hash = ?, is_admin = ? WHERE id = ?"
+      ).run(a.username, a.display_name, a.password_hash, a.is_admin ? 1 : 0, unclaimed.id);
+      return unclaimed.id;
+    }
+    const info = db.prepare(
+      "INSERT INTO users (username, display_name, password_hash, is_admin, created_at) VALUES (?, ?, ?, ?, ?)"
+    ).run(a.username, a.display_name, a.password_hash, a.is_admin ? 1 : 0, nowSec());
+    return Number(info.lastInsertRowid);
+  })();
+}
+
+export function setPasswordHash(db: DB, userId: number, hash: string): void {
+  db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(hash, userId);
+}
+
+export function insertViewerSession(db: DB, tokenHash: string, userId: number, expiresAt: number): void {
+  const now = nowSec();
+  db.prepare("DELETE FROM viewer_sessions WHERE expires_at <= ?").run(now);
+  db.prepare(
+    "INSERT INTO viewer_sessions (token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)"
+  ).run(tokenHash, userId, expiresAt, now);
+}
+
+/** The user behind a live session; expired sessions and disabled users get null. */
+export function viewerSessionUser(db: DB, tokenHash: string): UserRow | null {
+  return (db
+    .prepare(
+      `SELECT u.* FROM viewer_sessions s JOIN users u ON u.id = s.user_id
+       WHERE s.token_hash = ? AND s.expires_at > ? AND u.disabled = 0 AND u.password_hash IS NOT NULL`
+    )
+    .get(tokenHash, nowSec()) as UserRow | undefined) ?? null;
+}
+
+export function deleteViewerSession(db: DB, tokenHash: string): void {
+  db.prepare("DELETE FROM viewer_sessions WHERE token_hash = ?").run(tokenHash);
+}
+
+/** Sign a user out everywhere, optionally keeping one session. */
+export function deleteUserSessions(db: DB, userId: number, keepTokenHash: string | null = null): void {
+  db.prepare("DELETE FROM viewer_sessions WHERE user_id = ? AND token_hash IS NOT ?").run(userId, keepTokenHash);
 }
 
 export function findDeviceByKey(db: DB, rawKey: string | null): DeviceRow | null {

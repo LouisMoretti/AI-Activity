@@ -5,11 +5,12 @@ import {
 } from "../db/queries.ts";
 import type { DB } from "../db/schema.ts";
 import { readJson } from "../lib/http.ts";
+import type { ViewerEnv } from "../lib/viewer-auth.ts";
 
-export function billingRoutes(db: DB, userId: () => number) {
-  return new Hono()
+export function billingRoutes(db: DB) {
+  return new Hono<ViewerEnv>()
     .get("/", (c) => {
-      const uid = userId();
+      const uid = c.get("userId");
       return c.json<BillingResponse>({
         subscriptions: listSubscriptions(db, uid),
         billing_records: listBillingRecords(db, uid),
@@ -21,7 +22,7 @@ export function billingRoutes(db: DB, userId: () => number) {
     .post("/subscription", async (c) => {
       const parsed = parseSubscription(await readJson(c));
       if (typeof parsed === "string") return c.json({ error: parsed }, 400);
-      return c.json({ ok: true, id: insertSubscription(db, userId(), parsed) });
+      return c.json({ ok: true, id: insertSubscription(db, c.get("userId"), parsed) });
     });
 }
 

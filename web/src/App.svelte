@@ -34,7 +34,7 @@
   </header>
 
   {#if dash.status === "locked"}
-    <LoginBar onlogin={(p) => dash.login(p)} />
+    <LoginBar onlogin={(u, p) => dash.login(u, p)} />
   {/if}
 
   <div class="toolbar">

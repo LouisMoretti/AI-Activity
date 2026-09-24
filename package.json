@@ -9,6 +9,7 @@
     "dev:web": "vite --config web/vite.config.ts",
     "build": "vite build --config web/vite.config.ts",
     "gen-key": "node --env-file-if-exists=.env scripts/gen-key.ts",
+    "user": "node --env-file-if-exists=.env scripts/user.ts",
     "typecheck": "tsc -p tsconfig.json && svelte-check --tsconfig web/tsconfig.json --fail-on-warnings",
     "test": "node --test test/*.test.js"
   },

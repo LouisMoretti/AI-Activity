@@ -129,9 +129,19 @@ export interface Device {
   created_at: number;
 }
 
+export interface Account {
+  id: number;
+  username: string;
+  display_name: string;
+  is_admin: boolean;
+}
+
 export interface AuthStatus {
+  /** False while no account exists: the dashboard is open. */
   locked: boolean;
   authenticated: boolean;
+  /** The signed-in account; null when open or signed out. */
+  user: Account | null;
 }
 
 export interface IngestResult {

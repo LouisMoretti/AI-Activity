@@ -7,14 +7,15 @@ import {
 } from "../db/queries.ts";
 import { nowSec, type DB } from "../db/schema.ts";
 import { intParam } from "../lib/http.ts";
+import type { ViewerEnv } from "../lib/viewer-auth.ts";
 
 /** Read-only measured usage: stats, heatmap buckets, quotas, sessions. */
-export function usageRoutes(db: DB, userId: () => number) {
-  return new Hono()
+export function usageRoutes(db: DB) {
+  return new Hono<ViewerEnv>()
     .get("/stats", (c) => {
       const days = intParam(c, "days", 30, 1, 730);
       const tool = c.req.query("tool") || null;
-      const totals = usageTotals(db, userId(), nowSec() - days * 86400, tool);
+      const totals = usageTotals(db, c.get("userId"), nowSec() - days * 86400, tool);
       return c.json<StatsResponse>({
         range_days: days,
         tool,
@@ -28,13 +29,13 @@ export function usageRoutes(db: DB, userId: () => number) {
       const days = intParam(c, "days", 364, 1, 730);
       const tool = c.req.query("tool") || null;
       return c.json<ActivityResponse>({
-        days: dailyBuckets(db, userId(), nowSec() - days * 86400, tool),
+        days: dailyBuckets(db, c.get("userId"), nowSec() - days * 86400, tool),
         provenance: "measured device events",
       });
     })
     .get("/quotas", (c) =>
       c.json<QuotasResponse>({
-        quotas: latestQuotas(db, userId()),
+        quotas: latestQuotas(db, c.get("userId")),
         provenance: "latest snapshot provided by the account (never summed across devices)",
       }))
     .get("/summary", (c) => {
@@ -45,8 +46,8 @@ export function usageRoutes(db: DB, userId: () => number) {
       return c.json<SummaryResponse>({
         tool,
         day: new Date(dayStart * 1000).toISOString().slice(0, 10),
-        total: breakdown(db, userId(), 0, tool),
-        today: breakdown(db, userId(), dayStart, tool),
+        total: breakdown(db, c.get("userId"), 0, tool),
+        today: breakdown(db, c.get("userId"), dayStart, tool),
         provenance: "measured device events (incremental token counts only)",
       });
     })
@@ -54,9 +55,9 @@ export function usageRoutes(db: DB, userId: () => number) {
       const tool = c.req.query("tool") || null;
       return c.json<SessionsResponse>({
         sessions: recentSessions(
-          db, userId(), intParam(c, "limit", 10, 1, 200), tool, intParam(c, "offset", 0, 0, Number.MAX_SAFE_INTEGER),
+          db, c.get("userId"), intParam(c, "limit", 10, 1, 200), tool, intParam(c, "offset", 0, 0, Number.MAX_SAFE_INTEGER),
         ),
-        total: countSessions(db, userId(), tool),
+        total: countSessions(db, c.get("userId"), tool),
         provenance: "grouped by unique session id from device events",
       });
     });
