@@ -177,7 +177,9 @@ Notes:
 - Offline recovery: the collector spools unsent payloads with their original
   `occurred_at` and replays them in order; the server orders by `occurred_at`.
 - Quotas: every window with a numeric `used_percentage` becomes a snapshot
-  row. The dashboard reads the latest row per `(account_ref, limit_type)`.
+  row dated by the event's `occurred_at` (so spool replays never overwrite a
+  newer value). The dashboard reads the latest row per
+  `(account_ref, limit_type)`.
 
 ### Claude Code statusLine → payload mapping
 

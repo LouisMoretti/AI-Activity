@@ -120,6 +120,16 @@ describe("open server (no viewer password)", () => {
     assert.equal(rows[0].used_pct, 11);
   });
 
+  test("a replayed stale snapshot does not replace a newer quota", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const q = (pct) => ({ five_hour: { used_percentage: pct, resets_at: now + 3600 } });
+    await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "replay", rate_limits: q(60), occurred_at: now }) });
+    await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "replay", rate_limits: q(10), occurred_at: now - 7200 }) });
+    const quotas = (await req(srv.base, "GET", "/api/quotas")).json.quotas.filter((x) => x.account_ref === "replay");
+    assert.equal(quotas.length, 1);
+    assert.equal(quotas[0].used_pct, 60);
+  });
+
   test("payload without rate_limits creates no quota rows", async () => {
     const before = (await req(srv.base, "GET", "/api/quotas")).json.quotas.length;
     await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "no-limits" }) });
