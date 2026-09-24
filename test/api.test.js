@@ -244,6 +244,30 @@ describe("locked server (viewer password)", () => {
     await req(srv.base, "POST", "/api/auth/logout", { cookie });
     assert.equal((await req(srv.base, "GET", "/api/stats", { cookie })).status, 401);
   });
+
+  test("session cookie is Secure only over HTTPS", async () => {
+    const plain = await req(srv.base, "POST", "/api/auth/login", { body: { password: "hunter2" } });
+    assert.doesNotMatch(plain.headers.get("set-cookie"), /Secure/);
+    const r = await fetch(srv.base + "/api/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-proto": "https" },
+      body: JSON.stringify({ password: "hunter2" }),
+    });
+    assert.match(r.headers.get("set-cookie"), /Secure/);
+  });
+
+  test("repeated failed logins from one client are throttled", async () => {
+    const attempt = (password, ip) => fetch(srv.base + "/api/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": ip },
+      body: JSON.stringify({ password }),
+    });
+    for (let i = 0; i < 10; i++) assert.equal((await attempt("nope", "203.0.113.9")).status, 401);
+    const blocked = await attempt("hunter2", "203.0.113.9");
+    assert.equal(blocked.status, 429);
+    assert.ok(Number(blocked.headers.get("retry-after")) > 0);
+    assert.equal((await attempt("hunter2", "203.0.113.10")).status, 200);
+  });
 });
 
 describe("summary, sessions and context (redesign APIs)", () => {
