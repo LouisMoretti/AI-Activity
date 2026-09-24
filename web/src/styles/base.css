@@ -1,4 +1,7 @@
 *, *::before, *::after { box-sizing: border-box; }
+/* Keep the scrollbar's space reserved: short views (e.g. a tool filter with
+   no data) would otherwise drop the scrollbar and shift the centered page. */
+html { scrollbar-gutter: stable; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 var(--font); }
 h1, h2, h3, p { margin: 0; }
 button { font: inherit; color: var(--muted); background: none; border: 0; cursor: pointer; }
