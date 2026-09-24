@@ -78,8 +78,9 @@ export function createDevice(db: DB, { userId, name }: { userId: number; name: s
   return { id: Number(info.lastInsertRowid), key: raw, prefix };
 }
 
-export function revokeDevice(db: DB, id: number): void {
-  db.prepare("UPDATE devices SET revoked = 1 WHERE id = ?").run(id);
+/** Revoke one of the user's devices; false when no such device exists. */
+export function revokeDevice(db: DB, userId: number, id: number): boolean {
+  return db.prepare("UPDATE devices SET revoked = 1 WHERE id = ? AND user_id = ?").run(id, userId).changes > 0;
 }
 
 export function listDevices(db: DB, userId: number): Device[] {

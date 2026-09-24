@@ -24,6 +24,7 @@ describe("open server (no viewer password)", () => {
     assert.equal((await req(srv.base, "POST", "/api/ingest", { body: event(), key: d.key })).status, 200);
     assert.equal((await req(srv.base, "POST", `/api/devices/${d.id}/revoke`)).status, 200);
     assert.equal((await req(srv.base, "POST", "/api/ingest", { body: event(), key: d.key })).status, 401);
+    assert.equal((await req(srv.base, "POST", "/api/devices/999999/revoke")).status, 404);
   });
 
   test("ingest rejects bad JSON, oversized bodies and unsupported tools", async () => {
