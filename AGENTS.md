@@ -93,7 +93,8 @@ web/
   src/lib/series.ts       pure helpers: dense UTC series, streaks, calendar grid
   src/lib/dashboard.svelte.ts  state: provider, auth status, 15 s refresh
   src/components/         StatsBar, ActivityChart (Heatmap, TrendChart),
-                          QuotaCard, SessionList, BillingCards, LoginBar, …
+                          QuotaCard, SessionList, BillingCards, LoginBar,
+                          DevicesPanel, SubscriptionForm, …
   src/styles/tokens.css   design tokens — components only use these variables
 public/             legacy UI, removed at the switch-over
 ```
