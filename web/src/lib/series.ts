@@ -60,6 +60,30 @@ export function calendarWeeks(series: DayPoint[]): (DayPoint | null)[][] {
   return weeks;
 }
 
+/**
+ * Month labels per calendar column: a label on the first week of each month.
+ * A label is dropped when the next one starts fewer than minGap columns
+ * later (e.g. a partial first month), so text never overlaps.
+ */
+export function monthLabels(
+  weeks: (DayPoint | null)[][],
+  name: (iso: string) => string,
+  minGap = 3,
+): string[] {
+  const firstDays = weeks.map((w) => w.find((d) => d !== null)?.day ?? null);
+  const labels = firstDays.map((day, i) => {
+    if (!day) return "";
+    const prev = i > 0 ? firstDays[i - 1] : null;
+    return prev && name(prev) === name(day) ? "" : name(day);
+  });
+  for (let i = 0; i < labels.length; i++) {
+    if (!labels[i]) continue;
+    const next = labels.findIndex((l, j) => j > i && l !== "");
+    if (next !== -1 && next - i < minGap) labels[i] = "";
+  }
+  return labels;
+}
+
 /** Heat level 0..4 relative to the series max (0 only for no activity). */
 export const level = (tokens: number, max: number) =>
   tokens <= 0 ? 0 : Math.max(1, Math.ceil((tokens / Math.max(1, max)) * 4));

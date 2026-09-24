@@ -19,6 +19,8 @@ export interface NormalizedEvent {
   cache_read_tokens: number;
   cache_write_tokens: number;
   cost_estimated_usd: number | null;
+  context_window_size: number | null;
+  context_used_pct: number | null;
   occurred_at: number;
   account_ref: string;
   quotas: NormalizedQuota[];
@@ -40,6 +42,13 @@ function toSec(ts: unknown, fallback: number | null): number | null {
   if (!Number.isFinite(v)) return fallback;
   // Accept milliseconds as well as seconds.
   return v > 1e12 ? Math.floor(v / 1000) : Math.floor(v);
+}
+
+/** Non-negative finite number, or null when absent/invalid (never 0 by default). */
+function optNum(v: unknown): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
 const str = (v: unknown): string | null =>
@@ -96,6 +105,10 @@ export function normalizeIngest(body: unknown): NormalizedEvent {
     });
   }
 
+  // Context fill of the conversation at this call (a gauge, not summed).
+  const ctxSize = optNum(cw.context_window_size ?? src.context_window_size);
+  const ctxPct = optNum(cw.used_percentage ?? src.context_used_pct);
+
   const providedId =
     (typeof src.event_id === "string" && src.event_id) ||
     (typeof src.eventId === "string" && src.eventId) || null;
@@ -112,6 +125,8 @@ export function normalizeIngest(body: unknown): NormalizedEvent {
     cache_read_tokens: toInt(u.cache_read_input_tokens ?? u.cache_read_tokens),
     cache_write_tokens: toInt(u.cache_creation_input_tokens ?? u.cache_write_tokens),
     cost_estimated_usd: costOk ? costDelta : null,
+    context_window_size: ctxSize !== null && ctxSize > 0 ? Math.floor(ctxSize) : null,
+    context_used_pct: ctxPct,
     occurred_at: src.occurred_at !== undefined ? toSec(src.occurred_at, now) : now,
     account_ref: typeof src.account_ref === "string" && src.account_ref
       ? src.account_ref

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fmtDay, fmtNum } from "../lib/format.ts";
   import { cumulative, weeklyTotals, type DayPoint } from "../lib/series.ts";
   import Heatmap from "./Heatmap.svelte";
   import Section from "./Section.svelte";
@@ -6,54 +7,76 @@
   import TrendChart from "./TrendChart.svelte";
 
   type View = "daily" | "weekly" | "cumulative";
-  let { series, demo, hasActivity }: { series: DayPoint[]; demo: boolean; hasActivity: boolean } = $props();
+  let { series, today, demo, hasActivity }: {
+    series: DayPoint[]; today: string; demo: boolean; hasActivity: boolean;
+  } = $props();
 
   let view = $state<View>("daily");
-  let wrap = $state<HTMLDivElement>();
-  // Narrow screens scroll the calendar: start on the most recent weeks.
-  $effect(() => {
-    if (wrap && view && series.length) wrap.scrollLeft = wrap.scrollWidth;
-  });
-  let focused = $state("");
+  let hovered = $state<DayPoint | null>(null);
+  let scroller = $state<HTMLDivElement>();
   const weekly = $derived(weeklyTotals(series));
+  const todayPoint = $derived(series.find((d) => d.day === today) ?? { day: today, tokens: 0 });
 
-  const hint = $derived.by(() => {
-    if (!hasActivity) return "No measured activity yet. Connect a device to see real tokens here.";
-    const src = demo ? "simulated data" : "measured data";
-    if (view === "weekly") return `Tokens consumed each week · ${src}.`;
-    if (view === "cumulative") return `Total tokens over time · ${src}.`;
-    return `Hover a day to see its ${demo ? "activity (fictional)" : "measured activity"}.`;
+  const describe = (d: DayPoint) =>
+    `${fmtDay(d.day)}: ${d.tokens ? `${fmtNum(d.tokens)} tokens` : "no activity"}${demo ? " (fictional)" : ""}`;
+
+  // Without a hovered cell, the readout shows today.
+  const readout = $derived.by(() => {
+    if (view === "daily") {
+      if (!hasActivity && !hovered) return "No measured activity yet. Connect a device to see real tokens here.";
+      return describe(hovered ?? todayPoint);
+    }
+    const src = demo ? "fictional data" : "measured data";
+    return view === "weekly" ? `Tokens per week · ${src}` : `Total tokens over time · ${src}`;
+  });
+
+  // Narrow screens scroll the calendar: start on the most recent weeks.
+  // Re-applied when the area resizes (rotation, late layout).
+  $effect(() => {
+    if (!scroller || !view || !series.length) return;
+    const el = scroller;
+    const toEnd = () => { el.scrollLeft = el.scrollWidth; };
+    requestAnimationFrame(toEnd);
+    const ro = new ResizeObserver(toEnd);
+    ro.observe(el);
+    return () => ro.disconnect();
   });
 </script>
 
 <Section title="Token activity">
   {#snippet actions()}
     <Segmented variant="tabs" label="Activity view" value={view}
-      onchange={(v) => { view = v; focused = ""; }}
+      onchange={(v) => { view = v; hovered = null; }}
       options={[{ value: "daily", label: "Daily" }, { value: "weekly", label: "Weekly" }, { value: "cumulative", label: "Cumulative" }]} />
   {/snippet}
-  <div class="wrap" bind:this={wrap}>
-    {#if view === "daily"}
-      <Heatmap {series} {demo} onfocusday={(l) => (focused = l)} />
-    {:else}
-      <TrendChart values={view === "weekly" ? weekly : cumulative(weekly)} kind={view} {demo} />
-    {/if}
-  </div>
-  <div class="footer">
-    <span aria-live="polite">{focused || hint}</span>
-    {#if view === "daily"}
-      <div class="legend" aria-hidden="true">
-        <span>Less</span>{#each [0, 1, 2, 3, 4] as l (l)}<i style:background="var(--heat-{l})"></i>{/each}<span>More</span>
-      </div>
-    {/if}
+  <div class="area">
+    <div class="scroller" bind:this={scroller}>
+      {#if view === "daily"}
+        <Heatmap {series} {today} {describe} onhover={(d) => (hovered = d)} />
+      {:else}
+        <TrendChart values={view === "weekly" ? weekly : cumulative(weekly)} kind={view} {demo} />
+      {/if}
+    </div>
+    <div class="footer">
+        <span class="readout" aria-live="polite">{readout}</span>
+        {#if view === "daily"}
+          <div class="legend" aria-hidden="true">
+            <span>Less</span>{#each [0, 1, 2, 3, 4] as l (l)}<i style:background="var(--heat-{l})"></i>{/each}<span>More</span>
+          </div>
+        {/if}
+    </div>
   </div>
 </Section>
 
 <style>
-  .wrap { overflow-x: auto; padding: 2px; }
-  .footer { display: flex; justify-content: space-between; gap: 15px; margin-top: 16px; color: var(--faint); font-size: 12px; min-height: 20px; flex-wrap: wrap; }
-  .legend { display: flex; align-items: center; gap: 4px; }
-  .legend i { width: 10px; height: 10px; border-radius: 2px; }
-  .legend span:first-child { margin-right: 5px; }
-  .legend span:last-child { margin-left: 5px; }
+  /* Centered when it fits; on narrow screens the chart scrolls while the
+     readout below stays in view. */
+  .area { width: fit-content; max-width: 100%; margin-inline: auto; }
+  .scroller { overflow-x: auto; padding: 4px 2px; }
+  .footer { display: flex; justify-content: space-between; align-items: center; gap: 8px 16px; flex-wrap: wrap; margin-top: 12px; font-size: 12px; color: var(--faint); }
+  .readout { color: var(--muted); }
+  .legend { display: flex; align-items: center; gap: 3px; }
+  .legend i { width: var(--cell); height: var(--cell); border-radius: 2px; }
+  .legend span:first-child { margin-right: 4px; }
+  .legend span:last-child { margin-left: 4px; }
 </style>

@@ -39,6 +39,8 @@ export function ingestRoutes(db: DB) {
         cache_read_tokens: ev.cache_read_tokens,
         cache_write_tokens: ev.cache_write_tokens,
         cost_estimated_usd: ev.cost_estimated_usd,
+        context_window_size: ev.context_window_size,
+        context_used_pct: ev.context_used_pct,
         occurred_at: ev.occurred_at,
         received_at: received,
       })

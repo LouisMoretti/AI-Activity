@@ -206,3 +206,55 @@ describe("locked server (viewer password)", () => {
     assert.equal((await req(srv.base, "GET", "/api/stats", { cookie })).status, 401);
   });
 });
+
+describe("summary, sessions and context (redesign APIs)", () => {
+  let srv, key;
+  before(async () => {
+    srv = await startServer();
+    key = (await newDevice(srv.base)).key;
+  });
+  after(() => srv.stop());
+
+  test("summary splits all-time and today by model and tool", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: "a", model: "claude-opus-5-5", occurred_at: now }) });
+    await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: "b", model: "claude-sonnet-5", occurred_at: now - 40 * 86400 }) });
+    const s = (await req(srv.base, "GET", "/api/summary")).json;
+    assert.equal(s.total.tokens, 360);
+    assert.equal(s.total.sessions, 2);
+    assert.equal(s.today.tokens, 180);
+    assert.equal(s.today.sessions, 1);
+    assert.deepEqual(s.total.by_model.map((r) => r.name).sort(), ["claude-opus-5-5", "claude-sonnet-5"]);
+    assert.deepEqual(s.total.by_tool, [{ name: "claude-code", tokens: 360, sessions: 2, events: 2 }]);
+    assert.equal(s.day, new Date().toISOString().slice(0, 10));
+    assert.equal((await req(srv.base, "GET", "/api/summary?tool=codex")).json.total.tokens, 0);
+  });
+
+  test("sessions report the latest context fill and a total for paging", async () => {
+    const at = Math.floor(Date.now() / 1000);
+    await req(srv.base, "POST", "/api/ingest", { key, body: {
+      session_id: "ctx", prompt_id: "c1", occurred_at: at - 10,
+      context_window: { context_window_size: 200000, used_percentage: 20, current_usage: { input_tokens: 5 } },
+    } });
+    await req(srv.base, "POST", "/api/ingest", { key, body: {
+      session_id: "ctx", prompt_id: "c2", occurred_at: at,
+      context_window: { context_window_size: 200000, used_percentage: 35, current_usage: { input_tokens: 6 } },
+    } });
+    await req(srv.base, "POST", "/api/ingest", { key, body: { session_id: "ctx", prompt_id: "c3", occurred_at: at - 5, usage: { input_tokens: 7 } } });
+    const r = (await req(srv.base, "GET", "/api/sessions?limit=1")).json;
+    assert.equal(r.sessions.length, 1);
+    assert.ok(r.total >= 3);
+    const ctx = (await req(srv.base, "GET", "/api/sessions?limit=50")).json.sessions.find((s) => s.session_id === "ctx");
+    assert.equal(ctx.context_used_pct, 35);
+    assert.equal(ctx.context_window_size, 200000);
+    const noCtx = (await req(srv.base, "GET", "/api/sessions?limit=50")).json.sessions.find((s) => s.session_id === "a");
+    assert.equal(noCtx.context_used_pct, null);
+    assert.equal((await req(srv.base, "GET", "/api/sessions?tool=codex")).json.total, 0);
+  });
+
+  test("estimate is flagged unavailable until a cost delta arrives", async () => {
+    assert.equal((await req(srv.base, "GET", "/api/billing")).json.estimated_available, false);
+    await req(srv.base, "POST", "/api/ingest", { key, body: event({ cost_estimated_usd_delta: 0.02 }) });
+    assert.equal((await req(srv.base, "GET", "/api/billing")).json.estimated_available, true);
+  });
+});

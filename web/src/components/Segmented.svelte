@@ -16,7 +16,7 @@
 
 <style>
   .pill { display: flex; gap: 3px; padding: 4px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 9px; }
-  .pill button { padding: 6px 12px; border-radius: var(--radius-sm); }
+  .pill button { padding: 6px 12px; border-radius: var(--radius-sm); white-space: nowrap; flex-shrink: 0; }
   .pill button[aria-pressed="true"] { color: var(--text); background: #333; }
   .tabs { display: flex; gap: 14px; }
   .tabs button { padding: 0 0 3px; font-size: 13px; border-bottom: 1px solid transparent; }

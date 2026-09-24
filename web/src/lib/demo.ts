@@ -1,12 +1,20 @@
 // FICTIONAL, deterministic demo dataset. Only reachable via ?demo=1 and
 // always labeled "Demonstration data". Never presented as a measurement.
-import { plural, fmtCompact } from "./format.ts";
-import { peak, streaks, type DayPoint } from "./series.ts";
-import { toolsFor, type DashboardVM, type Provider, type ToolKey } from "./view-model.ts";
+import { lastUtcDays, streaks, type DayPoint } from "./series.ts";
+import {
+  toolsFor, WINDOW_SPANS, type DashboardVM, type FigureVM, type Provider, type SessionVM,
+} from "./view-model.ts";
 
-const days = Array.from({ length: 364 }, (_, i) => {
-  const day = new Date(Date.UTC(2025, 9, 1 + i)).toISOString().slice(0, 10);
-  const active = i > 200 ? ((i * 37) % 13) > 3 : ((i * 19) % 71) < 2;
+type DemoTool = "claude-code" | "codex";
+const DEMO_TOOLS: DemoTool[] = ["claude-code", "codex"];
+const MODELS: Record<DemoTool, [string, number][]> = {
+  "claude-code": [["claude-opus-5-5", 0.7], ["claude-sonnet-5", 0.3]],
+  codex: [["gpt-5-codex", 1]],
+};
+
+// Deterministic pseudo-activity, anchored on today so the calendar is full.
+const days = lastUtcDays(364).map((day, i) => {
+  const active = i >= 358 || (i > 200 ? ((i * 37) % 13) > 3 : ((i * 19) % 71) < 2);
   return {
     day,
     codex: active ? Math.round(((i * 7919) % 1600000) * (i > 290 ? 2 : 1)) : 0,
@@ -14,57 +22,63 @@ const days = Array.from({ length: 364 }, (_, i) => {
   };
 });
 
-const quota = {
-  codex: { plan: "Plus · demo", five: 38, week: 64, reset: "Resets in 2 h 18 min", weekly: "Monday at 09:00" },
-  "claude-code": { plan: "Pro · demo", five: 72, week: 86, reset: "Resets in 48 min", weekly: "Friday at 14:30" },
-};
-
-const sessions = [
-  { tool: "codex" as ToolKey, title: "Consumption dashboard", used: 74000, max: 258000 },
-  { tool: "claude-code" as ToolKey, title: "API and sync", used: 128000, max: 200000 },
-];
+function figure(tools: DemoTool[], pick: (t: DemoTool) => number): FigureVM {
+  const byTool = tools.map((t) => ({ name: t, value: pick(t) })).filter((r) => r.value > 0);
+  const byModel = tools.flatMap((t) => MODELS[t].map(([m, share]) => ({ name: m, value: Math.round(pick(t) * share) })))
+    .filter((r) => r.value > 0)
+    .sort((a, b) => b.value - a.value);
+  return { value: byTool.reduce((a, r) => a + r.value, 0), byTool, byModel };
+}
 
 export function demoDashboard(provider: Provider): DashboardVM {
-  const tools = toolsFor(provider);
-  const series: DayPoint[] = days.map((d) => ({
-    day: d.day,
-    tokens: tools.reduce((a, t) => a + d[t], 0),
-  }));
-  const s = streaks(series);
+  const visible = toolsFor(provider);
+  const tools = DEMO_TOOLS.filter((t) => visible.includes(t));
+  const series: DayPoint[] = days.map((d) => ({ day: d.day, tokens: tools.reduce((a, t) => a + d[t], 0) }));
+  const now = Math.floor(Date.now() / 1000);
+  const last = days[days.length - 1];
+
+  const sessions: SessionVM[] = ([
+    { tool: "claude-code", id: "demo-a1b2c3d4", model: "claude-opus-5-5", calls: 142, tokens: 18_400_000, lastActive: now - 90, context: { pct: 64, size: 200000 } },
+    { tool: "codex", id: "demo-e5f6a7b8", model: "gpt-5-codex", calls: 57, tokens: 6_100_000, lastActive: now - 25 * 60, context: { pct: 29, size: 258000 } },
+    { tool: "claude-code", id: "demo-c9d0e1f2", model: "claude-sonnet-5", calls: 12, tokens: 940_000, lastActive: now - 5 * 3600, context: null },
+  ] satisfies SessionVM[]).filter((s) => visible.includes(s.tool));
+
   return {
     demo: true,
-    periodLabel: "Oct. 2025 — Sept. 2026 · fictional data",
-    stats: [
-      { value: fmtCompact(series.reduce((a, d) => a + d.tokens, 0)), label: "Tokens (1 y)" },
-      { value: fmtCompact(peak(series)), label: "Busiest day" },
-      { value: provider === "claude-code" ? "1 h 52 min" : "2 h 44 min", label: "Longest chat" },
-      { value: plural(s.current, "day"), label: "Current streak" },
-      { value: plural(s.longest, "day"), label: "Longest streak" },
-    ],
+    today: last.day,
     series,
     hasActivity: true,
-    quotas: tools.map((t) => ({
-      tool: t,
-      name: t === "codex" ? "Codex" : "Claude Code",
-      badge: quota[t].plan,
-      rows: [
-        { label: "5-hour window", pct: quota[t].five, reset: quota[t].reset },
-        { label: "This week", pct: quota[t].week, reset: quota[t].weekly },
+    stats: {
+      total: figure(tools, (t) => days.reduce((a, d) => a + d[t], 0)),
+      today: figure(tools, (t) => last[t]),
+      sessions: figure(tools, (t) => (t === "codex" ? 38 : 64)),
+      streak: streaks(series),
+    },
+    tools: visible,
+    claude: {
+      tool: "claude-code",
+      connected: true,
+      updatedAt: now - 40,
+      windows: [
+        { label: "5-hour window", pct: 72, resetsAt: now + 48 * 60, spanSec: WINDOW_SPANS.five_hour },
+        { label: "This week", pct: 86, resetsAt: now + 2 * 86400 + 5 * 3600, spanSec: WINDOW_SPANS.seven_day },
       ],
-    })),
-    sessions: sessions.filter((x) => tools.includes(x.tool)).map((x) => ({
-      tool: x.tool,
-      title: x.title,
-      subtitle: `${x.tool === "codex" ? "Codex" : "Claude Code"} · fictional conversation`,
-      tokensLabel: `${fmtCompact(x.used)} / ${fmtCompact(x.max)} tokens`,
-      context: { used: x.used, max: x.max },
-    })),
-    sessionsSubtitle: "Last simulated state — fictional",
-    billing: [
-      { title: "Paid subscriptions", value: "Demo", note: "Manually entered — fictional." },
-      { title: "Actual API charges", value: "Demo", note: "Provider invoices — fictional." },
-      { title: "Estimated API equivalent", value: "Demo", note: "Derived from tokens — neither an invoice nor a saving." },
+    },
+    codex: {
+      tool: "codex",
+      connected: true,
+      updatedAt: now - 20 * 60,
+      windows: [
+        { label: "5-hour window", pct: 38, resetsAt: now + 2 * 3600 + 18 * 60, spanSec: WINDOW_SPANS.five_hour },
+        { label: "This week", pct: 64, resetsAt: now + 4 * 86400, spanSec: WINDOW_SPANS.seven_day },
+      ],
+    },
+    sessions,
+    sessionsTotal: sessions.length,
+    cost: [
+      { label: "Paid subscriptions", value: "Demo", note: "Manually entered. Fictional." },
+      { label: "Actual API charges", value: "Demo", note: "Provider invoices. Fictional." },
+      { label: "API-rate estimate", value: "Demo", note: "Neither an invoice nor a saving. Fictional." },
     ],
-    footer: "Demo mode: no account connection, no real quotas. Fictional values.",
   };
 }

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
-  ActivityDay, BillingRecord, Device, Quota, Session, Subscription,
+  ActivityDay, BillingRecord, Breakdown, BreakdownRow, Device, Quota, Session, Subscription,
 } from "../../shared/types.ts";
 import { nowSec, type DB } from "./schema.ts";
 
@@ -22,6 +22,8 @@ export interface UsageEventInput {
   cache_read_tokens: number;
   cache_write_tokens: number;
   cost_estimated_usd: number | null;
+  context_window_size: number | null;
+  context_used_pct: number | null;
   occurred_at: number;
   received_at: number;
 }
@@ -120,12 +122,12 @@ export function insertUsageEvent(db: DB, ev: UsageEventInput): { inserted: boole
       `INSERT INTO usage_events
         (event_id, device_id, user_id, tool, session_id, prompt_id, model,
          input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-         cost_estimated_usd, occurred_at, received_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         cost_estimated_usd, context_window_size, context_used_pct, occurred_at, received_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       ev.event_id, ev.device_id, ev.user_id, ev.tool, ev.session_id, ev.prompt_id, ev.model,
       ev.input_tokens, ev.output_tokens, ev.cache_read_tokens, ev.cache_write_tokens,
-      ev.cost_estimated_usd, ev.occurred_at, ev.received_at
+      ev.cost_estimated_usd, ev.context_window_size, ev.context_used_pct, ev.occurred_at, ev.received_at
     );
     return { inserted: true, deduped: false };
   } catch (err) {
@@ -198,18 +200,77 @@ export function dailyBuckets(db: DB, userId: number, sinceSec: number, tool: str
     .all(userId, sinceSec, tool, tool) as ActivityDay[];
 }
 
-export function recentSessions(db: DB, userId: number, limit = 10): Session[] {
+const TOKENS = "input_tokens + output_tokens + cache_read_tokens + cache_write_tokens";
+
+/**
+ * Most recent sessions. Context fill comes from the session's latest event
+ * that reported it (a gauge at that moment, never summed).
+ */
+export function recentSessions(db: DB, userId: number, limit: number, tool: string | null): Session[] {
   return db
     .prepare(
-      `SELECT session_id, tool, MAX(model) AS model,
-              SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens) AS tokens,
-              MAX(occurred_at) AS last_seen, COUNT(*) AS events
-       FROM usage_events
-       WHERE user_id = ? AND session_id IS NOT NULL
-       GROUP BY session_id, tool
-       ORDER BY last_seen DESC LIMIT ?`
+      `SELECT s.*, c.context_used_pct, c.context_window_size FROM (
+         SELECT session_id, tool, MAX(model) AS model,
+                SUM(${TOKENS}) AS tokens,
+                MAX(occurred_at) AS last_seen, COUNT(*) AS events
+         FROM usage_events
+         WHERE user_id = ? AND session_id IS NOT NULL AND (? IS NULL OR tool = ?)
+         GROUP BY session_id, tool
+         ORDER BY last_seen DESC LIMIT ?
+       ) s
+       LEFT JOIN (
+         SELECT session_id, tool, context_used_pct, context_window_size,
+                ROW_NUMBER() OVER (
+                  PARTITION BY session_id, tool ORDER BY occurred_at DESC, received_at DESC
+                ) AS rn
+         FROM usage_events
+         WHERE user_id = ? AND context_used_pct IS NOT NULL
+       ) c ON c.session_id = s.session_id AND c.tool = s.tool AND c.rn = 1
+       ORDER BY s.last_seen DESC`
     )
-    .all(userId, limit) as Session[];
+    .all(userId, tool, tool, limit, userId) as Session[];
+}
+
+export function countSessions(db: DB, userId: number, tool: string | null): number {
+  return (db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM (
+         SELECT 1 FROM usage_events
+         WHERE user_id = ? AND session_id IS NOT NULL AND (? IS NULL OR tool = ?)
+         GROUP BY session_id, tool
+       )`
+    )
+    .get(userId, tool, tool) as { n: number }).n;
+}
+
+/** Tokens, sessions and events since sinceSec, split by model and by tool. */
+export function breakdown(db: DB, userId: number, sinceSec: number, tool: string | null): Breakdown {
+  const group = (col: "model" | "tool") =>
+    db
+      .prepare(
+        `SELECT COALESCE(${col}, 'unknown') AS name,
+                SUM(${TOKENS}) AS tokens,
+                COUNT(DISTINCT session_id) AS sessions,
+                COUNT(*) AS events
+         FROM usage_events
+         WHERE user_id = ? AND occurred_at >= ? AND (? IS NULL OR tool = ?)
+         GROUP BY name ORDER BY tokens DESC`
+      )
+      .all(userId, sinceSec, tool, tool) as BreakdownRow[];
+  const t = usageTotals(db, userId, sinceSec, tool);
+  return {
+    tokens: Number(t.total_tokens),
+    sessions: Number(t.sessions),
+    events: Number(t.events),
+    by_model: group("model"),
+    by_tool: group("tool"),
+  };
+}
+
+export function estimatedCostAvailable(db: DB, userId: number): boolean {
+  return Boolean(db
+    .prepare("SELECT 1 FROM usage_events WHERE user_id = ? AND cost_estimated_usd IS NOT NULL LIMIT 1")
+    .get(userId));
 }
 
 export function listSubscriptions(db: DB, userId: number): Subscription[] {

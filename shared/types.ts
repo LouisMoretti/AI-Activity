@@ -51,10 +51,37 @@ export interface Session {
   tokens: number;
   last_seen: number;
   events: number;
+  /** Context fill at the latest call that reported it; null if never reported. */
+  context_used_pct: number | null;
+  context_window_size: number | null;
 }
 
 export interface SessionsResponse {
   sessions: Session[];
+  total: number; // all sessions matching the filter, for "show more"
+  provenance: string;
+}
+
+export interface BreakdownRow {
+  name: string;
+  tokens: number;
+  sessions: number;
+  events: number;
+}
+
+export interface Breakdown {
+  tokens: number;
+  sessions: number;
+  events: number;
+  by_model: BreakdownRow[];
+  by_tool: BreakdownRow[];
+}
+
+export interface SummaryResponse {
+  tool: string | null;
+  day: string; // current UTC day, YYYY-MM-DD
+  total: Breakdown; // all time
+  today: Breakdown;
   provenance: string;
 }
 
@@ -89,6 +116,8 @@ export interface BillingResponse {
   subscriptions: Subscription[];
   billing_records: BillingRecord[];
   estimated_api_equivalent_usd: number;
+  /** false until at least one event carried a cost delta ("Unavailable", not 0). */
+  estimated_available: boolean;
   disclaimer: string;
 }
 

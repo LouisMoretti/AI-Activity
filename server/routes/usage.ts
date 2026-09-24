@@ -1,8 +1,10 @@
 import { Hono } from "hono";
 import type {
-  ActivityResponse, QuotasResponse, SessionsResponse, StatsResponse,
+  ActivityResponse, QuotasResponse, SessionsResponse, StatsResponse, SummaryResponse,
 } from "../../shared/types.ts";
-import { dailyBuckets, latestQuotas, recentSessions, usageTotals } from "../db/queries.ts";
+import {
+  breakdown, countSessions, dailyBuckets, latestQuotas, recentSessions, usageTotals,
+} from "../db/queries.ts";
 import { nowSec, type DB } from "../db/schema.ts";
 import { intParam } from "../lib/http.ts";
 
@@ -35,9 +37,25 @@ export function usageRoutes(db: DB, userId: () => number) {
         quotas: latestQuotas(db, userId()),
         provenance: "latest snapshot provided by the account (never summed across devices)",
       }))
-    .get("/sessions", (c) =>
-      c.json<SessionsResponse>({
-        sessions: recentSessions(db, userId(), intParam(c, "limit", 10, 1, 50)),
+    .get("/summary", (c) => {
+      const tool = c.req.query("tool") || null;
+      const now = new Date();
+      // "Today" is the current UTC day, matching the activity buckets.
+      const dayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) / 1000;
+      return c.json<SummaryResponse>({
+        tool,
+        day: new Date(dayStart * 1000).toISOString().slice(0, 10),
+        total: breakdown(db, userId(), 0, tool),
+        today: breakdown(db, userId(), dayStart, tool),
+        provenance: "measured device events (incremental token counts only)",
+      });
+    })
+    .get("/sessions", (c) => {
+      const tool = c.req.query("tool") || null;
+      return c.json<SessionsResponse>({
+        sessions: recentSessions(db, userId(), intParam(c, "limit", 10, 1, 200), tool),
+        total: countSessions(db, userId(), tool),
         provenance: "grouped by unique session id from device events",
-      }));
+      });
+    });
 }

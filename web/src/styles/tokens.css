@@ -1,16 +1,20 @@
-/* Design tokens. Components only use these variables, so the redesign can
-   swap palette, type and spacing here without touching component code. */
+/* Design tokens. Components only use these variables. Palette kept from
+   the original dashboard (dark, neutral greys, soft blue accent). */
 :root {
   color-scheme: dark;
   --bg: #181818;
   --surface: #1c1c1c;
   --surface-2: #202020;
+  --raised: #262626;
   --line: #2c2c2c;
   --text: #ededed;
   --muted: #a3a3a3;
-  --faint: #909090;
+  --faint: #8a8a8a;
   --accent: #86a8ea;
   --claude: #d29b80;
+  --codex: #86a8ea;
+  --opencode: #a9c7a0;
+  --ok: #7cc58f;
   --warn: #dfb37c;
   --track: #303030;
   --heat-0: #242424;
@@ -24,7 +28,8 @@
 
   --radius: 12px;
   --radius-sm: 6px;
-  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --cell: 12px;
+  --font: "Geist Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono: "Geist Mono Variable", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --cell: 11px;
   --cell-gap: 3px;
 }

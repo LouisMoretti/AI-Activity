@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  calendarWeeks, cumulative, denseSeries, lastUtcDays, level, streaks, weeklyTotals,
+  calendarWeeks, cumulative, denseSeries, lastUtcDays, level, monthLabels, streaks, weeklyTotals,
 } from "../web/src/lib/series.ts";
 
 const pts = (...tokens) => tokens.map((t, i) => ({ day: `2026-01-${String(i + 1).padStart(2, "0")}`, tokens: t }));
@@ -39,4 +39,18 @@ test("heat level is 0 only without activity", () => {
   assert.equal(level(0, 100), 0);
   assert.equal(level(1, 100), 1);
   assert.equal(level(100, 100), 4);
+});
+
+test("month labels never collide: a partial first month is dropped", () => {
+  // Starts 2025-09-28 (Sunday): one September week, then October.
+  const start = Date.UTC(2025, 8, 28);
+  const series = Array.from({ length: 70 }, (_, i) => ({
+    day: new Date(start + i * 86400000).toISOString().slice(0, 10), tokens: 0,
+  }));
+  const name = (iso) => iso.slice(0, 7);
+  const labels = monthLabels(calendarWeeks(series), name);
+  assert.equal(labels[0], ""); // "2025-09" would overlap "2025-10"
+  assert.equal(labels[1], "2025-10");
+  const shown = labels.map((l, i) => (l ? i : -1)).filter((i) => i >= 0);
+  for (let k = 1; k < shown.length; k++) assert.ok(shown[k] - shown[k - 1] >= 3);
 });

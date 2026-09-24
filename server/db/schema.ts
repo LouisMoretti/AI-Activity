@@ -97,6 +97,17 @@ function migrate(db: DB): void {
     );
   `);
 
+  // Additive column migrations (SQLite has no ADD COLUMN IF NOT EXISTS).
+  const cols = new Set(
+    (db.prepare("PRAGMA table_info(usage_events)").all() as { name: string }[]).map((c) => c.name)
+  );
+  if (!cols.has("context_window_size")) {
+    db.exec("ALTER TABLE usage_events ADD COLUMN context_window_size INTEGER");
+  }
+  if (!cols.has("context_used_pct")) {
+    db.exec("ALTER TABLE usage_events ADD COLUMN context_used_pct REAL");
+  }
+
   // Ensure at least one default user exists (multi-user comes later;
   // every device maps to a user, currently user 1).
   const row = db.prepare("SELECT id FROM users ORDER BY id LIMIT 1").get();

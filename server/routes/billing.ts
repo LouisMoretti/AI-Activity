@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { BillingResponse } from "../../shared/types.ts";
 import {
-  insertSubscription, listBillingRecords, listSubscriptions, usageTotals,
+  estimatedCostAvailable, insertSubscription, listBillingRecords, listSubscriptions, usageTotals,
 } from "../db/queries.ts";
 import type { DB } from "../db/schema.ts";
 import { readJson } from "../lib/http.ts";
@@ -14,6 +14,7 @@ export function billingRoutes(db: DB, userId: () => number) {
         subscriptions: listSubscriptions(db, uid),
         billing_records: listBillingRecords(db, uid),
         estimated_api_equivalent_usd: Number(usageTotals(db, uid, 0, null).estimated_usd || 0),
+        estimated_available: estimatedCostAvailable(db, uid),
         disclaimer: "Paid amounts are manually entered invoices. The API-equivalent estimate is derived from measured tokens and is neither an invoice nor a saving.",
       });
     })

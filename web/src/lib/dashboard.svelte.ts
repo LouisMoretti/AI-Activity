@@ -1,20 +1,24 @@
 // Dashboard state: data source (live or ?demo=1), provider filter, auth,
-// and the 15 s auto-refresh (skipped while hidden or already in flight).
+// session paging, and the 15 s auto-refresh (skipped while hidden or
+// already in flight).
 import { api, UnauthorizedError } from "./api.ts";
 import { demoDashboard } from "./demo.ts";
-import { ACTIVITY_DAYS, liveDashboard, STATS_DAYS, type LiveData } from "./live.ts";
+import { ACTIVITY_DAYS, liveDashboard, type LiveData } from "./live.ts";
 import type { DashboardVM, Provider } from "./view-model.ts";
 
 export type Status = "loading" | "ready" | "locked" | "error";
 
 const REFRESH_MS = 15000;
+export const SESSIONS_PAGE = 10;
 
 export class Dashboard {
   readonly demo = new URLSearchParams(location.search).get("demo") === "1";
   provider = $state<Provider>("all");
   status = $state<Status>("loading");
+  sessionsLimit = $state(SESSIONS_PAGE);
   private live = $state<LiveData | null>(null);
   private inFlight = false;
+  private reloadQueued = false;
 
   vm = $derived<DashboardVM | null>(
     this.demo ? demoDashboard(this.provider)
@@ -27,28 +31,42 @@ export class Dashboard {
       this.status = "ready";
       return;
     }
-    if (this.inFlight) return;
+    if (this.inFlight) {
+      // A filter or paging change during a refresh must not be lost.
+      this.reloadQueued = true;
+      return;
+    }
     this.inFlight = true;
     const tool = this.provider === "all" ? null : this.provider;
     try {
-      const [stats, activity, quotas, sessions, billing] = await Promise.all([
-        api.stats(STATS_DAYS, tool),
+      const [summary, activity, quotas, sessions, billing] = await Promise.all([
+        api.summary(tool),
         api.activity(ACTIVITY_DAYS, tool),
         api.quotas(),
-        api.sessions(10),
+        api.sessions(this.sessionsLimit, tool),
         api.billing(),
       ]);
-      this.live = { stats, activity, quotas, sessions, billing };
+      this.live = { summary, activity, quotas, sessions, billing };
       this.status = "ready";
     } catch (e) {
       this.status = e instanceof UnauthorizedError ? "locked" : "error";
     } finally {
       this.inFlight = false;
+      if (this.reloadQueued) {
+        this.reloadQueued = false;
+        void this.load();
+      }
     }
   }
 
   setProvider(p: Provider): void {
     this.provider = p;
+    this.sessionsLimit = SESSIONS_PAGE;
+    void this.load();
+  }
+
+  showMoreSessions(): void {
+    this.sessionsLimit += SESSIONS_PAGE;
     void this.load();
   }
 

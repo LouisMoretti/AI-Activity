@@ -10,8 +10,13 @@ tools. Current scope: **Claude Code ingestion only**. Codex and OpenCode
 connectors are inventoried but not implemented yet; the UI shows them as
 "Unavailable — connector coming soon" instead of fake numbers.
 
-Visual direction (kept from the demo): statistics + token activity on top,
-tool limits at the bottom, then conversation context and cost.
+Layout, top to bottom: token activity (centered year calendar, readout shows
+today unless a day is hovered), four stats (all-time tokens, today, sessions,
+current streak; hover shows the split by tool and model, or the longest
+streak), one card per tool (Claude Code, Codex, OpenCode are separate
+components), recent conversations (10 + "Show more"), cost. Palette: the
+original dark theme; type: Geist, with Geist Mono only for ids and model
+names. Quota bars carry a mark for how far into the window we are.
 
 **Hard rule:** the old demo dataset was fictional and deterministic. It is only
 visible via `?demo=1`, always labeled "Demonstration data", and never presented
@@ -180,6 +185,8 @@ Official contract: https://code.claude.com/docs/en/statusline
 | `prompt_id` | `prompt_id` |
 | `model.id` | `model` |
 | `context_window.current_usage` | `usage` (incremental, summed) |
+| `context_window.used_percentage` | `context_used_pct` (gauge, latest per session, never summed) |
+| `context_window.context_window_size` | `context_window_size` |
 | `cost.total_cost_usd` | **delta only** → `cost_estimated_usd_delta` |
 | `rate_limits.*.used_percentage` / `resets_at` | `rate_limits` snapshots |
 | absent `rate_limits` | show "Unavailable" |
@@ -224,8 +231,13 @@ Viewer (cookie session after `POST /api/auth/login {password}`; open if no
 - `GET /api/stats?days=30&tool=claude-code`
 - `GET /api/activity?days=364&tool=...` (daily buckets for the heatmap)
 - `GET /api/quotas` (latest snapshot per account + limit type)
-- `GET /api/sessions?limit=10` (grouped by unique session id)
-- `GET /api/billing` (paid vs actual vs estimated, with disclaimer)
+- `GET /api/summary?tool=...` (all-time and current-UTC-day tokens,
+  sessions, events, each split `by_model` and `by_tool`)
+- `GET /api/sessions?limit=10&tool=...` (grouped by unique session id, with
+  latest `context_used_pct` / `context_window_size`, plus `total` for paging)
+- `GET /api/billing` (paid vs actual vs estimated, with disclaimer;
+  `estimated_available: false` means no cost delta was ever received, shown
+  as "Unavailable", not 0)
 - `POST /api/billing/subscription` `{tool, plan_name, amount, currency, period_start, period_end, note}`
 - `GET /api/devices`, `POST /api/devices {name}` (returns key once),
   `POST /api/devices/:id/revoke`

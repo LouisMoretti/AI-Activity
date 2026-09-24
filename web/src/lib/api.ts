@@ -1,7 +1,7 @@
 // Typed client for the dashboard JSON API (same origin, cookie session).
 import type {
   ActivityResponse, AuthStatus, BillingResponse, QuotasResponse,
-  SessionsResponse, StatsResponse,
+  SessionsResponse, StatsResponse, SummaryResponse,
 } from "../../../shared/types.ts";
 
 export class UnauthorizedError extends Error {
@@ -30,6 +30,8 @@ export const api = {
   stats: (days: number, tool: string | null) => get<StatsResponse>(`/api/stats?days=${days}${toolQuery(tool)}`),
   activity: (days: number, tool: string | null) => get<ActivityResponse>(`/api/activity?days=${days}${toolQuery(tool)}`),
   quotas: () => get<QuotasResponse>("/api/quotas"),
-  sessions: (limit: number) => get<SessionsResponse>(`/api/sessions?limit=${limit}`),
+  summary: (tool: string | null) => get<SummaryResponse>(`/api/summary?x=1${toolQuery(tool)}`),
+  sessions: (limit: number, tool: string | null) =>
+    get<SessionsResponse>(`/api/sessions?limit=${limit}${toolQuery(tool)}`),
   billing: () => get<BillingResponse>("/api/billing"),
 };
