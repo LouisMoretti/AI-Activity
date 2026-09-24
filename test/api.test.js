@@ -207,6 +207,9 @@ describe("open server (no viewer password)", () => {
     assert.equal((await post({ amount: -5 })).status, 400);
     assert.equal((await post({ amount: "" })).status, 400);
     assert.equal((await post({ currency: "euros" })).status, 400);
+    assert.equal((await post({ currency: "ABC" })).status, 400);
+    assert.equal((await post({ plan_name: "   " })).status, 400);
+    assert.equal((await post({ tool: 123 })).status, 400);
     assert.equal((await post({ period_start: "2026-02-30" })).status, 400);
     assert.equal((await post({ period_start: "2026-03-01", period_end: "2026-02-01" })).status, 400);
     const ok = await post({ currency: "eur", period_start: "2026-09-01", period_end: "2026-09-30" });

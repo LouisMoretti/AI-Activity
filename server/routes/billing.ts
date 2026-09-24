@@ -26,6 +26,7 @@ export function billingRoutes(db: DB, userId: () => number) {
 }
 
 const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+const CURRENCIES = new Set(Intl.supportedValuesOf("currency"));
 
 /** A real calendar day as YYYY-MM-DD, or null. */
 function isoDay(v: unknown): string | null {
@@ -41,13 +42,13 @@ function parseSubscription(body: Record<string, unknown>): Parameters<typeof ins
   const plan_name = text(body.plan_name, 80);
   const amount = typeof body.amount === "string" && body.amount.trim() === "" ? NaN : Number(body.amount);
   if (!tool || !plan_name || !Number.isFinite(amount)) {
-    return "tool, plan_name and numeric amount are required";
+    return "tool and plan_name (non-empty strings) and a numeric amount are required";
   }
   if (amount < 0) return "amount must be >= 0";
   const currency = body.currency === undefined || body.currency === null || body.currency === ""
     ? "USD"
     : text(body.currency, 8).toUpperCase();
-  if (!/^[A-Z]{3}$/.test(currency)) return "currency must be a 3-letter ISO 4217 code";
+  if (!CURRENCIES.has(currency)) return "currency must be an ISO 4217 code, e.g. USD or EUR";
   const period_start = body.period_start ? isoDay(body.period_start) : null;
   const period_end = body.period_end ? isoDay(body.period_end) : null;
   if ((body.period_start && !period_start) || (body.period_end && !period_end)) {
