@@ -76,7 +76,7 @@ export function toAccount(u: UserRow): Account {
   };
 }
 
-/** True once at least one account can log in; before that the dashboard is open. */
+/** True once at least one account can log in; before that nothing is viewable (setup). */
 export function accountsExist(db: DB): boolean {
   return Boolean(db.prepare("SELECT 1 FROM users WHERE password_hash IS NOT NULL LIMIT 1").get());
 }

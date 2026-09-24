@@ -134,8 +134,8 @@ function migrate(db: DB): void {
     CREATE INDEX IF NOT EXISTS idx_viewer_sessions_user ON viewer_sessions(user_id);
   `);
 
-  // Ensure at least one user exists: before any account is set up, the open
-  // dashboard (and every device) maps to user 1.
+  // Ensure at least one user exists: before any account is set up, every
+  // device (keys from gen-key) maps to user 1, which the first account claims.
   const row = db.prepare("SELECT id FROM users ORDER BY id LIMIT 1").get();
   if (!row) {
     db.prepare("INSERT INTO users (created_at) VALUES (?)").run(nowSec());
