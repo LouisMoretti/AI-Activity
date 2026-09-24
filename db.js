@@ -219,23 +219,24 @@ export function insertQuotaSnapshot(db, q) {
   );
 }
 
-/** Latest snapshot per (account_ref, limit_type). Never summed across devices. */
+/**
+ * Latest snapshot per (account_ref, limit_type). Never summed across devices.
+ * measured_at has 1 s resolution and the statusLine fires in bursts, so ties
+ * are broken by insertion order (id) to always return exactly one row.
+ */
 export function latestQuotas(db, userId) {
   return db
     .prepare(
-      `SELECT q.* FROM quota_snapshots q
-       JOIN (
-         SELECT account_ref, limit_type, MAX(measured_at) AS m
-         FROM quota_snapshots WHERE user_id = ?
-         GROUP BY account_ref, limit_type
-       ) latest
-         ON q.account_ref = latest.account_ref
-        AND q.limit_type = latest.limit_type
-        AND q.measured_at = latest.m
-       WHERE q.user_id = ?
-       ORDER BY q.account_ref, q.limit_type`
+      `SELECT * FROM (
+         SELECT q.*, ROW_NUMBER() OVER (
+           PARTITION BY account_ref, limit_type
+           ORDER BY measured_at DESC, id DESC
+         ) AS rn
+         FROM quota_snapshots q WHERE user_id = ?
+       ) WHERE rn = 1
+       ORDER BY account_ref, limit_type`
     )
-    .all(userId, userId);
+    .all(userId);
 }
 
 export function usageTotals(db, userId, sinceSec, tool) {

@@ -33,6 +33,9 @@ npm run gen-key -- "laptop-louis"
 
 Health check: `GET /api/health` → `{"ok":true}`.
 
+Tests: `npm test` boots the real server on a temp DB and exercises the HTTP
+API black-box (`test/api.test.js`), so they must stay green across refactors.
+
 ## 3. Architecture
 
 ```
