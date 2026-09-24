@@ -448,13 +448,16 @@ describe("profiles and user management", () => {
     const created = await post("/api/users", { username: "carol", password: "carol-pass", display_name: " Carol " }, admin);
     assert.equal(created.status, 200);
     assert.equal((await post("/api/users", { username: "Carol", password: "carol-pass" }, admin)).status, 409);
+    // A double submit: both pass the lookup while hashing, one wins.
+    const twice = await Promise.all([1, 2].map(() => post("/api/users", { username: "twin", password: "twin-pass" }, admin)));
+    assert.deepEqual(twice.map((r) => r.status).sort(), [200, 409]);
     const carol = await login(srv.base, "carol", "carol-pass");
     const me = (await req(srv.base, "GET", "/api/auth/status", { cookie: carol })).json.user;
     assert.deepEqual(me, { id: created.json.id, username: "carol", display_name: "Carol", is_admin: false });
     assert.equal((await req(srv.base, "GET", "/api/users", { cookie: carol })).status, 403);
     assert.equal((await post("/api/users", { username: "eve", password: "eve-password" }, carol)).status, 403);
     const list = (await req(srv.base, "GET", "/api/users", { cookie: admin })).json.users;
-    assert.deepEqual(list.map((u) => [u.username, u.is_admin, u.disabled]), [["admin", true, false], ["carol", false, false]]);
+    assert.deepEqual(list.map((u) => [u.username, u.is_admin, u.disabled]), [["admin", true, false], ["carol", false, false], ["twin", false, false]]);
   });
 
   test("display name can be changed and cleared", async () => {

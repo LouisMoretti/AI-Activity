@@ -69,14 +69,19 @@ export function userRoutes(db: DB) {
       const username = typeof body.username === "string" ? body.username.trim() : "";
       const problem = usernameProblem(username) ?? passwordProblem(body.password);
       if (problem) return c.json({ error: problem }, 400);
-      if (findUserByUsername(db, username)) return c.json({ error: "that username is taken" }, 409);
-      const id = createAccount(db, {
-        username,
-        display_name: displayName(body.display_name),
-        password_hash: await hashPassword(body.password as string),
-        is_admin: body.is_admin === true,
-      });
-      return c.json({ ok: true, id });
+      const taken = () => c.json({ error: "that username is taken" }, 409);
+      if (findUserByUsername(db, username)) return taken();
+      const password_hash = await hashPassword(body.password as string);
+      try {
+        const id = createAccount(db, {
+          username, display_name: displayName(body.display_name), password_hash, is_admin: body.is_admin === true,
+        });
+        return c.json({ ok: true, id });
+      } catch (err) {
+        // Created meanwhile (double submit, CLI) while the password was hashing.
+        if ((err as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE") return taken();
+        throw err;
+      }
     })
     .post("/:id{[0-9]+}/password", async (c) => {
       const user = target(c.req.param("id"));
