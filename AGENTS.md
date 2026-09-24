@@ -49,6 +49,9 @@ STATIC_DIR=web/dist npm start   # serve the built UI (default is still public/
                                 # until the redesign switch-over)
 ```
 
+CI (`.github/workflows/ci.yml`) runs typecheck, tests and the web build on
+every PR and push to main.
+
 Tests: `npm test` boots the real server on a temp DB and exercises the HTTP
 API black-box (`test/api.test.js`), so they must stay green across refactors;
 `test/series.test.js` covers the pure chart helpers of the web client.
