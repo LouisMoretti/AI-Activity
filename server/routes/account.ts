@@ -81,6 +81,9 @@ export function userRoutes(db: DB) {
     .post("/:id{[0-9]+}/password", async (c) => {
       const user = target(c.req.param("id"));
       if (!user) return c.json({ error: "user not found" }, 404);
+      // Own password goes through /api/account/password, which needs the
+      // current one: a stolen admin session must not be able to take over.
+      if (user.id === c.get("userId")) return c.json({ error: "change your own password from your account" }, 400);
       const body = await readJson(c);
       const problem = passwordProblem(body.password);
       if (problem) return c.json({ error: problem }, 400);

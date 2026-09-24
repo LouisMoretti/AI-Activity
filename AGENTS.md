@@ -274,7 +274,8 @@ open, as the single pre-accounts user, while no account exists):
   exists.
 - Admin only (`403` otherwise): `GET /api/users`, `POST /api/users
   {username, password, display_name, is_admin}`, `POST /api/users/:id/password
-  {password}` (signs that user out), `POST /api/users/:id/disable|enable`.
+  {password}` (signs that user out; not for the admin's own account, which
+  goes through `/api/account/password` so a stolen session cannot take it over), `POST /api/users/:id/disable|enable`.
   A disabled account cannot sign in and its device keys are rejected at
   ingest; admins cannot disable themselves, so one enabled admin remains.
 - `GET /api/stats?days=30&tool=claude-code`

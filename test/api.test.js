@@ -496,6 +496,8 @@ describe("profiles and user management", () => {
     assert.equal((await post(`/api/users/${json.id}/password`, { password: "gina-pass-2" }, admin)).status, 200);
     assert.equal((await req(srv.base, "GET", "/api/stats", { cookie: gina })).status, 401);
     await login(srv.base, "gina", "gina-pass-2");
+    // An admin's own password needs the current one (the Account section).
+    assert.equal((await post("/api/users/1/password", { password: "taken-over" }, admin)).status, 400);
   });
 
   test("the open dashboard has no profile and no admin", async () => {

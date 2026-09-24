@@ -88,10 +88,10 @@
             </small>
           </div>
           <div class="row-actions">
-            <button type="button" disabled={busy} onclick={() => { resetting = resetting === u.id ? null : u.id; resetValue = ""; }}>
-              Reset password
-            </button>
             {#if u.id !== selfId}
+              <button type="button" disabled={busy} onclick={() => { resetting = resetting === u.id ? null : u.id; resetValue = ""; }}>
+                Reset password
+              </button>
               <button type="button" class:danger={!u.disabled} disabled={busy} onclick={() => toggle(u)}>
                 {u.disabled ? "Enable" : "Disable"}
               </button>
