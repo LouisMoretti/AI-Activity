@@ -325,22 +325,31 @@ async function handler(req, res) {
     }
     const ev = normalizeIngest(body);
     const received = nowSec();
-    const result = insertUsageEvent(db, {
-      event_id: ev.event_id,
-      device_id: device.id,
-      user_id: device.user_id,
-      tool: ev.tool,
-      session_id: ev.session_id,
-      prompt_id: ev.prompt_id,
-      model: ev.model,
-      input_tokens: ev.input_tokens,
-      output_tokens: ev.output_tokens,
-      cache_read_tokens: ev.cache_read_tokens,
-      cache_write_tokens: ev.cache_write_tokens,
-      cost_estimated_usd: ev.cost_estimated_usd,
-      occurred_at: ev.occurred_at,
-      received_at: received,
-    });
+    // Empty snapshots (session start / pre-first-call triggers: zero tokens,
+    // no cost delta) carry no consumable data — skip the usage row so event
+    // counts stay honest. Quota snapshots below are still recorded.
+    const hasConsumption =
+      ev.input_tokens > 0 || ev.output_tokens > 0 ||
+      ev.cache_read_tokens > 0 || ev.cache_write_tokens > 0 ||
+      ev.cost_estimated_usd !== null;
+    const result = hasConsumption
+      ? insertUsageEvent(db, {
+        event_id: ev.event_id,
+        device_id: device.id,
+        user_id: device.user_id,
+        tool: ev.tool,
+        session_id: ev.session_id,
+        prompt_id: ev.prompt_id,
+        model: ev.model,
+        input_tokens: ev.input_tokens,
+        output_tokens: ev.output_tokens,
+        cache_read_tokens: ev.cache_read_tokens,
+        cache_write_tokens: ev.cache_write_tokens,
+        cost_estimated_usd: ev.cost_estimated_usd,
+        occurred_at: ev.occurred_at,
+        received_at: received,
+      })
+      : { inserted: false, deduped: false };
     // Quotas are snapshots: latest value wins, never summed.
     for (const q of ev.quotas) {
       insertQuotaSnapshot(db, {
@@ -357,6 +366,7 @@ async function handler(req, res) {
     sendJson(res, 200, {
       ok: true,
       deduped: !result.inserted,
+      stored: result.inserted,
       event_id: ev.event_id,
     });
     return;

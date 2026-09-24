@@ -109,8 +109,16 @@ Notes:
   is ignored by design. Send an explicit per-event **delta** computed by the
   collector (previous session total kept in a local state file); otherwise the
   cost estimate stays empty and only tokens are counted.
-- Dedup: `event_id` primary key (`INSERT OR IGNORE`) plus a
-  `(device_id, prompt_id)` guard. Replays return `{"ok":true,"deduped":true}`.
+- Dedup: `event_id` primary key (`INSERT OR IGNORE`) plus an identical-snapshot
+  guard per `(device_id, prompt_id, token tuple, model)`. The statusLine fires
+  several times per prompt (one snapshot per API call in the agentic loop, plus
+  unchanged re-fires); each distinct snapshot is one call's consumption and is
+  kept, only byte-identical re-fires are dropped. Dropping everything after the
+  first snapshot per prompt undercounts ~3x (measured against session files).
+  Replays return `{"ok":true,"deduped":true}`.
+- Empty snapshots (zero tokens, no cost delta, e.g. session-start triggers)
+  store no usage row (`stored: false`) but their quota snapshots are still
+  recorded.
 - Offline recovery: the collector spools unsent payloads with their original
   `occurred_at` and replays them in order; the server orders by `occurred_at`.
 - Quotas: every window with a numeric `used_percentage` becomes a snapshot

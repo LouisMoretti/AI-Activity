@@ -136,15 +136,38 @@ export function revokeDevice(db, id) {
   return db.prepare("UPDATE devices SET revoked = 1 WHERE id = ?").run(id);
 }
 
-/** Insert an incremental usage event. Returns { inserted, deduped }. */
+/**
+ * Insert an incremental usage event.
+ *
+ * Dedup strategy: the statusLine fires several times per user prompt (one
+ * snapshot per API call in the agentic loop, plus unchanged re-fires on
+ * compact / permission / vim events). Each DISTINCT usage snapshot is one
+ * API call's consumption and must be kept; only an IDENTICAL snapshot for
+ * the same device+prompt is a duplicate trigger and is dropped. Dropping
+ * every snapshot after the first per prompt would undercount ~3x.
+ * Returns { inserted, deduped }.
+ */
 export function insertUsageEvent(db, ev) {
-  // Natural dedup: same device + same prompt_id already stored.
+  // Natural dedup: identical snapshot already stored for this device+prompt.
   if (ev.prompt_id) {
     const existing = db
       .prepare(
-        "SELECT event_id FROM usage_events WHERE device_id = ? AND prompt_id = ? LIMIT 1"
+        `SELECT event_id FROM usage_events
+         WHERE device_id = ? AND prompt_id = ?
+           AND input_tokens = ? AND output_tokens = ?
+           AND cache_read_tokens = ? AND cache_write_tokens = ?
+           AND COALESCE(model, '') = COALESCE(?, '')
+         LIMIT 1`
       )
-      .get(ev.device_id, ev.prompt_id);
+      .get(
+        ev.device_id,
+        ev.prompt_id,
+        ev.input_tokens ?? 0,
+        ev.output_tokens ?? 0,
+        ev.cache_read_tokens ?? 0,
+        ev.cache_write_tokens ?? 0,
+        ev.model ?? null
+      );
     if (existing) return { inserted: false, deduped: true };
   }
   try {
