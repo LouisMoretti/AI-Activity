@@ -12,6 +12,7 @@ export type Route =
   | { page: "home" }
   | { page: "profile"; username: string }
   | { page: "settings" }
+  | { page: "admin" }
   | { page: "invite"; token: string };
 
 /**
@@ -44,6 +45,7 @@ function routeFromPath(): Route {
   const invite = path.match(/^\/invite\/([^/]+)\/?$/);
   if (invite) return { page: "invite", token: decodeURIComponent(invite[1]) };
   if (/^\/settings\/?$/.test(path)) return { page: "settings" };
+  if (/^\/admin\/?$/.test(path)) return { page: "admin" };
   return { page: "home" };
 }
 
@@ -67,6 +69,8 @@ export class Dashboard {
   sessionsLimit = $state(SESSIONS_PAGE);
   /** The signed-in account; null when signed out. */
   account = $state<Account | null>(null);
+  /** Anyone may create an account from the sign-in page. */
+  signupOpen = $state(false);
   /** Every profile, for the switcher (signed in only). */
   profiles = $state<Profile[]>([]);
   /** The profile on screen. */
@@ -97,10 +101,13 @@ export class Dashboard {
     try {
       const auth = await api.authStatus();
       this.account = auth.user;
+      this.signupOpen = auth.signup_open;
       if (!auth.user) {
         this.profiles = [];
         if (route.page === "profile") await this.loadProfile(route.username);
-        else if (route.page === "settings") this.go(`/?next=${encodeURIComponent("/settings")}`, true);
+        else if (route.page === "settings" || route.page === "admin") {
+          this.go(`/?next=${encodeURIComponent(`/${route.page}`)}`, true);
+        }
         else this.status = auth.setup_required ? "setup" : "signed-out";
         return;
       }
@@ -186,11 +193,15 @@ export class Dashboard {
     return null;
   }
 
-  /** Create the first account (setup code) or one from an invite; signs in. */
+  /**
+   * Create an account and sign in: the first one (setup code), one from an
+   * invite link, or an open sign-up from the sign-in page.
+   */
   async createAccount(a: NewAccount, setupCode: string | null): Promise<string | null> {
     try {
       if (setupCode !== null) await api.setup(setupCode, a);
-      else await api.signup(this.route.page === "invite" ? this.route.token : "", a);
+      else if (this.route.page === "invite") await api.signup(this.route.token, a);
+      else await api.register(a);
     } catch (e) {
       // The only 401 here is a wrong setup code.
       return e instanceof UnauthorizedError ? "Wrong setup code: copy it from the server log." : (e as Error).message;

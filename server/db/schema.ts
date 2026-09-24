@@ -108,6 +108,10 @@ function migrate(db: DB): void {
       created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_viewer_sessions_user ON viewer_sessions(user_id);
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS invites (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       token_hash TEXT NOT NULL UNIQUE,

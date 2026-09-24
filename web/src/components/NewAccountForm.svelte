@@ -1,9 +1,11 @@
 <script lang="ts">
   import type { NewAccount } from "../lib/api.ts";
 
-  let { title, intro, withSetupCode = false, submitLabel, oncreate }: {
-    title: string;
+  let { title = "", intro, withSetupCode = false, framed = true, submitLabel, oncreate }: {
+    title?: string;
     intro: string;
+    /** false inside another card (the sign-in page tabs). */
+    framed?: boolean;
     /** First account: also ask for the one-time code from the server log. */
     withSetupCode?: boolean;
     submitLabel: string;
@@ -33,8 +35,8 @@
   }
 </script>
 
-<form onsubmit={submit}>
-  <h2>{title}</h2>
+<form onsubmit={submit} class:framed>
+  {#if title}<h2>{title}</h2>{/if}
   <p class="muted">{intro}</p>
   {#if withSetupCode}
     <label>Setup code
@@ -59,7 +61,8 @@
 </form>
 
 <style>
-  form { max-width: 420px; margin: 24px auto 0; border: 1px solid var(--line); border-radius: var(--radius); padding: 20px 22px 22px; display: grid; gap: 12px; }
+  form { display: grid; gap: 12px; }
+  form.framed { max-width: 420px; margin: 24px auto 0; border: 1px solid var(--line); border-radius: var(--radius); padding: 20px 22px 22px; }
   h2 { font-size: 16px; font-weight: 600; }
   label { display: grid; gap: 5px; font-size: 12px; color: var(--muted); }
   .opt { color: var(--faint); }

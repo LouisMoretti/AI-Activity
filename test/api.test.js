@@ -246,7 +246,7 @@ describe("locked server (DASHBOARD_PASSWORD bootstraps an admin account)", () =>
     assert.equal((await req(srv.base, "POST", "/api/devices", { body: { name: "x" } })).status, 401);
     assert.equal((await req(srv.base, "POST", "/api/ingest", { body: event(), key: "ak_nope" })).status, 401);
     const st = (await req(srv.base, "GET", "/api/auth/status")).json;
-    assert.deepEqual(st, { authenticated: false, user: null, setup_required: false });
+    assert.deepEqual(st, { authenticated: false, user: null, setup_required: false, signup_open: true });
   });
 
   test("login / logout cycle", async () => {
@@ -299,7 +299,7 @@ describe("accounts", () => {
     const srv = await startServer({ autoLogin: false });
     try {
       assert.deepEqual((await req(srv.base, "GET", "/api/auth/status")).json,
-        { authenticated: false, user: null, setup_required: true });
+        { authenticated: false, user: null, setup_required: true, signup_open: true });
       for (const p of ["/api/stats", "/api/summary", "/api/profiles", "/api/devices"]) {
         assert.equal((await req(srv.base, "GET", p)).status, 401, p);
       }
@@ -314,7 +314,7 @@ describe("accounts", () => {
       const cookie = await login(srv.base, "louis", "correct horse");
       const st = (await req(srv.base, "GET", "/api/auth/status", { cookie })).json;
       assert.deepEqual(st, {
-        authenticated: true, setup_required: false,
+        authenticated: true, setup_required: false, signup_open: true,
         user: { id: 1, username: "louis", display_name: "Louis", is_admin: true },
       });
       assert.equal((await req(srv.base, "GET", "/api/stats?days=730", { cookie })).json.events, 1);
@@ -549,6 +549,96 @@ describe("creating accounts from the site", () => {
       const other = (await req(srv.base, "POST", "/api/users/invites")).json;
       assert.equal((await req(srv.base, "POST", `/api/users/invites/${other.id}/revoke`)).status, 200);
       assert.equal((await signup({ invite: other.token, username: "yan", password: "yan-password" })).status, 404);
+    } finally {
+      await srv.stop();
+    }
+  });
+});
+
+describe("open sign-up and admin panel", () => {
+  const register = (base, body, ip = "198.51.100.1") => fetch(`${base}/api/auth/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": ip },
+    body: JSON.stringify(body),
+  });
+
+  test("anyone creates an account from the sign-in page while sign-up is open", async () => {
+    const srv = await startServer();
+    try {
+      assert.equal((await register(srv.base, { username: "neo", password: "short" })).status, 400);
+      assert.equal((await register(srv.base, { username: "admin", password: "long-enough" })).status, 409);
+      const r = await register(srv.base, { username: "neo", password: "neo-password", display_name: "Neo" });
+      assert.equal(r.status, 200);
+      const cookie = r.headers.get("set-cookie").split(";")[0];
+      const me = (await req(srv.base, "GET", "/api/auth/status", { cookie })).json.user;
+      assert.deepEqual(me, { id: me.id, username: "neo", display_name: "Neo", is_admin: false });
+      assert.equal((await req(srv.base, "GET", "/api/admin/overview", { cookie })).status, 403);
+      assert.equal((await req(srv.base, "POST", "/api/admin/settings", { cookie, body: { signup_open: false } })).status, 403);
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  test("admins close sign-up; invite links keep working", async () => {
+    const srv = await startServer();
+    try {
+      assert.equal((await req(srv.base, "POST", "/api/admin/settings", { body: { signup_open: "no" } })).status, 400);
+      assert.deepEqual((await req(srv.base, "POST", "/api/admin/settings", { body: { signup_open: false } })).json,
+        { signup_open: false });
+      assert.equal((await req(srv.base, "GET", "/api/auth/status", { anon: true })).json.signup_open, false);
+      assert.equal((await register(srv.base, { username: "neo", password: "neo-password" })).status, 403);
+      const { token } = (await req(srv.base, "POST", "/api/users/invites")).json;
+      const viaInvite = await req(srv.base, "POST", "/api/auth/signup", {
+        anon: true, body: { invite: token, username: "neo", password: "neo-password" },
+      });
+      assert.equal(viaInvite.status, 200);
+      await req(srv.base, "POST", "/api/admin/settings", { body: { signup_open: true } });
+      assert.equal((await register(srv.base, { username: "trinity", password: "trinity-pass" })).status, 200);
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  test("one client cannot create accounts in bulk", async () => {
+    const srv = await startServer();
+    try {
+      // Concurrent requests cannot slip past the limit while passwords hash.
+      const burst = await Promise.all([0, 1, 2, 3, 4, 5, 6].map((i) =>
+        register(srv.base, { username: `race${i}`, password: "bulk-password" }, "203.0.113.50")));
+      assert.deepEqual(burst.map((r) => r.status).sort(), [200, 200, 200, 200, 200, 429, 429]);
+      const blocked = await register(srv.base, { username: "bulk5", password: "bulk-password" }, "203.0.113.50");
+      assert.equal(blocked.status, 429);
+      assert.ok(Number(blocked.headers.get("retry-after")) > 0);
+      assert.equal((await register(srv.base, { username: "other", password: "other-password" }, "203.0.113.51")).status, 200);
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  test("no open sign-up before the first account exists", async () => {
+    const srv = await startServer({ autoLogin: false });
+    try {
+      assert.equal((await register(srv.base, { username: "neo", password: "neo-password" })).status, 409);
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  test("the overview counts the whole server", async () => {
+    const srv = await startServer();
+    try {
+      const { key } = await newDevice(srv.base);
+      await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: "o1" }) });
+      await register(srv.base, { username: "neo", password: "neo-password" });
+      await req(srv.base, "POST", "/api/users/invites");
+      const o = (await req(srv.base, "GET", "/api/admin/overview")).json;
+      assert.equal(o.accounts, 2);
+      assert.equal(o.disabled_accounts, 0);
+      assert.equal(o.devices, 1);
+      assert.equal(o.events, 1);
+      assert.equal(o.sessions, 1);
+      assert.equal(o.pending_invites, 1);
+      assert.ok(o.last_event_at > 0);
     } finally {
       await srv.stop();
     }

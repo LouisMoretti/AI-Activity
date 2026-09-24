@@ -1,12 +1,13 @@
 <script lang="ts">
   import AccountMenu from "./components/AccountMenu.svelte";
+  import AdminOverview from "./components/AdminOverview.svelte";
+  import AuthPanel from "./components/AuthPanel.svelte";
   import ActivityChart from "./components/ActivityChart.svelte";
   import ClaudeCodeCard from "./components/ClaudeCodeCard.svelte";
   import CodexCard from "./components/CodexCard.svelte";
   import Conversations from "./components/Conversations.svelte";
   import DevicesPanel from "./components/DevicesPanel.svelte";
   import InviteSignup from "./components/InviteSignup.svelte";
-  import LoginBar from "./components/LoginBar.svelte";
   import Logo from "./components/Logo.svelte";
   import NewAccountForm from "./components/NewAccountForm.svelte";
   import OpenCodeCard from "./components/OpenCodeCard.svelte";
@@ -25,6 +26,7 @@
   $effect(() => {
     const page = dash.route.page;
     document.title = page === "settings" ? "Settings · AI Activity"
+      : page === "admin" ? "Admin · AI Activity"
       : page === "profile" && dash.shown ? `${dash.shown.display_name} · AI Activity${dash.vm?.demo ? " · Demo" : ""}`
         : "AI Activity";
   });
@@ -70,7 +72,7 @@
       </p>
     {/if}
   {:else if dash.status === "signed-out"}
-    <LoginBar onlogin={(u, p) => dash.login(u, p)} />
+    <AuthPanel signupOpen={dash.signupOpen} onlogin={(u, p) => dash.login(u, p)} oncreate={(a, c) => dash.createAccount(a, c)} />
   {:else if dash.status === "setup"}
     <NewAccountForm withSetupCode title="Create the first account"
       intro="No account exists yet. The setup code is printed in the server log. This account becomes the admin and keeps the data collected so far."
@@ -104,10 +106,22 @@
       <DevicesPanel />
     </Section>
 
+  {/if}
+
+  {#if dash.route.page === "admin" && dash.account && dash.status === "ready"}
+    <div class="settings-head">
+      <h2>Admin</h2>
+      <button type="button" onclick={() => dash.go("/")}>Back to your profile</button>
+    </div>
     {#if dash.account.is_admin}
+      <Section title="Overview" subtitle="The whole server, every account">
+        <AdminOverview />
+      </Section>
       <Section title="Users" subtitle="Profile pages are public; devices and settings stay private">
         <UsersPanel selfId={dash.account.id} />
       </Section>
+    {:else}
+      <p class="gate">This page is for admins.</p>
     {/if}
   {/if}
 

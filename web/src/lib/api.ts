@@ -1,6 +1,6 @@
 // Typed client for the dashboard JSON API (same origin, cookie session).
 import type {
-  Account, ActivityResponse, AdminUser, AuthStatus, Invite, Profile, ProfilesResponse, Device, QuotasResponse,
+  Account, ActivityResponse, AdminOverview, AdminSettings, AdminUser, AuthStatus, Invite, Profile, ProfilesResponse, Device, QuotasResponse,
   SessionsResponse, StatsResponse, SummaryResponse,
 } from "../../../shared/types.ts";
 
@@ -52,6 +52,11 @@ export const api = {
   setup: (setup_code: string, a: NewAccount) => post<{ ok: true }>("/api/auth/setup", { setup_code, ...a }),
   inviteStatus: (token: string) =>
     get<{ valid: boolean; expires_at: number | null }>(`/api/auth/invite/${encodeURIComponent(token)}`),
+  /** Open sign-up from the sign-in page (when an admin allows it); signs in. */
+  register: (a: NewAccount) => post<{ ok: true }>("/api/auth/register", a),
+  adminOverview: () => get<AdminOverview>("/api/admin/overview"),
+  adminSettings: () => get<AdminSettings>("/api/admin/settings"),
+  setSignupOpen: (signup_open: boolean) => post<AdminSettings>("/api/admin/settings", { signup_open }),
   /** Account from an invite link; signs in. */
   signup: (invite: string, a: NewAccount) => post<{ ok: true }>("/api/auth/signup", { invite, ...a }),
   invites: () => get<{ invites: Invite[] }>("/api/users/invites"),

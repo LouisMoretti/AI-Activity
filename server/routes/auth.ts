@@ -1,7 +1,8 @@
 import { Hono, type Context } from "hono";
 import type { AuthStatus } from "../../shared/types.ts";
 import {
-  accountsExist, createFirstAccount, findUsableInvite, findUserByUsername, hashKey, redeemInvite,
+  accountsExist, createAccount, createFirstAccount, findUsableInvite, findUserByUsername, hashKey, redeemInvite,
+  signupOpen,
 } from "../db/queries.ts";
 import type { DB } from "../db/schema.ts";
 import { readJson } from "../lib/http.ts";
@@ -9,7 +10,11 @@ import {
   hashPassword, PASSWORD_MAX, passwordProblem, usernameProblem, verifyPassword,
 } from "../lib/passwords.ts";
 import { setupCodeMatches } from "../lib/setup.ts";
-import type { ViewerAuth } from "../lib/viewer-auth.ts";
+import { clientId, type ViewerAuth } from "../lib/viewer-auth.ts";
+
+/** Open sign-up: accounts one client may create per window (spam guard). */
+const SIGNUPS_PER_CLIENT = 5;
+const SIGNUP_WINDOW_MS = 60 * 60 * 1000;
 
 const text = (v: unknown) => (typeof v === "string" ? v.trim() : "");
 const displayName = (v: unknown) => text(v).slice(0, 60) || null;
@@ -36,6 +41,9 @@ export function authRoutes(db: DB, auth: ViewerAuth, setupCode: string | null) {
     return c.json({ error: "too many failed attempts, try again later" }, 429);
   };
 
+  let signups = new Map<string, number>(); // client → accounts created in window
+  let signupWindow = Date.now();
+
   return new Hono()
     .get("/status", (c) => {
       const who = auth.resolve(c);
@@ -43,7 +51,44 @@ export function authRoutes(db: DB, auth: ViewerAuth, setupCode: string | null) {
         authenticated: Boolean(who),
         user: who?.account ?? null,
         setup_required: !accountsExist(db),
+        signup_open: signupOpen(db),
       });
+    })
+    // Open sign-up from the sign-in page, while an admin allows it.
+    .post("/register", async (c) => {
+      const body = await readJson(c);
+      const limited = throttle(c);
+      if (limited) return limited;
+      if (!accountsExist(db)) return c.json({ error: "create the first account with the setup code" }, 409);
+      if (!signupOpen(db)) return c.json({ error: "sign-up is closed: ask an admin for an invite link" }, 403);
+      if (Date.now() - signupWindow > SIGNUP_WINDOW_MS) {
+        signups = new Map();
+        signupWindow = Date.now();
+      }
+      const client = clientId(c);
+      if ((signups.get(client) ?? 0) >= SIGNUPS_PER_CLIENT) {
+        c.header("retry-after", String(Math.ceil((signupWindow + SIGNUP_WINDOW_MS - Date.now()) / 1000)));
+        return c.json({ error: "too many accounts created from here, try again later" }, 429);
+      }
+      const fields = newAccountFields(body);
+      if (typeof fields === "string") return c.json({ error: fields }, 400);
+      if (findUserByUsername(db, fields.username)) return c.json({ error: "that username is taken" }, 409);
+      // Reserve the slot before hashing: concurrent requests must not all
+      // pass the check while the password hashes.
+      const window = signups;
+      window.set(client, (window.get(client) ?? 0) + 1);
+      const release = () => window.set(client, Math.max(0, (window.get(client) ?? 1) - 1));
+      let id: number;
+      try {
+        const password_hash = await hashPassword(fields.password);
+        id = createAccount(db, { username: fields.username, display_name: fields.display_name, password_hash, is_admin: false });
+      } catch (err) {
+        release();
+        if (isTaken(err)) return c.json({ error: "that username is taken" }, 409);
+        throw err;
+      }
+      auth.login(c, id);
+      return c.json({ ok: true });
     })
     .post("/login", async (c) => {
       const body = await readJson(c);

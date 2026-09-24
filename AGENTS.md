@@ -19,12 +19,15 @@ subscription tracking (removed on purpose). Palette: the
 original dark theme; type: Geist, with Geist Mono only for ids and model
 names. Quota bars carry a mark for how far into the window we are.
 
-**Pages:** `/` is the sign-in screen (or first-account setup); once signed
+**Pages:** `/` has two tabs, Sign in and Create account (open sign-up, which
+admins can close; or first-account setup while none exists); once signed
 in it redirects to `/u/<you>`, so the address bar is the shareable link.
 `/u/<username>` is **public and read-only**, no account needed: activity,
 stats, tools/quotas and conversations ("Copy link" in the profile header).
-Clicking the avatar opens Your profile / Settings / Sign out; `/settings`
-(signed in only) holds Account, Devices and Users (admins). The demo
+Clicking the avatar opens Your profile / Settings / Admin panel (admins) /
+Sign out. `/settings` (signed in) holds Account and Devices; `/admin`
+(admins) holds the server overview, the open sign-up switch, users and
+invite links. The demo
 (`?demo=1`) needs a sign-in and only replaces your own page.
 
 **Hard rule:** the old demo dataset was fictional and deterministic. It is only
@@ -44,9 +47,11 @@ Viewer accounts. Nothing is viewable until the first one exists; that first
 account is an admin and owns the data collected so far (collectors keep
 posting with `gen-key` keys meanwhile). Create it in the browser with the
 one-time **setup code** the server prints at start (new on every start, only
-while no account exists), or from the CLI. Admins then invite others from
-the Users section: a single-use link valid 7 days, where the invited person
-picks their own username and password. There is no open sign-up.
+while no account exists), or from the CLI. After that, anyone can create an
+account from the sign-in page while open sign-up is on (default; 5 accounts
+per client per hour), and admins can switch it off in `/admin`. Invite links
+(single use, 7 days, the invited person picks their own username and
+password) work either way.
 
 ```bash
 npm run user -- add louis --name "Louis"   # password prompt (or piped stdin)
@@ -122,10 +127,11 @@ web/
   src/lib/series.ts       pure helpers: dense UTC series, streaks, calendar grid
   src/lib/dashboard.svelte.ts  state: provider, auth status, 15 s refresh
   src/components/         StatsBar, ActivityChart (Heatmap, TrendChart),
-                          QuotaCard, SessionList, LoginBar,
+                          QuotaCard, SessionList,
                           DevicesPanel, AccountMenu,
                           ProfilePanel, ProfileSwitcher, ProfileHeader, UsersPanel,
-                          NewAccountForm, InviteSignup, …
+                          NewAccountForm, InviteSignup, AuthPanel,
+                          AdminOverview, …
   src/styles/tokens.css   design tokens — components only use these variables
 public/             legacy UI, removed at the switch-over
 ```
@@ -277,6 +283,11 @@ account exists):
 - `POST /api/auth/setup {setup_code, username, password, display_name}`:
   first account only (`409` once one exists), throttled like a login; the
   code ignores case, spaces and dashes. Signs in.
+- `POST /api/auth/register {username, password, display_name}`: open
+  sign-up, non-admin account, signs in. `403` when an admin closed sign-up,
+  `409` before the first account exists or if the username is taken, `429`
+  after 5 accounts from one client in an hour. `GET /api/auth/status` also
+  returns `signup_open`.
 - `GET /api/auth/invite/:token` → `{valid, expires_at}`;
   `POST /api/auth/signup {invite, username, password, display_name}` creates
   a non-admin account and uses the invite up atomically (`404` if invalid,
@@ -305,6 +316,9 @@ account exists):
   over), `POST /api/users/:id/disable|enable`. A disabled account cannot sign
   in and its device keys are rejected at ingest; admins cannot disable
   themselves, so one enabled admin remains.
+- Admin panel (admin only): `GET /api/admin/overview` → server-wide counts
+  (accounts, disabled, live devices, events, sessions, last event, pending
+  invites); `GET|POST /api/admin/settings` `{signup_open: boolean}`.
 - Invites (admin only): `GET /api/users/invites` (pending only, never the
   token), `POST /api/users/invites` → `{id, token, expires_at}` (token shown
   once, stored hashed; the link is `/invite/<token>`),
@@ -332,8 +346,9 @@ account exists):
 7. `?demo=1` still shows labeled fictional data (after sign-in); normal view
    never does.
 8. `/` signed out: sign-in (or first-account) screen; signed in: redirect
-   to `/u/<you>`. `/settings` signed out: sign-in, then back to settings.
-   Invite links work once.
+   to `/u/<you>`. `/settings` and `/admin` signed out: sign-in, then back.
+   Invite links work once. With open sign-up off, Create account says so and
+   `POST /api/auth/register` answers `403`.
 9. `/u/<name>` opens without an account and shows usage only: no devices
    or account sections, for visitors and other accounts alike.
 
