@@ -295,6 +295,20 @@ After `npm start` works locally:
    shows the labeled fictional dataset.
 5. Revoke/replace device keys if a test key leaks; never put keys in URLs.
 
+Live review (edits show up instantly for the tester): keep the Node API on
+:3000 (collectors post there) and point the tunnel at the Vite dev server
+instead, which proxies `/api` to :3000 and pushes changes over HMR:
+
+```bash
+STATIC_DIR=web/dist npm run dev     # API on :3000, restarts on server/ edits
+npm run dev:web                     # UI on :5173 with HMR
+cloudflared tunnel --url http://localhost:5173
+```
+
+`web/vite.config.ts` allows `*.trycloudflare.com` hosts and limits what the
+dev server can read to `web/`, `shared/` and `node_modules/`, so `data/`
+(the SQLite DB) and `.env` are never served through the tunnel.
+
 ## 10. Roadmap (later, not now)
 
 - Codex connector (App Server `thread/tokenUsage/updated`,
