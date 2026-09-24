@@ -4,11 +4,11 @@
   "description": "Personal multi-user dashboard for real AI tool usage data (Claude Code first). Demo values are never presented as real measurements.",
   "type": "module",
   "scripts": {
-    "start": "node server/index.ts",
-    "dev": "node --watch server/index.ts",
+    "start": "node --env-file-if-exists=.env server/index.ts",
+    "dev": "node --env-file-if-exists=.env --watch server/index.ts",
     "dev:web": "vite --config web/vite.config.ts",
     "build": "vite build --config web/vite.config.ts",
-    "gen-key": "node scripts/gen-key.ts",
+    "gen-key": "node --env-file-if-exists=.env scripts/gen-key.ts",
     "typecheck": "tsc -p tsconfig.json && svelte-check --tsconfig web/tsconfig.json --fail-on-warnings",
     "test": "node --test test/*.test.js"
   },

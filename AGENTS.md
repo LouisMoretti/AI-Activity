@@ -26,7 +26,8 @@ as a real measurement.
 
 ```bash
 npm install
-cp .env.example .env        # set PORT, DB_PATH, DASHBOARD_PASSWORD
+cp .env.example .env        # set PORT, DB_PATH, DASHBOARD_PASSWORD (loaded by
+                            # npm start/dev/gen-key; real env vars win)
 npm start                   # http://localhost:3000
 ```
 
