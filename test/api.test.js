@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { startServer, req, newDevice, event } from "./helpers.js";
@@ -342,5 +343,20 @@ describe("summary, sessions and context (redesign APIs)", () => {
     assert.equal((await req(srv.base, "GET", "/api/billing")).json.estimated_available, false);
     await req(srv.base, "POST", "/api/ingest", { key, body: event({ cost_estimated_usd_delta: 0.02 }) });
     assert.equal((await req(srv.base, "GET", "/api/billing")).json.estimated_available, true);
+  });
+});
+
+describe("shutdown", () => {
+  test("SIGTERM closes the server and checkpoints the SQLite WAL", async () => {
+    const srv = await startServer();
+    try {
+      const { key } = await newDevice(srv.base);
+      await req(srv.base, "POST", "/api/ingest", { key, body: event() });
+      assert.ok(fs.existsSync(`${srv.dbPath}-wal`));
+      assert.equal(await srv.kill(), 0);
+      assert.ok(!fs.existsSync(`${srv.dbPath}-wal`));
+    } finally {
+      await srv.stop();
+    }
   });
 });

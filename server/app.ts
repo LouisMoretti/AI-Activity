@@ -47,8 +47,9 @@ export function createApp(db: DB, config: Config) {
 
   app.onError((err, c) => {
     if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
+    // Details stay in the server log; the public tunnel only sees a generic error.
     console.error(err);
-    return c.json({ error: String(err?.message || err) }, 500);
+    return c.json({ error: "internal server error" }, 500);
   });
 
   return app;
