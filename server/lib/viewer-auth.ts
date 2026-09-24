@@ -100,6 +100,9 @@ export function createViewerAuth(db: DB) {
       }
     },
     login(c: Context, userId: number) {
+      // Signing in again from the same browser replaces its previous session.
+      const previous = cookieToken(c);
+      if (previous) deleteViewerSession(db, tokenHash(previous));
       const token = randomBytes(32).toString("base64url");
       insertViewerSession(db, tokenHash(token), userId, nowSec() + SESSION_SEC);
       setCookie(c, COOKIE, token, {

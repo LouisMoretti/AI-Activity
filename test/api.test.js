@@ -387,6 +387,20 @@ describe("accounts", () => {
     }
   });
 
+  test("signing in again replaces the browser's previous session", async () => {
+    const srv = await startServer({ password: "admin-pass" });
+    try {
+      const first = await login(srv.base, "admin", "admin-pass");
+      const again = await req(srv.base, "POST", "/api/auth/login", {
+        body: { username: "admin", password: "admin-pass" }, cookie: first,
+      });
+      assert.equal(again.status, 200);
+      assert.equal((await req(srv.base, "GET", "/api/stats", { cookie: first })).status, 401);
+    } finally {
+      await srv.stop();
+    }
+  });
+
   test("sessions survive a server restart", async () => {
     const dir = fs.mkdtempSync(`${os.tmpdir()}/ai-usage-restart-`);
     const env = { DB_PATH: `${dir}/t.db` };
