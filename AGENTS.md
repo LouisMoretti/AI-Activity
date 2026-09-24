@@ -33,9 +33,20 @@ npm run gen-key -- "laptop-louis"
 
 Health check: `GET /api/health` → `{"ok":true}`.
 
+Web client (Svelte 5 + Vite, in `web/`):
+
+```bash
+npm run dev                 # API server on :3000 (watch mode)
+npm run dev:web             # UI with HMR on :5173, proxies /api → :3000
+npm run build               # → web/dist
+STATIC_DIR=web/dist npm start   # serve the built UI (default is still public/
+                                # until the redesign switch-over)
+```
+
 Tests: `npm test` boots the real server on a temp DB and exercises the HTTP
-API black-box (`test/api.test.js`), so they must stay green across refactors.
-Types: `npm run typecheck`. Node >= 22.18 runs the TypeScript server directly
+API black-box (`test/api.test.js`), so they must stay green across refactors;
+`test/series.test.js` covers the pure chart helpers of the web client.
+Types: `npm run typecheck` (tsc for server, svelte-check for web). Node >= 22.18 runs the TypeScript server directly
 (type stripping, no build step), so only erasable TS syntax is allowed (no
 `enum`, no parameter properties) and relative imports keep their `.ts`
 extension.
@@ -49,7 +60,7 @@ Claude Code statusLine (bash POST, on the user's device, NOT this repo)
 Node server (Hono + TypeScript, server/) + SQLite (better-sqlite3)
    │  serves the static web root (STATIC_DIR, default public/) + JSON APIs
    ▼
-Browser dashboard (public/index.html, app.js, style.css)
+Browser dashboard (web/: Svelte 5 + TypeScript, built by Vite)
 ```
 
 ```
@@ -64,7 +75,21 @@ server/
   routes/           auth, ingest, usage (stats/activity/quotas/sessions),
                     billing, devices
 shared/types.ts     API response types shared with the web client
+web/
+  src/lib/api.ts          typed fetch client (401 → UnauthorizedError)
+  src/lib/view-model.ts   what components render (DashboardVM)
+  src/lib/live.ts         API responses → DashboardVM ("Unavailable", never guessed)
+  src/lib/demo.ts         FICTIONAL ?demo=1 dataset → DashboardVM (always labeled)
+  src/lib/series.ts       pure helpers: dense UTC series, streaks, calendar grid
+  src/lib/dashboard.svelte.ts  state: provider, auth status, 15 s refresh
+  src/components/         StatsBar, ActivityChart (Heatmap, TrendChart),
+                          QuotaCard, SessionList, BillingCards, LoginBar, …
+  src/styles/tokens.css   design tokens — components only use these variables
+public/             legacy UI, removed at the switch-over
 ```
+
+Components never branch on live vs demo: both sources map into the same
+`DashboardVM`, so the "demo is always labeled" rule lives in `demo.ts` only.
 
 - The server derives the user from the ingestion key (`devices.key_hash`).
   Schema already has `users` / `devices.user_id`; viewer login is a shared
