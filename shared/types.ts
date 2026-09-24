@@ -129,9 +129,46 @@ export interface Device {
   created_at: number;
 }
 
+export interface Account {
+  id: number;
+  username: string;
+  display_name: string;
+  is_admin: boolean;
+}
+
+/** An account as listed for admins. */
+export interface AdminUser extends Account {
+  disabled: boolean;
+  created_at: number;
+  /** Devices with a live (non-revoked) key. */
+  devices: number;
+}
+
 export interface AuthStatus {
-  locked: boolean;
   authenticated: boolean;
+  /** The signed-in account; null when signed out. */
+  user: Account | null;
+  /** No account exists yet: the first one is created on the server (CLI). */
+  setup_required: boolean;
+}
+
+/** A pending invite link, as listed for admins (the token is never listed). */
+export interface Invite {
+  id: number;
+  created_at: number;
+  expires_at: number;
+  /** Username of the admin who created it. */
+  created_by: string;
+}
+
+/** A profile page anyone signed in can open (read-only usage). */
+export interface Profile {
+  username: string;
+  display_name: string;
+}
+
+export interface ProfilesResponse {
+  profiles: Profile[];
 }
 
 export interface IngestResult {

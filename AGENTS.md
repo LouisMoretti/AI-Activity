@@ -18,23 +18,48 @@ components), recent conversations (10 + "Show more"), cost. Palette: the
 original dark theme; type: Geist, with Geist Mono only for ids and model
 names. Quota bars carry a mark for how far into the window we are.
 
+**Pages:** `/` is the sign-in screen (or first-account setup); once signed
+in it redirects to `/u/<you>`, so the address bar is the shareable link.
+`/u/<username>` is **public and read-only**, no account needed: activity,
+stats, tools/quotas and conversations ("Copy link" in the profile header).
+Your own page adds the Cost section, visible only to you. Clicking the
+avatar opens Your profile / Settings / Sign out; `/settings` (signed in
+only) holds Account, Subscriptions, Devices and Users (admins). The demo
+(`?demo=1`) needs a sign-in and only replaces your own page.
+
 **Hard rule:** the old demo dataset was fictional and deterministic. It is only
-visible via `?demo=1`, always labeled "Demonstration data", and never presented
-as a real measurement.
+visible via `?demo=1` (once signed in), always labeled "Demonstration data",
+and never presented as a real measurement.
 
 ## 2. Quick start
 
 ```bash
 npm install
-cp .env.example .env        # set PORT, DB_PATH, DASHBOARD_PASSWORD (loaded by
-                            # npm start/dev/gen-key; real env vars win)
+cp .env.example .env        # set PORT, DB_PATH (loaded by npm start/dev/
+                            # gen-key/user; real env vars win)
 npm start                   # http://localhost:3000
 ```
 
-Create a device ingestion key (printed once, stored hashed):
+Viewer accounts. Nothing is viewable until the first one exists; that first
+account is an admin and owns the data collected so far (collectors keep
+posting with `gen-key` keys meanwhile). Create it in the browser with the
+one-time **setup code** the server prints at start (new on every start, only
+while no account exists), or from the CLI. Admins then invite others from
+the Users section: a single-use link valid 7 days, where the invited person
+picks their own username and password. There is no open sign-up.
 
 ```bash
-npm run gen-key -- "laptop-louis"
+npm run user -- add louis --name "Louis"   # password prompt (or piped stdin)
+npm run user -- add alice [--admin]
+npm run user -- passwd louis               # also signs that user out
+npm run user -- list
+```
+
+Create a device ingestion key (printed once, stored hashed), for the first
+account unless `--user` says otherwise:
+
+```bash
+npm run gen-key -- "laptop-louis" [--user alice]
 ```
 
 Health check: `GET /api/health` → `{"ok":true}`.
@@ -77,13 +102,17 @@ Browser dashboard (web/: Svelte 5 + TypeScript, built by Vite)
 server/
   index.ts          boot: config, DB, listen
   app.ts            Hono app: /api mount, viewer-auth gate, static + SPA fallback
-  config.ts         env → Config (PORT, DB_PATH, DASHBOARD_PASSWORD, STATIC_DIR)
+  config.ts         env → Config (PORT, DB_PATH, DASHBOARD_USER/PASSWORD, STATIC_DIR)
   db/schema.ts      open + migrate
   db/queries.ts     every SQL statement lives here
   lib/ingest.ts     payload normalization (flat + raw statusLine shapes)
-  lib/viewer-auth.ts, lib/http.ts
+  lib/viewer-auth.ts  viewer sessions + login throttling
+  lib/passwords.ts    scrypt hashing, username/password rules
+  lib/accounts.ts     DASHBOARD_PASSWORD → first account migration
+  lib/setup.ts        one-time setup code for the first account
+  lib/http.ts
   routes/           auth, ingest, usage (stats/activity/quotas/sessions),
-                    billing, devices
+                    billing, devices, account (profile + admin users)
 shared/types.ts     API response types shared with the web client
 web/
   src/lib/api.ts          typed fetch client (401 → UnauthorizedError)
@@ -94,7 +123,9 @@ web/
   src/lib/dashboard.svelte.ts  state: provider, auth status, 15 s refresh
   src/components/         StatsBar, ActivityChart (Heatmap, TrendChart),
                           QuotaCard, SessionList, BillingCards, LoginBar,
-                          DevicesPanel, SubscriptionForm, …
+                          DevicesPanel, SubscriptionForm, AccountMenu,
+                          ProfilePanel, ProfileSwitcher, ProfileHeader, UsersPanel,
+                          NewAccountForm, InviteSignup, …
   src/styles/tokens.css   design tokens — components only use these variables
 public/             legacy UI, removed at the switch-over
 ```
@@ -102,14 +133,24 @@ public/             legacy UI, removed at the switch-over
 Components never branch on live vs demo: both sources map into the same
 `DashboardVM`, so the "demo is always labeled" rule lives in `demo.ts` only.
 
-- The server derives the user from the ingestion key (`devices.key_hash`).
-  Schema already has `users` / `devices.user_id`; viewer login is a shared
-  `DASHBOARD_PASSWORD` for the testing phase (multi-user login comes later).
+- The server derives the user from the ingestion key (`devices.key_hash`);
+  viewers are users with a username + scrypt password hash, and every viewer
+  API is scoped to the signed-in user (`c.get("userId")`, set by
+  `viewer-auth.ts`). Sessions live in `viewer_sessions` (token stored as a
+  SHA-256 hash), so they survive restarts.
+- Migration from the shared-password phase: if `DASHBOARD_PASSWORD` is set
+  and no account exists, boot creates an admin account named
+  `DASHBOARD_USER` (default `admin`) with that password. After that the
+  variable is ignored.
 - The local collector is just a bash `POST` from the Claude Code statusLine.
   This repo only provides the endpoint plus the documented contract below.
 - Never transmit prompts, transcripts, or provider keys — metrics only.
 
 ## 4. Data model (SQLite, `data/dashboard.db`)
+
+- `users` — viewer accounts (`username` unique, case-insensitive;
+  `password_hash`, `is_admin`, `disabled`). Every other table carries
+  `user_id`. `viewer_sessions` holds hashed session tokens with expiry.
 
 - `usage_events` — one row per **incremental** consumption event: tokens
   consumed since the last event, model, session/task id, device, date.
@@ -232,14 +273,48 @@ echo "[$?] claude"   # visible status line stays minimal
 
 ## 6. Viewer + device APIs
 
-Viewer (cookie session after `POST /api/auth/login {password}`; open if no
-`DASHBOARD_PASSWORD` is set):
+Viewer (cookie session after `POST /api/auth/login {username, password}`;
+every viewer API answers `401` without one, including before the first
+account exists):
 
-- `GET /api/auth/status`, `POST /api/auth/logout`
+- `GET /api/auth/status` → `{authenticated, user, setup_required}` (`user` is
+  `{id, username, display_name, is_admin}` or null; `setup_required` while no
+  account exists), `POST /api/auth/logout`
+- `POST /api/auth/setup {setup_code, username, password, display_name}`:
+  first account only (`409` once one exists), throttled like a login; the
+  code ignores case, spaces and dashes. Signs in.
+- `GET /api/auth/invite/:token` → `{valid, expires_at}`;
+  `POST /api/auth/signup {invite, username, password, display_name}` creates
+  a non-admin account and uses the invite up atomically (`404` if invalid,
+  used, revoked or expired; `409` if the username is taken, invite kept).
+  Signs in.
+- `GET /api/profiles` → enabled accounts `{username, display_name}`
+  (signed in only, so visitors cannot list accounts).
+- Public profile pages, **no session needed**: `GET /api/u/:username` →
+  `{username, display_name}`, and `/api/u/:username/stats|activity|quotas|summary|sessions`
+  (same shapes as the viewer's own routes; `404` if unknown or disabled).
+  Nothing private has a public route: billing, devices, account and users
+  always need a session and only ever act on the signed-in user.
+- Unknown usernames and wrong passwords get the same `401` and the same
+  hashing cost.
 - Login is throttled: 10 failures per client (`CF-Connecting-IP` behind the
   tunnel) or 50 in total per 15 min → `429` with `Retry-After` (the global
   cap locks everyone out, owner included, until the window ends). The session
   cookie is `Secure` when the request is HTTPS (incl. `X-Forwarded-Proto`).
+- `POST /api/account {display_name}` (empty → falls back to the username),
+  `POST /api/account/password {current_password, new_password}` (throttled
+  like a login; signs out the user's other sessions).
+- Admin only (`403` otherwise): `GET /api/users`, `POST /api/users
+  {username, password, display_name, is_admin}`, `POST /api/users/:id/password
+  {password}` (signs that user out; not for the admin's own account, which
+  goes through `/api/account/password` so a stolen session cannot take it
+  over), `POST /api/users/:id/disable|enable`. A disabled account cannot sign
+  in and its device keys are rejected at ingest; admins cannot disable
+  themselves, so one enabled admin remains.
+- Invites (admin only): `GET /api/users/invites` (pending only, never the
+  token), `POST /api/users/invites` → `{id, token, expires_at}` (token shown
+  once, stored hashed; the link is `/invite/<token>`),
+  `POST /api/users/invites/:id/revoke`.
 - `GET /api/stats?days=30&tool=claude-code`
 - `GET /api/activity?days=364&tool=...` (daily buckets for the heatmap)
 - `GET /api/quotas` (latest snapshot per account + limit type)
@@ -275,7 +350,13 @@ Viewer (cookie session after `POST /api/auth/login {password}`; open if no
    ordered correctly by event time.
 5. Payload without `rate_limits` → quota card shows "Unavailable".
 6. Payload after `resets_at` passed → new snapshot replaces the old window.
-7. `?demo=1` still shows labeled fictional data; normal view never does.
+7. `?demo=1` still shows labeled fictional data (after sign-in); normal view
+   never does.
+8. `/` signed out: sign-in (or first-account) screen; signed in: redirect
+   to `/u/<you>`. `/settings` signed out: sign-in, then back to settings.
+   Invite links work once.
+9. `/u/<name>` opens without an account and shows usage only: no cost,
+   devices or account sections, for visitors and other accounts alike.
 
 ```bash
 # manual test example
@@ -304,7 +385,8 @@ After `npm start` works locally:
    ```
 3. Copy the public URL (`https://<random>.trycloudflare.com`).
 4. **Send that link to the user for testing** and keep the tunnel running
-   while they test. Mention the viewer password (if set) and that `?demo=1`
+   while they test. Mention which account to sign in with (or the setup code
+   from the server log if none exists yet) and that `?demo=1`
    shows the labeled fictional dataset.
 5. Revoke/replace device keys if a test key leaks; never put keys in URLs.
 
@@ -330,4 +412,3 @@ dev server can read to `web/`, `shared/` and `node_modules/`, so `data/`
 - OpenCode connector (`opencode stats`, session/message DB, local server
   events; record provider + billing mode per session; no 5h/weekly quota
   unless the provider exposes one).
-- Per-user viewer login replacing the shared password.

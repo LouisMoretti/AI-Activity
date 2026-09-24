@@ -1,7 +1,10 @@
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { getConnInfo } from "@hono/node-server/conninfo";
 import type { Context, MiddlewareHandler } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import type { Account } from "../../shared/types.ts";
+import { deleteViewerSession, insertViewerSession, toAccount, viewerSessionUser } from "../db/queries.ts";
+import { nowSec, type DB } from "../db/schema.ts";
 
 const COOKIE = "dash_session";
 const SESSION_SEC = 30 * 86400;
@@ -11,7 +14,16 @@ const FAIL_WINDOW_MS = 15 * 60 * 1000;
 const FAILS_PER_CLIENT = 10;
 const FAILS_TOTAL = 50;
 
-const digest = (s: string) => createHash("sha256").update(s).digest();
+/** Hono env of every viewer route: who the request acts for. */
+export type ViewerEnv = {
+  Variables: {
+    /** The signed-in viewer. */
+    userId: number;
+    account: Account;
+  };
+};
+
+const tokenHash = (token: string) => createHash("sha256").update(token).digest("hex");
 
 /**
  * Behind the Cloudflare tunnel every request comes from localhost, and
@@ -32,12 +44,11 @@ const isHttps = (c: Context) =>
   new URL(c.req.url).protocol === "https:" || c.req.header("x-forwarded-proto") === "https";
 
 /**
- * Shared-password viewer sessions for the testing phase (in memory, reset
- * on restart). With no password configured, the dashboard is open.
+ * Per-user viewer sessions, stored hashed in SQLite so they survive a
+ * restart. Every viewer API needs one: with no account yet, nothing is
+ * readable until the first account is created (npm run user -- add).
  */
-export function createViewerAuth(password: string) {
-  const sessions = new Map<string, number>(); // token → expiry (ms)
-  const expected = digest(password);
+export function createViewerAuth(db: DB) {
   let fails = new Map<string, number>(); // client → failures in window
   let failsTotal = 0;
   let windowStart = Date.now();
@@ -49,31 +60,32 @@ export function createViewerAuth(password: string) {
     windowStart = Date.now();
   };
 
-  const isAuthed = (c: Context): boolean => {
-    if (!password) return true;
-    const token = getCookie(c, COOKIE);
-    const expires = token ? sessions.get(token) : undefined;
-    if (expires === undefined) return false;
-    if (expires > Date.now()) return true;
-    sessions.delete(token!);
-    return false;
+  const cookieToken = (c: Context) => getCookie(c, COOKIE) || null;
+
+  /** Who this request acts for, or null when it needs a login. */
+  const resolve = (c: Context): { userId: number; account: Account } | null => {
+    const token = cookieToken(c);
+    const user = token ? viewerSessionUser(db, tokenHash(token)) : null;
+    return user ? { userId: user.id, account: toAccount(user) } : null;
   };
 
   return {
-    locked: Boolean(password),
-    isAuthed,
+    resolve,
+    /** The current session's token hash (to keep it when signing out elsewhere). */
+    sessionHash: (c: Context) => {
+      const token = cookieToken(c);
+      return token ? tokenHash(token) : null;
+    },
     /** Seconds until another attempt is allowed, or 0 if not throttled. */
     throttled(c: Context): number {
       resetWindowIfDue();
       const blocked = (fails.get(clientId(c)) ?? 0) >= FAILS_PER_CLIENT || failsTotal >= FAILS_TOTAL;
       return blocked ? Math.ceil((windowStart + FAIL_WINDOW_MS - Date.now()) / 1000) : 0;
     },
-    /** Constant-time comparison; records failures for throttling. */
-    check(c: Context, candidate: string): boolean {
-      if (!password) return true;
+    /** Count a login attempt for throttling. */
+    record(c: Context, ok: boolean): void {
       resetWindowIfDue();
       const id = clientId(c);
-      const ok = timingSafeEqual(digest(candidate), expected);
       if (ok) {
         // That client was mistyping, not guessing: stop counting it globally.
         failsTotal = Math.max(0, failsTotal - (fails.get(id) ?? 0));
@@ -82,26 +94,29 @@ export function createViewerAuth(password: string) {
         fails.set(id, (fails.get(id) ?? 0) + 1);
         failsTotal += 1;
       }
-      return ok;
     },
-    login(c: Context) {
-      const now = Date.now();
-      for (const [t, exp] of sessions) if (exp <= now) sessions.delete(t);
-      const token = randomUUID();
-      sessions.set(token, now + SESSION_SEC * 1000);
+    login(c: Context, userId: number) {
+      // Signing in again from the same browser replaces its previous session.
+      const previous = cookieToken(c);
+      if (previous) deleteViewerSession(db, tokenHash(previous));
+      const token = randomBytes(32).toString("base64url");
+      insertViewerSession(db, tokenHash(token), userId, nowSec() + SESSION_SEC);
       setCookie(c, COOKIE, token, {
         httpOnly: true, path: "/", sameSite: "Lax", maxAge: SESSION_SEC, secure: isHttps(c),
       });
     },
     logout(c: Context) {
-      const token = getCookie(c, COOKIE);
-      if (token) sessions.delete(token);
+      const token = cookieToken(c);
+      if (token) deleteViewerSession(db, tokenHash(token));
       deleteCookie(c, COOKIE, { httpOnly: true, path: "/", sameSite: "Lax", secure: isHttps(c) });
     },
     require: (async (c, next) => {
-      if (!isAuthed(c)) return c.json({ error: "viewer login required" }, 401);
+      const who = resolve(c);
+      if (!who) return c.json({ error: "viewer login required" }, 401);
+      c.set("userId", who.userId);
+      c.set("account", who.account);
       await next();
-    }) as MiddlewareHandler,
+    }) as MiddlewareHandler<ViewerEnv>,
   };
 }
 

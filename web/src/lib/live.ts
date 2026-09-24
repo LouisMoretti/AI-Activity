@@ -15,7 +15,8 @@ export interface LiveData {
   activity: ActivityResponse;
   quotas: QuotasResponse;
   sessions: SessionsResponse;
-  billing: BillingResponse;
+  /** Only for the viewer's own profile: costs are private. */
+  billing: BillingResponse | null;
 }
 
 export const ACTIVITY_DAYS = 364;
@@ -115,6 +116,6 @@ export function liveDashboard(d: LiveData, provider: Provider): DashboardVM {
     codex: codexNotConnected,
     sessions,
     sessionsTotal: d.sessions.total,
-    cost: costCards(d.billing),
+    cost: d.billing ? costCards(d.billing) : null,
   };
 }

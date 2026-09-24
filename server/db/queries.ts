@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
-  ActivityDay, BillingRecord, Breakdown, BreakdownRow, Device, Quota, Session, Subscription,
+  Account, ActivityDay, AdminUser, Invite, Profile, BillingRecord, Breakdown, BreakdownRow, Device, Quota, Session, Subscription,
 } from "../../shared/types.ts";
 import { nowSec, type DB } from "./schema.ts";
 
@@ -58,10 +58,185 @@ export function getDefaultUserId(db: DB): number {
   return (db.prepare("SELECT id FROM users ORDER BY id LIMIT 1").get() as { id: number }).id;
 }
 
+export interface UserRow {
+  id: number;
+  username: string | null;
+  display_name: string | null;
+  password_hash: string | null;
+  is_admin: number;
+  disabled: number;
+}
+
+export function toAccount(u: UserRow): Account {
+  return {
+    id: u.id,
+    username: u.username ?? "",
+    display_name: u.display_name || u.username || "",
+    is_admin: Boolean(u.is_admin),
+  };
+}
+
+/** True once at least one account can log in; before that nothing is viewable (setup). */
+export function accountsExist(db: DB): boolean {
+  return Boolean(db.prepare("SELECT 1 FROM users WHERE password_hash IS NOT NULL LIMIT 1").get());
+}
+
+export function findUserByUsername(db: DB, username: string): UserRow | null {
+  return (db.prepare("SELECT * FROM users WHERE username = ? COLLATE NOCASE").get(username) as UserRow | undefined)
+    ?? null;
+}
+
+export function listUsers(db: DB): UserRow[] {
+  return db.prepare("SELECT * FROM users WHERE username IS NOT NULL ORDER BY id").all() as UserRow[];
+}
+
+/** Accounts that can sign in, i.e. whose profile page exists. */
+export function listProfiles(db: DB): Profile[] {
+  return (db
+    .prepare("SELECT * FROM users WHERE password_hash IS NOT NULL AND disabled = 0 ORDER BY username COLLATE NOCASE")
+    .all() as UserRow[]).map((u) => ({ username: u.username ?? "", display_name: toAccount(u).display_name }));
+}
+
+export function getUser(db: DB, id: number): UserRow | null {
+  return (db.prepare("SELECT * FROM users WHERE id = ? AND username IS NOT NULL").get(id) as UserRow | undefined) ?? null;
+}
+
+/** Accounts as the admin panel shows them, with their device count. */
+export function listAdminUsers(db: DB): AdminUser[] {
+  const rows = db
+    .prepare(
+      `SELECT u.*, (SELECT COUNT(*) FROM devices d WHERE d.user_id = u.id AND d.revoked = 0) AS devices
+       FROM users u WHERE u.username IS NOT NULL ORDER BY u.id`
+    )
+    .all() as (UserRow & { created_at: number; devices: number })[];
+  return rows.map((u) => ({ ...toAccount(u), disabled: Boolean(u.disabled), created_at: u.created_at, devices: u.devices }));
+}
+
+export function setDisplayName(db: DB, userId: number, name: string | null): void {
+  db.prepare("UPDATE users SET display_name = ? WHERE id = ?").run(name, userId);
+}
+
+export function setUserDisabled(db: DB, userId: number, disabled: boolean): void {
+  db.prepare("UPDATE users SET disabled = ? WHERE id = ?").run(disabled ? 1 : 0, userId);
+}
+
+/**
+ * Create a login account. The very first account claims the pre-accounts
+ * user (the one that already owns every device and event) instead of
+ * starting empty.
+ */
+export function createAccount(
+  db: DB,
+  a: { username: string; display_name: string | null; password_hash: string; is_admin: boolean }
+): number {
+  return db.transaction(() => {
+    const unclaimed = accountsExist(db) ? undefined : db
+      .prepare("SELECT id FROM users WHERE username IS NULL ORDER BY id LIMIT 1")
+      .get() as { id: number } | undefined;
+    if (unclaimed) {
+      db.prepare(
+        "UPDATE users SET username = ?, display_name = ?, password_hash = ?, is_admin = ? WHERE id = ?"
+      ).run(a.username, a.display_name, a.password_hash, a.is_admin ? 1 : 0, unclaimed.id);
+      return unclaimed.id;
+    }
+    const info = db.prepare(
+      "INSERT INTO users (username, display_name, password_hash, is_admin, created_at) VALUES (?, ?, ?, ?, ?)"
+    ).run(a.username, a.display_name, a.password_hash, a.is_admin ? 1 : 0, nowSec());
+    return Number(info.lastInsertRowid);
+  })();
+}
+
+/** Create the first account only; null when one already exists (lost race). */
+export function createFirstAccount(db: DB, a: Parameters<typeof createAccount>[1]): number | null {
+  return db.transaction(() => (accountsExist(db) ? null : createAccount(db, a)))();
+}
+
+export function createInvite(db: DB, tokenHash: string, createdBy: number, expiresAt: number): number {
+  return Number(db
+    .prepare("INSERT INTO invites (token_hash, created_by, created_at, expires_at) VALUES (?, ?, ?, ?)")
+    .run(tokenHash, createdBy, nowSec(), expiresAt).lastInsertRowid);
+}
+
+const USABLE_INVITE = "used_by IS NULL AND revoked = 0 AND expires_at > ?";
+
+/** Invites that can still be used, newest first. */
+export function listPendingInvites(db: DB): Invite[] {
+  return db
+    .prepare(
+      `SELECT i.id, i.created_at, i.expires_at, COALESCE(u.username, '') AS created_by
+       FROM invites i LEFT JOIN users u ON u.id = i.created_by
+       WHERE ${USABLE_INVITE}
+       ORDER BY i.id DESC`
+    )
+    .all(nowSec()) as Invite[];
+}
+
+export function revokeInvite(db: DB, id: number): boolean {
+  return db.prepare(`UPDATE invites SET revoked = 1 WHERE id = ? AND ${USABLE_INVITE}`).run(id, nowSec()).changes > 0;
+}
+
+export function findUsableInvite(db: DB, tokenHash: string): { id: number; expires_at: number } | null {
+  return (db
+    .prepare(`SELECT id, expires_at FROM invites WHERE token_hash = ? AND ${USABLE_INVITE}`)
+    .get(tokenHash, nowSec()) as { id: number; expires_at: number } | undefined) ?? null;
+}
+
+/**
+ * Create an account from an invite and use the invite up, atomically.
+ * Null when the invite is no longer usable. Throws SQLITE_CONSTRAINT_UNIQUE
+ * when the username is taken.
+ */
+export function redeemInvite(
+  db: DB, tokenHash: string, a: Omit<Parameters<typeof createAccount>[1], "is_admin">
+): number | null {
+  return db.transaction(() => {
+    const invite = findUsableInvite(db, tokenHash);
+    if (!invite) return null;
+    const id = createAccount(db, { ...a, is_admin: false });
+    db.prepare("UPDATE invites SET used_by = ?, used_at = ? WHERE id = ?").run(id, nowSec(), invite.id);
+    return id;
+  })();
+}
+
+export function setPasswordHash(db: DB, userId: number, hash: string): void {
+  db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(hash, userId);
+}
+
+export function insertViewerSession(db: DB, tokenHash: string, userId: number, expiresAt: number): void {
+  const now = nowSec();
+  db.prepare("DELETE FROM viewer_sessions WHERE expires_at <= ?").run(now);
+  db.prepare(
+    "INSERT INTO viewer_sessions (token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)"
+  ).run(tokenHash, userId, expiresAt, now);
+}
+
+/** The user behind a live session; expired sessions and disabled users get null. */
+export function viewerSessionUser(db: DB, tokenHash: string): UserRow | null {
+  return (db
+    .prepare(
+      `SELECT u.* FROM viewer_sessions s JOIN users u ON u.id = s.user_id
+       WHERE s.token_hash = ? AND s.expires_at > ? AND u.disabled = 0 AND u.password_hash IS NOT NULL`
+    )
+    .get(tokenHash, nowSec()) as UserRow | undefined) ?? null;
+}
+
+export function deleteViewerSession(db: DB, tokenHash: string): void {
+  db.prepare("DELETE FROM viewer_sessions WHERE token_hash = ?").run(tokenHash);
+}
+
+/** Sign a user out everywhere, optionally keeping one session. */
+export function deleteUserSessions(db: DB, userId: number, keepTokenHash: string | null = null): void {
+  db.prepare("DELETE FROM viewer_sessions WHERE user_id = ? AND token_hash IS NOT ?").run(userId, keepTokenHash);
+}
+
 export function findDeviceByKey(db: DB, rawKey: string | null): DeviceRow | null {
   if (!rawKey) return null;
+  // A disabled account's devices stop being accepted too.
   const row = db
-    .prepare("SELECT * FROM devices WHERE key_hash = ?")
+    .prepare(
+      `SELECT d.* FROM devices d JOIN users u ON u.id = d.user_id
+       WHERE d.key_hash = ? AND u.disabled = 0`
+    )
     .get(hashKey(rawKey)) as DeviceRow | undefined;
   if (!row || row.revoked) return null;
   return row;

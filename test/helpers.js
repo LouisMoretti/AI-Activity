@@ -9,6 +9,12 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const SERVER_ENTRY = path.join(ROOT, "server", "index.ts");
+const USER_CLI = path.join(ROOT, "scripts", "user.ts");
+const GEN_KEY = path.join(ROOT, "scripts", "gen-key.ts");
+
+/** Session cookie used by req() when the call passes none (see startServer). */
+const defaultCookies = new Map();
+export const TEST_ADMIN = { username: "admin", password: "test-admin-pass" };
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -21,7 +27,15 @@ function freePort() {
   });
 }
 
-export async function startServer({ password = "", env = {} } = {}) {
+/**
+ * Boot the server on a temp DB. Without a password, an admin account is
+ * created and signed in, and req() uses that session by default (pass
+ * `anon: true` for an anonymous call). `autoLogin: false` without a
+ * password boots with no account at all.
+ */
+export async function startServer({ password = "", env = {}, autoLogin = true } = {}) {
+  const auto = autoLogin && !password;
+  if (auto) password = TEST_ADMIN.password;
   const port = await freePort();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ai-usage-test-"));
   const dbPath = path.join(dir, "t.db");
@@ -30,7 +44,9 @@ export async function startServer({ password = "", env = {} } = {}) {
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stderr = "";
+  let stdout = "";
   proc.stderr.on("data", (c) => (stderr += c));
+  proc.stdout.on("data", (c) => (stdout += c));
   const base = `http://127.0.0.1:${port}`;
   for (let i = 0; i < 100; i++) {
     try {
@@ -39,9 +55,12 @@ export async function startServer({ password = "", env = {} } = {}) {
     if (proc.exitCode !== null) throw new Error(`server exited: ${stderr}`);
     await new Promise((r) => setTimeout(r, 50));
   }
+  if (auto) defaultCookies.set(base, await login(base, TEST_ADMIN.username, TEST_ADMIN.password));
   return {
     base,
     dbPath,
+    /** The one-time setup code the server printed, or null. */
+    setupCode: () => stdout.match(/Setup code: (\S+)/)?.[1] ?? null,
     /** Sends SIGTERM and resolves with the exit code once the server is gone. */
     async kill() {
       if (proc.exitCode !== null || proc.signalCode !== null) return proc.exitCode;
@@ -55,7 +74,8 @@ export async function startServer({ password = "", env = {} } = {}) {
   };
 }
 
-export async function req(base, method, p, { body, key, cookie, raw } = {}) {
+export async function req(base, method, p, { body, key, cookie, raw, anon = false } = {}) {
+  if (cookie === undefined && !anon) cookie = defaultCookies.get(base);
   const headers = {};
   if (body !== undefined || raw !== undefined) headers["content-type"] = "application/json";
   if (key) headers.authorization = `Bearer ${key}`;
@@ -90,4 +110,36 @@ export function event(over = {}) {
     occurred_at: Math.floor(Date.now() / 1000),
     ...over,
   };
+}
+
+/** Run `npm run user -- <args>` against a test DB, piping the password on stdin. */
+export function userCli(dbPath, args, password = "") {
+  return new Promise((resolve) => {
+    const proc = spawn(process.execPath, [USER_CLI, ...args], {
+      env: { ...process.env, DB_PATH: dbPath },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let out = "";
+    proc.stdout.on("data", (c) => (out += c));
+    proc.stderr.on("data", (c) => (out += c));
+    proc.stdin.end(`${password}\n`);
+    proc.on("exit", (code) => resolve({ code, out }));
+  });
+}
+
+/** Log in and return the session cookie ("name=value"). */
+export async function login(base, username, password) {
+  const r = await req(base, "POST", "/api/auth/login", { body: { username, password }, anon: true });
+  if (r.status !== 200) throw new Error(`login failed: ${r.status} ${r.text}`);
+  return r.headers.get("set-cookie").split(";")[0];
+}
+
+/** Run `npm run gen-key -- <name>` against a test DB; resolves with the key. */
+export function genKey(dbPath, name) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(process.execPath, [GEN_KEY, name], { env: { ...process.env, DB_PATH: dbPath } });
+    let out = "";
+    proc.stdout.on("data", (c) => (out += c));
+    proc.on("exit", (code) => (code === 0 ? resolve(out.match(/ak_[0-9a-f]+/)[0]) : reject(new Error(out))));
+  });
 }

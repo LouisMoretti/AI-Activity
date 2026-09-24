@@ -1,15 +1,27 @@
 import { serve } from "@hono/node-server";
 import { createApp } from "./app.ts";
 import { loadConfig } from "./config.ts";
+import { accountsExist } from "./db/queries.ts";
 import { openDb } from "./db/schema.ts";
+import { bootstrapAccounts } from "./lib/accounts.ts";
+import { newSetupCode } from "./lib/setup.ts";
 
 const config = loadConfig();
 const db = openDb(config.dbPath);
+const bootstrapped = await bootstrapAccounts(db, config);
+// New on every start and only in this log: whoever creates the first
+// account from the browser must be able to read the server's output.
+const setupCode = accountsExist(db) ? null : newSetupCode();
 
-const server = serve({ fetch: createApp(db, config).fetch, port: config.port }, () => {
+const server = serve({ fetch: createApp(db, config, setupCode).fetch, port: config.port }, () => {
   console.log(`AI usage dashboard listening on http://localhost:${config.port}`);
   console.log(`DB: ${config.dbPath}`);
-  if (!config.viewerPassword) console.log("Viewer auth: disabled (no DASHBOARD_PASSWORD set)");
+  if (bootstrapped) console.log(`Created account "${bootstrapped}" from DASHBOARD_PASSWORD`);
+  if (setupCode) {
+    console.log("No account yet. Create the first one in the browser with this setup code:");
+    console.log(`  Setup code: ${setupCode}`);
+    console.log("(or run npm run user -- add <username>)");
+  }
 });
 
 // Stop accepting requests, then close SQLite so the WAL is checkpointed.
