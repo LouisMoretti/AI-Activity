@@ -34,6 +34,9 @@
       <p class="who">Signed in as <span class="mono">@{account.username}</span></p>
       <button type="button" role="menuitem" onclick={pick(() => onnavigate(`/u/${encodeURIComponent(account.username)}`))}>Your profile</button>
       <button type="button" role="menuitem" onclick={pick(() => onnavigate("/settings"))}>Settings</button>
+      {#if account.is_admin}
+        <button type="button" role="menuitem" onclick={pick(() => onnavigate("/admin"))}>Admin panel</button>
+      {/if}
       <button type="button" role="menuitem" onclick={pick(onlogout)}>Sign out</button>
     </div>
   {/if}

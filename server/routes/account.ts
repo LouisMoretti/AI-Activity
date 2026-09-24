@@ -1,9 +1,9 @@
 import { Hono, type MiddlewareHandler } from "hono";
 import type { Account, AdminUser } from "../../shared/types.ts";
 import { randomBytes } from "node:crypto";
-import type { Invite } from "../../shared/types.ts";
+import type { AdminOverview, AdminSettings, Invite } from "../../shared/types.ts";
 import {
-  createAccount, createInvite, deleteUserSessions, findUserByUsername, getUser, hashKey, listAdminUsers,
+  adminOverview, createAccount, createInvite, setSignupOpen, signupOpen, deleteUserSessions, findUserByUsername, getUser, hashKey, listAdminUsers,
   listPendingInvites, revokeInvite, setDisplayName, setPasswordHash, setUserDisabled, toAccount,
 } from "../db/queries.ts";
 import { nowSec } from "../db/schema.ts";
@@ -112,5 +112,19 @@ export function userRoutes(db: DB) {
       setUserDisabled(db, user.id, disable);
       if (disable) deleteUserSessions(db, user.id);
       return c.json({ ok: true });
+    });
+}
+
+/** Admin panel: server-wide overview and settings. */
+export function adminRoutes(db: DB) {
+  return new Hono<ViewerEnv>()
+    .use(requireAdmin)
+    .get("/overview", (c) => c.json<AdminOverview>(adminOverview(db)))
+    .get("/settings", (c) => c.json<AdminSettings>({ signup_open: signupOpen(db) }))
+    .post("/settings", async (c) => {
+      const body = await readJson(c);
+      if (typeof body.signup_open !== "boolean") return c.json({ error: "signup_open must be true or false" }, 400);
+      setSignupOpen(db, body.signup_open);
+      return c.json<AdminSettings>({ signup_open: signupOpen(db) });
     });
 }

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
-  Account, ActivityDay, AdminUser, Invite, Profile, Breakdown, BreakdownRow, Device, Quota, Session,
+  Account, ActivityDay, AdminOverview, AdminUser, Invite, Profile, Breakdown, BreakdownRow, Device, Quota, Session,
 } from "../../shared/types.ts";
 import { nowSec, type DB } from "./schema.ts";
 
@@ -142,6 +142,32 @@ export function createAccount(
     ).run(a.username, a.display_name, a.password_hash, a.is_admin ? 1 : 0, nowSec());
     return Number(info.lastInsertRowid);
   })();
+}
+
+/** Anyone may create an account from the sign-in page (default: yes). */
+export function signupOpen(db: DB): boolean {
+  const row = db.prepare("SELECT value FROM app_settings WHERE key = 'signup_open'").get() as { value: string } | undefined;
+  return row ? row.value === "1" : true;
+}
+
+export function setSignupOpen(db: DB, open: boolean): void {
+  db.prepare(
+    "INSERT INTO app_settings (key, value) VALUES ('signup_open', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+  ).run(open ? "1" : "0");
+}
+
+/** Counts for the admin overview. */
+export function adminOverview(db: DB): AdminOverview {
+  const n = (sql: string) => (db.prepare(sql).get() as { n: number | null }).n ?? 0;
+  return {
+    accounts: n("SELECT COUNT(*) AS n FROM users WHERE password_hash IS NOT NULL"),
+    disabled_accounts: n("SELECT COUNT(*) AS n FROM users WHERE password_hash IS NOT NULL AND disabled = 1"),
+    devices: n("SELECT COUNT(*) AS n FROM devices WHERE revoked = 0"),
+    events: n("SELECT COUNT(*) AS n FROM usage_events"),
+    sessions: n("SELECT COUNT(DISTINCT session_id) AS n FROM usage_events"),
+    last_event_at: (db.prepare("SELECT MAX(received_at) AS n FROM usage_events").get() as { n: number | null }).n,
+    pending_invites: listPendingInvites(db).length,
+  };
 }
 
 /** Create the first account only; null when one already exists (lost race). */

@@ -29,7 +29,7 @@ const tokenHash = (token: string) => createHash("sha256").update(token).digest("
  * Behind the Cloudflare tunnel every request comes from localhost, and
  * Cloudflare sets CF-Connecting-IP to the real client address.
  */
-function clientId(c: Context): string {
+export function clientId(c: Context): string {
   const cf = c.req.header("cf-connecting-ip");
   if (cf) return cf;
   try {
