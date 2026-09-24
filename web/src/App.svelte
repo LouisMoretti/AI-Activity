@@ -47,6 +47,8 @@
 
   {#if dash.vm}
     {@const vm = dash.vm}
+    <!-- Management only acts on the real server, never on demo data. -->
+    {@const canManage = !vm.demo && dash.status !== "locked"}
     <ActivityChart series={vm.series} today={vm.today} demo={vm.demo} hasActivity={vm.hasActivity} />
     <StatsRow stats={vm.stats} />
 
@@ -64,13 +66,12 @@
 
     <Section title="Cost" subtitle="Paid and estimated stay separate">
       <CostPanel cards={vm.cost} />
-      <!-- Management only acts on the real server, never on demo data. -->
-      {#if !vm.demo && dash.status !== "locked"}
+      {#if canManage}
         <SubscriptionForm onadded={() => dash.load()} />
       {/if}
     </Section>
 
-    {#if !vm.demo && dash.status !== "locked"}
+    {#if canManage}
       <Section title="Devices" subtitle="One ingestion key per machine">
         <DevicesPanel />
       </Section>
