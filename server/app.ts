@@ -7,6 +7,7 @@ import type { Config } from "./config.ts";
 import type { DB } from "./db/schema.ts";
 import { limitBody } from "./lib/http.ts";
 import { createViewerAuth } from "./lib/viewer-auth.ts";
+import { accountRoutes, userRoutes } from "./routes/account.ts";
 import { authRoutes } from "./routes/auth.ts";
 import { billingRoutes } from "./routes/billing.ts";
 import { deviceRoutes } from "./routes/devices.ts";
@@ -29,7 +30,9 @@ export function createApp(db: DB, config: Config) {
     .use(auth.require)
     .route("/", usageRoutes(db))
     .route("/billing", billingRoutes(db))
-    .route("/devices", deviceRoutes(db));
+    .route("/devices", deviceRoutes(db))
+    .route("/account", accountRoutes(db, auth))
+    .route("/users", userRoutes(db));
 
   const indexFile = path.join(config.staticDir, "index.html");
   // Served from memory; an async stat per request picks up a rebuilt web

@@ -97,7 +97,7 @@ server/
   lib/accounts.ts     DASHBOARD_PASSWORD → first account migration
   lib/http.ts
   routes/           auth, ingest, usage (stats/activity/quotas/sessions),
-                    billing, devices
+                    billing, devices, account (profile + admin users)
 shared/types.ts     API response types shared with the web client
 web/
   src/lib/api.ts          typed fetch client (401 → UnauthorizedError)
@@ -108,7 +108,8 @@ web/
   src/lib/dashboard.svelte.ts  state: provider, auth status, 15 s refresh
   src/components/         StatsBar, ActivityChart (Heatmap, TrendChart),
                           QuotaCard, SessionList, BillingCards, LoginBar,
-                          DevicesPanel, SubscriptionForm, …
+                          DevicesPanel, SubscriptionForm, AccountMenu,
+                          ProfilePanel, UsersPanel, …
   src/styles/tokens.css   design tokens — components only use these variables
 public/             legacy UI, removed at the switch-over
 ```
@@ -267,6 +268,15 @@ open, as the single pre-accounts user, while no account exists):
   tunnel) or 50 in total per 15 min → `429` with `Retry-After` (the global
   cap locks everyone out, owner included, until the window ends). The session
   cookie is `Secure` when the request is HTTPS (incl. `X-Forwarded-Proto`).
+- `POST /api/account {display_name}` (empty → falls back to the username),
+  `POST /api/account/password {current_password, new_password}` (throttled
+  like a login; signs out the user's other sessions). `409` while no account
+  exists.
+- Admin only (`403` otherwise): `GET /api/users`, `POST /api/users
+  {username, password, display_name, is_admin}`, `POST /api/users/:id/password
+  {password}` (signs that user out), `POST /api/users/:id/disable|enable`.
+  A disabled account cannot sign in and its device keys are rejected at
+  ingest; admins cannot disable themselves, so one enabled admin remains.
 - `GET /api/stats?days=30&tool=claude-code`
 - `GET /api/activity?days=364&tool=...` (daily buckets for the heatmap)
 - `GET /api/quotas` (latest snapshot per account + limit type)

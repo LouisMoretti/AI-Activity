@@ -1,6 +1,6 @@
 // Typed client for the dashboard JSON API (same origin, cookie session).
 import type {
-  ActivityResponse, AuthStatus, BillingResponse, Device, QuotasResponse,
+  Account, ActivityResponse, AdminUser, AuthStatus, BillingResponse, Device, QuotasResponse,
   SessionsResponse, StatsResponse, Subscription, SummaryResponse,
 } from "../../../shared/types.ts";
 
@@ -37,6 +37,16 @@ export const api = {
   authStatus: () => get<AuthStatus>("/api/auth/status"),
   /** Resolves on success; throws with the server's message otherwise. */
   login: (username: string, password: string) => post<{ ok: true }>("/api/auth/login", { username, password }),
+  logout: () => post<{ ok: true }>("/api/auth/logout"),
+  updateProfile: (display_name: string) => post<{ user: Account }>("/api/account", { display_name }),
+  changePassword: (current_password: string, new_password: string) =>
+    post<{ ok: true }>("/api/account/password", { current_password, new_password }),
+  users: () => get<{ users: AdminUser[] }>("/api/users"),
+  createUser: (u: { username: string; display_name: string; password: string; is_admin: boolean }) =>
+    post<{ id: number }>("/api/users", u),
+  setUserDisabled: (id: number, disabled: boolean) =>
+    post<{ ok: true }>(`/api/users/${id}/${disabled ? "disable" : "enable"}`),
+  resetPassword: (id: number, password: string) => post<{ ok: true }>(`/api/users/${id}/password`, { password }),
   stats: (days: number, tool: string | null) => get<StatsResponse>(`/api/stats?days=${days}${toolQuery(tool)}`),
   activity: (days: number, tool: string | null) => get<ActivityResponse>(`/api/activity?days=${days}${toolQuery(tool)}`),
   quotas: () => get<QuotasResponse>("/api/quotas"),

@@ -433,6 +433,82 @@ describe("accounts", () => {
   });
 });
 
+describe("profiles and user management", () => {
+  let srv, admin;
+  const post = (p, body, cookie) => req(srv.base, "POST", p, { body, cookie });
+  before(async () => {
+    srv = await startServer({ password: "admin-pass" });
+    admin = await login(srv.base, "admin", "admin-pass");
+  });
+  after(() => srv.stop());
+
+  test("admins create accounts; others cannot", async () => {
+    assert.equal((await post("/api/users", { username: "x", password: "long enough" }, admin)).status, 400);
+    assert.equal((await post("/api/users", { username: "carol", password: "short" }, admin)).status, 400);
+    const created = await post("/api/users", { username: "carol", password: "carol-pass", display_name: " Carol " }, admin);
+    assert.equal(created.status, 200);
+    assert.equal((await post("/api/users", { username: "Carol", password: "carol-pass" }, admin)).status, 409);
+    const carol = await login(srv.base, "carol", "carol-pass");
+    const me = (await req(srv.base, "GET", "/api/auth/status", { cookie: carol })).json.user;
+    assert.deepEqual(me, { id: created.json.id, username: "carol", display_name: "Carol", is_admin: false });
+    assert.equal((await req(srv.base, "GET", "/api/users", { cookie: carol })).status, 403);
+    assert.equal((await post("/api/users", { username: "eve", password: "eve-password" }, carol)).status, 403);
+    const list = (await req(srv.base, "GET", "/api/users", { cookie: admin })).json.users;
+    assert.deepEqual(list.map((u) => [u.username, u.is_admin, u.disabled]), [["admin", true, false], ["carol", false, false]]);
+  });
+
+  test("display name can be changed and cleared", async () => {
+    const r = await post("/api/account", { display_name: "Louis M." }, admin);
+    assert.equal(r.json.user.display_name, "Louis M.");
+    assert.equal((await post("/api/account", { display_name: "  " }, admin)).json.user.display_name, "admin");
+  });
+
+  test("password change needs the current one and signs out other sessions", async () => {
+    await post("/api/users", { username: "dave", password: "dave-pass-1" }, admin);
+    const here = await login(srv.base, "dave", "dave-pass-1");
+    const elsewhere = await login(srv.base, "dave", "dave-pass-1");
+    assert.equal((await post("/api/account/password", { current_password: "nope", new_password: "dave-pass-2" }, here)).status, 400);
+    assert.equal((await post("/api/account/password", { current_password: "dave-pass-1", new_password: "x" }, here)).status, 400);
+    assert.equal((await post("/api/account/password", { current_password: "dave-pass-1", new_password: "dave-pass-2" }, here)).status, 200);
+    assert.equal((await req(srv.base, "GET", "/api/stats", { cookie: here })).status, 200);
+    assert.equal((await req(srv.base, "GET", "/api/stats", { cookie: elsewhere })).status, 401);
+    await login(srv.base, "dave", "dave-pass-2");
+  });
+
+  test("disabling an account signs it out and stops its devices", async () => {
+    const { json } = await post("/api/users", { username: "frank", password: "frank-pass" }, admin);
+    const frank = await login(srv.base, "frank", "frank-pass");
+    const dev = await newDevice(srv.base, "frank-laptop", frank);
+    assert.equal((await post(`/api/users/${json.id}/disable`, {}, admin)).status, 200);
+    assert.equal((await req(srv.base, "GET", "/api/stats", { cookie: frank })).status, 401);
+    assert.equal((await post("/api/auth/login", { username: "frank", password: "frank-pass" })).status, 401);
+    assert.equal((await req(srv.base, "POST", "/api/ingest", { key: dev.key, body: event() })).status, 401);
+    assert.equal((await post(`/api/users/${json.id}/enable`, {}, admin)).status, 200);
+    assert.equal((await req(srv.base, "POST", "/api/ingest", { key: dev.key, body: event() })).status, 200);
+    await login(srv.base, "frank", "frank-pass");
+    assert.equal((await post("/api/users/1/disable", {}, admin)).status, 400);
+    assert.equal((await post("/api/users/999/disable", {}, admin)).status, 404);
+  });
+
+  test("an admin password reset signs that user out", async () => {
+    const { json } = await post("/api/users", { username: "gina", password: "gina-pass-1" }, admin);
+    const gina = await login(srv.base, "gina", "gina-pass-1");
+    assert.equal((await post(`/api/users/${json.id}/password`, { password: "gina-pass-2" }, admin)).status, 200);
+    assert.equal((await req(srv.base, "GET", "/api/stats", { cookie: gina })).status, 401);
+    await login(srv.base, "gina", "gina-pass-2");
+  });
+
+  test("the open dashboard has no profile and no admin", async () => {
+    const open = await startServer();
+    try {
+      assert.equal((await req(open.base, "POST", "/api/account", { body: { display_name: "x" } })).status, 409);
+      assert.equal((await req(open.base, "GET", "/api/users")).status, 403);
+    } finally {
+      await open.stop();
+    }
+  });
+});
+
 describe("summary, sessions and context (redesign APIs)", () => {
   let srv, key;
   before(async () => {

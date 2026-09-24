@@ -136,6 +136,14 @@ export interface Account {
   is_admin: boolean;
 }
 
+/** An account as listed for admins. */
+export interface AdminUser extends Account {
+  disabled: boolean;
+  created_at: number;
+  /** Devices with a live (non-revoked) key. */
+  devices: number;
+}
+
 export interface AuthStatus {
   /** False while no account exists: the dashboard is open. */
   locked: boolean;

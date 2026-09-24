@@ -1,4 +1,5 @@
 <script lang="ts">
+  import AccountMenu from "./components/AccountMenu.svelte";
   import ActivityChart from "./components/ActivityChart.svelte";
   import ClaudeCodeCard from "./components/ClaudeCodeCard.svelte";
   import CodexCard from "./components/CodexCard.svelte";
@@ -8,10 +9,12 @@
   import LoginBar from "./components/LoginBar.svelte";
   import Logo from "./components/Logo.svelte";
   import OpenCodeCard from "./components/OpenCodeCard.svelte";
+  import ProfilePanel from "./components/ProfilePanel.svelte";
   import Section from "./components/Section.svelte";
   import Segmented from "./components/Segmented.svelte";
   import StatsRow from "./components/StatsRow.svelte";
   import SubscriptionForm from "./components/SubscriptionForm.svelte";
+  import UsersPanel from "./components/UsersPanel.svelte";
   import { Dashboard } from "./lib/dashboard.svelte.ts";
   import type { Provider } from "./lib/view-model.ts";
 
@@ -30,7 +33,10 @@
 <main>
   <header class="top">
     <div class="brand"><Logo /><h1>AI Activity</h1></div>
-    <span class="badge" class:demo={dash.demo}>{dash.demo ? "Demonstration data" : "Live data"}</span>
+    <div class="top-right">
+      <span class="badge" class:demo={dash.demo}>{dash.demo ? "Demonstration data" : "Live data"}</span>
+      {#if dash.account && !dash.demo}<AccountMenu account={dash.account} onlogout={() => dash.logout()} />{/if}
+    </div>
   </header>
 
   {#if dash.status === "locked"}
@@ -75,6 +81,26 @@
       <Section title="Devices" subtitle="One ingestion key per machine">
         <DevicesPanel />
       </Section>
+
+      <Section title="Account" subtitle={dash.account ? "Your profile and password" : "Open dashboard"}>
+        {#if dash.account}
+          {#key dash.account.id}
+            <ProfilePanel account={dash.account} onchange={() => dash.load()} />
+          {/key}
+        {:else}
+          <p class="open-note">
+            No account exists yet, so anyone with the link sees this dashboard. On the server, run
+            <code class="mono">npm run user -- add &lt;username&gt;</code> to create yours: it keeps the data
+            collected so far and turns on sign-in.
+          </p>
+        {/if}
+      </Section>
+
+      {#if dash.account?.is_admin}
+        <Section title="Users" subtitle="Each account sees only its own devices and usage">
+          <UsersPanel selfId={dash.account.id} />
+        </Section>
+      {/if}
     {/if}
   {/if}
 </main>
@@ -84,6 +110,9 @@
   .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 28px; }
   .brand { display: flex; align-items: center; gap: 11px; }
   h1 { font-size: 19px; font-weight: 600; letter-spacing: -0.4px; }
+  .top-right { display: flex; align-items: center; gap: 14px; min-width: 0; }
+  .open-note { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 20px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+  .open-note code { color: var(--text); }
   .badge { border: 1px solid var(--line); color: var(--muted); font-size: 12px; padding: 5px 10px; border-radius: var(--radius-sm); }
   .badge.demo { border-color: var(--demo-line); background: var(--demo-bg); color: var(--demo-text); }
   .toolbar { display: flex; justify-content: center; margin-bottom: 8px; }

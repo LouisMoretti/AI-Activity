@@ -5,7 +5,7 @@ import { api, UnauthorizedError } from "./api.ts";
 import { demoDashboard } from "./demo.ts";
 import { ACTIVITY_DAYS, liveDashboard, type LiveData } from "./live.ts";
 import type { DashboardVM, Provider } from "./view-model.ts";
-import type { SessionsResponse } from "../../../shared/types.ts";
+import type { Account, SessionsResponse } from "../../../shared/types.ts";
 
 export type Status = "loading" | "ready" | "locked" | "error";
 
@@ -31,6 +31,8 @@ export class Dashboard {
   provider = $state<Provider>("all");
   status = $state<Status>("loading");
   sessionsLimit = $state(SESSIONS_PAGE);
+  /** The signed-in account; null while the dashboard is open (no accounts) or signed out. */
+  account = $state<Account | null>(null);
   private live = $state<LiveData | null>(null);
   private inFlight = false;
   private reloadQueued = false;
@@ -54,17 +56,20 @@ export class Dashboard {
     this.inFlight = true;
     const tool = this.provider === "all" ? null : this.provider;
     try {
-      const [summary, activity, quotas, sessions, billing] = await Promise.all([
+      const [auth, summary, activity, quotas, sessions, billing] = await Promise.all([
+        api.authStatus(),
         api.summary(tool),
         api.activity(ACTIVITY_DAYS, tool),
         api.quotas(),
         fetchSessions(this.sessionsLimit, tool),
         api.billing(),
       ]);
+      this.account = auth.user;
       this.live = { summary, activity, quotas, sessions, billing };
       this.status = "ready";
     } catch (e) {
-      this.status = e instanceof UnauthorizedError ? "locked" : "error";
+      if (e instanceof UnauthorizedError) this.signedOut();
+      else this.status = "error";
     } finally {
       this.inFlight = false;
       if (this.reloadQueued) {
@@ -94,6 +99,19 @@ export class Dashboard {
     }
     await this.load();
     return null;
+  }
+
+  async logout(): Promise<void> {
+    await api.logout().catch(() => {});
+    this.signedOut();
+  }
+
+  /** Drop everything the previous account could see. */
+  private signedOut(): void {
+    this.account = null;
+    this.live = null;
+    this.sessionsLimit = SESSIONS_PAGE;
+    this.status = "locked";
   }
 
   /** Starts polling; returns a cleanup function. */

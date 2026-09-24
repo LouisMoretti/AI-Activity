@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
-  Account, ActivityDay, BillingRecord, Breakdown, BreakdownRow, Device, Quota, Session, Subscription,
+  Account, ActivityDay, AdminUser, BillingRecord, Breakdown, BreakdownRow, Device, Quota, Session, Subscription,
 } from "../../shared/types.ts";
 import { nowSec, type DB } from "./schema.ts";
 
@@ -90,6 +90,29 @@ export function listUsers(db: DB): UserRow[] {
   return db.prepare("SELECT * FROM users WHERE username IS NOT NULL ORDER BY id").all() as UserRow[];
 }
 
+export function getUser(db: DB, id: number): UserRow | null {
+  return (db.prepare("SELECT * FROM users WHERE id = ? AND username IS NOT NULL").get(id) as UserRow | undefined) ?? null;
+}
+
+/** Accounts as the admin panel shows them, with their device count. */
+export function listAdminUsers(db: DB): AdminUser[] {
+  const rows = db
+    .prepare(
+      `SELECT u.*, (SELECT COUNT(*) FROM devices d WHERE d.user_id = u.id AND d.revoked = 0) AS devices
+       FROM users u WHERE u.username IS NOT NULL ORDER BY u.id`
+    )
+    .all() as (UserRow & { created_at: number; devices: number })[];
+  return rows.map((u) => ({ ...toAccount(u), disabled: Boolean(u.disabled), created_at: u.created_at, devices: u.devices }));
+}
+
+export function setDisplayName(db: DB, userId: number, name: string | null): void {
+  db.prepare("UPDATE users SET display_name = ? WHERE id = ?").run(name, userId);
+}
+
+export function setUserDisabled(db: DB, userId: number, disabled: boolean): void {
+  db.prepare("UPDATE users SET disabled = ? WHERE id = ?").run(disabled ? 1 : 0, userId);
+}
+
 /**
  * Create a login account. The very first account claims the pre-accounts
  * user (the one that already owns every device and event) instead of
@@ -149,8 +172,12 @@ export function deleteUserSessions(db: DB, userId: number, keepTokenHash: string
 
 export function findDeviceByKey(db: DB, rawKey: string | null): DeviceRow | null {
   if (!rawKey) return null;
+  // A disabled account's devices stop being accepted too.
   const row = db
-    .prepare("SELECT * FROM devices WHERE key_hash = ?")
+    .prepare(
+      `SELECT d.* FROM devices d JOIN users u ON u.id = d.user_id
+       WHERE d.key_hash = ? AND u.disabled = 0`
+    )
     .get(hashKey(rawKey)) as DeviceRow | undefined;
   if (!row || row.revoked) return null;
   return row;
