@@ -13,3 +13,8 @@ test("money totals are summed per currency, never across currencies", () => {
   );
   assert.equal(fmtMoneyTotals([{ amount: 90, currency: "EUR" }]), "EUR 90");
 });
+
+test("money totals: empty input and float sums", () => {
+  assert.equal(fmtMoneyTotals([]), "");
+  assert.equal(fmtMoneyTotals([{ amount: 0.1, currency: "USD" }, { amount: 0.2, currency: "USD" }]), "USD 0.3");
+});
