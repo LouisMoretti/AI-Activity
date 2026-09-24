@@ -140,6 +140,14 @@ describe("open server (no viewer password)", () => {
     assert.ok(days.includes(iso(now - 10 * day)));
   });
 
+  test("occurred_at in the future is clamped to the receive time", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: "future", occurred_at: now + 400 * 86400 }) });
+    const s = (await req(srv.base, "GET", "/api/sessions?limit=200")).json.sessions.find((x) => x.session_id === "future");
+    assert.ok(s.last_seen <= Math.floor(Date.now() / 1000));
+    assert.ok(s.last_seen >= now);
+  });
+
   test("tool filter on stats", async () => {
     const r = (await req(srv.base, "GET", "/api/stats?days=30&tool=codex")).json;
     assert.equal(r.events, 0);
