@@ -75,10 +75,5 @@ export function demoDashboard(provider: Provider): DashboardVM {
     },
     sessions,
     sessionsTotal: sessions.length,
-    cost: [
-      { label: "Paid subscriptions", value: "Demo", note: "Manually entered. Fictional." },
-      { label: "Actual API charges", value: "Demo", note: "Provider invoices. Fictional." },
-      { label: "API-rate estimate", value: "Demo", note: "Neither an invoice nor a saving. Fictional." },
-    ],
   };
 }

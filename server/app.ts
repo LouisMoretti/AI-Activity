@@ -9,7 +9,6 @@ import { limitBody } from "./lib/http.ts";
 import { createViewerAuth } from "./lib/viewer-auth.ts";
 import { accountRoutes, userRoutes } from "./routes/account.ts";
 import { authRoutes } from "./routes/auth.ts";
-import { billingRoutes } from "./routes/billing.ts";
 import { deviceRoutes } from "./routes/devices.ts";
 import { ingestRoutes } from "./routes/ingest.ts";
 import { publicProfileRoutes, usageRoutes } from "./routes/usage.ts";
@@ -32,7 +31,6 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
     // Everything below requires a viewer session.
     .use(auth.require)
     .route("/", usageRoutes(db))
-    .route("/billing", billingRoutes(db))
     .route("/devices", deviceRoutes(db))
     .route("/account", accountRoutes(db, auth))
     .route("/users", userRoutes(db));

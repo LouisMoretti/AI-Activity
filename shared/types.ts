@@ -12,7 +12,6 @@ export interface StatsResponse {
   cache_read: number;
   cache_write: number;
   total_tokens: number;
-  estimated_usd: number;
   events: number;
   sessions: number;
   has_data: boolean;
@@ -83,42 +82,6 @@ export interface SummaryResponse {
   total: Breakdown; // all time
   today: Breakdown;
   provenance: string;
-}
-
-export interface Subscription {
-  id: number;
-  user_id: number;
-  tool: string;
-  plan_name: string;
-  amount: number;
-  currency: string;
-  period_start: string | null;
-  period_end: string | null;
-  note: string | null;
-  created_at: number;
-}
-
-export interface BillingRecord {
-  id: number;
-  user_id: number;
-  kind: string; // api_actual | ...
-  tool: string;
-  amount: number;
-  currency: string;
-  period_start: string | null;
-  period_end: string | null;
-  source: string | null;
-  note: string | null;
-  created_at: number;
-}
-
-export interface BillingResponse {
-  subscriptions: Subscription[];
-  billing_records: BillingRecord[];
-  estimated_api_equivalent_usd: number;
-  /** false until at least one event carried a cost delta ("Unavailable", not 0). */
-  estimated_available: boolean;
-  disclaimer: string;
 }
 
 export interface Device {

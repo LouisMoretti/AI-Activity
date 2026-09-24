@@ -3,18 +3,6 @@ const plain = new Intl.NumberFormat("en-US");
 
 export const fmtCompact = (n: number) => compact.format(n);
 export const fmtNum = (n: number) => plain.format(n);
-export const fmtMoney = (n: number, currency = "USD") =>
-  `${currency} ${plain.format(Math.round(n * 100) / 100)}`;
-/**
- * Amounts summed per currency, never across currencies:
- * [20 USD, 18 EUR, 5 USD] → "USD 25 · EUR 18".
- */
-export function fmtMoneyTotals(xs: { amount: number; currency: string }[]): string {
-  const totals = new Map<string, number>();
-  for (const x of xs) totals.set(x.currency, (totals.get(x.currency) ?? 0) + Number(x.amount || 0));
-  return [...totals].map(([cur, n]) => fmtMoney(n, cur)).join(" · ");
-}
-
 export const fmtPct = (n: number) => `${Math.round(n * 10) / 10}`;
 
 export const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;

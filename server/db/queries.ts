@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
-  Account, ActivityDay, AdminUser, Invite, Profile, BillingRecord, Breakdown, BreakdownRow, Device, Quota, Session, Subscription,
+  Account, ActivityDay, AdminUser, Invite, Profile, Breakdown, BreakdownRow, Device, Quota, Session,
 } from "../../shared/types.ts";
 import { nowSec, type DB } from "./schema.ts";
 
@@ -21,7 +21,6 @@ export interface UsageEventInput {
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
-  cost_estimated_usd: number | null;
   context_window_size: number | null;
   context_used_pct: number | null;
   occurred_at: number;
@@ -45,7 +44,6 @@ export interface UsageTotals {
   cache_read: number;
   cache_write: number;
   total_tokens: number;
-  estimated_usd: number;
   events: number;
   sessions: number;
 }
@@ -298,12 +296,12 @@ export function insertUsageEvent(db: DB, ev: UsageEventInput): { inserted: boole
       `INSERT INTO usage_events
         (event_id, device_id, user_id, tool, session_id, prompt_id, model,
          input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-         cost_estimated_usd, context_window_size, context_used_pct, occurred_at, received_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         context_window_size, context_used_pct, occurred_at, received_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       ev.event_id, ev.device_id, ev.user_id, ev.tool, ev.session_id, ev.prompt_id, ev.model,
       ev.input_tokens, ev.output_tokens, ev.cache_read_tokens, ev.cache_write_tokens,
-      ev.cost_estimated_usd, ev.context_window_size, ev.context_used_pct, ev.occurred_at, ev.received_at
+      ev.context_window_size, ev.context_used_pct, ev.occurred_at, ev.received_at
     );
     return { inserted: true, deduped: false };
   } catch (err) {
@@ -370,7 +368,6 @@ export function usageTotals(db: DB, userId: number, sinceSec: number, tool: stri
          COALESCE(SUM(cache_read_tokens), 0) AS cache_read,
          COALESCE(SUM(cache_write_tokens), 0) AS cache_write,
          COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens), 0) AS total_tokens,
-         COALESCE(SUM(cost_estimated_usd), 0) AS estimated_usd,
          COUNT(*) AS events,
          COUNT(DISTINCT session_id) AS sessions
        FROM usage_events
@@ -468,37 +465,4 @@ export function breakdown(db: DB, userId: number, sinceSec: number, tool: string
     by_model: group("model"),
     by_tool: group("tool"),
   };
-}
-
-export function estimatedCostAvailable(db: DB, userId: number): boolean {
-  return Boolean(db
-    .prepare("SELECT 1 FROM usage_events WHERE user_id = ? AND cost_estimated_usd IS NOT NULL LIMIT 1")
-    .get(userId));
-}
-
-export function listSubscriptions(db: DB, userId: number): Subscription[] {
-  return db
-    .prepare("SELECT * FROM subscriptions WHERE user_id = ? ORDER BY created_at DESC")
-    .all(userId) as Subscription[];
-}
-
-export function listBillingRecords(db: DB, userId: number): BillingRecord[] {
-  return db
-    .prepare("SELECT * FROM billing_records WHERE user_id = ? ORDER BY created_at DESC")
-    .all(userId) as BillingRecord[];
-}
-
-export function insertSubscription(
-  db: DB,
-  userId: number,
-  s: Pick<Subscription, "tool" | "plan_name" | "amount" | "currency" | "period_start" | "period_end" | "note">
-): number {
-  const info = db
-    .prepare(
-      `INSERT INTO subscriptions
-        (user_id, tool, plan_name, amount, currency, period_start, period_end, note, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(userId, s.tool, s.plan_name, s.amount, s.currency, s.period_start, s.period_end, s.note, nowSec());
-  return Number(info.lastInsertRowid);
 }

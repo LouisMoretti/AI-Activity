@@ -44,7 +44,6 @@ function migrate(db: DB): void {
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
       cache_write_tokens INTEGER NOT NULL DEFAULT 0,
-      cost_estimated_usd REAL,
       occurred_at INTEGER NOT NULL,
       received_at INTEGER NOT NULL
     );
@@ -68,34 +67,11 @@ function migrate(db: DB): void {
     );
     CREATE INDEX IF NOT EXISTS idx_quota_user_account
       ON quota_snapshots(user_id, account_ref, limit_type, measured_at);
-
-    CREATE TABLE IF NOT EXISTS billing_records (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL REFERENCES users(id),
-      kind TEXT NOT NULL,
-      tool TEXT NOT NULL,
-      amount REAL NOT NULL,
-      currency TEXT NOT NULL DEFAULT 'USD',
-      period_start TEXT,
-      period_end TEXT,
-      source TEXT,
-      note TEXT,
-      created_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS subscriptions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL REFERENCES users(id),
-      tool TEXT NOT NULL,
-      plan_name TEXT NOT NULL,
-      amount REAL NOT NULL,
-      currency TEXT NOT NULL DEFAULT 'USD',
-      period_start TEXT,
-      period_end TEXT,
-      note TEXT,
-      created_at INTEGER NOT NULL
-    );
   `);
+
+  // Databases from before the cost feature was removed may still hold
+  // usage_events.cost_estimated_usd and the billing_records / subscriptions
+  // tables: they are left as is and never read or written.
 
   // Additive column migrations (SQLite has no ADD COLUMN IF NOT EXISTS).
   const cols = new Set(

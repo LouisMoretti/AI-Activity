@@ -18,7 +18,6 @@ export interface NormalizedEvent {
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
-  cost_estimated_usd: number | null;
   context_window_size: number | null;
   context_used_pct: number | null;
   occurred_at: number;
@@ -82,13 +81,6 @@ export function normalizeIngest(body: unknown): NormalizedEvent {
   let tool = typeof src.tool === "string" ? src.tool : "claude-code";
   if (tool === "claude") tool = "claude-code";
 
-  // Estimated cost: ONLY an explicit delta is accepted. The statusLine
-  // cost.total_cost_usd field is cumulative per session and must never
-  // be summed, so it is ignored here by design.
-  const delta = src.cost_estimated_usd_delta ?? src.cost_estimated_usd ?? null;
-  const costDelta = delta === null ? null : Number(delta);
-  const costOk = costDelta !== null && Number.isFinite(costDelta) && costDelta >= 0;
-
   const limits: Obj = isObj(src.rate_limits) ? src.rate_limits : {};
   const quotas: NormalizedQuota[] = [];
   for (const key of Object.keys(limits)) {
@@ -124,7 +116,6 @@ export function normalizeIngest(body: unknown): NormalizedEvent {
     output_tokens: toInt(u.output_tokens),
     cache_read_tokens: toInt(u.cache_read_input_tokens ?? u.cache_read_tokens),
     cache_write_tokens: toInt(u.cache_creation_input_tokens ?? u.cache_write_tokens),
-    cost_estimated_usd: costOk ? costDelta : null,
     context_window_size: ctxSize !== null && ctxSize > 0 ? Math.floor(ctxSize) : null,
     context_used_pct: ctxPct,
     // A skewed device clock must not put usage in the future (heatmap,
@@ -137,9 +128,8 @@ export function normalizeIngest(body: unknown): NormalizedEvent {
   };
 }
 
-/** Empty snapshots (session start, zero tokens, no cost delta) carry no consumption. */
+/** Empty snapshots (session start, zero tokens) carry no consumption. */
 export function hasConsumption(ev: NormalizedEvent): boolean {
   return ev.input_tokens > 0 || ev.output_tokens > 0 ||
-    ev.cache_read_tokens > 0 || ev.cache_write_tokens > 0 ||
-    ev.cost_estimated_usd !== null;
+    ev.cache_read_tokens > 0 || ev.cache_write_tokens > 0;
 }

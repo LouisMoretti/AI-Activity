@@ -14,7 +14,8 @@ Layout, top to bottom: token activity (centered year calendar, readout shows
 today unless a day is hovered), four stats (all-time tokens, today, sessions,
 current streak; hover shows the split by tool and model, or the longest
 streak), one card per tool (Claude Code, Codex, OpenCode are separate
-components), recent conversations (10 + "Show more"), cost. Palette: the
+components), recent conversations (10 + "Show more"). No cost or
+subscription tracking (removed on purpose). Palette: the
 original dark theme; type: Geist, with Geist Mono only for ids and model
 names. Quota bars carry a mark for how far into the window we are.
 
@@ -22,9 +23,8 @@ names. Quota bars carry a mark for how far into the window we are.
 in it redirects to `/u/<you>`, so the address bar is the shareable link.
 `/u/<username>` is **public and read-only**, no account needed: activity,
 stats, tools/quotas and conversations ("Copy link" in the profile header).
-Your own page adds the Cost section, visible only to you. Clicking the
-avatar opens Your profile / Settings / Sign out; `/settings` (signed in
-only) holds Account, Subscriptions, Devices and Users (admins). The demo
+Clicking the avatar opens Your profile / Settings / Sign out; `/settings`
+(signed in only) holds Account, Devices and Users (admins). The demo
 (`?demo=1`) needs a sign-in and only replaces your own page.
 
 **Hard rule:** the old demo dataset was fictional and deterministic. It is only
@@ -112,7 +112,7 @@ server/
   lib/setup.ts        one-time setup code for the first account
   lib/http.ts
   routes/           auth, ingest, usage (stats/activity/quotas/sessions),
-                    billing, devices, account (profile + admin users)
+                    devices, account (profile + admin users)
 shared/types.ts     API response types shared with the web client
 web/
   src/lib/api.ts          typed fetch client (401 → UnauthorizedError)
@@ -122,8 +122,8 @@ web/
   src/lib/series.ts       pure helpers: dense UTC series, streaks, calendar grid
   src/lib/dashboard.svelte.ts  state: provider, auth status, 15 s refresh
   src/components/         StatsBar, ActivityChart (Heatmap, TrendChart),
-                          QuotaCard, SessionList, BillingCards, LoginBar,
-                          DevicesPanel, SubscriptionForm, AccountMenu,
+                          QuotaCard, SessionList, LoginBar,
+                          DevicesPanel, AccountMenu,
                           ProfilePanel, ProfileSwitcher, ProfileHeader, UsersPanel,
                           NewAccountForm, InviteSignup, …
   src/styles/tokens.css   design tokens — components only use these variables
@@ -157,8 +157,9 @@ Components never branch on live vs demo: both sources map into the same
 - `quota_snapshots` — one row per observed quota window
   (`five_hour`, `seven_day`): account, limit type, % used, window length,
   reset time, measurement date. Latest snapshot wins; never summed.
-- `billing_records` / `subscriptions` — actually invoiced API charges and
-  manually entered subscription prices (promotions and currency included).
+- Older databases may still contain `usage_events.cost_estimated_usd` and
+  the `billing_records` / `subscriptions` tables from the removed cost
+  feature; nothing reads or writes them.
 
 Counting rules:
 
@@ -189,7 +190,6 @@ Unknown or revoked keys → `401`. Small JSON bodies only (256 KB max).
     "cache_creation_input_tokens": 5000,
     "cache_read_input_tokens": 2000
   },
-  "cost_estimated_usd_delta": 0.01234,
   "rate_limits": {
     "five_hour": { "used_percentage": 23.5, "resets_at": 1738425600 },
     "seven_day": { "used_percentage": 41.2, "resets_at": 1738857600 }
@@ -202,11 +202,9 @@ Unknown or revoked keys → `401`. Small JSON bodies only (256 KB max).
 Notes:
 
 - The server also accepts the near-raw statusLine shape (`model: {id}`,
-  `context_window: {current_usage: {...}}`, `cost: {...}`, `rate_limits`).
-- `cost.total_cost_usd` from the statusLine is **cumulative per session** and
-  is ignored by design. Send an explicit per-event **delta** computed by the
-  collector (previous session total kept in a local state file); otherwise the
-  cost estimate stays empty and only tokens are counted.
+  `context_window: {current_usage: {...}}`, `rate_limits`). Cost fields
+  (`cost`, `cost_estimated_usd_delta`) are ignored: the dashboard does not
+  track cost.
 - Dedup: `event_id` primary key (`INSERT OR IGNORE`) plus an identical-snapshot
   guard per `(device_id, prompt_id, token tuple, model)`. The statusLine fires
   several times per prompt (one snapshot per API call in the agentic loop, plus
@@ -214,7 +212,7 @@ Notes:
   kept, only byte-identical re-fires are dropped. Dropping everything after the
   first snapshot per prompt undercounts ~3x (measured against session files).
   Replays return `{"ok":true,"deduped":true}`.
-- Empty snapshots (zero tokens, no cost delta, e.g. session-start triggers)
+- Empty snapshots (zero tokens, e.g. session-start triggers)
   store no usage row (`stored: false`) but their quota snapshots are still
   recorded.
 - Offline recovery: the collector spools unsent payloads with their original
@@ -236,7 +234,6 @@ Official contract: https://code.claude.com/docs/en/statusline
 | `context_window.current_usage` | `usage` (incremental, summed) |
 | `context_window.used_percentage` | `context_used_pct` (gauge, latest per session, never summed) |
 | `context_window.context_window_size` | `context_window_size` |
-| `cost.total_cost_usd` | **delta only** → `cost_estimated_usd_delta` |
 | `rate_limits.*.used_percentage` / `resets_at` | `rate_limits` snapshots |
 | absent `rate_limits` | show "Unavailable" |
 
@@ -249,7 +246,6 @@ Official contract: https://code.claude.com/docs/en/statusline
 input=$(cat)
 ENDPOINT="https://<tunnel-url>/api/ingest"
 KEY="<device key from npm run gen-key>"
-STATE=~/.ai-usage/claude-state.json  # { last_cost_per_session, last_event_ids }
 SPOOL=~/.ai-usage/spool
 mkdir -p "$SPOOL"
 event_id=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen)
@@ -261,8 +257,6 @@ payload=$(echo "$input" | jq -c --arg eid "$event_id" '{
   rate_limits: (.rate_limits // {}),
   occurred_at: now | floor
 }')
-# NOTE: compute cost_estimated_usd_delta from .cost.total_cost_usd minus
-# the last total stored for this session in $STATE before POSTing.
 echo "$payload" > "$SPOOL/$event_id.json"
 for f in "$SPOOL"/*.json; do
   curl -sf -X POST "$ENDPOINT" -H "Authorization: Bearer $KEY" \
@@ -293,7 +287,7 @@ account exists):
 - Public profile pages, **no session needed**: `GET /api/u/:username` →
   `{username, display_name}`, and `/api/u/:username/stats|activity|quotas|summary|sessions`
   (same shapes as the viewer's own routes; `404` if unknown or disabled).
-  Nothing private has a public route: billing, devices, account and users
+  Nothing private has a public route: devices, account and users
   always need a session and only ever act on the signed-in user.
 - Unknown usernames and wrong passwords get the same `401` and the same
   hashing cost.
@@ -322,25 +316,10 @@ account exists):
   sessions, events, each split `by_model` and `by_tool`)
 - `GET /api/sessions?limit=10&offset=0&tool=...` (grouped by unique session id, with
   latest `context_used_pct` / `context_window_size`, plus `total` for paging)
-- `GET /api/billing` (paid vs actual vs estimated, with disclaimer;
-  `estimated_available: false` means no cost delta was ever received, shown
-  as "Unavailable", not 0)
-- `POST /api/billing/subscription` `{tool, plan_name, amount, currency, period_start, period_end, note}`
-  (amount >= 0, ISO 4217 currency, YYYY-MM-DD dates with start <= end; 400 otherwise)
 - `GET /api/devices`, `POST /api/devices {name}` (returns key once),
   `POST /api/devices/:id/revoke`
 
-## 7. Cost section rules
-
-- **Paid subscriptions**: manually entered, exactly what was paid (promo,
-  currency). Via `POST /api/billing/subscription`.
-- **Actual API charges**: verified provider invoices only (`billing_records`
-  with `kind = api_actual`). Empty until an invoice source is connected.
-- **Estimated API equivalent**: derived from measured tokens × list prices. The
-  UI labels it "neither an invoice nor a saving". An estimate for
-  subscription-included usage is never shown as money saved or spent.
-
-## 8. Testing checklist (acceptance criteria)
+## 7. Testing checklist (acceptance criteria)
 
 1. Real Claude Code activity → new tokens and sessions appear, no duplicates.
 2. Replay the same `event_id` (or same device + `prompt_id`) → `deduped: true`,
@@ -355,8 +334,8 @@ account exists):
 8. `/` signed out: sign-in (or first-account) screen; signed in: redirect
    to `/u/<you>`. `/settings` signed out: sign-in, then back to settings.
    Invite links work once.
-9. `/u/<name>` opens without an account and shows usage only: no cost,
-   devices or account sections, for visitors and other accounts alike.
+9. `/u/<name>` opens without an account and shows usage only: no devices
+   or account sections, for visitors and other accounts alike.
 
 ```bash
 # manual test example
@@ -367,14 +346,13 @@ curl -s localhost:3000/api/ingest -H "Authorization: Bearer $KEY" \
   "prompt_id":"p1","model":"claude-opus-5-5",
   "usage":{"input_tokens":100,"output_tokens":50,
     "cache_creation_input_tokens":10,"cache_read_input_tokens":20},
-  "cost_estimated_usd_delta":0.01,
   "rate_limits":{"five_hour":{"used_percentage":23.5,"resets_at":1999999999}},
   "occurred_at":1750000000}'
 curl -s 'localhost:3000/api/stats?days=365' ; echo
 curl -s localhost:3000/api/quotas ; echo
 ```
 
-## 9. Testing with the user (Cloudflare tunnel) — REQUIRED
+## 8. Testing with the user (Cloudflare tunnel) — REQUIRED
 
 After `npm start` works locally:
 
@@ -404,7 +382,7 @@ cloudflared tunnel --url http://localhost:5173
 dev server can read to `web/`, `shared/` and `node_modules/`, so `data/`
 (the SQLite DB) and `.env` are never served through the tunnel.
 
-## 10. Roadmap (later, not now)
+## 9. Roadmap (later, not now)
 
 - Codex connector (App Server `thread/tokenUsage/updated`,
   `account/rateLimits/read`, `account/usage/read`; verify desktop-task
