@@ -54,11 +54,15 @@ export async function startServer({ password = "", env = {}, autoLogin = true } 
   proc.stderr.on("data", (c) => (stderr += c));
   proc.stdout.on("data", (c) => (stdout += c));
   const base = `http://127.0.0.1:${port}`;
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; ; i++) {
     try {
       if ((await fetch(`${base}/api/health`)).ok) break;
     } catch { /* not up yet */ }
     if (proc.exitCode !== null) throw new Error(`server exited: ${stderr}`);
+    if (i >= 100) {
+      proc.kill();
+      throw new Error(`server not healthy after 5 s: ${stderr || stdout}`);
+    }
     await new Promise((r) => setTimeout(r, 50));
   }
   if (auto) defaultCookies.set(base, await login(base, TEST_ADMIN.username, TEST_ADMIN.password));
@@ -80,10 +84,12 @@ export async function startServer({ password = "", env = {}, autoLogin = true } 
   };
 }
 
-export async function req(base, method, p, { body, key, cookie, raw, anon = false } = {}) {
+/** type: content-type to send (default application/json on anything but GET; null sends none). */
+export async function req(base, method, p, { body, key, cookie, raw, anon = false, type, headers: extra = {} } = {}) {
   if (cookie === undefined && !anon) cookie = defaultCookies.get(base);
-  const headers = {};
-  if (body !== undefined || raw !== undefined) headers["content-type"] = "application/json";
+  const headers = { ...extra };
+  if (type === undefined) type = method === "GET" ? null : "application/json";
+  if (type) headers["content-type"] = type;
   if (key) headers.authorization = `Bearer ${key}`;
   if (cookie) headers.cookie = cookie;
   const res = await fetch(base + p, {
@@ -140,12 +146,13 @@ export async function login(base, username, password) {
   return r.headers.get("set-cookie").split(";")[0];
 }
 
-/** Run `npm run gen-key -- <name>` against a test DB; resolves with the key. */
-export function genKey(dbPath, name) {
+/** Run `npm run gen-key -- <name> [...extra]` against a test DB; resolves with the key. */
+export function genKey(dbPath, name, ...extra) {
   return new Promise((resolve, reject) => {
-    const proc = spawn(process.execPath, [GEN_KEY, name], { env: { ...process.env, DB_PATH: dbPath } });
+    const proc = spawn(process.execPath, [GEN_KEY, name, ...extra], { env: { ...process.env, DB_PATH: dbPath } });
     let out = "";
     proc.stdout.on("data", (c) => (out += c));
+    proc.stderr.on("data", (c) => (out += c));
     proc.on("exit", (code) => (code === 0 ? resolve(out.match(/ak_[0-9a-f]+/)[0]) : reject(new Error(out))));
   });
 }
