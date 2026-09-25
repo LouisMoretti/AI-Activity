@@ -410,20 +410,24 @@ const TOKENS = "input_tokens + output_tokens + cache_read_tokens + cache_write_t
 /**
  * Most recent sessions. Model and context fill come from the session's
  * latest event that reported them (the model in use now, not MAX(model) by
- * string order; context is a gauge at that moment, never summed).
+ * string order; context is a gauge at that moment, never summed). Both are
+ * looked up for the page's sessions only.
  */
 export function recentSessions(
   db: DB, userId: number, limit: number, tool: string | null, offset = 0
 ): Session[] {
+  const latest = (col: string, where: string) =>
+    `(SELECT ${col} FROM usage_events m
+      WHERE m.user_id = s.user_id AND m.session_id = s.session_id AND m.tool = s.tool AND ${where}
+      ORDER BY m.occurred_at DESC, m.received_at DESC LIMIT 1)`;
   return db
     .prepare(
-      `SELECT s.*,
-         (SELECT model FROM usage_events m
-          WHERE m.user_id = ? AND m.session_id = s.session_id AND m.tool = s.tool
-            AND m.model IS NOT NULL
-          ORDER BY m.occurred_at DESC, m.received_at DESC LIMIT 1) AS model,
-         c.context_used_pct, c.context_window_size FROM (
-         SELECT session_id, tool,
+      `SELECT s.session_id, s.tool, s.tokens, s.last_seen, s.events,
+         ${latest("model", "m.model IS NOT NULL")} AS model,
+         ${latest("context_used_pct", "m.context_used_pct IS NOT NULL")} AS context_used_pct,
+         ${latest("context_window_size", "m.context_used_pct IS NOT NULL")} AS context_window_size
+       FROM (
+         SELECT user_id, session_id, tool,
                 SUM(${TOKENS}) AS tokens,
                 MAX(occurred_at) AS last_seen, COUNT(*) AS events
          FROM usage_events
@@ -431,17 +435,9 @@ export function recentSessions(
          GROUP BY session_id, tool
          ORDER BY last_seen DESC, session_id LIMIT ? OFFSET ?
        ) s
-       LEFT JOIN (
-         SELECT session_id, tool, context_used_pct, context_window_size,
-                ROW_NUMBER() OVER (
-                  PARTITION BY session_id, tool ORDER BY occurred_at DESC, received_at DESC
-                ) AS rn
-         FROM usage_events
-         WHERE user_id = ? AND context_used_pct IS NOT NULL
-       ) c ON c.session_id = s.session_id AND c.tool = s.tool AND c.rn = 1
        ORDER BY s.last_seen DESC, s.session_id`
     )
-    .all(userId, userId, tool, tool, limit, offset, userId) as Session[];
+    .all(userId, tool, tool, limit, offset) as Session[];
 }
 
 export function countSessions(db: DB, userId: number, tool: string | null): number {
@@ -456,129 +452,152 @@ export function countSessions(db: DB, userId: number, tool: string | null): numb
     .get(userId, tool, tool) as { n: number }).n;
 }
 
-/** Tokens, sessions and events since sinceSec, split by model and by tool. */
+type Tally = { tokens: number; events: number; sessions: Set<string> };
+const tally = (): Tally => ({ tokens: 0, events: 0, sessions: new Set() });
+const add = (t: Tally, tokens: number, events: number, session: string | null) => {
+  t.tokens += tokens;
+  t.events += events;
+  if (session !== null) t.sessions.add(session);
+};
+/** Rows by tokens (largest first), sessions counted distinct like COUNT(DISTINCT). */
+const ranked = (m: Map<string, Tally>): BreakdownRow[] =>
+  [...m].map(([name, t]) => ({ name, tokens: t.tokens, sessions: t.sessions.size, events: t.events }))
+    .sort((a, b) => b.tokens - a.tokens || (a.name < b.name ? -1 : 1));
+
+/**
+ * Tokens, sessions and events since sinceSec, split by model and by tool,
+ * from one pass over the covering index (grouped per model, tool and
+ * session, then folded here).
+ */
 export function breakdown(db: DB, userId: number, sinceSec: number, tool: string | null): Breakdown {
-  const group = (col: "model" | "tool") =>
-    db
-      .prepare(
-        `SELECT COALESCE(${col}, 'unknown') AS name,
-                SUM(${TOKENS}) AS tokens,
-                COUNT(DISTINCT session_id) AS sessions,
-                COUNT(*) AS events
-         FROM usage_events
-         WHERE user_id = ? AND occurred_at >= ? AND (? IS NULL OR tool = ?)
-         GROUP BY name ORDER BY tokens DESC`
-      )
-      .all(userId, sinceSec, tool, tool) as BreakdownRow[];
-  const t = usageTotals(db, userId, sinceSec, tool);
+  const groups = db
+    .prepare(
+      `SELECT COALESCE(model, 'unknown') AS model, tool, session_id,
+              SUM(${TOKENS}) AS tokens, COUNT(*) AS events
+       FROM usage_events
+       WHERE user_id = ? AND occurred_at >= ? AND (? IS NULL OR tool = ?)
+       GROUP BY model, tool, session_id`
+    )
+    .all(userId, sinceSec, tool, tool) as { model: string; tool: string; session_id: string | null; tokens: number; events: number }[];
+  const total = tally();
+  const byModel = new Map<string, Tally>();
+  const byTool = new Map<string, Tally>();
+  for (const g of groups) {
+    add(total, g.tokens, g.events, g.session_id);
+    if (!byModel.has(g.model)) byModel.set(g.model, tally());
+    add(byModel.get(g.model)!, g.tokens, g.events, g.session_id);
+    if (!byTool.has(g.tool)) byTool.set(g.tool, tally());
+    add(byTool.get(g.tool)!, g.tokens, g.events, g.session_id);
+  }
   return {
-    tokens: Number(t.total_tokens),
-    sessions: Number(t.sessions),
-    events: Number(t.events),
-    by_model: group("model"),
-    by_tool: group("tool"),
+    tokens: total.tokens,
+    sessions: total.sessions.size,
+    events: total.events,
+    by_model: ranked(byModel),
+    by_tool: ranked(byTool),
   };
 }
 
-/** Usage rows of enabled accounts only: disabled ones leave the leaderboard. */
-const LISTED = `usage_events e JOIN users u ON u.id = e.user_id
-  WHERE u.password_hash IS NOT NULL AND u.disabled = 0`;
-
 /**
  * Everyone's usage since sinceSec, ranked by tokens. activitySinceSec bounds
- * the global heatmap and the streaks, which ignore the period.
+ * the global heatmap and the streaks, which ignore the period. Disabled
+ * accounts never appear. Two grouped passes over the covering index (the
+ * period, and the heatmap year), folded here.
  */
 export function leaderboard(
   db: DB, sinceSec: number, activitySinceSec: number, todayIso: string
 ): Omit<LeaderboardResponse, "range_days" | "provenance"> {
   // Every enabled account, used or not: idle ones rank last with zeros.
-  const rows = db
+  const users = db
     .prepare(
-      `SELECT u.id, u.username, u.display_name, u.avatar_url,
-              COALESCE(SUM(${TOKENS}), 0) AS tokens,
-              COUNT(DISTINCT e.session_id) AS sessions,
-              COUNT(e.event_id) AS events,
-              COUNT(DISTINCT date(e.occurred_at, 'unixepoch')) AS active_days,
-              MAX(e.occurred_at) AS last_active
-       FROM users u LEFT JOIN usage_events e ON e.user_id = u.id AND e.occurred_at >= ?
-       WHERE u.password_hash IS NOT NULL AND u.disabled = 0
-       GROUP BY u.id
-       ORDER BY tokens DESC, u.username COLLATE NOCASE`
+      `SELECT id, username, display_name, avatar_url FROM users
+       WHERE password_hash IS NOT NULL AND disabled = 0`
     )
-    .all(sinceSec) as (Omit<LeaderboardEntry, "top_model" | "current_streak" | "display_name" | "avatar_url"> &
-      { id: number; display_name: string | null; avatar_url: string | null })[];
-
-  const topModels = new Map(
-    (db
-      .prepare(
-        `SELECT user_id, model FROM (
-           SELECT e.user_id, e.model, ROW_NUMBER() OVER (
-             PARTITION BY e.user_id ORDER BY SUM(${TOKENS}) DESC, e.model
-           ) AS rn
-           FROM ${LISTED} AND e.occurred_at >= ? AND e.model IS NOT NULL
-           GROUP BY e.user_id, e.model
-         ) WHERE rn = 1`
-      )
-      .all(sinceSec) as { user_id: number; model: string }[]).map((r) => [r.user_id, r.model])
-  );
-
-  // Active days per user, newest first, to count back from today.
-  const daysByUser = new Map<number, string[]>();
-  for (const r of db
+    .all() as { id: number; username: string | null; display_name: string | null; avatar_url: string | null }[];
+  const LISTED_FROM = `usage_events e JOIN users u ON u.id = e.user_id
+    WHERE u.password_hash IS NOT NULL AND u.disabled = 0`;
+  // The period, per user, session, model and day…
+  const groups = db
     .prepare(
-      `SELECT DISTINCT e.user_id, date(e.occurred_at, 'unixepoch') AS day
-       FROM ${LISTED} AND e.occurred_at >= ? ORDER BY day DESC`
+      `SELECT e.user_id, e.session_id, e.model, date(e.occurred_at, 'unixepoch') AS day,
+              SUM(${TOKENS}) AS tokens, COUNT(*) AS events, MAX(e.occurred_at) AS last
+       FROM ${LISTED_FROM} AND e.occurred_at >= ?
+       GROUP BY e.user_id, e.session_id, e.model, day`
     )
-    .all(activitySinceSec) as { user_id: number; day: string }[]) {
-    const list = daysByUser.get(r.user_id) ?? [];
-    list.push(r.day);
-    daysByUser.set(r.user_id, list);
+    .all(sinceSec) as {
+      user_id: number; session_id: string | null; model: string | null; day: string;
+      tokens: number; events: number; last: number;
+    }[];
+  // …and the heatmap year, per user, day and session (models do not matter there).
+  const yearDays = db
+    .prepare(
+      `SELECT e.user_id, date(e.occurred_at, 'unixepoch') AS day, e.session_id, SUM(${TOKENS}) AS tokens
+       FROM ${LISTED_FROM} AND e.occurred_at >= ?
+       GROUP BY e.user_id, day, e.session_id`
+    )
+    .all(activitySinceSec) as { user_id: number; day: string; session_id: string | null; tokens: number }[];
+
+  type Acc = Tally & { days: Set<string>; last: number | null; models: Map<string, number>; streakDays: Set<string> };
+  const acc = new Map<number, Acc>(users.map((u) => [u.id, {
+    ...tally(), days: new Set<string>(), last: null, models: new Map<string, number>(), streakDays: new Set<string>(),
+  }]));
+  const total = tally();
+  const byModel = new Map<string, Tally>();
+  const activity = new Map<string, Tally>();
+  for (const d of yearDays) {
+    acc.get(d.user_id)!.streakDays.add(d.day);
+    if (!activity.has(d.day)) activity.set(d.day, tally());
+    add(activity.get(d.day)!, d.tokens, 0, d.session_id);
   }
-  const streak = (days: string[] = []) => {
+  for (const g of groups) {
+    const a = acc.get(g.user_id)!;
+    add(a, g.tokens, g.events, g.session_id);
+    add(total, g.tokens, g.events, g.session_id);
+    a.days.add(g.day);
+    a.last = Math.max(a.last ?? 0, g.last);
+    if (g.model !== null) a.models.set(g.model, (a.models.get(g.model) ?? 0) + g.tokens);
+    const name = g.model ?? "unknown";
+    if (!byModel.has(name)) byModel.set(name, tally());
+    add(byModel.get(name)!, g.tokens, g.events, g.session_id);
+  }
+
+  // Consecutive active days counted back from today.
+  const streak = (days: Set<string>) => {
     let n = 0;
-    let expected = Date.parse(todayIso + "T00:00:00Z");
-    for (const d of days) {
-      if (Date.parse(d + "T00:00:00Z") !== expected) break;
-      n++;
-      expected -= 86400000;
-    }
+    for (let t = Date.parse(todayIso + "T00:00:00Z"); days.has(new Date(t).toISOString().slice(0, 10)); t -= 86400000) n++;
     return n;
   };
+  // Most tokens, then the model name, like ORDER BY SUM(tokens) DESC, model.
+  const topModel = (m: Map<string, number>) =>
+    [...m].sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1))[0]?.[0] ?? null;
+  // SQLite's NOCASE: ASCII letters folded, everything else by code point.
+  const nocase = (v: string) => v.replace(/[A-Z]/g, (ch) => ch.toLowerCase());
 
-  const totals = db
-    .prepare(
-      `SELECT COALESCE(SUM(${TOKENS}), 0) AS tokens, COUNT(DISTINCT e.session_id) AS sessions, COUNT(*) AS events
-       FROM ${LISTED} AND e.occurred_at >= ?`
-    )
-    .get(sinceSec) as { tokens: number; sessions: number; events: number };
+  const entries = users.map((u) => {
+    const a = acc.get(u.id)!;
+    return {
+      username: u.username ?? "",
+      display_name: u.display_name || u.username || "",
+      avatar_url: u.avatar_url,
+      tokens: a.tokens,
+      sessions: a.sessions.size,
+      events: a.events,
+      active_days: a.days.size,
+      last_active: a.last,
+      top_model: topModel(a.models),
+      current_streak: streak(a.streakDays),
+    };
+  }).sort((x, y) => y.tokens - x.tokens || (nocase(x.username) < nocase(y.username) ? -1 : nocase(x.username) > nocase(y.username) ? 1 : 0));
 
   return {
-    accounts: rows.length,
-    totals: { ...totals, tokens: Number(totals.tokens), active_accounts: rows.filter((r) => r.events > 0).length },
-    entries: rows.map(({ id, display_name, avatar_url, ...r }) => ({
-      ...r,
-      avatar_url,
-      tokens: Number(r.tokens),
-      username: r.username ?? "",
-      display_name: display_name || r.username || "",
-      top_model: topModels.get(id) ?? null,
-      current_streak: streak(daysByUser.get(id)),
-    })),
-    by_model: db
-      .prepare(
-        `SELECT COALESCE(e.model, 'unknown') AS name, SUM(${TOKENS}) AS tokens,
-                COUNT(DISTINCT e.session_id) AS sessions, COUNT(*) AS events
-         FROM ${LISTED} AND e.occurred_at >= ?
-         GROUP BY name ORDER BY tokens DESC`
-      )
-      .all(sinceSec) as BreakdownRow[],
-    activity: db
-      .prepare(
-        `SELECT date(e.occurred_at, 'unixepoch') AS day, SUM(${TOKENS}) AS tokens,
-                COUNT(DISTINCT e.session_id) AS sessions
-         FROM ${LISTED} AND e.occurred_at >= ?
-         GROUP BY day ORDER BY day`
-      )
-      .all(activitySinceSec) as ActivityDay[],
+    accounts: users.length,
+    totals: {
+      tokens: total.tokens, sessions: total.sessions.size, events: total.events,
+      active_accounts: entries.filter((e) => e.events > 0).length,
+    },
+    entries,
+    by_model: ranked(byModel),
+    activity: [...activity].sort((x, y) => (x[0] < y[0] ? -1 : 1))
+      .map(([day, t]) => ({ day, tokens: t.tokens, sessions: t.sessions.size })),
   };
 }

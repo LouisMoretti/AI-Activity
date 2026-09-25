@@ -1,4 +1,5 @@
 import type { Context, MiddlewareHandler } from "hono";
+import type { DB } from "../db/schema.ts";
 import { HTTPException } from "hono/http-exception";
 
 /** Parse a JSON body, turning malformed input into a 400. */
@@ -41,5 +42,36 @@ export function limitBody(maxBytes: number): MiddlewareHandler {
       duplex: "half",
     } as RequestInit);
     await next();
+  };
+}
+
+const CACHE_TTL_MS = 30_000;
+const CACHE_MAX = 500;
+
+/**
+ * Cache successful GET answers of public read routes (profiles, leaderboard)
+ * until the database changes, or for 30 s at most (time-based windows such
+ * as "today" and "last 30 days" move on their own). Every open dashboard
+ * polls every 15 s, so an idle server answers from memory. "Changed" is
+ * total_changes() for this server's own writes and PRAGMA data_version for
+ * writes from another connection (the npm run user / gen-key CLI).
+ */
+export function readCache(db: DB): MiddlewareHandler {
+  const cache = new Map<string, { version: string; at: number; body: string }>();
+  const changes = db.prepare("SELECT total_changes() AS n");
+  return async (c, next) => {
+    if (c.req.method !== "GET") return next();
+    const url = new URL(c.req.url);
+    const key = url.pathname + url.search;
+    const version = `${(changes.get() as { n: number }).n}:${db.pragma("data_version", { simple: true })}`;
+    const hit = cache.get(key);
+    if (hit && hit.version === version && Date.now() - hit.at < CACHE_TTL_MS) {
+      return c.body(hit.body, 200, { "content-type": "application/json" });
+    }
+    await next();
+    if (c.res.status !== 200) return;
+    cache.delete(key);
+    cache.set(key, { version, at: Date.now(), body: await c.res.clone().text() });
+    if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value!);
   };
 }

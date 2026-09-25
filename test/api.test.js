@@ -790,6 +790,36 @@ describe("public profile pages", () => {
   });
 });
 
+describe("read cache", () => {
+  let srv, key;
+  before(async () => {
+    srv = await startServer();
+    key = (await newDevice(srv.base, "cache")).key;
+  });
+  after(() => srv.stop());
+
+  test("public reads are fresh after any write, from the server or the CLI", async () => {
+    const board = async () => (await req(srv.base, "GET", "/api/leaderboard?days=30", { anon: true })).json;
+    const tokens = async () => (await req(srv.base, "GET", "/api/u/admin/summary", { anon: true })).json.total.tokens;
+    const before = await board();
+    assert.deepEqual(await board(), before);
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ usage: { input_tokens: 5 } }) });
+    assert.equal((await board()).totals.tokens, before.totals.tokens + 5);
+    assert.equal(await tokens(), before.totals.tokens + 5);
+    // Another connection (the CLI) writing to the same DB.
+    assert.equal((await userCli(srv.dbPath, ["add", "cliuser"], "cli-password-1")).code, 0);
+    assert.ok((await board()).entries.some((e) => e.username === "cliuser"));
+  });
+
+  test("read indexes replace the old ones", async () => {
+    const db = new Database(srv.dbPath, { readonly: true });
+    const names = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'usage_events'").all().map((r) => r.name);
+    db.close();
+    assert.ok(names.includes("idx_usage_user_read") && names.includes("idx_usage_user_session_read"), String(names));
+    assert.ok(!names.includes("idx_usage_device_prompt") && !names.includes("idx_usage_user_time"), String(names));
+  });
+});
+
 describe("leaderboard", () => {
   test("ranks every enabled account by tokens, publicly", async () => {
     const srv = await startServer();
