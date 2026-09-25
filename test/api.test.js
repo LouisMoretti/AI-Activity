@@ -130,13 +130,31 @@ describe("basics (signed in as the test admin)", () => {
     legacy.run("old-1", deviceId, uid, "legacy-s", t, t);
     legacy.run("old-2", deviceId, uid, "legacy-s", t, t);
     legacy.run("old-3", deviceId, uid, "other-s", t, t);
+    legacy.run("old-early", deviceId, uid, "legacy-s", t - 3600, t - 3600);
     db.close();
-    assert.equal((await stats()).total_tokens - mid.total_tokens, 3 * 505);
+    assert.equal((await stats()).total_tokens - mid.total_tokens, 4 * 505);
 
     const body = { messages: [{ message_id: "msg_legacy_1", session_id: "legacy-s", occurred_at: t, usage: { input_tokens: 500, output_tokens: 5 } }] };
     assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { body, key })).json.stored, 1);
-    // legacy-s now counts its one real message; other-s keeps its snapshot.
-    assert.equal((await stats()).total_tokens - mid.total_tokens, 505 + 505);
+    // From the message's time on, legacy-s counts its one real message.
+    // other-s and legacy-s's earlier snapshot (not covered yet) are kept.
+    assert.equal((await stats()).total_tokens - mid.total_tokens, 505 + 505 + 505);
+    // Once messages reach back that far (the README import), it goes too.
+    const early = { messages: [{ message_id: "msg_legacy_0", session_id: "legacy-s", occurred_at: t - 3600, usage: { input_tokens: 1 } }] };
+    await req(srv.base, "POST", "/api/ingest/claude-code", { body: early, key });
+    assert.equal((await stats()).total_tokens - mid.total_tokens, 505 + 1 + 505);
+  });
+
+  test("usage without an Anthropic message id is not stored", async () => {
+    const before = await stats();
+    // The old reference collector sent a fresh random UUID on every fire.
+    for (const id of ["0b9f1c2e-5d6a-4f7b-8c9d-0e1f2a3b4c5d", "e-123", "msg_", "msg_bad id"]) {
+      const r = await req(srv.base, "POST", "/api/ingest/claude-code", { body: event({ event_id: id }), key });
+      assert.deepEqual(r.json, { ok: true, stored: false, updated: false, deduped: false, event_id: null });
+    }
+    const batch = { messages: [{ message_id: "not-a-message-id", usage: { input_tokens: 5 } }] };
+    assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { body: batch, key })).json.messages, 0);
+    assert.equal((await stats()).total_tokens, before.total_tokens);
   });
 
   test("a message id stored by another account is never overwritten", async () => {

@@ -39,9 +39,9 @@ export function ingestRoutes(db: DB) {
     let single: UpsertResult | null = null;
 
     db.transaction(() => {
-      const sessions = new Set<string>();
+      const sessions = new Map<string, number>(); // session → oldest message time
       for (const m of batch.messages) {
-        if (m.session_id) sessions.add(m.session_id);
+        if (m.session_id) sessions.set(m.session_id, Math.min(sessions.get(m.session_id) ?? m.occurred_at, m.occurred_at));
         // Empty messages skip the usage row so event counts stay honest.
         if (!hasConsumption(m)) continue;
         single = upsertUsageEvent(db, {
@@ -49,7 +49,7 @@ export function ingestRoutes(db: DB) {
         });
         counts[single] += 1;
       }
-      for (const s of sessions) dropSnapshotRows(db, device.user_id, s);
+      for (const [s, since] of sessions) dropSnapshotRows(db, device.user_id, s, since);
       if (batch.context) {
         const { session_id, used_pct, window_size } = batch.context;
         setSessionContext(db, device.user_id, session_id, used_pct, window_size);

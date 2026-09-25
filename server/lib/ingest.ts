@@ -77,12 +77,16 @@ function modelOf(v: unknown): string | null {
   return isObj(v) ? str(v.id || v.display_name || null) : null;
 }
 
+/** Anthropic message ids look like msg_011CfQ1q3CGJXyE6UmWhehGs. */
+const MESSAGE_ID = /^msg_[A-Za-z0-9_-]{1,200}$/;
+
 /**
- * One message, or null without a message id: a usage snapshot that cannot
- * be tied to one API response would be counted again on every re-fire.
+ * One message, or null without an Anthropic message id: a usage snapshot
+ * that cannot be tied to one API response (e.g. an old collector's random
+ * per-fire UUID) would be counted again on every re-fire.
  */
 function toMessage(m: Obj, now: number): NormalizedMessage | null {
-  const id = [m.message_id, m.event_id, m.eventId].find((v) => typeof v === "string" && v);
+  const id = [m.message_id, m.event_id, m.eventId].find((v) => typeof v === "string" && MESSAGE_ID.test(v));
   if (typeof id !== "string") return null;
   const u: Obj = isObj(m.usage) ? m.usage : {};
   const size = optNum(m.context_window_size);

@@ -174,7 +174,7 @@ Components never branch on live vs demo: both sources map into the same
   `source = 'message'`): that API response's tokens, model, session,
   device, date. Rows from the old statusLine snapshot collector have
   `source = 'snapshot'` and counted most API calls about twice; a session's
-  snapshot rows are deleted as soon as messages of that session arrive.
+  snapshot rows are deleted from the time of its oldest message received.
 - `quota_snapshots` — one row per observed quota window
   (`five_hour`, `seven_day`): account, limit type, % used, window length,
   reset time, measurement date. Latest snapshot wins; never summed.
@@ -246,12 +246,15 @@ Notes:
   replay (`deduped`). A message id stored by another account is never
   touched. The collector resends the recent messages on every refresh;
   that is safe by design.
-- Entries without a message id store no usage, and neither does a raw
+- Entries without an Anthropic message id (`msg_…`; e.g. a random per-fire
+  UUID) store no usage, and neither does a raw
   statusLine payload (`context_window.current_usage`): it re-fires with a
   partial then a final snapshot per API call, which counted about twice.
   Such a payload still records its quotas and context gauge.
 - When messages of a session arrive, that session's old `snapshot` rows
-  are deleted, so the two never add up (README: import past sessions).
+  from the oldest of those messages on are deleted, so the two never add
+  up. The live collector only resends the transcript tail, so earlier
+  snapshot rows stay until the README import covers the whole session.
 - Context gauge: `context` (or a raw statusLine `context_window`) is put on
   the session's newest row; `recentSessions` shows the latest one.
 - Empty messages (zero tokens) store no row.

@@ -299,14 +299,16 @@ export function upsertUsageEvent(db: DB, ev: UsageEventInput): UpsertResult {
 }
 
 /**
- * Drop a session's old statusLine snapshot rows once its messages arrive:
- * the messages are exact, the snapshots counted most calls twice, and the
- * two must never add up.
+ * Drop a session's old statusLine snapshot rows from sinceSec on, once its
+ * messages from that time arrive: the messages are exact, the snapshots
+ * counted most calls twice, and the two must never add up. Older snapshot
+ * rows stay until messages cover them too (the live collector only resends
+ * the transcript tail; the README import covers whole sessions).
  */
-export function dropSnapshotRows(db: DB, userId: number, sessionId: string): number {
+export function dropSnapshotRows(db: DB, userId: number, sessionId: string, sinceSec: number): number {
   return db
-    .prepare("DELETE FROM usage_events WHERE user_id = ? AND session_id = ? AND source = 'snapshot'")
-    .run(userId, sessionId).changes;
+    .prepare("DELETE FROM usage_events WHERE user_id = ? AND session_id = ? AND source = 'snapshot' AND occurred_at >= ?")
+    .run(userId, sessionId, sinceSec).changes;
 }
 
 /** Put the session's latest context fill on its newest row (a gauge, never summed). */

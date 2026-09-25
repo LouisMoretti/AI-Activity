@@ -107,7 +107,7 @@ let seq = 0;
 export function event(over = {}) {
   seq += 1;
   return {
-    event_id: `e-${Date.now()}-${seq}`,
+    event_id: `msg_test_${Date.now()}_${seq}`,
     tool: "claude-code",
     session_id: "s1",
     prompt_id: `p-${seq}`,
