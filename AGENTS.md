@@ -14,8 +14,9 @@ Layout, top to bottom: token activity (centered year calendar, readout shows
 today unless a day is hovered), four stats (all-time tokens, today, sessions,
 current streak; hover shows the split by tool and model, or the longest
 streak), one card per tool (Claude Code, Codex, OpenCode are separate
-components), recent conversations (10 + "Show more"). No cost or
-subscription tracking (removed on purpose). Palette: the
+components), recent conversations (10 + "Show more"). No tool filter:
+every tool is always shown. No cost or subscription tracking (removed on
+purpose). Only demo data carries a badge ("Demonstration data"). Palette: the
 original dark theme; type: Geist, with Geist Mono only for ids and model
 names. Quota bars carry a mark for how far into the window we are.
 

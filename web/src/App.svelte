@@ -14,11 +14,9 @@
   import ProfilePanel from "./components/ProfilePanel.svelte";
   import ProfileSwitcher from "./components/ProfileSwitcher.svelte";
   import Section from "./components/Section.svelte";
-  import Segmented from "./components/Segmented.svelte";
   import StatsRow from "./components/StatsRow.svelte";
   import UsersPanel from "./components/UsersPanel.svelte";
   import { Dashboard } from "./lib/dashboard.svelte.ts";
-  import type { Provider } from "./lib/view-model.ts";
 
   const dash = new Dashboard();
   $effect(() => dash.start());
@@ -30,13 +28,6 @@
         : "AI Activity";
   });
 
-  const providers: { value: Provider; label: string }[] = [
-    { value: "all", label: "All tools" },
-    { value: "claude-code", label: "Claude Code" },
-    { value: "codex", label: "Codex" },
-    { value: "opencode", label: "OpenCode" },
-  ];
-
   /** Back to the sign-in screen, then here. */
   const signInHere = () => dash.go(`/?next=${encodeURIComponent(location.pathname)}`);
 </script>
@@ -45,9 +36,8 @@
   <header class="top">
     <a class="brand" href="/" onclick={(e) => { e.preventDefault(); dash.go("/"); }}><Logo /><h1>AI Activity</h1></a>
     <div class="top-right">
-      {#if dash.vm}
-        <span class="badge" class:demo={dash.vm.demo} class:live={!dash.vm.demo}>{dash.vm.demo ? "Demonstration data" : "Live data"}</span>
-      {/if}
+      <!-- Fictional data is always labeled; live data needs no badge. -->
+      {#if dash.vm?.demo}<span class="badge demo">Demonstration data</span>{/if}
       {#if dash.account}
         {#if dash.profiles.length > 1}
           <ProfileSwitcher profiles={dash.profiles}
@@ -119,9 +109,6 @@
     {@const vm = dash.vm}
     <ProfileHeader profile={dash.shown} own={dash.own} />
 
-    <div class="toolbar">
-      <Segmented label="Tools" options={providers} value={dash.provider} onchange={(p) => dash.setProvider(p)} />
-    </div>
 
     <ActivityChart series={vm.series} today={vm.today} demo={vm.demo} hasActivity={vm.hasActivity} />
     <StatsRow stats={vm.stats} />
@@ -152,15 +139,11 @@
   .settings-head h2 { font-size: 17px; font-weight: 600; }
   .badge { border: 1px solid var(--line); color: var(--muted); font-size: 12px; padding: 5px 10px; border-radius: var(--radius-sm); }
   .badge.demo { border-color: var(--demo-line); background: var(--demo-bg); color: var(--demo-text); }
-  .toolbar { display: flex; justify-content: center; margin-bottom: 8px; }
   .notice { color: var(--warn); margin: 12px 0; text-align: center; }
   .tools { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr)); gap: 16px; }
   @media (max-width: 720px) {
     main { padding: 24px 16px 40px; }
     .top { gap: 12px; align-items: flex-start; }
     h1 { white-space: nowrap; }
-    /* The demo label must stay visible; "Live data" is the default and can go. */
-    .badge.live { display: none; }
-    .toolbar { justify-content: flex-start; overflow-x: auto; }
   }
 </style>
