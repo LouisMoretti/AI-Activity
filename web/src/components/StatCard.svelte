@@ -21,7 +21,7 @@
   span { display: block; color: var(--muted); font-size: 13px; margin-top: 2px; }
   .pop {
     position: absolute; z-index: 10; top: calc(100% + 10px); left: 50%; translate: -50% 0;
-    width: max-content; min-width: 200px; max-width: 280px; text-align: left;
+    width: max-content; min-width: 200px; max-width: min(360px, calc(100vw - 32px)); text-align: left;
     background: var(--raised); border: 1px solid var(--line); border-radius: 10px;
     padding: 12px 14px; box-shadow: 0 8px 24px #0007;
     opacity: 0; visibility: hidden; transition: opacity .12s ease;

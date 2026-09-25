@@ -7,8 +7,10 @@
 
 A personal, multi-device dashboard showing **real measured usage** of AI coding
 tools. Current scope: **Claude Code, Codex and OpenCode ingestion**.
-OpenCode has no quota of its own: its card shows tokens, conversations and
-the split by provider, and its limits as "Unavailable".
+OpenCode has no quota of its own: its card shows the conversations active
+now (a reply in the last 10 minutes; listed in creation order so parallel
+ones never swap places), else the last one, on the right; today's tokens, conversations,
+calls, models and providers on the left.
 
 Layout, top to bottom: token activity (centered year calendar, readout shows
 today unless a day is hovered), four stats (all-time tokens, today, sessions,
