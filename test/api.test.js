@@ -1433,6 +1433,26 @@ describe("opencode ingestion", () => {
 
 describe("rate limits", () => {
   const post = (base, key, body) => req(base, "POST", "/api/ingest/claude-code", { key, body });
+  /**
+   * Sends up to `max` requests until one is refused. Buckets refill while
+   * the burst runs (more on a slow runner), so the check is: the burst
+   * passes, then no more than what refilled meanwhile.
+   */
+  async function burst(send, { capacity, perSec, max }) {
+    const start = Date.now();
+    let ok = 0;
+    let refused = null;
+    while (ok + (refused ? 1 : 0) < max) {
+      const r = await send();
+      if (r.status === 429) { refused = r; break; }
+      assert.equal(r.status, 200, r.text);
+      ok += 1;
+    }
+    const refilled = Math.ceil(((Date.now() - start) / 1000) * perSec);
+    assert.ok(refused, `never refused after ${ok} requests`);
+    assert.ok(ok >= capacity && ok <= capacity + refilled, `${ok} passed; burst ${capacity}, refilled ${refilled}`);
+    assert.ok(Number(refused.headers.get("retry-after")) >= 1);
+  }
   const batch = (n, tag) => ({
     messages: Array.from({ length: n }, (_, i) => ({ ...event(), message_id: `msg_rl_${tag}_${i}` })),
   });
@@ -1463,21 +1483,16 @@ describe("rate limits", () => {
     t.after(() => srv.stop());
     const { key } = await newDevice(srv.base);
     const one = event();
-    const statuses = [];
-    for (let i = 0; i < 310; i++) statuses.push((await post(srv.base, key, one)).status);
-    assert.ok(statuses.slice(0, 300).every((s) => s === 200), "the burst passes");
-    assert.ok(statuses.slice(305).every((s) => s === 429), String(statuses.slice(300)));
+    await burst(() => post(srv.base, key, one), { capacity: 300, perSec: 5, max: 1000 });
   });
 
   test("public reads: over the per-client budget → 429, other clients unaffected", async (t) => {
     const srv = await startServer();
     t.after(() => srv.stop());
     const get = (p, ip) => req(srv.base, "GET", p, { anon: true, headers: { "cf-connecting-ip": ip } });
-    const paths = ["/api/leaderboard", "/api/u/admin/summary", "/api/profiles"];
-    for (let i = 0; i < 120; i++) assert.equal((await get(paths[i % 3], "203.0.113.60")).status, 200);
-    const over = await get("/api/u/admin/activity", "203.0.113.60");
-    assert.equal(over.status, 429);
-    assert.ok(Number(over.headers.get("retry-after")) >= 1);
+    const paths = ["/api/leaderboard", "/api/u/admin/summary", "/api/profiles", "/api/u/admin/activity"];
+    let i = 0;
+    await burst(() => get(paths[i++ % 4], "203.0.113.60"), { capacity: 120, perSec: 2, max: 500 });
     assert.equal((await get("/api/leaderboard", "203.0.113.61")).status, 200);
     // Health and the sign-in status are not public reads.
     assert.equal((await get("/api/health", "203.0.113.60")).status, 200);
@@ -1487,9 +1502,7 @@ describe("rate limits", () => {
   test("signed-in routes: over the per-user budget → 429, other users unaffected", async (t) => {
     const srv = await startServer();
     t.after(() => srv.stop());
-    for (let i = 0; i < 120; i++) assert.equal((await req(srv.base, "GET", "/api/devices")).status, 200);
-    const over = await req(srv.base, "GET", "/api/devices");
-    assert.equal(over.status, 429);
+    await burst(() => req(srv.base, "GET", "/api/devices"), { capacity: 120, perSec: 1, max: 500 });
     const bob = await register(srv.base, { username: "ratebob", password: "bob-password-1" });
     assert.equal((await req(srv.base, "GET", "/api/devices", { cookie: bob.cookie })).status, 200);
   });
