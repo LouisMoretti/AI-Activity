@@ -12,6 +12,7 @@
   import ProfilePanel from "./components/ProfilePanel.svelte";
   import SiteHeader from "./components/SiteHeader.svelte";
   import Section from "./components/Section.svelte";
+  import TodayByTool from "./components/TodayByTool.svelte";
   import StatsRow from "./components/StatsRow.svelte";
   import UsersPanel from "./components/UsersPanel.svelte";
   import { untrack } from "svelte";
@@ -105,7 +106,12 @@
         <div class="tools">
           {#if vm.tools.includes("claude-code")}<ClaudeCodeCard vm={vm.claude} />{/if}
           {#if vm.tools.includes("codex")}<CodexCard vm={vm.codex} />{/if}
-          {#if vm.tools.includes("opencode")}<OpenCodeCard vm={vm.opencode} />{/if}
+          {#if vm.tools.includes("opencode")}
+            <div class="wide">
+              <OpenCodeCard vm={vm.opencode} />
+              <TodayByTool today={vm.stats.today} />
+            </div>
+          {/if}
         </div>
       </Section>
 
@@ -121,6 +127,9 @@
   .gate { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 20px; color: var(--muted); font-size: 13px; line-height: 1.6; }
   .gate button { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 4px 10px; font-size: 12px; color: var(--text); }
   .notice { color: var(--warn); margin: 12px 0; text-align: center; }
+  /* OpenCode (2/3) and today's split by tool (1/3) share the last row. */
+  .wide { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; }
+  @media (max-width: 720px) { .wide { grid-template-columns: 1fr; } }
   .tools { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr)); gap: 16px; }
   @media (max-width: 720px) {
     .shell { padding: 24px 16px 40px; }

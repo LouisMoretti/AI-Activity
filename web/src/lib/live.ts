@@ -1,7 +1,7 @@
 // Maps measured API responses into the view model. Missing data stays
 // null ("—" / "Unavailable"); nothing is interpolated.
 import type {
-  ActivityResponse, Breakdown, QuotasResponse, SessionsResponse, SummaryResponse,
+  ActivityResponse, Breakdown, QuotasResponse, Session, SessionsResponse, SummaryResponse,
 } from "../../../shared/types.ts";
 import { denseSeries, streaks } from "./series.ts";
 import {
@@ -14,8 +14,8 @@ export interface LiveData {
   activity: ActivityResponse;
   quotas: QuotasResponse;
   sessions: SessionsResponse;
-  /** summary?tool=opencode: its models are stored as provider/model. */
-  opencode: SummaryResponse;
+  /** OpenCode's card: its summary (today) and its latest sessions. */
+  opencode: { summary: SummaryResponse; latest: SessionsResponse };
 }
 
 export const ACTIVITY_DAYS = 364;
@@ -45,36 +45,35 @@ function toolQuotas(q: QuotasResponse, tool: QuotaToolVM["tool"]): QuotaToolVM {
   };
 }
 
-function openCode(s: SummaryResponse): OpenCodeVM {
-  const providers = new Map<string, number>();
-  for (const m of s.total.by_model) {
-    const name = m.name.includes("/") ? m.name.slice(0, m.name.indexOf("/")) : m.name;
-    providers.set(name, (providers.get(name) ?? 0) + m.tokens);
-  }
-  const has = s.total.events > 0;
-  return {
-    tokens: has ? s.total.tokens : null,
-    today: has ? s.today.tokens : null,
-    sessions: has ? s.total.sessions : null,
-    providers: [...providers].map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value),
-  };
-}
-
 const asTool = (t: string): ToolKey =>
   t === "codex" || t === "opencode" ? t : "claude-code";
+
+const toSession = (s: Session): SessionVM => ({
+  tool: asTool(s.tool),
+  id: s.session_id,
+  model: s.model,
+  calls: s.events,
+  tokens: s.tokens,
+  lastActive: s.last_seen,
+  context: s.context_used_pct === null ? null : { pct: s.context_used_pct, size: s.context_window_size },
+});
+
+function openCode(d: LiveData["opencode"]): OpenCodeVM {
+  const t = d.summary.today;
+  return {
+    recent: d.latest.sessions.map(toSession),
+    today: {
+      tokens: t.tokens, sessions: t.sessions, calls: t.events, models: t.by_model.length,
+      // Models are stored as provider/model.
+      providers: new Set(t.by_model.map((m) => m.name.split("/")[0])).size,
+    },
+  };
+}
 
 export function liveDashboard(d: LiveData, provider: Provider): DashboardVM {
   const series = denseSeries(d.activity.days, ACTIVITY_DAYS, d.summary.day);
   const hasActivity = d.summary.total.events > 0;
-  const sessions: SessionVM[] = d.sessions.sessions.map((s) => ({
-    tool: asTool(s.tool),
-    id: s.session_id,
-    model: s.model,
-    calls: s.events,
-    tokens: s.tokens,
-    lastActive: s.last_seen,
-    context: s.context_used_pct === null ? null : { pct: s.context_used_pct, size: s.context_window_size },
-  }));
+  const sessions = d.sessions.sessions.map(toSession);
   return {
     demo: false,
     today: d.summary.day,

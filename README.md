@@ -133,7 +133,7 @@ What it does:
 - The first run sends the whole database: that is the import of past
   sessions.
 - No 5-hour or weekly limit: OpenCode has none of its own, so the card
-  lists usage per provider instead.
+  shows the active conversations and today's usage instead.
 - How far the database was sent is kept in
   `~/.cache/ai-activity/opencode.json` and only moves forward once the
   server accepted a batch, so nothing is lost while the server is down (the
