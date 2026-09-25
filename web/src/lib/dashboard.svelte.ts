@@ -67,8 +67,6 @@ export class Dashboard {
   sessionsLimit = $state(SESSIONS_PAGE);
   /** The signed-in account; null when signed out. */
   account = $state<Account | null>(null);
-  /** Every profile, for the switcher (signed in only). */
-  profiles = $state<Profile[]>([]);
   /** The profile on screen. */
   shown = $state<Profile | null>(null);
   private live = $state<LiveData | null>(null);
@@ -98,7 +96,6 @@ export class Dashboard {
       const auth = await api.authStatus();
       this.account = auth.user;
       if (!auth.user) {
-        this.profiles = [];
         if (route.page === "profile") await this.loadProfile(route.username);
         // Public, like profile pages: the page loads its own data.
         else if (route.page === "leaderboard") this.status = "ready";
@@ -113,7 +110,6 @@ export class Dashboard {
         this.go(nextPath() ?? profilePath(auth.user.username) + (this.demo ? "?demo=1" : ""), true);
         return;
       }
-      this.profiles = (await api.profiles()).profiles;
       if (route.page === "profile") await this.loadProfile(route.username);
       else this.status = "ready";
     } catch (e) {
@@ -206,7 +202,6 @@ export class Dashboard {
   /** Drop everything the previous account could see. */
   private signedOut(): void {
     this.account = null;
-    this.profiles = [];
     this.live = null;
     this.sessionsLimit = SESSIONS_PAGE;
     this.status = "signed-out";
