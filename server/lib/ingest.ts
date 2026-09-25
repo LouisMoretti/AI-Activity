@@ -105,6 +105,11 @@ function toMessage(m: Obj, now: number): NormalizedMessage | null {
   };
 }
 
+/** Quota window lengths: a window cannot reset later than this after it was observed. */
+const QUOTA_WINDOW_SEC: Record<string, number> = { five_hour: 5 * 3600, seven_day: 7 * 86400 };
+const MAX_WINDOW_SEC = 31 * 86400;
+const RESET_SLACK_SEC = 600;
+
 /**
  * Normalize a Claude Code payload (POST /api/ingest/claude-code).
  *
@@ -136,6 +141,7 @@ function normalizeClaudeCode(body: unknown): NormalizedBatch {
     if (msg) messages.push(msg);
   }
 
+  const measuredAt = eventTime(src.occurred_at, now);
   const limits: Obj = isObj(src.rate_limits) ? src.rate_limits : {};
   const quotas: NormalizedQuota[] = [];
   for (const key of Object.keys(limits)) {
@@ -143,11 +149,11 @@ function normalizeClaudeCode(body: unknown): NormalizedBatch {
     if (!isObj(w)) continue;
     const pct = Number(w.used_percentage ?? w.used_pct);
     if (!Number.isFinite(pct) || pct < 0) continue;
-    quotas.push({
-      limit_type: key,
-      used_pct: pct,
-      resets_at: w.resets_at !== undefined && w.resets_at !== null ? toSec(w.resets_at, null) : null,
-    });
+    const resets = w.resets_at !== undefined && w.resets_at !== null ? toSec(w.resets_at, null) : null;
+    // The window that resets last is shown as current (latestQuotas), so a
+    // reset further away than the window is long would pin it: drop it.
+    if (resets !== null && resets > measuredAt + (QUOTA_WINDOW_SEC[key] ?? MAX_WINDOW_SEC) + RESET_SLACK_SEC) continue;
+    quotas.push({ limit_type: key, used_pct: pct, resets_at: resets });
   }
 
   // Context gauge: explicit in a batch, or read from a raw statusLine payload.
@@ -164,7 +170,7 @@ function normalizeClaudeCode(body: unknown): NormalizedBatch {
     messages,
     quotas,
     account_ref: typeof src.account_ref === "string" && src.account_ref ? src.account_ref : "default",
-    measured_at: eventTime(src.occurred_at, now),
+    measured_at: measuredAt,
     context,
     single,
   };
