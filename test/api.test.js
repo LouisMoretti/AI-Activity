@@ -1011,6 +1011,55 @@ describe("leaderboard", () => {
   });
 });
 
+describe("local days (like GitHub's contribution calendar)", () => {
+  let srv, key, cookie;
+  const post = (over) => req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event(over) });
+  const get = async (p) => (await req(srv.base, "GET", `/api/u/tz/${p}`, { anon: true })).json;
+  const iso = (sec) => new Date(sec * 1000).toISOString().slice(0, 10);
+  // 23:30 UTC three days ago: already the next day at UTC+2, still that day in UTC.
+  const lateUtc = Math.floor(Date.now() / 86400000) * 86400 - 3 * 86400 + 23.5 * 3600;
+  before(async () => {
+    srv = await startServer();
+    cookie = (await register(srv.base, { username: "tz", password: "tz-password-1" })).cookie;
+    key = (await newDevice(srv.base, "tz-laptop", cookie)).key;
+  });
+  after(() => srv.stop());
+
+  test("an event counts on the local day where it happened", async () => {
+    await post({ event_id: "msg_tz_paris", occurred_at: lateUtc, utc_offset_min: 120 });
+    // Invalid offsets are dropped: the event counts as UTC.
+    await post({ event_id: "msg_tz_bad", occurred_at: lateUtc, utc_offset_min: 7 });
+    const days = (await get("activity?days=30")).days;
+    assert.deepEqual(days.map((d) => [d.day, d.tokens]), [[iso(lateUtc), 180], [iso(lateUtc + 86400), 180]]);
+  });
+
+  test("a replay dates an event stored without an offset, once", async () => {
+    await post({ event_id: "msg_tz_old", occurred_at: lateUtc });
+    const replay = await post({ event_id: "msg_tz_old", occurred_at: lateUtc, utc_offset_min: 120 });
+    assert.equal(replay.json.deduped, true);
+    // A known offset never changes: the day does not move afterwards.
+    await post({ event_id: "msg_tz_old", occurred_at: lateUtc, utc_offset_min: -300 });
+    const days = (await get("activity?days=30")).days;
+    assert.deepEqual(days.map((d) => [d.day, d.tokens]), [[iso(lateUtc), 180], [iso(lateUtc + 86400), 360]]);
+  });
+
+  test("today is the owner's day at their latest offset, for every visitor", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    // UTC+14: the owner's today may already be tomorrow in UTC.
+    await post({ event_id: "msg_tz_now", occurred_at: now, utc_offset_min: 840 });
+    const today = iso(now + 840 * 60);
+    const s = await get("summary");
+    assert.equal(s.day, today);
+    assert.equal(s.today.tokens, 180);
+    const days = (await get("activity?days=1")).days;
+    assert.deepEqual(days.map((d) => d.day), [today]);
+    const board = (await req(srv.base, "GET", "/api/leaderboard?days=30", { anon: true })).json;
+    assert.equal(board.day, today);
+    assert.equal(board.entries.find((e) => e.username === "tz").current_streak, 1);
+    assert.equal(board.activity.at(-1).day, today);
+  });
+});
+
 describe("summary, sessions and context (redesign APIs)", () => {
   let srv, key;
   before(async () => {

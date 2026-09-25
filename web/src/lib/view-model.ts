@@ -18,7 +18,7 @@ export interface FigureVM {
 
 export interface StatsVM {
   total: FigureVM; // all-time tokens
-  today: FigureVM; // tokens today (UTC day)
+  today: FigureVM; // tokens today (the owner's local day)
   sessions: FigureVM; // all-time conversations
   streak: { current: number; longest: number } | null;
 }

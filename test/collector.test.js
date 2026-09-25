@@ -7,6 +7,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
+import Database from "better-sqlite3";
 import { startServer, req, newDevice } from "./helpers.js";
 
 const README = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8");
@@ -72,7 +73,7 @@ describe("collector one-liner from README.md", () => {
     key = (await newDevice(srv.base, "collector")).key;
     proxy = await slowProxy(srv.base, 1500);
     home = fs.mkdtempSync(path.join(os.tmpdir(), "ai-activity-home-"));
-    env = { ...process.env, HOME: home };
+    env = { ...process.env, HOME: home, TZ: "IST-5:30" }; // POSIX TZ: UTC+5:30, no tz database needed
     project = path.join(home, ".claude", "projects", "-work");
     fs.mkdirSync(path.join(project, "sess-1", "subagents"), { recursive: true });
     transcript = path.join(project, "sess-1.jsonl");
@@ -108,6 +109,11 @@ describe("collector one-liner from README.md", () => {
     assert.ok(q.some((x) => x.limit_type === "five_hour" && x.used_pct === 21));
     const s = (await req(srv.base, "GET", "/api/u/admin/sessions")).json.sessions.find((x) => x.session_id === "sess-1");
     assert.equal(s.context_used_pct, 37);
+    // Each entry carries the device's UTC offset at that time, in minutes.
+    const db = new Database(srv.dbPath, { readonly: true });
+    const utcOffsets = db.prepare("SELECT DISTINCT utc_offset_min AS o FROM usage_events").all().map((r) => r.o);
+    db.close();
+    assert.deepEqual(utcOffsets, [330]);
     // Offsets stop before the half-written line.
     assert.equal(offsets()[transcript], fs.readFileSync(transcript).lastIndexOf(10) + 1);
   });

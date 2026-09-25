@@ -20,6 +20,8 @@ export interface NormalizedMessage {
   context_window_size: number | null;
   context_used_pct: number | null;
   occurred_at: number;
+  /** The device's UTC offset at occurred_at, in minutes; null when not sent. */
+  utc_offset_min: number | null;
 }
 
 /** Context fill of a session at measurement time (a gauge, never summed). */
@@ -72,6 +74,17 @@ const str = (v: unknown): string | null =>
 /** A skewed device clock must not put usage in the future (heatmap, streaks, "today"). */
 const eventTime = (v: unknown, now: number) => (v !== undefined ? Math.min(toSec(v, now), now) : now);
 
+/**
+ * A UTC offset in minutes as the collectors send it (east of UTC positive,
+ * like Python's tm_gmtoff / 60): -12:00 to +14:00, in quarter hours.
+ * Anything else is dropped, and the event then counts as UTC.
+ */
+function utcOffset(v: unknown): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isInteger(n) && n >= -720 && n <= 840 && n % 15 === 0 ? n : null;
+}
+
 function modelOf(v: unknown): string | null {
   if (typeof v === "string") return v;
   return isObj(v) ? str(v.id || v.display_name || null) : null;
@@ -102,6 +115,7 @@ function toMessage(m: Obj, now: number): NormalizedMessage | null {
     context_window_size: size !== null && size > 0 ? Math.floor(size) : null,
     context_used_pct: optNum(m.context_used_pct),
     occurred_at: eventTime(m.occurred_at, now),
+    utc_offset_min: utcOffset(m.utc_offset_min),
   };
 }
 
@@ -230,6 +244,7 @@ function toCodexMessage(m: Obj, now: number): NormalizedMessage | null {
     context_window_size: null,
     context_used_pct: null,
     occurred_at: eventTime(m.occurred_at, now),
+    utc_offset_min: utcOffset(m.utc_offset_min),
   };
 }
 

@@ -7,7 +7,7 @@ export const fmtPct = (n: number) => `${Math.round(n * 10) / 10}`;
 
 export const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-/** "YYYY-MM-DD" (UTC bucket) → "24 September 2026". */
+/** "YYYY-MM-DD" (a calendar day) → "24 September 2026". */
 export const fmtDay = (iso: string) =>
   new Date(iso + "T00:00:00Z").toLocaleDateString("en-GB", {
     day: "numeric", month: "long", year: "numeric", timeZone: "UTC",

@@ -26,6 +26,7 @@ export interface UsageEventInput {
   context_window_size: number | null;
   context_used_pct: number | null;
   occurred_at: number;
+  utc_offset_min: number | null;
   received_at: number;
 }
 
@@ -282,30 +283,40 @@ export type UpsertResult = "stored" | "updated" | "deduped";
 export function upsertUsageEvent(db: DB, ev: UsageEventInput): UpsertResult {
   return db.transaction((): UpsertResult => {
     const existing = db
-      .prepare("SELECT user_id, output_tokens FROM usage_events WHERE event_id = ?")
-      .get(ev.event_id) as { user_id: number; output_tokens: number } | undefined;
+      .prepare("SELECT user_id, output_tokens, utc_offset_min FROM usage_events WHERE event_id = ?")
+      .get(ev.event_id) as { user_id: number; output_tokens: number; utc_offset_min: number | null } | undefined;
     if (!existing) {
       db.prepare(
         `INSERT INTO usage_events
           (event_id, device_id, user_id, tool, session_id, prompt_id, model,
            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-           context_window_size, context_used_pct, occurred_at, received_at, source)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'message')`
+           context_window_size, context_used_pct, occurred_at, utc_offset_min, received_at, source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'message')`
       ).run(
         ev.event_id, ev.device_id, ev.user_id, ev.tool, ev.session_id, ev.prompt_id, ev.model,
         ev.input_tokens, ev.output_tokens, ev.cache_read_tokens, ev.cache_write_tokens,
-        ev.context_window_size, ev.context_used_pct, ev.occurred_at, ev.received_at
+        ev.context_window_size, ev.context_used_pct, ev.occurred_at, ev.utc_offset_min, ev.received_at
       );
       return "stored";
     }
-    if (existing.user_id !== ev.user_id || ev.output_tokens <= existing.output_tokens) return "deduped";
+    if (existing.user_id !== ev.user_id) return "deduped";
+    if (ev.output_tokens <= existing.output_tokens) {
+      // A replay from a collector that sends offsets dates an event stored
+      // without one (resending the history fixes old days). A known offset
+      // never changes: an event's day does not move afterwards.
+      if (existing.utc_offset_min === null && ev.utc_offset_min !== null) {
+        db.prepare("UPDATE usage_events SET utc_offset_min = ? WHERE event_id = ?").run(ev.utc_offset_min, ev.event_id);
+      }
+      return "deduped";
+    }
     db.prepare(
       `UPDATE usage_events SET input_tokens = ?, output_tokens = ?, cache_read_tokens = ?,
-         cache_write_tokens = ?, model = COALESCE(?, model), received_at = ?
+         cache_write_tokens = ?, model = COALESCE(?, model), utc_offset_min = COALESCE(utc_offset_min, ?),
+         received_at = ?
        WHERE event_id = ?`
     ).run(
       ev.input_tokens, ev.output_tokens, ev.cache_read_tokens, ev.cache_write_tokens,
-      ev.model, ev.received_at, ev.event_id
+      ev.model, ev.utc_offset_min, ev.received_at, ev.event_id
     );
     return "updated";
   })();
@@ -416,11 +427,50 @@ export function usageTotals(db: DB, userId: number, sinceSec: number, tool: stri
     .get(userId, sinceSec, tool, tool) as UsageTotals;
 }
 
+/**
+ * An event's day: the local day where and when it happened (like a GitHub
+ * contribution), from the device's UTC offset at that time. It never moves
+ * afterwards. Events without an offset count as UTC.
+ */
+const localDay = (t = "") => `date(${t}occurred_at + COALESCE(${t}utc_offset_min, 0) * 60, 'unixepoch')`;
+
+/** The day it is now at a UTC offset (UTC when null), as "YYYY-MM-DD". */
+export function dayAt(offsetMin: number | null, now = nowSec()): string {
+  return new Date((now + (offsetMin ?? 0) * 60) * 1000).toISOString().slice(0, 10);
+}
+
+/** "YYYY-MM-DD" n days later (earlier when negative). */
+export function addDays(day: string, n: number): string {
+  return new Date(Date.parse(day + "T00:00:00Z") + n * 86400000).toISOString().slice(0, 10);
+}
+
+/** The earliest time an event of that local day can have happened: its midnight at UTC+14. */
+export function earliestOfDay(day: string): number {
+  return Date.parse(day + "T00:00:00Z") / 1000 - 14 * 3600;
+}
+
+/**
+ * The UTC offset of the user's latest event that has one: where they are
+ * now, as far as we know. "Today" and the streak end on that day, for every
+ * visitor of the profile.
+ */
+export function latestOffset(db: DB, userId: number): number | null {
+  const row = db
+    .prepare(
+      `SELECT utc_offset_min FROM usage_events
+       WHERE user_id = ? AND utc_offset_min IS NOT NULL
+       ORDER BY occurred_at DESC LIMIT 1`
+    )
+    .get(userId) as { utc_offset_min: number } | undefined;
+  return row?.utc_offset_min ?? null;
+}
+
+/** Tokens and sessions per local day of the events since sinceSec. */
 export function dailyBuckets(db: DB, userId: number, sinceSec: number, tool: string | null): ActivityDay[] {
   return db
     .prepare(
       `SELECT
-         date(occurred_at, 'unixepoch') AS day,
+         ${localDay()} AS day,
          SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens) AS tokens,
          COUNT(DISTINCT session_id) AS sessions
        FROM usage_events
@@ -491,20 +541,23 @@ const ranked = (m: Map<string, Tally>): BreakdownRow[] =>
     .sort((a, b) => b.tokens - a.tokens || (a.name < b.name ? -1 : 1));
 
 /**
- * Tokens, sessions and events since sinceSec, split by model and by tool,
- * from one pass over the covering index (grouped per model, tool and
- * session, then folded here).
+ * Tokens, sessions and events since sinceSec (and on that local day, when
+ * given), split by model and by tool, from one pass over the covering index
+ * (grouped per model, tool and session, then folded here).
  */
-export function breakdown(db: DB, userId: number, sinceSec: number, tool: string | null): Breakdown {
+export function breakdown(
+  db: DB, userId: number, sinceSec: number, tool: string | null, day: string | null = null
+): Breakdown {
   const groups = db
     .prepare(
       `SELECT COALESCE(model, 'unknown') AS model, tool, session_id,
               SUM(${TOKENS}) AS tokens, COUNT(*) AS events
        FROM usage_events
        WHERE user_id = ? AND occurred_at >= ? AND (? IS NULL OR tool = ?)
+         AND (? IS NULL OR ${localDay()} = ?)
        GROUP BY model, tool, session_id`
     )
-    .all(userId, sinceSec, tool, tool) as { model: string; tool: string; session_id: string | null; tokens: number; events: number }[];
+    .all(userId, sinceSec, tool, tool, day, day) as { model: string; tool: string; session_id: string | null; tokens: number; events: number }[];
   const total = tally();
   const byModel = new Map<string, Tally>();
   const byTool = new Map<string, Tally>();
@@ -525,13 +578,14 @@ export function breakdown(db: DB, userId: number, sinceSec: number, tool: string
 }
 
 /**
- * Everyone's usage since sinceSec, ranked by tokens. activitySinceSec bounds
- * the global heatmap and the streaks, which ignore the period. Disabled
- * accounts never appear. Two grouped passes over the covering index (the
- * period, and the heatmap year), folded here.
+ * Everyone's usage since sinceSec, ranked by tokens. The global heatmap
+ * covers calendarDays local days and ignores the period, like the streaks
+ * (each counted back from that account's own today). Disabled accounts
+ * never appear. Two grouped passes over the covering index (the period, and
+ * the heatmap year), folded here.
  */
 export function leaderboard(
-  db: DB, sinceSec: number, activitySinceSec: number, todayIso: string
+  db: DB, sinceSec: number, calendarDays: number, now = nowSec()
 ): Omit<LeaderboardResponse, "range_days" | "provenance"> {
   // Every enabled account, used or not: idle ones rank last with zeros.
   const users = db
@@ -540,12 +594,17 @@ export function leaderboard(
        WHERE password_hash IS NOT NULL AND disabled = 0`
     )
     .all() as { id: number; username: string | null; display_name: string | null; avatar_url: string | null }[];
+  const today = new Map(users.map((u) => [u.id, dayAt(latestOffset(db, u.id), now)]));
+  // The calendar ends on the latest of those days (UTC with no account).
+  const lastDay = [...today.values()].reduce((a, d) => (d > a ? d : a), dayAt(null, now));
+  const firstDay = addDays(lastDay, -(calendarDays - 1));
+  const activitySinceSec = earliestOfDay(firstDay);
   const LISTED_FROM = `usage_events e JOIN users u ON u.id = e.user_id
     WHERE u.password_hash IS NOT NULL AND u.disabled = 0`;
   // The period, per user, session, model and day…
   const groups = db
     .prepare(
-      `SELECT e.user_id, e.session_id, e.model, date(e.occurred_at, 'unixepoch') AS day,
+      `SELECT e.user_id, e.session_id, e.model, ${localDay("e.")} AS day,
               SUM(${TOKENS}) AS tokens, COUNT(*) AS events, MAX(e.occurred_at) AS last
        FROM ${LISTED_FROM} AND e.occurred_at >= ?
        GROUP BY e.user_id, e.session_id, e.model, day`
@@ -557,7 +616,7 @@ export function leaderboard(
   // …and the heatmap year, per user, day and session (models do not matter there).
   const yearDays = db
     .prepare(
-      `SELECT e.user_id, date(e.occurred_at, 'unixepoch') AS day, e.session_id, SUM(${TOKENS}) AS tokens
+      `SELECT e.user_id, ${localDay("e.")} AS day, e.session_id, SUM(${TOKENS}) AS tokens
        FROM ${LISTED_FROM} AND e.occurred_at >= ?
        GROUP BY e.user_id, day, e.session_id`
     )
@@ -572,6 +631,7 @@ export function leaderboard(
   const activity = new Map<string, Tally>();
   for (const d of yearDays) {
     acc.get(d.user_id)!.streakDays.add(d.day);
+    if (d.day < firstDay) continue;
     if (!activity.has(d.day)) activity.set(d.day, tally());
     add(activity.get(d.day)!, d.tokens, 0, d.session_id);
   }
@@ -587,8 +647,8 @@ export function leaderboard(
     add(byModel.get(name)!, g.tokens, g.events, g.session_id);
   }
 
-  // Consecutive active days counted back from today.
-  const streak = (days: Set<string>) => {
+  // Consecutive active days counted back from that account's today.
+  const streak = (days: Set<string>, todayIso: string) => {
     let n = 0;
     for (let t = Date.parse(todayIso + "T00:00:00Z"); days.has(new Date(t).toISOString().slice(0, 10)); t -= 86400000) n++;
     return n;
@@ -611,7 +671,7 @@ export function leaderboard(
       active_days: a.days.size,
       last_active: a.last,
       top_model: topModel(a.models),
-      current_streak: streak(a.streakDays),
+      current_streak: streak(a.streakDays, today.get(u.id)!),
     };
   }).sort((x, y) => y.tokens - x.tokens || (nocase(x.username) < nocase(y.username) ? -1 : nocase(x.username) > nocase(y.username) ? 1 : 0));
 
@@ -623,6 +683,7 @@ export function leaderboard(
     },
     entries,
     by_model: ranked(byModel),
+    day: lastDay,
     activity: [...activity].sort((x, y) => (x[0] < y[0] ? -1 : 1))
       .map(([day, t]) => ({ day, tokens: t.tokens, sessions: t.sessions.size })),
   };

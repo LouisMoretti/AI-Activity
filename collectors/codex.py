@@ -39,6 +39,11 @@ def when(ts):
         return None
 
 
+def utc_offset(ts):
+    """This machine's UTC offset at that time, in minutes (daylight saving included)."""
+    return time.localtime(ts).tm_gmtoff // 60
+
+
 def lines(data):
     """JSON objects in a chunk of complete lines; broken lines are skipped."""
     dec = json.JSONDecoder()
@@ -92,6 +97,7 @@ def read(path, state):
                 "turn_id": p.get("turn_id"),
                 "model": model,
                 "occurred_at": ts,
+                "utc_offset_min": utc_offset(ts),
                 "usage": usage_of(p["usage"]),
             })
         elif p.get("type") == "token_count" and ts:
@@ -116,6 +122,7 @@ def read(path, state):
                     "session_id": session,
                     "model": model,
                     "occurred_at": ts,
+                    "utc_offset_min": utc_offset(ts),
                     "usage": usage_of(last),
                 })
             last_total = total

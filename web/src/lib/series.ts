@@ -1,23 +1,31 @@
-// Pure helpers over a daily token series (UTC days, oldest first).
+// Pure helpers over a daily token series (days as "YYYY-MM-DD", oldest first).
 import type { ActivityDay } from "../../../shared/types.ts";
 
 export type DayPoint = Pick<ActivityDay, "day" | "tokens">;
 
 /**
- * The last n UTC days ending today, as "YYYY-MM-DD". UTC matches the server
- * buckets (date(occurred_at, 'unixepoch')); local-midnight math would shift
- * the range a day back in UTC+ timezones.
+ * The n days ending on `end` ("YYYY-MM-DD"), oldest first. Day strings are
+ * calendar dates, so the math stays in UTC: local-midnight math would shift
+ * them in UTC+ timezones.
  */
-export function lastUtcDays(n: number, now = new Date()): string[] {
-  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+export function daysEndingOn(end: string, n: number): string[] {
+  const last = Date.parse(end + "T00:00:00Z");
   return Array.from({ length: n }, (_, i) =>
-    new Date(today - (n - 1 - i) * 86400000).toISOString().slice(0, 10));
+    new Date(last - (n - 1 - i) * 86400000).toISOString().slice(0, 10));
 }
 
-/** Fill a sparse server series into a dense one; missing days are 0 tokens (no events). */
-export function denseSeries(days: ActivityDay[], n: number): DayPoint[] {
+/** The last n UTC days ending today (the fictional demo only; live pages end on the server's day). */
+export function lastUtcDays(n: number, now = new Date()): string[] {
+  return daysEndingOn(now.toISOString().slice(0, 10), n);
+}
+
+/**
+ * Fill a sparse server series into the n days ending on `end` (the owner's
+ * today, from the server); missing days are 0 tokens (no events).
+ */
+export function denseSeries(days: ActivityDay[], n: number, end: string): DayPoint[] {
   const byDay = new Map(days.map((d) => [d.day, Number(d.tokens) || 0]));
-  return lastUtcDays(n).map((day) => ({ day, tokens: byDay.get(day) ?? 0 }));
+  return daysEndingOn(end, n).map((day) => ({ day, tokens: byDay.get(day) ?? 0 }));
 }
 
 export function streaks(series: DayPoint[]) {

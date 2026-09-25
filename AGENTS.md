@@ -141,7 +141,7 @@ web/
   src/lib/view-model.ts   what components render (DashboardVM)
   src/lib/live.ts         API responses → DashboardVM ("Unavailable", never guessed)
   src/lib/demo.ts         FICTIONAL ?demo=1 dataset → DashboardVM (always labeled)
-  src/lib/series.ts       pure helpers: dense UTC series, streaks, calendar grid
+  src/lib/series.ts       pure helpers: dense day series, streaks, calendar grid
   src/lib/format.ts       number, day, duration and "ago" formatting
   src/lib/dashboard.svelte.ts  state: provider, auth status, 15 s refresh
   src/App.svelte          routes the pages; renders the site chrome once
@@ -194,7 +194,8 @@ Components never branch on live vs demo: both sources map into the same
 
 - `usage_events` — one row per **Anthropic message id** (`event_id`,
   `source = 'message'`): that API response's tokens, model, session,
-  device, date. Rows from the old statusLine snapshot collector have
+  device, date and `utc_offset_min` (the device's UTC offset then; NULL =
+  UTC). Rows from the old statusLine snapshot collector have
   `source = 'snapshot'` and counted most API calls about twice; a session's
   snapshot rows are deleted from the time of its oldest message received
   (minus 2 minutes: a snapshot is stamped when the statusLine fired).
@@ -203,8 +204,9 @@ Components never branch on live vs demo: both sources map into the same
   measurement date (an unchanged value only moves the latest row's
   measurement date forward). Never summed; see §5 for which row is shown.
 - Reads go through two covering indexes on `usage_events`
-  (`idx_usage_user_read`: user, time, tool, session, model, token counts;
-  `idx_usage_user_session_read`: user, session, tool, time, token counts).
+  (`idx_usage_user_read`: user, time, tool, session, model, token counts,
+  offset; `idx_usage_user_session_read`: user, session, tool, time, token
+  counts, offset). An index missing a covered column is rebuilt at start.
   Any new read query should be answerable from one of them.
 - Migrations are additive (`ADD COLUMN` when missing) and also drop the
   leftovers of removed features: `usage_events.cost_estimated_usd` and the
@@ -221,6 +223,14 @@ Counting rules:
   snapshot per API call. Never sum cumulative counters (`total_input_tokens`, `total_cost_usd`) or
   observed quotas across devices of the same account.
 - Missing data is displayed as "Unavailable", never interpolated.
+- Days are local, like GitHub's contribution calendar: an event counts on
+  `date(occurred_at + utc_offset_min * 60)`, the day where and when it
+  happened, for every visitor, and never moves afterwards (DST and travel
+  included). "Today", the end of a profile's calendar and its current
+  streak use the offset of the owner's latest event that has one (UTC if
+  none); the leaderboard's streaks too, per account, and its calendar ends
+  on the latest of those days. Time ranges (`stats?days`, leaderboard
+  periods) stay rolling windows of 24 h days.
 
 ## 5. Ingestion API
 
@@ -241,6 +251,7 @@ A batch of transcript messages (what the README collector sends):
       "session_id": "7d891161-…",
       "model": "claude-opus-5-5",
       "occurred_at": 1790334657,
+      "utc_offset_min": 120,
       "usage": {
         "input_tokens": 2,
         "output_tokens": 281,
@@ -284,6 +295,10 @@ Notes:
 - Context gauge: `context` (or a raw statusLine `context_window`) is put on
   the session's newest row; `recentSessions` shows the latest one.
 - Empty messages (zero tokens) store no row.
+- `utc_offset_min` (minutes east of UTC, −720..840, quarter hours; else
+  dropped → UTC) dates the event's local day (§4). A replay that carries
+  one fills it on a row stored without (resending the history fixes old
+  days); a stored offset never changes.
 - Quotas: every window with a numeric `used_percentage` (or `used_pct`) is
   recorded, dated by the payload's `occurred_at` (capped at now). A device
   can post stale values (a terminal that has not called the API yet), so
@@ -301,6 +316,7 @@ Notes:
 | transcript `message.id` | `messages[].message_id` (dedup key) |
 | transcript `sessionId` (also on subagent files) | `messages[].session_id` |
 | transcript `message.model`, `timestamp` | `model`, `occurred_at` |
+| device clock at `timestamp` (`time.localtime(t).tm_gmtoff // 60`) | `messages[].utc_offset_min` |
 | transcript `message.usage` (4 counters) | `messages[].usage` |
 | statusLine `rate_limits.*` | `rate_limits` snapshots (absent → "Unavailable") |
 | statusLine `context_window.used_percentage` / `context_window_size` | `context` gauge, never summed |
@@ -321,6 +337,7 @@ Same batch shape (`messages`, `rate_limits`, `context`, `occurred_at`,
 | `token_usage_record.session_id` / `session_meta.id` | `messages[].session_id` |
 | latest `turn_context.model` (or `thread_settings_applied`) | `messages[].model` |
 | `token_usage_record.usage` (`input_tokens`, `cached_input_tokens`, `cache_write_input_tokens`, `output_tokens`) | `messages[].usage` |
+| machine clock at the line's `timestamp` | `messages[].utc_offset_min` |
 | `token_count.rate_limits.primary` / `secondary` (`used_percent`, `window_minutes`, `resets_at`) | `rate_limits` → `five_hour` (300 min) / `seven_day` (10080 min); other lengths dropped |
 | `token_count.info.last_token_usage.total_tokens` / `model_context_window` | `context.used_tokens` / `window_size` → `used_pct` |
 
@@ -405,13 +422,14 @@ account exists):
   account, ranked by tokens in the period (`tokens`, `sessions`, `events`,
   `active_days`, `top_model`, `last_active` (null when idle),
   `current_streak`), plus `totals`, `accounts`, `by_model` and a 364-day
-  global `activity`. Disabled accounts never appear.
+  global `activity` ending on `day`. Disabled accounts never appear.
 - Usage, public, under `/api/u/:username/`:
   - `stats?days=30&tool=claude-code`
-  - `activity?days=364&tool=...` (daily buckets for the heatmap)
+  - `activity?days=364&tool=...` (local-day buckets for the heatmap,
+    the `days` days ending on the owner's today)
   - `quotas` (current window per account, tool + limit type; see §5)
-  - `summary?tool=...` (all-time and current-UTC-day tokens, sessions,
-    events, each split `by_model` and `by_tool`)
+  - `summary?tool=...` (`day`: the owner's today; all-time and today's
+    tokens, sessions, events, each split `by_model` and `by_tool`)
   - `sessions?limit=10&offset=0&tool=...` (grouped by unique session id,
     with latest `context_used_pct` / `context_window_size`, plus `total`
     for paging)
@@ -438,15 +456,17 @@ account exists):
    command (its whole process group) does not stop the detached upload.
 5. Payload without `rate_limits` → quota card shows "Unavailable".
 6. Payload after `resets_at` passed → new snapshot replaces the old window.
-7. `?demo=1` still shows labeled fictional data (after sign-in); normal view
+7. An event at 23:30 Europe/Paris shows on that local day; "Today" and the
+   streak reset at the owner's local midnight.
+8. `?demo=1` still shows labeled fictional data (after sign-in); normal view
    never does.
-8. `/` signed out: sign-in (or first-account) screen; signed in: redirect
+9. `/` signed out: sign-in (or first-account) screen; signed in: redirect
    to `/u/<you>`. `/settings` and `/admin` signed out: sign-in, then back.
    Create account works for anyone (after the first account) until an
    admin closes it; then the tab is hidden and `register` answers `403`.
-9. `/u/<name>` opens without an account and shows usage only: no devices
+10. `/u/<name>` opens without an account and shows usage only: no devices
    or account sections, for visitors and other accounts alike.
-10. `/leaderboard` opens without an account and lists every enabled
+11. `/leaderboard` opens without an account and lists every enabled
     account, idle ones included; disabled ones never listed.
 
 ```bash

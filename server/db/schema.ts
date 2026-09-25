@@ -86,6 +86,12 @@ function migrate(db: DB): void {
   if (!cols.has("source")) {
     db.exec("ALTER TABLE usage_events ADD COLUMN source TEXT NOT NULL DEFAULT 'snapshot'");
   }
+  // The device's UTC offset when the event happened, in minutes: its day is
+  // the local day there and then, like a GitHub contribution. NULL (older
+  // collectors) counts as UTC.
+  if (!cols.has("utc_offset_min")) {
+    db.exec("ALTER TABLE usage_events ADD COLUMN utc_offset_min INTEGER");
+  }
   if (cols.has("cost_estimated_usd")) {
     db.exec("ALTER TABLE usage_events DROP COLUMN cost_estimated_usd");
   }
@@ -96,17 +102,22 @@ function migrate(db: DB): void {
   // index groups the session list from the index; the per-session lookups
   // (latest model and context, snapshot cleanup) use it to find their rows
   // but read those columns from the table.
+  // Indexes made before a column they now cover are rebuilt.
+  for (const [name, col] of [["idx_usage_user_read", "utc_offset_min"], ["idx_usage_user_session_read", "utc_offset_min"]]) {
+    const idx = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?").get(name) as { sql: string } | undefined;
+    if (idx && !idx.sql.includes(col)) db.exec(`DROP INDEX ${name}`);
+  }
   db.exec(`
     DROP INDEX IF EXISTS idx_usage_user_time;
     DROP INDEX IF EXISTS idx_usage_device_prompt;
     DROP INDEX IF EXISTS idx_usage_session;
     CREATE INDEX IF NOT EXISTS idx_usage_user_read ON usage_events(
       user_id, occurred_at, tool, session_id, model,
-      input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+      input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, utc_offset_min
     );
     CREATE INDEX IF NOT EXISTS idx_usage_user_session_read ON usage_events(
       user_id, session_id, tool, occurred_at,
-      input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+      input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, utc_offset_min
     );
   `);
 
