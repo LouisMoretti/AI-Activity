@@ -13,8 +13,9 @@ if (!file) {
 }
 const config = loadConfig();
 try {
-  const saved = restoreFrom(file, config.dbPath, config.backupDir, MIGRATIONS.length);
+  const { saved, setAside } = restoreFrom(file, config.dbPath, config.backupDir, MIGRATIONS.length);
   if (saved) console.log(`Previous database saved as ${saved.file}`);
+  if (setAside) console.log(`Previous database could not be read (corrupt?); kept as ${setAside}`);
   console.log(`Restored ${file} to ${config.dbPath}. Start the server; users may need to sign in again.`);
 } catch (err) {
   console.error(`Restore failed: ${(err as Error).message}`);

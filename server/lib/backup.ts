@@ -28,19 +28,42 @@ export interface BackupResult {
  */
 export function backupTo(db: DB, dir: string, { now = new Date(), suffix = "" } = {}): BackupResult {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const file = path.join(dir, `${stem(db.name)}-${stamp(now)}${suffix}.db`);
-  if (fs.existsSync(file)) throw new Error(`${file} already exists`);
-  const partial = `${file}.partial`;
-  fs.rmSync(partial, { force: true });
+  // mkdir only applies the mode to a directory it creates.
+  try {
+    fs.chmodSync(dir, 0o700);
+  } catch {
+    // Not ours (a shared mount): its owner decides; the files stay 600.
+  }
+  const { file, partial } = claimName(dir, `${stem(db.name)}-${stamp(now)}`, suffix);
   try {
     db.prepare("VACUUM INTO ?").run(partial);
-    fs.chmodSync(partial, 0o600);
     const info = checkBackup(partial);
     fs.renameSync(partial, file);
     return { file, bytes: fs.statSync(file).size, ...info };
   } catch (err) {
     fs.rmSync(partial, { force: true });
     throw err;
+  }
+}
+
+/**
+ * A free backup name, claimed by creating its empty .partial file (0600, so
+ * the copy is never readable by others, even while it is written; VACUUM
+ * INTO accepts an empty target). Two backups in the same second (the
+ * server and a CLI both upgrading, or two runs) get -2, -3… instead of
+ * failing.
+ */
+function claimName(dir: string, base: string, suffix: string) {
+  for (let n = 1; ; n++) {
+    const file = path.join(dir, `${base}${n > 1 ? `-${n}` : ""}${suffix}.db`);
+    const partial = `${file}.partial`;
+    if (fs.existsSync(file)) continue;
+    try {
+      fs.closeSync(fs.openSync(partial, "wx", 0o600));
+      return { file, partial };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
   }
 }
 
@@ -63,7 +86,7 @@ export function checkBackup(file: string): { events: number; version: number } {
  * backups of this database. Returns the deleted files.
  */
 export function pruneBackups(dir: string, dbPath: string, { daily = 7, weekly = 4 } = {}): string[] {
-  const re = new RegExp(`^${stem(dbPath).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-(\\d{8})-(\\d{6})\\.db$`);
+  const re = new RegExp(`^${stem(dbPath).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-(\\d{8})-(\\d{6})(?:-\\d+)?\\.db$`);
   const backups = fs
     .readdirSync(dir)
     .map((name) => ({ name, m: name.match(re) }))
@@ -97,32 +120,44 @@ function isoWeek(day: string): string {
   return `${d.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
 }
 
+const inUse = (dbPath: string) => new Error(`${dbPath} is in use: stop the server (and any npm run user / gen-key) first`);
+const isBusy = (err: unknown) => /^SQLITE_(BUSY|LOCKED)/.test((err as { code?: string }).code ?? "");
+
 /**
  * Replaces the database file with a backup. Refuses while anything else has
  * the database open: leaving WAL mode needs every other connection gone, so
  * a running server (or CLI) makes it fail instead of being swapped under.
- * The current database is backed up first (…-pre-restore.db).
+ * The current database is backed up first (…-pre-restore.db); one that
+ * cannot be read or backed up (corrupt: the reason to restore) is set
+ * aside as <db>.corrupt-<stamp> instead, so the restore still happens.
  */
-export function restoreFrom(backup: string, dbPath: string, backupDir: string, latestVersion: number): BackupResult | null {
+export function restoreFrom(
+  backup: string, dbPath: string, backupDir: string, latestVersion: number,
+): { saved: BackupResult | null; setAside: string | null } {
   const { version } = checkBackup(backup);
   if (version > latestVersion) {
     throw new Error(`${backup} is at schema version ${version}, newer than this server knows (${latestVersion})`);
   }
   let saved: BackupResult | null = null;
+  let setAside: string | null = null;
   if (fs.existsSync(dbPath)) {
-    const db = new Database(dbPath, { fileMustExist: true, timeout: 0 });
+    let db: DB | null = null;
     try {
-      try {
-        db.pragma("journal_mode = DELETE");
-      } catch {
-        throw new Error(`${dbPath} is in use: stop the server (and any npm run user / gen-key) first`);
-      }
-      if (db.pragma("journal_mode", { simple: true }) !== "delete") {
-        throw new Error(`${dbPath} is in use: stop the server (and any npm run user / gen-key) first`);
-      }
+      db = new Database(dbPath, { fileMustExist: true, timeout: 0 });
+      db.pragma("journal_mode = DELETE");
+      if (db.pragma("journal_mode", { simple: true }) !== "delete") throw inUse(dbPath);
       saved = backupTo(db, backupDir, { suffix: "-pre-restore" });
+    } catch (err) {
+      if (isBusy(err)) throw inUse(dbPath);
+      if ((err as Error).message === inUse(dbPath).message) throw err;
+      // Unreadable or failing its integrity check: keep it for inspection.
+      setAside = `${dbPath}.corrupt-${stamp(new Date())}`;
     } finally {
-      db.close();
+      db?.close();
+    }
+    if (setAside) {
+      fs.renameSync(dbPath, setAside);
+      for (const ext of ["-wal", "-shm"]) if (fs.existsSync(dbPath + ext)) fs.renameSync(dbPath + ext, setAside + ext);
     }
   }
   const tmp = `${dbPath}.restoring`;
@@ -133,5 +168,5 @@ export function restoreFrom(backup: string, dbPath: string, backupDir: string, l
   // onto the restored one.
   for (const ext of ["-wal", "-shm", "-journal"]) fs.rmSync(dbPath + ext, { force: true });
   fs.renameSync(tmp, dbPath);
-  return saved;
+  return { saved, setAside };
 }

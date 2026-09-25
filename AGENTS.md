@@ -132,6 +132,8 @@ git pull && docker compose up -d --build                  # upgrade
   `PROXY_SUBNET`, default `172.29.94.0/24`, which only Caddy shares with
   the app; change it if that range is taken). Without it every visitor
   would look like one client to the login throttle and the sign-up cap.
+  The network is IPv4 only: IPv6 visitors may all arrive as its gateway
+  address, depending on the host's Docker setup (issue #102).
 - Restore: `docker compose stop app backup`, then
   `docker compose run --rm --no-deps app node scripts/restore.ts /data/backups/<file>`,
   then `docker compose start app backup`.
@@ -311,13 +313,17 @@ npm run restore -- data/backups/dashboard-20260925-134052.db   # server stopped
 - `backup` takes a `VACUUM INTO` snapshot (one self-contained file, every
   write committed before it started), writes it under a temporary name,
   runs `integrity_check` on it and only then names it
-  `dashboard-YYYYMMDD-HHMMSS.db` (UTC) in `BACKUP_DIR` (default
-  `data/backups`, mode 700, files 600). It exits non-zero on any failure.
+  `dashboard-YYYYMMDD-HHMMSS.db` (UTC; `-2`, `-3`… for more in the same
+  second) in `BACKUP_DIR` (default `data/backups`, made mode 700; files
+  are 600 from the moment they are created). It exits non-zero on any
+  failure.
   Then it prunes: the newest backup of each of the last 7 days and of each
   of the last 4 ISO weeks stay. Only names of that exact shape are ever
   deleted (`-pre-v2`, `-pre-restore` copies and other files stay).
 - Schedule it daily: in Docker, the compose file's `backup` service does
-  (`BACKUP_EVERY_SEC`, default 86400); else a cron line on the server, e.g.
+  (`BACKUP_EVERY_SEC`, default 86400; it starts once the app is healthy
+  and retries a failed run after 5 minutes); else a cron line on the
+  server, e.g.
   `15 3 * * * cd /srv/ai-activity && npm run -s backup`.
 - Copy the backups **off the machine** too, or they die with its disk:
   e.g. `rsync -a data/backups/ backup-host:ai-activity/` or `rclone sync
@@ -327,8 +333,9 @@ npm run restore -- data/backups/dashboard-20260925-134052.db   # server stopped
 - `restore` checks the backup (integrity, schema not newer than the code),
   refuses while anything has the database open (it must leave WAL mode,
   which needs every other connection gone), saves the current database as
-  `…-pre-restore.db`, then replaces it and removes the stale `-wal` /
-  `-shm`. Sessions are rolled back with it: users may have to sign in again,
+  `…-pre-restore.db` (one it cannot read or back up, i.e. corrupt, is set
+  aside as `dashboard.db.corrupt-<stamp>` instead), then replaces it and
+  removes the stale `-wal` / `-shm`. Sessions are rolled back with it: users may have to sign in again,
   and events posted after the backup are missing: the collectors only send
   what their offsets say is new. Deleting `~/.cache/ai-activity/*.json` on
   a device makes its next run resend its whole local history (dedup makes

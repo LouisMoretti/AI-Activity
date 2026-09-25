@@ -39,13 +39,17 @@ services:
     image: ai-activity:latest
     restart: unless-stopped
     init: true
-    depends_on: [app]
+    # Healthy means the app has opened (and created) the database.
+    depends_on:
+      app:
+        condition: service_healthy
     network_mode: none
     volumes:
       - data:/data
     entrypoint: ["sh", "-c"]
     command:
-      - 'trap "exit 0" TERM INT; while :; do node scripts/backup.ts || echo "backup failed"; sleep ${BACKUP_EVERY_SEC:-86400} & wait $$!; done'
+      # A failed run is retried after 5 minutes, not the next day.
+      - 'trap "exit 0" TERM INT; while :; do if node scripts/backup.ts; then s=${BACKUP_EVERY_SEC:-86400}; else echo "backup failed, retrying in 5 min"; s=300; fi; sleep $$s & wait $$!; done'
 
 volumes:
   data:
