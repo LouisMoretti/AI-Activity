@@ -1,12 +1,21 @@
-# docker compose up -d → Caddy (HTTPS) → app. See AGENTS.md, "Deploy".
-# Settings come from .env next to this file (SITE_ADDRESS at least).
+# docker compose up -d → app + daily backups. HTTPS comes from your own Caddy
+# container, which joins the ai-activity-proxy network. See AGENTS.md, "Deploy".
 name: ai-activity
+
+# Rotated logs (Docker keeps them forever otherwise): 3 × 10 MB per container.
+x-logging: &logging
+  driver: local
+  options:
+    max-size: 10m
+    max-file: "3"
 
 services:
   app:
     build: .
-    image: ai-activity:latest
+    # Built here by default; the deploy script sets the GHCR image in .env.
+    image: ${APP_IMAGE:-ai-activity:latest}
     restart: unless-stopped
+    logging: *logging
     init: true
     environment:
       # Only Caddy shares this network with the app: trust its forwarding
@@ -14,36 +23,28 @@ services:
       TRUST_PROXY: ${PROXY_SUBNET:-172.29.94.0/24}
     volumes:
       - data:/data
-    networks: [proxy]
+    networks:
+      proxy:
+        aliases: [ai-activity] # Caddyfile: reverse_proxy ai-activity:3000
     # No published port: the app is only reachable through Caddy.
-
-  caddy:
-    image: caddy:2
-    restart: unless-stopped
-    depends_on: [app]
-    environment:
-      SITE_ADDRESS: ${SITE_ADDRESS:?set SITE_ADDRESS in .env (your domain, or http://localhost with HTTP_PORT=8080 to try it)}
-    ports:
-      - "${HTTP_PORT:-80}:80"
-      - "${HTTPS_PORT:-443}:443"
-      - "${HTTPS_PORT:-443}:443/udp"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data # certificates: keep them across restarts
-      - caddy_config:/config
-    networks: [proxy]
 
   # Daily backup of the live database into the same volume (data/backups),
   # pruned to 7 daily + 4 weekly. Copy them off the machine too.
   backup:
-    image: ai-activity:latest
+    image: ${APP_IMAGE:-ai-activity:latest}
     restart: unless-stopped
+    logging: *logging
     init: true
     # Healthy means the app has opened (and created) the database.
     depends_on:
       app:
         condition: service_healthy
     network_mode: none
+    # Not the image's check (it calls the web server, which never runs
+    # here): `docker compose up --wait` needs every service healthy.
+    healthcheck:
+      test: ["CMD", "test", "-w", "/data"]
+      interval: 10s
     volumes:
       - data:/data
     entrypoint: ["sh", "-c"]
@@ -53,11 +54,13 @@ services:
 
 volumes:
   data:
-  caddy_data:
-  caddy_config:
 
 networks:
+  # Created here with a fixed name and subnet; your Caddy's compose file
+  # lists it as external. Nothing but Caddy and the app may join it: every
+  # address in it is trusted (TRUST_PROXY).
   proxy:
+    name: ai-activity-proxy
     ipam:
       config:
         - subnet: ${PROXY_SUBNET:-172.29.94.0/24}

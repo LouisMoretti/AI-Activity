@@ -4,3 +4,4 @@ data/
 web/dist/
 web/src/lib/.dashboard.test-build.js
 __pycache__/
+.deploy.lock
