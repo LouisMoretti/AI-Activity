@@ -147,6 +147,35 @@ describe("Codex collector (Stop hook from README.md)", () => {
     assert.equal((await summary()).tokens - before.tokens, 105);
   });
 
+  test("a line with an unreadable timestamp is skipped, not retried forever", async () => {
+    const before = await summary();
+    const bad = JSON.stringify({ timestamp: "not a date", type: "token_usage_record",
+      payload: { session_id: S1, response_id: "resp_bad", usage: usage(9, 0, 9) } });
+    fs.appendFileSync(current, bad + "\n" + response("resp_5", S1, usage(200, 100, 7), 6472));
+    await run(hookCommand, env);
+    assert.ok(await waitFor(async () => (await summary()).events === before.events + 1));
+    assert.equal((await summary()).tokens - before.tokens, 207);
+    assert.equal(state()[current][0], fs.statSync(current).size);
+  });
+
+  test("a run cut short keeps the files already sent", async () => {
+    const before = await summary();
+    const day = path.join(home, ".codex", "sessions", "2026", "09", "21");
+    fs.mkdirSync(day, { recursive: true });
+    const good = path.join(day, "rollout-2026-09-21T10-00-00-good.jsonl");
+    const rejected = path.join(day, "rollout-2026-09-21T11-00-00-rejected.jsonl");
+    fs.writeFileSync(good, line("session_meta", { id: "s-good" }) + "\n" + response("resp_6", "s-good", usage(40, 0, 2), 42));
+    // A session id past the 256 KB body limit: the server answers 413 for this file.
+    const huge = "x".repeat(300 * 1024);
+    fs.writeFileSync(rejected, line("session_meta", { id: huge }) + "\n" + response("resp_7", huge, usage(1, 0, 1), 2));
+    await run(hookCommand, env);
+    assert.ok(await waitFor(() => fs.existsSync(path.join(home, ".cache")) && state()[good]), "the accepted file is saved");
+    assert.equal(state()[good][0], fs.statSync(good).size);
+    assert.equal(state()[rejected], undefined, "the rejected file is retried next run");
+    assert.equal((await summary()).tokens - before.tokens, 42);
+    fs.rmSync(rejected);
+  });
+
   test("no prompt text is sent", () => {
     // The collector only builds messages from token records; nothing else is read into a payload.
     assert.ok(!/content|last_agent_message|text/.test(SCRIPT.match(/messages\.append\(\{[\s\S]*?\}\)/g).join("")));

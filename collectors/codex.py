@@ -21,6 +21,7 @@ import json
 import os
 import signal
 import sys
+import time
 import urllib.request
 
 SERVER = os.environ.get("AI_ACTIVITY_URL", "<server>")
@@ -31,7 +32,11 @@ BATCH = 400
 
 
 def when(ts):
-    return int(datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp())
+    """Unix time of an ISO timestamp, or None if it does not parse (the line is skipped)."""
+    try:
+        return int(datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp())
+    except (AttributeError, TypeError, ValueError):
+        return None
 
 
 def lines(data):
@@ -70,7 +75,7 @@ def read(path, state):
     end = data.rfind(b"\n") + 1  # never read a line still being written
     messages, limits, context, last_total = [], None, None, None
     for o in lines(data[:end]):
-        t, p = o.get("type"), o.get("payload")
+        t, p, ts = o.get("type"), o.get("payload"), when(o.get("timestamp"))
         if not isinstance(p, dict):
             continue
         if t == "session_meta":
@@ -79,17 +84,17 @@ def read(path, state):
             model = p["model"]
         elif p.get("type") == "thread_settings_applied" and (p.get("thread_settings") or {}).get("model"):
             model = p["thread_settings"]["model"]
-        elif t == "token_usage_record" and isinstance(p.get("usage"), dict) and o.get("timestamp"):
+        elif t == "token_usage_record" and isinstance(p.get("usage"), dict) and ts:
             records = True
             messages.append({
                 "response_id": p.get("response_id"),
                 "session_id": p.get("session_id") or p.get("thread_id") or session,
                 "turn_id": p.get("turn_id"),
                 "model": model,
-                "occurred_at": when(o["timestamp"]),
+                "occurred_at": ts,
                 "usage": usage_of(p["usage"]),
             })
-        elif p.get("type") == "token_count" and o.get("timestamp"):
+        elif p.get("type") == "token_count" and ts:
             info = p.get("info") if isinstance(p.get("info"), dict) else {}
             last = info.get("last_token_usage") if isinstance(info.get("last_token_usage"), dict) else None
             total = (info.get("total_token_usage") or {}).get("total_tokens")
@@ -101,7 +106,7 @@ def read(path, state):
                 w = {k: {f: rl[k].get(f) for f in ("used_percent", "window_minutes", "resets_at")}
                      for k in ("primary", "secondary") if isinstance(rl.get(k), dict)}
                 if w:
-                    limits = (w, when(o["timestamp"]))
+                    limits = (w, ts)
             # Rollouts older than token_usage_record: one token_count per response,
             # sometimes repeated. Keyed by the thread's running total, so a replay
             # or a repeat is the same id.
@@ -110,7 +115,7 @@ def read(path, state):
                     "event_id": "tc_%s_%d" % (session, total),
                     "session_id": session,
                     "model": model,
-                    "occurred_at": when(o["timestamp"]),
+                    "occurred_at": ts,
                     "usage": usage_of(last),
                 })
             last_total = total
@@ -124,7 +129,18 @@ def post(body):
     urllib.request.urlopen(req, timeout=60).read()
 
 
+def save(path, state):
+    with open(path + ".tmp", "w") as out:
+        json.dump(state, out)
+    os.replace(path + ".tmp", path)
+
+
+def timeout(signum, frame):
+    raise TimeoutError("time limit reached; resumes next run")
+
+
 def main():
+    signal.signal(signal.SIGALRM, timeout)  # an exception, so the finally below still saves
     signal.alarm(900)
     os.makedirs(CACHE, exist_ok=True)
     lock = open(os.path.join(CACHE, "codex.lock"), "w")
@@ -137,24 +153,29 @@ def main():
         state = {}
     files = glob.glob(os.path.join(CODEX_HOME, "sessions", "**", "*.jsonl"), recursive=True)
     files += glob.glob(os.path.join(CODEX_HOME, "archived_sessions", "**", "*.jsonl"), recursive=True)
-    done = {}
-    for f in sorted(files):
-        saved = state.get(f)
-        if saved and saved[0] == os.path.getsize(f):
-            continue
-        messages, limits, context, new = read(f, state)
-        base = {"context": context}
-        if limits:
-            base["rate_limits"], base["occurred_at"] = limits
-        if messages or limits or context:
-            for i in range(0, max(len(messages), 1), BATCH):
-                post(dict(base, messages=messages[i:i + BATCH]))
-        done[f] = new
-    state.update(done)
-    with open(path + ".tmp", "w") as out:
-        json.dump(state, out)
-    os.replace(path + ".tmp", path)
-
+    # Progress is kept per accepted file and saved as the run goes and when it
+    # ends, even cut short (time limit, server error): a long backlog still
+    # gets through over several runs instead of starting over each time.
+    changed, saved_at = False, time.monotonic()
+    try:
+        for f in sorted(files):
+            saved = state.get(f)
+            if saved and saved[0] == os.path.getsize(f):
+                continue
+            messages, limits, context, new = read(f, state)
+            base = {"context": context}
+            if limits:
+                base["rate_limits"], base["occurred_at"] = limits
+            if messages or limits or context:
+                for i in range(0, max(len(messages), 1), BATCH):
+                    post(dict(base, messages=messages[i:i + BATCH]))
+            state[f], changed = new, True
+            if time.monotonic() - saved_at > 10:
+                save(path, state)
+                changed, saved_at = False, time.monotonic()
+    finally:
+        if changed:
+            save(path, state)
 
 if __name__ == "__main__":
     try:
