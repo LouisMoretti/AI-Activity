@@ -24,12 +24,15 @@ names. Quota bars carry a mark for how far into the window we are.
 open; or first-account setup while none exists); once signed
 in it redirects to `/u/<you>`, so the address bar is the shareable link.
 `/u/<username>` is **public and read-only**, no account needed: activity,
-stats, tools/quotas and conversations ("Copy link" in the profile header).
+stats, tools/quotas and conversations.
 `/leaderboard` is **public** too: every enabled account (idle ones last,
 with zeros) ranked by tokens over 7 days / 30 days / all time, with
 server-wide totals, the model split and a global activity calendar. The
 header (`SiteHeader`) is the same on every page: logo, demo badge, and the
-avatar menu (or "Sign in"). It never depends on the route; site chrome (a
+avatar menu (or "Sign in"), plus a breadcrumb of the current page
+(`AI Activity / @name`, `/ Leaderboard`, `/ Settings`, `/ Admin panel`) that
+replaces in-page titles. It never reads the route itself (`App.svelte`
+passes the breadcrumb); site chrome (a
 future footer too) is rendered once in `App.svelte`, outside the pages.
 Clicking the avatar opens Your profile / Leaderboard / Settings / Admin
 panel (admins) / Sign out. `/settings` (signed in) holds Account and Devices; `/admin`
@@ -135,7 +138,7 @@ web/
   src/components/         StatsBar, ActivityChart (Heatmap, TrendChart),
                           QuotaCard, SessionList,
                           DevicesPanel, AccountMenu,
-                          SiteHeader, ProfilePanel, ProfileHeader, UsersPanel,
+                          SiteHeader, ProfilePanel, UsersPanel,
                           NewAccountForm, AuthPanel, Leaderboard,
                           AdminOverview, …
   src/styles/tokens.css   design tokens — components only use these variables
