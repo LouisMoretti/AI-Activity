@@ -157,6 +157,39 @@ describe("versioned migrations", () => {
     }
   });
 
+  test("version 2 removes legacy snapshots already covered by exact message rows", () => {
+    const t = tmpDb();
+    const old = new Database(t.file);
+    MIGRATIONS[0](old);
+    old.pragma("user_version = 1");
+    old.prepare(
+      `INSERT INTO devices (id, user_id, name, key_hash, key_prefix, created_at)
+       VALUES (1, 1, 'old collector', 'hash', 'old', 0)`
+    ).run();
+    const insert = old.prepare(
+      `INSERT INTO usage_events
+         (event_id, device_id, user_id, tool, session_id, input_tokens, occurred_at, received_at, source)
+       VALUES (?, 1, 1, 'claude-code', ?, 10, ?, ?, ?)`
+    );
+    insert.run("covered", "s1", 999, 999, "snapshot");
+    insert.run("message", "s1", 1000, 1000, "message");
+    insert.run("earlier", "s1", 800, 800, "snapshot");
+    insert.run("other-session", "s2", 1000, 1000, "snapshot");
+    old.close();
+
+    const db = openDb(t.file);
+    try {
+      assert.equal(schemaVersion(db), LATEST);
+      assert.deepEqual(
+        db.prepare("SELECT event_id FROM usage_events ORDER BY event_id").all().map((r) => r.event_id),
+        ["earlier", "message", "other-session"]
+      );
+    } finally {
+      db.close();
+      fs.rmSync(t.dir, { recursive: true, force: true });
+    }
+  });
+
   test("a failing migration rolls back entirely and leaves the version as it was", () => {
     const t = tmpDb();
     openDb(t.file).close();

@@ -291,6 +291,10 @@ Components never branch on live vs demo: both sources map into the same
   idempotent checks. It also drops the leftovers of removed features
   (`usage_events.cost_estimated_usd`; the `billing_records`,
   `subscriptions`, `invites`, `app_settings` tables).
+- Migration 2 removes legacy `snapshot` rows already covered by exact
+  message rows, including snapshots stamped up to 2 minutes before the
+  first message. This applies the current ingest cleanup retroactively to
+  databases whose collectors had already advanced their offsets.
   `test/migrations.test.js` checks that a fresh database and older ones
   (`test/fixtures/schema-v0.sql`) end at the same schema with their data.
 

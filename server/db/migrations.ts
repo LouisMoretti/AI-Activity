@@ -11,7 +11,31 @@ import type { DB } from "./schema.ts";
  */
 export const MIGRATIONS: ((db: DB) => void)[] = [
   baseline,
+  cleanupCoveredSnapshots,
 ];
+
+/**
+ * 2: Apply the message-ingestion snapshot cleanup retroactively. The first
+ * version of that cleanup did not include the two-minute statusLine slack;
+ * collectors that had already advanced their offsets did not resend those
+ * old messages after the fix, leaving a snapshot one or two seconds before
+ * the first message to be counted alongside the exact transcript rows.
+ */
+function cleanupCoveredSnapshots(db: DB): void {
+  db.exec(`
+    DELETE FROM usage_events AS snapshot
+    WHERE snapshot.source = 'snapshot'
+      AND snapshot.session_id IS NOT NULL
+      AND snapshot.occurred_at >= (
+        SELECT MIN(message.occurred_at) - 120
+        FROM usage_events AS message
+        WHERE message.user_id = snapshot.user_id
+          AND message.session_id = snapshot.session_id
+          AND message.tool = snapshot.tool
+          AND message.source = 'message'
+      )
+  `);
+}
 
 /**
  * 1: the schema as it was before versioned migrations. Every database made
