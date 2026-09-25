@@ -7,9 +7,11 @@
   let name = $state("");
   let error = $state("");
   let busy = $state(false);
-  // Shown once right after creation; never stored or refetched.
+  // Shown right after creation (or when copying failed); the list never holds keys.
   let created = $state<{ name: string; key: string } | null>(null);
   let copied = $state(false);
+  // Row whose key was just copied, for the "Copied" feedback.
+  let copiedId = $state<number | null>(null);
 
   const fmtDate = (sec: number) =>
     new Date(sec * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
@@ -61,12 +63,38 @@
       copied = false;
     }
   }
+
+  // The key is fetched on click, one at a time. The clipboard write starts
+  // in the click itself (ClipboardItem takes a promise): Safari refuses a
+  // write that only starts after the request returns.
+  async function copyKey(d: Device) {
+    error = "";
+    const key = api.deviceKey(d.id).then((r) => r.key);
+    try {
+      if (typeof ClipboardItem !== "undefined") {
+        const blob = key.then((k) => new Blob([k], { type: "text/plain" }));
+        await navigator.clipboard.write([new ClipboardItem({ "text/plain": blob })]);
+      } else {
+        await navigator.clipboard.writeText(await key);
+      }
+      copiedId = d.id;
+      setTimeout(() => { if (copiedId === d.id) copiedId = null; }, 2000);
+    } catch (err) {
+      // No clipboard access: show the key so it can be copied by hand.
+      try {
+        created = { name: d.name, key: await key };
+        copied = false;
+      } catch {
+        error = (err as Error).message;
+      }
+    }
+  }
 </script>
 
 <div class="panel">
   {#if created}
     <div class="key" role="status">
-      <p>Key for <strong>{created.name}</strong>. Shown once: store it on the device now.</p>
+      <p>Key for <strong>{created.name}</strong>. Store it on that machine; <em>Copy key</em> gives it back later.</p>
       <div class="row">
         <code class="mono">{created.key}</code>
         <button type="button" onclick={copy}>{copied ? "Copied" : "Copy"}</button>
@@ -88,11 +116,16 @@
           {#if d.revoked}
             <span class="muted">Revoked</span>
           {:else}
-            <button type="button" class="danger" onclick={() => revoke(d)}>Revoke</button>
+            <div class="actions">
+              {#if d.has_key}
+                <button type="button" onclick={() => copyKey(d)}>{copiedId === d.id ? "Copied" : "Copy key"}</button>
+              {/if}
+              <button type="button" class="danger" onclick={() => revoke(d)}>Revoke</button>
+            </div>
           {/if}
         </li>
       {:else}
-        <li class="muted">No devices yet. Create a key for each machine that runs a collector.</li>
+        <li class="muted">No devices yet. Create one key per machine: it serves every tool on it.</li>
       {/each}
     </ul>
   {/if}
@@ -109,6 +142,7 @@
   ul { list-style: none; margin: 0; padding: 0; }
   li { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 12px 0; }
   li + li { border-top: 1px solid var(--line); }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
   li.revoked strong { color: var(--muted); }
   strong { font-weight: 500; display: block; }
   small { color: var(--muted); font-size: 12px; }
@@ -119,6 +153,7 @@
   .danger:hover { color: var(--warn); border-color: var(--warn); }
   /* Accent, not the --demo-* palette: this is a real key, never demo data. */
   .key { margin: 12px 0 6px; padding: 12px 14px; border: 1px solid var(--accent); background: var(--surface-2); border-radius: var(--radius-sm); }
+  .key strong { display: inline; }
   .key p { font-size: 13px; color: var(--text); }
   .key .row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
   code { flex: 1; min-width: 0; overflow-wrap: anywhere; color: var(--text); }

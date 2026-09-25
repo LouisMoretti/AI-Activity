@@ -71,8 +71,8 @@ npm run user -- passwd louis               # also signs that user out
 npm run user -- list
 ```
 
-Create a device ingestion key (printed once, stored hashed), for the first
-account unless `--user` says otherwise:
+Create a device ingestion key (also copyable later from Settings →
+Devices), for the first account unless `--user` says otherwise:
 
 ```bash
 npm run gen-key -- "laptop-louis" [--user alice]
@@ -415,8 +415,14 @@ account exists):
   - `sessions?limit=10&offset=0&tool=...` (grouped by unique session id,
     with latest `context_used_pct` / `context_window_size`, plus `total`
     for paging)
-- `GET /api/devices`, `POST /api/devices {name}` (returns key once),
-  `POST /api/devices/:id/revoke`
+- `GET /api/devices` (never the keys, only `key_prefix` and `has_key`),
+  `POST /api/devices {name}` (returns the key), `GET /api/devices/:id/key`
+  → `{key}` (one key per request, own live devices only, `404` otherwise),
+  `POST /api/devices/:id/revoke` (also forgets the key). A device is a
+  machine: one key serves every tool on it (the tool comes from the ingest
+  URL). Keys are stored in `devices.key` so the owner can copy them again
+  (they only allow posting usage); ingest looks them up by `key_hash`.
+  Keys made before that column existed are hash only: not copyable.
 
 ## 7. Testing checklist (acceptance criteria)
 

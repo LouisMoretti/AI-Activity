@@ -90,6 +90,8 @@ export interface Device {
   key_prefix: string;
   revoked: number;
   created_at: number;
+  /** The key can be fetched again (GET /api/devices/:id/key); false for revoked or older keys. */
+  has_key: boolean;
 }
 
 export interface Account {

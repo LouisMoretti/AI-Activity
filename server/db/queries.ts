@@ -5,9 +5,10 @@ import type {
 } from "../../shared/types.ts";
 import { nowSec, type DB } from "./schema.ts";
 
-export interface DeviceRow extends Device {
+export interface DeviceRow extends Omit<Device, "has_key"> {
   user_id: number;
   key_hash: string;
+  key: string | null;
 }
 
 export interface UsageEventInput {
@@ -239,21 +240,33 @@ export function createDevice(db: DB, { userId, name }: { userId: number; name: s
   const prefix = raw.slice(0, 10);
   const info = db
     .prepare(
-      "INSERT INTO devices (user_id, name, key_hash, key_prefix, revoked, created_at) VALUES (?, ?, ?, ?, 0, ?)"
+      "INSERT INTO devices (user_id, name, key_hash, key, key_prefix, revoked, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)"
     )
-    .run(userId, name || "unnamed device", hashKey(raw), prefix, nowSec());
+    .run(userId, name || "unnamed device", hashKey(raw), raw, prefix, nowSec());
   return { id: Number(info.lastInsertRowid), key: raw, prefix };
 }
 
 /** Revoke one of the user's devices; false when no such device exists. */
 export function revokeDevice(db: DB, userId: number, id: number): boolean {
-  return db.prepare("UPDATE devices SET revoked = 1 WHERE id = ? AND user_id = ?").run(id, userId).changes > 0;
+  // A revoked key is useless, so it is not kept either.
+  return db.prepare("UPDATE devices SET revoked = 1, key = NULL WHERE id = ? AND user_id = ?").run(id, userId).changes > 0;
+}
+
+/** The key of one of the user's live devices; null if none (or made before keys were kept). */
+export function getDeviceKey(db: DB, userId: number, id: number): string | null {
+  const row = db
+    .prepare("SELECT key FROM devices WHERE id = ? AND user_id = ? AND revoked = 0")
+    .get(id, userId) as { key: string | null } | undefined;
+  return row?.key ?? null;
 }
 
 export function listDevices(db: DB, userId: number): Device[] {
-  return db
-    .prepare("SELECT id, name, key_prefix, revoked, created_at FROM devices WHERE user_id = ? ORDER BY id")
-    .all(userId) as Device[];
+  const rows = db
+    .prepare(
+      "SELECT id, name, key_prefix, revoked, created_at, key IS NOT NULL AS has_key FROM devices WHERE user_id = ? ORDER BY id"
+    )
+    .all(userId) as (Omit<Device, "has_key"> & { has_key: number })[];
+  return rows.map((d) => ({ ...d, has_key: Boolean(d.has_key) }));
 }
 
 export type UpsertResult = "stored" | "updated" | "deduped";

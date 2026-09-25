@@ -110,6 +110,13 @@ function migrate(db: DB): void {
     );
   `);
 
+  // Device keys are kept so their owner can copy them again from Settings
+  // (ingest still looks them up by hash). Keys made before are hash only.
+  const deviceCols = new Set(
+    (db.prepare("PRAGMA table_info(devices)").all() as { name: string }[]).map((c) => c.name)
+  );
+  if (!deviceCols.has("key")) db.exec("ALTER TABLE devices ADD COLUMN key TEXT");
+
   // Accounts: the pre-accounts single user (id 1) keeps all its data and
   // gets a username once the first account is set up.
   const userCols = new Set(
