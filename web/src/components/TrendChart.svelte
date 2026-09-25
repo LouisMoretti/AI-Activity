@@ -26,5 +26,6 @@
 </svg>
 
 <style>
-  svg { display: block; width: 760px; max-width: 100%; height: 110px; }
+  /* Fills its container (the size of the daily calendar). */
+  svg { display: block; width: 100%; height: 100%; }
 </style>
