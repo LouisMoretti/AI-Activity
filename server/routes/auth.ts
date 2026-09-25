@@ -1,6 +1,6 @@
 import { Hono, type Context } from "hono";
 import type { AuthStatus } from "../../shared/types.ts";
-import { accountsExist, createAccount, createFirstAccount, findUserByUsername } from "../db/queries.ts";
+import { accountsExist, createAccount, createFirstAccount, findUserByUsername, signupOpen } from "../db/queries.ts";
 import type { DB } from "../db/schema.ts";
 import { readJson } from "../lib/http.ts";
 import {
@@ -48,14 +48,17 @@ export function authRoutes(db: DB, auth: ViewerAuth, setupCode: string | null) {
         authenticated: Boolean(who),
         user: who?.account ?? null,
         setup_required: !accountsExist(db),
+        signup_open: signupOpen(db),
       });
     })
-    // Sign-up is open to anyone once the first (admin) account exists.
+    // Sign-up is open to anyone once the first (admin) account exists,
+    // unless an admin closed it.
     .post("/register", async (c) => {
       const body = await readJson(c);
       const limited = throttle(c);
       if (limited) return limited;
       if (!accountsExist(db)) return c.json({ error: "create the first account with the setup code" }, 409);
+      if (!signupOpen(db)) return c.json({ error: "sign-up is closed on this server" }, 403);
       if (Date.now() - signupWindow > SIGNUP_WINDOW_MS) {
         signups = new Map();
         signupWindow = Date.now();
