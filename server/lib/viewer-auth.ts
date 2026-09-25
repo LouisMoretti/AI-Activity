@@ -25,18 +25,24 @@ export type ViewerEnv = {
 
 const tokenHash = (token: string) => createHash("sha256").update(token).digest("hex");
 
+const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+
 /**
- * Behind the Cloudflare tunnel every request comes from localhost, and
- * Cloudflare sets CF-Connecting-IP to the real client address.
+ * Behind the Cloudflare tunnel (or the Vite dev proxy) every request comes
+ * from localhost, and Cloudflare sets CF-Connecting-IP to the real client
+ * address. The header is only trusted from localhost: a client reaching the
+ * server directly (e.g. on the LAN) could otherwise send a new one on every
+ * request and escape the per-client limits.
  */
 export function clientId(c: Context): string {
-  const cf = c.req.header("cf-connecting-ip");
-  if (cf) return cf;
+  let peer = "unknown";
   try {
-    return getConnInfo(c).remote.address || "unknown";
+    peer = getConnInfo(c).remote.address || "unknown";
   } catch {
-    return "unknown";
+    // Not a Node socket (tests with app.request): keep "unknown".
   }
+  const cf = c.req.header("cf-connecting-ip");
+  return cf && LOOPBACK.has(peer) ? cf : peer;
 }
 
 /** HTTPS as seen by the browser, including through the tunnel. */
@@ -82,18 +88,31 @@ export function createViewerAuth(db: DB) {
       const blocked = (fails.get(clientId(c)) ?? 0) >= FAILS_PER_CLIENT || failsTotal >= FAILS_TOTAL;
       return blocked ? Math.ceil((windowStart + FAIL_WINDOW_MS - Date.now()) / 1000) : 0;
     },
-    /** Count a login attempt for throttling. */
-    record(c: Context, ok: boolean): void {
-      resetWindowIfDue();
+    /**
+     * Start a password (or setup code) check: seconds to wait when throttled,
+     * else 0. The attempt is counted as a failure right away, before the
+     * slow hash, so a burst of parallel guesses cannot all get through
+     * before any of them is recorded.
+     */
+    attempt(c: Context): number {
+      const wait = this.throttled(c);
+      if (wait) return wait;
       const id = clientId(c);
-      if (ok) {
-        // That client was mistyping, not guessing: stop counting it globally.
-        failsTotal = Math.max(0, failsTotal - (fails.get(id) ?? 0));
-        fails.delete(id);
-      } else {
-        fails.set(id, (fails.get(id) ?? 0) + 1);
-        failsTotal += 1;
-      }
+      fails.set(id, (fails.get(id) ?? 0) + 1);
+      failsTotal += 1;
+      return 0;
+    },
+    /**
+     * The attempt was right: take back that one attempt only. Earlier
+     * failures stay counted, whatever account this success was for, so
+     * signing in to your own account between guesses resets nothing.
+     */
+    succeeded(c: Context): void {
+      const id = clientId(c);
+      const n = fails.get(id) ?? 0;
+      if (n > 1) fails.set(id, n - 1);
+      else fails.delete(id);
+      failsTotal = Math.max(0, failsTotal - 1);
     },
     login(c: Context, userId: number) {
       // Signing in again from the same browser replaces its previous session.

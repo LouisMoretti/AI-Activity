@@ -391,6 +391,73 @@ describe("locked server (first account made from the CLI)", () => {
     assert.ok(Number(blocked.headers.get("retry-after")) > 0);
     assert.equal((await attempt("hunter2-pass", "203.0.113.10")).status, 200);
   });
+
+  test("signing in to another account between guesses does not reset the count", async () => {
+    const ip = "203.0.113.20";
+    const attempt = (username, password) => req(srv.base, "POST", "/api/auth/login", {
+      anon: true, body: { username, password }, headers: { "cf-connecting-ip": ip },
+    });
+    assert.equal((await register(srv.base, { username: "guesser", password: "guesser-pass" })).status, 200);
+    for (let i = 0; i < 9; i++) assert.equal((await attempt("admin", "nope")).status, 401);
+    assert.equal((await attempt("guesser", "guesser-pass")).status, 200);
+    assert.equal((await attempt("admin", "nope")).status, 401);
+    assert.equal((await attempt("admin", "nope")).status, 429);
+    assert.equal((await attempt("guesser", "guesser-pass")).status, 429);
+  });
+
+  test("state-changing requests must be same-site JSON", async () => {
+    const cookie = await login(srv.base, "admin", "hunter2-pass");
+    // A cross-site HTML form can send text/plain that happens to be JSON.
+    const form = await req(srv.base, "POST", "/api/auth/login", {
+      anon: true, type: "text/plain", raw: JSON.stringify({ username: "admin", password: "hunter2-pass" }),
+    });
+    assert.equal(form.status, 415);
+    assert.equal(form.headers.get("set-cookie"), null);
+    assert.equal((await req(srv.base, "POST", "/api/auth/logout", { type: null, cookie })).status, 415);
+    assert.equal((await req(srv.base, "POST", "/api/account", { type: "application/x-www-form-urlencoded", raw: "display_name=x", cookie })).status, 415);
+    const cross = await req(srv.base, "POST", "/api/account", { body: { display_name: "x" }, headers: { "sec-fetch-site": "cross-site" }, cookie });
+    assert.equal(cross.status, 403);
+    assert.equal((await req(srv.base, "POST", "/api/account", { body: {}, type: "application/json; charset=utf-8", cookie })).status, 200);
+    assert.equal((await req(srv.base, "GET", "/api/devices", { type: "text/plain", cookie })).status, 200);
+  });
+
+  test("a device name that is not text falls back to the default", async () => {
+    const cookie = await login(srv.base, "admin", "hunter2-pass");
+    const r = await req(srv.base, "POST", "/api/devices", { body: { name: { toString: 1 } }, cookie });
+    assert.equal(r.status, 200);
+    const d = (await req(srv.base, "GET", "/api/devices", { cookie })).json.devices.find((x) => x.id === r.json.id);
+    assert.equal(d.name, "unnamed device");
+  });
+});
+
+describe("login throttling under load", () => {
+  let srv;
+  before(async () => { srv = await startServer(); });
+  after(() => srv.stop());
+
+  test("a burst of parallel guesses is counted before hashing", async () => {
+    const guess = () => req(srv.base, "POST", "/api/auth/login", {
+      anon: true, body: { username: "admin", password: "nope" }, headers: { "cf-connecting-ip": "203.0.113.30" },
+    });
+    const statuses = (await Promise.all(Array.from({ length: 40 }, guess))).map((r) => r.status);
+    assert.equal(statuses.filter((s) => s === 401).length, 10);
+    assert.equal(statuses.filter((s) => s === 429).length, 30);
+  });
+
+  test("CF-Connecting-IP is only trusted from localhost", async (t) => {
+    const lan = Object.values(os.networkInterfaces()).flat().find((i) => i && i.family === "IPv4" && !i.internal);
+    if (!lan) return t.skip("no non-loopback IPv4 address to connect from");
+    const base = srv.base.replace("localhost", lan.address).replace("127.0.0.1", lan.address);
+    // From the LAN, a new header on every request must not buy a new budget.
+    const statuses = [];
+    for (let i = 0; i < 12; i++) {
+      statuses.push((await req(base, "POST", "/api/auth/register", {
+        anon: true, body: { username: `lan${i}`, password: "lan-password-1" }, headers: { "cf-connecting-ip": `198.51.100.${i}` },
+      })).status);
+    }
+    assert.deepEqual(statuses.slice(0, 5), [200, 200, 200, 200, 200]);
+    assert.ok(statuses.slice(5).every((s) => s === 429), String(statuses));
+  });
 });
 
 describe("accounts", () => {

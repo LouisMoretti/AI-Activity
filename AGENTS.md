@@ -305,10 +305,19 @@ account exists):
   always need a session and only ever act on the signed-in user.
 - Unknown usernames and wrong passwords get the same `401` and the same
   hashing cost.
-- Login is throttled: 10 failures per client (`CF-Connecting-IP` behind the
-  tunnel) or 50 in total per 15 min → `429` with `Retry-After` (the global
-  cap locks everyone out, owner included, until the window ends). The session
-  cookie is `Secure` when the request is HTTPS (incl. `X-Forwarded-Proto`).
+- Login is throttled: 10 failures per client or 50 in total per 15 min →
+  `429` with `Retry-After` (the global cap locks everyone out, owner
+  included, until the window ends). Login, setup and password change count
+  each attempt as a failure before hashing (a parallel burst cannot slip
+  through) and a right password only takes back that one attempt: signing
+  in to another account never resets the count. The client is
+  `CF-Connecting-IP`, trusted only from localhost (the tunnel or the Vite
+  proxy), else the socket address. The session cookie is `Secure` when the
+  request is HTTPS (incl. `X-Forwarded-Proto`).
+- Every `/api` request other than GET must be `Content-Type:
+  application/json` (`415` otherwise) and not `Sec-Fetch-Site: cross-site`
+  (`403`): a cross-site HTML form could otherwise post JSON-looking
+  `text/plain` and sign the visitor in to another account.
 - `POST /api/account {display_name?, avatar_url?}` (only the fields sent
   change; empty display name → the username, empty picture → the initial).
   Profile pictures are links, never uploads: every visitor's browser loads
