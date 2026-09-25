@@ -47,12 +47,6 @@ function migrate(db: DB): void {
       occurred_at INTEGER NOT NULL,
       received_at INTEGER NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_usage_user_time
-      ON usage_events(user_id, occurred_at);
-    CREATE INDEX IF NOT EXISTS idx_usage_device_prompt
-      ON usage_events(device_id, prompt_id);
-    CREATE INDEX IF NOT EXISTS idx_usage_session
-      ON usage_events(session_id);
 
     CREATE TABLE IF NOT EXISTS quota_snapshots (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,6 +89,26 @@ function migrate(db: DB): void {
   if (cols.has("cost_estimated_usd")) {
     db.exec("ALTER TABLE usage_events DROP COLUMN cost_estimated_usd");
   }
+
+  // Every read (stats, summary, activity, sessions, leaderboard) filters by
+  // user and time and only needs these columns: the covering index lets
+  // SQLite answer from the index alone instead of the table. The session
+  // index groups the session list from the index; the per-session lookups
+  // (latest model and context, snapshot cleanup) use it to find their rows
+  // but read those columns from the table.
+  db.exec(`
+    DROP INDEX IF EXISTS idx_usage_user_time;
+    DROP INDEX IF EXISTS idx_usage_device_prompt;
+    DROP INDEX IF EXISTS idx_usage_session;
+    CREATE INDEX IF NOT EXISTS idx_usage_user_read ON usage_events(
+      user_id, occurred_at, tool, session_id, model,
+      input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+    );
+    CREATE INDEX IF NOT EXISTS idx_usage_user_session_read ON usage_events(
+      user_id, session_id, tool, occurred_at,
+      input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+    );
+  `);
 
   // Accounts: the pre-accounts single user (id 1) keeps all its data and
   // gets a username once the first account is set up.

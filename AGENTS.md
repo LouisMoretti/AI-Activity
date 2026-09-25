@@ -184,6 +184,10 @@ Components never branch on live vs demo: both sources map into the same
 - `quota_snapshots` — one row per observed quota window
   (`five_hour`, `seven_day`): account, limit type, % used, window length,
   reset time, measurement date. Latest snapshot wins; never summed.
+- Reads go through two covering indexes on `usage_events`
+  (`idx_usage_user_read`: user, time, tool, session, model, token counts;
+  `idx_usage_user_session_read`: user, session, tool, time, token counts).
+  Any new read query should be answerable from one of them.
 - Migrations are additive (`ADD COLUMN` when missing) and also drop the
   leftovers of removed features: `usage_events.cost_estimated_usd` and the
   `billing_records`, `subscriptions`, `invites`, `app_settings` tables.
@@ -347,6 +351,9 @@ account exists):
   `GET /api/admin/settings` → `{signup_open}`, `POST /api/admin/settings
   {signup_open}` opens or closes account creation (stored in `settings`;
   open by default). Closing it never affects existing accounts or the CLI.
+- Public reads (`/api/u/…`, `/api/leaderboard`) are cached in memory until
+  the database changes (this server's writes or the CLI's) and for 30 s at
+  most (`readCache` in `server/lib/http.ts`).
 - `GET /api/leaderboard?days=1..730|all` (default 30; the UI uses 7, 30 and all), **no session needed** → every enabled
   account, ranked by tokens in the period (`tokens`, `sessions`, `events`,
   `active_days`, `top_model`, `last_active` (null when idle),
