@@ -1469,21 +1469,35 @@ describe("rate limits", () => {
     for (let i = 0; i < 50; i++) assert.equal((await post(srv.base, a.key, batch(400, `a${i}`))).status, 200);
     const events = async () => (await req(srv.base, "GET", "/api/u/admin/summary", { anon: true })).json.total.events;
     assert.equal(await events(), 20_400);
-    // ...and leaves the device in debt: the next one is refused before anything is read.
-    const over = await post(srv.base, a.key, batch(400, "over"));
+    // ...and leaves the device in debt: a batch that would write is rolled back...
+    const quotas = { five_hour: { used_percentage: 42, resets_at: Math.floor(Date.now() / 1000) + 3600 } };
+    const over = await post(srv.base, a.key, { ...batch(400, "over"), rate_limits: quotas });
     assert.equal(over.status, 429);
     assert.ok(Number(over.headers.get("retry-after")) >= 1);
     assert.equal(await events(), 20_400);
+    // ...but its quotas are kept, and replays still pass: a collector resending
+    // its backlog gets as far as the new rows every run.
+    const q = (await req(srv.base, "GET", "/api/u/admin/quotas", { anon: true })).json.quotas;
+    assert.deepEqual(q.map((x) => [x.tool, x.used_pct]), [["claude-code", 42]]);
+    assert.equal((await post(srv.base, a.key, same)).status, 200);
+    // Other tools on the same device, and other devices, are not held up.
+    const codex = await req(srv.base, "POST", "/api/ingest/codex", { key: a.key, body: { messages: [codexResponse()] } });
+    assert.equal(codex.status, 200);
     assert.equal((await post(srv.base, b.key, batch(1, "b"))).status, 200);
-    assert.equal(await events(), 20_401);
+    assert.equal(await events(), 20_402);
   });
 
-  test("ingest: requests per device are capped too, even when they store nothing", async (t) => {
+  test("ingest: requests are capped per device and tool, replays too (with a larger budget)", async (t) => {
     const srv = await startServer();
     t.after(() => srv.stop());
     const { key } = await newDevice(srv.base);
+    // Quotas only: no rows, one request each.
+    const quotasOnly = { rate_limits: { five_hour: { used_percentage: 1, resets_at: Math.floor(Date.now() / 1000) + 3600 } } };
+    await burst(() => post(srv.base, key, quotasOnly), { capacity: 300, perSec: 5, max: 1000 });
+    const other = await newDevice(srv.base, "replays");
     const one = event();
-    await burst(() => post(srv.base, key, one), { capacity: 300, perSec: 5, max: 1000 });
+    assert.equal((await post(srv.base, other.key, one)).json.stored, true); // stored: not a replay
+    await burst(() => post(srv.base, other.key, one), { capacity: 3000, perSec: 50, max: 10_000 });
   });
 
   test("public reads: over the per-client budget → 429, other clients unaffected", async (t) => {
@@ -1492,7 +1506,7 @@ describe("rate limits", () => {
     const get = (p, ip) => req(srv.base, "GET", p, { anon: true, headers: { "cf-connecting-ip": ip } });
     const paths = ["/api/leaderboard", "/api/u/admin/summary", "/api/profiles", "/api/u/admin/activity"];
     let i = 0;
-    await burst(() => get(paths[i++ % 4], "203.0.113.60"), { capacity: 120, perSec: 2, max: 500 });
+    await burst(() => get(paths[i++ % 4], "203.0.113.60"), { capacity: 300, perSec: 5, max: 1000 });
     assert.equal((await get("/api/leaderboard", "203.0.113.61")).status, 200);
     // Health and the sign-in status are not public reads.
     assert.equal((await get("/api/health", "203.0.113.60")).status, 200);

@@ -360,13 +360,24 @@ Counting rules:
 The tool slug in the URL picks the payload normalizer
 (`server/lib/ingest.ts`, one entry per slug): `claude-code`, `codex` and `opencode`. There is no default: a bare `/api/ingest` and unknown slugs → `404`.
 Unknown or revoked keys → `401`. Small JSON bodies only (256 KB max).
-Rate limits per device key: 300 requests (refill 5/s) and 20,000 rows
-written (stored or updated; refill 10/s). Over either → `429` with
-`Retry-After`, checked before the body is read, so nothing is stored. A
-batch is charged what it wrote, after the fact (it can push the device
-into debt), and replays cost nothing: the collectors resend the same
-backlog on their next run and get further each time. The burst covers a
-first import of about a month of history.
+Rate limits per device key **and tool** (one key serves every tool on a
+machine: a Claude Code import never holds up Codex), all `429` with
+`Retry-After`:
+
+- 300 requests, refill 5/s: batches that write rows, and posts with only
+  quotas / context.
+- 3,000 replays, refill 50/s: batches whose messages were all stored
+  already (the request is given back and charged here instead). The
+  collectors resend their whole backlog after any refusal (the Claude Code
+  one only saves its offsets once a run is fully accepted), so replays
+  need this much larger budget.
+- 20,000 rows written (stored or updated), refill 10/s. A batch is charged
+  what it wrote, after the fact, so it can push the device into debt;
+  while in debt, a batch that would write rows is rolled back (`429`) but
+  its quotas and context are still recorded, and replays still pass. A
+  backlog therefore always drains, at the refill rate once past the burst,
+  which covers a first import of about a month of history.
+
 The payload's `tool` is optional; when present it must equal the slug
 (`400` otherwise).
 
@@ -579,9 +590,11 @@ account exists):
 - Rate limits (`LIMITS` in `server/lib/rate-limit.ts`, token buckets in
   memory: they reset when the server restarts). Over one → `429` with
   `Retry-After`:
-  - public reads (`/api/u/…`, `/api/leaderboard`, `/api/profiles`): 120
-    per client (the client address above), refill 2/s. A dashboard polls
-    about 5 of them every 15 s;
+  - public reads (`/api/u/…`, `/api/leaderboard`, `/api/profiles`): 300
+    per client (the client address above), refill 5/s. A dashboard polls
+    7 of them every 15 s, so about ten tabs fit behind one address. A
+    rate-limited refresh keeps the page as it was (the web client does
+    not show it as "Could not reach the server");
   - signed-in routes (`/api/devices`, `/api/account`, `/api/users`,
     `/api/admin`): 120 per user, refill 1/s;
   - at most 20 live devices per account (`POST /api/devices` → `409`;

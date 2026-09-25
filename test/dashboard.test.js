@@ -95,6 +95,21 @@ describe("dashboard state", () => {
     stop();
   });
 
+  test("a rate-limited refresh keeps the page as it was; a first load shows the error", async () => {
+    const { dash, stop, tick } = await open("/u/me", profileRoutes("me"));
+    assert.equal(dash.status, "ready");
+    const shown = dash.vm;
+    routes["/api/u/me/summary"] = 429;
+    tick();
+    await settle();
+    assert.equal(dash.status, "ready");
+    assert.equal(dash.vm, shown);
+    stop();
+    const first = await open("/u/me", { ...profileRoutes("me"), "/api/u/me/summary": 429 });
+    assert.equal(first.dash.status, "error");
+    first.stop();
+  });
+
   test("a 401 on a page that needs the session sends back to sign-in, then here", async () => {
     const { dash, stop } = await open("/settings", { "/api/devices": 401 });
     assert.equal(dash.status, "ready");

@@ -12,6 +12,11 @@ export class NotFoundError extends Error {
   constructor() { super("not found"); }
 }
 
+/** 429: the server's rate limit; the next refresh tries again. */
+export class RateLimitedError extends Error {
+  constructor() { super("rate limited"); }
+}
+
 let sessionLost: (() => void) | null = null;
 
 /**
@@ -32,6 +37,7 @@ async function get<T>(path: string): Promise<T> {
   const r = await fetch(path);
   if (r.status === 401) throw unauthorized(path);
   if (r.status === 404) throw new NotFoundError();
+  if (r.status === 429) throw new RateLimitedError();
   if (!r.ok) throw new Error(`request failed: ${r.status}`);
   return r.json() as Promise<T>;
 }

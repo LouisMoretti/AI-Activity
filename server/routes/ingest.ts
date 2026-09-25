@@ -15,8 +15,10 @@ import { bearerKey } from "../lib/viewer-auth.ts";
  * is no default tool, so a bare /api/ingest is a 404.
  */
 export function ingestRoutes(db: DB) {
-  // Per device key: a leaked key can only add rows this fast (revoke it).
+  // Per device key and tool: a leaked key can only add rows this fast
+  // (revoke it). See LIMITS for why replays have their own budget.
   const requests = tokenBuckets(LIMITS.ingestRequests);
+  const replays = tokenBuckets(LIMITS.ingestReplays);
   const writes = tokenBuckets(LIMITS.ingestWrites);
   return new Hono().post("/:tool", async (c) => {
     const tool = c.req.param("tool");
@@ -29,10 +31,10 @@ export function ingestRoutes(db: DB) {
     }
     const device = findDeviceByKey(db, key);
     if (!device) return c.json({ error: "unknown or revoked device key" }, 401);
-    // Checked before reading the body: an answer over the limit stores
-    // nothing, and the collector sends the same backlog next run.
-    const bucket = String(device.id);
-    const wait = Math.max(requests.wait(bucket), writes.wait(bucket));
+    // Taken before reading the body, so a burst of parallel requests
+    // cannot all pass the check; given back below if it was only a replay.
+    const bucket = `${device.id}:${tool}`;
+    const wait = Math.max(requests.wait(bucket), replays.wait(bucket));
     if (wait) return tooManyRequests(c, wait);
     requests.take(bucket);
 
@@ -48,18 +50,41 @@ export function ingestRoutes(db: DB) {
     const counts = { stored: 0, updated: 0, deduped: 0 };
     let single: UpsertResult | null = null;
 
+    const overBudget = new Error("over the row budget");
+    let rowWait = 0;
+    try {
+      db.transaction(() => {
+        const sessions = new Map<string, number>(); // session → oldest message time
+        for (const m of batch.messages) {
+          if (m.session_id) sessions.set(m.session_id, Math.min(sessions.get(m.session_id) ?? m.occurred_at, m.occurred_at));
+          // Empty messages skip the usage row so event counts stay honest.
+          if (!hasConsumption(m)) continue;
+          single = upsertUsageEvent(db, {
+            ...m, device_id: device.id, user_id: device.user_id, tool: batch.tool, received_at: received,
+          });
+          counts[single] += 1;
+        }
+        // Out of rows: undo this batch's rows (a replay wrote none and passes).
+        rowWait = counts.stored + counts.updated ? writes.wait(bucket) : 0;
+        if (rowWait) throw overBudget;
+        for (const [s, since] of sessions) dropSnapshotRows(db, device.user_id, s, since);
+      })();
+    } catch (err) {
+      if (err !== overBudget) throw err;
+    }
+    if (rowWait) {
+      single = null;
+    } else if (batch.messages.length && counts.stored + counts.updated === 0) {
+      // Only a replay: charged to the replay budget instead.
+      requests.take(bucket, -1);
+      replays.take(bucket);
+    } else {
+      writes.take(bucket, counts.stored + counts.updated);
+    }
+
+    // Quotas and the context gauge are kept even when the rows were refused:
+    // they are what the dashboard shows right now.
     db.transaction(() => {
-      const sessions = new Map<string, number>(); // session → oldest message time
-      for (const m of batch.messages) {
-        if (m.session_id) sessions.set(m.session_id, Math.min(sessions.get(m.session_id) ?? m.occurred_at, m.occurred_at));
-        // Empty messages skip the usage row so event counts stay honest.
-        if (!hasConsumption(m)) continue;
-        single = upsertUsageEvent(db, {
-          ...m, device_id: device.id, user_id: device.user_id, tool: batch.tool, received_at: received,
-        });
-        counts[single] += 1;
-      }
-      for (const [s, since] of sessions) dropSnapshotRows(db, device.user_id, s, since);
       if (batch.context) {
         const { session_id, used_pct, window_size } = batch.context;
         setSessionContext(db, device.user_id, session_id, used_pct, window_size);
@@ -80,7 +105,7 @@ export function ingestRoutes(db: DB) {
         });
       }
     })();
-    writes.take(bucket, counts.stored + counts.updated);
+    if (rowWait) return tooManyRequests(c, rowWait);
 
     if (!batch.single) return c.json<IngestBatchResult>({ ok: true, messages: batch.messages.length, ...counts });
     const result = single as UpsertResult | null;
