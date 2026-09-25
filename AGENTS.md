@@ -98,7 +98,8 @@ every PR and push to main.
 
 Tests: `npm test` boots the real server on a temp DB and exercises the HTTP
 API black-box (`test/api.test.js`), so they must stay green across refactors;
-`test/series.test.js` covers pure helpers of the web
+`test/migrations.test.js` upgrades old databases through the
+migrations; `test/series.test.js` covers pure helpers of the web
 client; `test/dashboard.test.js` runs the client's state class
 (`dashboard.svelte.ts`, compiled with `svelte/compiler`) against a fake
 browser and fetch; `test/live.test.js` covers the API → view-model mapping;
@@ -130,7 +131,8 @@ server/
   index.ts          boot: config, DB, listen
   app.ts            Hono app: /api mount, viewer-auth gate, static + SPA fallback
   config.ts         env → Config (PORT, DB_PATH, STATIC_DIR)
-  db/schema.ts      open + migrate
+  db/schema.ts      open + migrate (runs pending migrations)
+  db/migrations.ts  ordered schema migrations (PRAGMA user_version)
   db/queries.ts     every SQL statement lives here
   lib/ingest.ts     payload normalizers, one per tool slug
   lib/viewer-auth.ts  viewer sessions + login throttling
@@ -223,9 +225,25 @@ Components never branch on live vs demo: both sources map into the same
   offset; `idx_usage_user_session_read`: user, session, tool, time, token
   counts, offset). An index missing a covered column is rebuilt at start.
   Any new read query should be answerable from one of them.
-- Migrations are additive (`ADD COLUMN` when missing) and also drop the
-  leftovers of removed features: `usage_events.cost_estimated_usd` and the
-  `billing_records`, `subscriptions`, `invites`, `app_settings` tables.
+- Migrations are versioned: `PRAGMA user_version` is the number of
+  migrations a database has run, and `MIGRATIONS` in
+  `server/db/migrations.ts` lists them in order. At open (server,
+  `npm run user`, `gen-key`), each pending one runs in its own transaction
+  with its version bump, so a failure leaves the database at the last
+  completed step. A database at a higher version than the code knows (made
+  by a newer server) is refused at start.
+- To change the schema, append one function to `MIGRATIONS`, never edit or
+  reorder a shipped one, and write it without "already done?" guards (it
+  runs once per database). SQLite cannot alter a column in place: a type or
+  constraint change rebuilds the table (create new, copy, drop, rename)
+  inside that step.
+- Migration 1 is the schema from before versioning (databases then are at
+  version 0 with any subset of its changes applied), so it alone keeps
+  idempotent checks. It also drops the leftovers of removed features
+  (`usage_events.cost_estimated_usd`; the `billing_records`,
+  `subscriptions`, `invites`, `app_settings` tables).
+  `test/migrations.test.js` checks that a fresh database and older ones
+  (`test/fixtures/schema-v0.sql`) end at the same schema with their data.
 
 Counting rules:
 
