@@ -1,5 +1,5 @@
 {
-  "name": "ai-usage-dashboard",
+  "name": "ai-activity",
   "version": "0.1.0",
   "description": "Personal multi-user dashboard for real AI tool usage data (Claude Code first). Demo values are never presented as real measurements.",
   "type": "module",
