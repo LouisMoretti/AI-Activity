@@ -1,10 +1,11 @@
 import { Hono, type MiddlewareHandler } from "hono";
 import type { Account, AdminOverview, AdminUser } from "../../shared/types.ts";
 import {
-  adminOverview, deleteUserSessions, getUser, listAdminUsers, setDisplayName, setPasswordHash, setUserAdmin,
+  adminOverview, deleteUserSessions, getUser, listAdminUsers, setAvatarUrl, setDisplayName, setPasswordHash, setUserAdmin,
   setUserDisabled, toAccount,
 } from "../db/queries.ts";
 import type { DB } from "../db/schema.ts";
+import { parseAvatarUrl } from "../lib/avatar.ts";
 import { readJson } from "../lib/http.ts";
 import { hashPassword, passwordProblem, verifyPassword } from "../lib/passwords.ts";
 import type { ViewerAuth, ViewerEnv } from "../lib/viewer-auth.ts";
@@ -26,7 +27,13 @@ export function accountRoutes(db: DB, auth: ViewerAuth) {
     .post("/", async (c) => {
       const body = await readJson(c);
       const id = c.get("userId");
-      setDisplayName(db, id, displayName(body.display_name));
+      // Each field is optional: only the ones sent are changed.
+      if ("avatar_url" in body) {
+        const avatar = parseAvatarUrl(body.avatar_url);
+        if ("error" in avatar) return c.json({ error: avatar.error }, 400);
+        setAvatarUrl(db, id, avatar.url);
+      }
+      if ("display_name" in body) setDisplayName(db, id, displayName(body.display_name));
       return c.json<{ user: Account }>({ user: toAccount(getUser(db, id)!) });
     })
     .post("/password", async (c) => {

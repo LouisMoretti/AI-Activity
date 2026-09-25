@@ -30,7 +30,7 @@ with zeros) ranked by tokens over 7 days / 30 days / all time, with
 server-wide totals, the model split and a global activity calendar. The
 header (`SiteHeader`) is the same on every page: logo, demo badge, and the
 avatar menu (or "Sign in"), plus a breadcrumb of the current page
-(`AI Activity / @name`, `/ Leaderboard`, `/ Settings`, `/ Admin panel`) that
+(`AI Activity / (picture) @name`, `/ Leaderboard`, `/ Settings`, `/ Admin panel`) that
 replaces in-page titles. It never reads the route itself (`App.svelte`
 passes the breadcrumb); site chrome (a
 future footer too) is rendered once in `App.svelte`, outside the pages.
@@ -124,6 +124,7 @@ server/
   lib/passwords.ts    scrypt hashing, username/password rules
   lib/accounts.ts     DASHBOARD_PASSWORD → first account migration
   lib/setup.ts        one-time setup code for the first account
+  lib/avatar.ts       profile picture link allowlist
   lib/http.ts
   routes/           auth, ingest, usage (stats/activity/quotas/sessions),
                     devices, account (profile + admin users)
@@ -164,7 +165,7 @@ Components never branch on live vs demo: both sources map into the same
 ## 4. Data model (SQLite, `data/dashboard.db`)
 
 - `users` — viewer accounts (`username` unique, case-insensitive;
-  `password_hash`, `is_admin`, `disabled`). Every other table carries
+  `password_hash`, `is_admin`, `disabled`, `avatar_url`). Every other table carries
   `user_id`. `viewer_sessions` holds hashed session tokens with expiry.
 
 - `usage_events` — one row per **incremental** consumption event: tokens
@@ -309,7 +310,14 @@ account exists):
   tunnel) or 50 in total per 15 min → `429` with `Retry-After` (the global
   cap locks everyone out, owner included, until the window ends). The session
   cookie is `Secure` when the request is HTTPS (incl. `X-Forwarded-Proto`).
-- `POST /api/account {display_name}` (empty → falls back to the username),
+- `POST /api/account {display_name?, avatar_url?}` (only the fields sent
+  change; empty display name → the username, empty picture → the initial).
+  Profile pictures are links, never uploads: every visitor's browser loads
+  them (public pages, open sign-up), so only `https` images from GitHub,
+  Gravatar or Imgur are accepted (`server/lib/avatar.ts`, per-host path
+  check, no credentials or port), anything else is `400`. Hosts that show
+  the uploader access logs would let anyone track every viewer's IP. The
+  client loads them with `referrerpolicy="no-referrer"`.
   `POST /api/account/password {current_password, new_password}` (throttled
   like a login; signs out the user's other sessions).
 - Admin only (`403` otherwise): `GET /api/users`, `POST /api/users/:id/password

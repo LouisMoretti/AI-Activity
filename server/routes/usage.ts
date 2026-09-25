@@ -6,7 +6,7 @@ import type {
 } from "../../shared/types.ts";
 import {
   breakdown, countSessions, dailyBuckets, findUserByUsername, latestQuotas, leaderboard, listProfiles, recentSessions,
-  toAccount, usageTotals,
+  toProfile, usageTotals,
 } from "../db/queries.ts";
 import { nowSec, type DB } from "../db/schema.ts";
 import { intParam } from "../lib/http.ts";
@@ -117,8 +117,7 @@ export function publicProfileRoutes(db: DB) {
   };
   return new Hono()
     .get("/", (c) => {
-      const { username, display_name } = toAccount(owner(c));
-      return c.json<Profile>({ username, display_name });
+      return c.json<Profile>(toProfile(owner(c)));
     })
     .route("/", usage(db, (c) => owner(c).id));
 }

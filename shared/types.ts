@@ -96,6 +96,8 @@ export interface Account {
   id: number;
   username: string;
   display_name: string;
+  /** https link to the profile picture (allowlisted hosts), or null. */
+  avatar_url: string | null;
   is_admin: boolean;
 }
 
@@ -131,6 +133,7 @@ export interface AdminOverview {
 export interface Profile {
   username: string;
   display_name: string;
+  avatar_url: string | null;
 }
 
 export interface ProfilesResponse {
@@ -148,6 +151,7 @@ export interface IngestResult {
 export interface LeaderboardEntry {
   username: string;
   display_name: string;
+  avatar_url: string | null;
   tokens: number;
   sessions: number;
   events: number;
