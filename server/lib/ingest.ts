@@ -9,7 +9,6 @@ export interface NormalizedQuota {
 
 export interface NormalizedEvent {
   event_id: string;
-  event_id_generated: boolean;
   tool: string;
   session_id: string | null;
   prompt_id: string | null;
@@ -107,7 +106,6 @@ export function normalizeIngest(body: unknown): NormalizedEvent {
 
   return {
     event_id: providedId || randomUUID(),
-    event_id_generated: !providedId,
     tool,
     session_id: str(src.session_id ?? src.sessionId),
     prompt_id: str(src.prompt_id ?? src.promptId),

@@ -69,9 +69,13 @@ function migrate(db: DB): void {
       ON quota_snapshots(user_id, account_ref, limit_type, measured_at);
   `);
 
-  // Older databases may still hold usage_events.cost_estimated_usd and the
-  // billing_records / subscriptions / invites / app_settings tables from
-  // removed features: they are left as is and never read or written.
+  // Leftovers of removed features (cost tracking, invites, sign-up setting).
+  db.exec(`
+    DROP TABLE IF EXISTS billing_records;
+    DROP TABLE IF EXISTS subscriptions;
+    DROP TABLE IF EXISTS invites;
+    DROP TABLE IF EXISTS app_settings;
+  `);
 
   // Additive column migrations (SQLite has no ADD COLUMN IF NOT EXISTS).
   const cols = new Set(
@@ -82,6 +86,9 @@ function migrate(db: DB): void {
   }
   if (!cols.has("context_used_pct")) {
     db.exec("ALTER TABLE usage_events ADD COLUMN context_used_pct REAL");
+  }
+  if (cols.has("cost_estimated_usd")) {
+    db.exec("ALTER TABLE usage_events DROP COLUMN cost_estimated_usd");
   }
 
   // Accounts: the pre-accounts single user (id 1) keeps all its data and

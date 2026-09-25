@@ -22,7 +22,7 @@ export type Route =
 export type Status = "loading" | "ready" | "signed-out" | "setup" | "missing" | "error";
 
 const REFRESH_MS = 15000;
-/** Server-side cap on one /api/sessions page. */
+/** Server-side cap on one sessions page (/api/u/<name>/sessions). */
 const SESSIONS_MAX_PAGE = 200;
 export const SESSIONS_PAGE = 10;
 

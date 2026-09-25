@@ -10,7 +10,6 @@ import {
 } from "../db/queries.ts";
 import { nowSec, type DB } from "../db/schema.ts";
 import { intParam } from "../lib/http.ts";
-import type { ViewerEnv } from "../lib/viewer-auth.ts";
 
 /** Days of the leaderboard's global heatmap (one year, like a profile's). */
 const LEADERBOARD_ACTIVITY_DAYS = 364;
@@ -98,16 +97,10 @@ export function profileListRoutes(db: DB) {
   return new Hono().get("/", (c) => c.json<ProfilesResponse>({ profiles: listProfiles(db) }));
 }
 
-/** The signed-in viewer's own usage (/api/stats, /api/summary, …). */
-export function usageRoutes(db: DB) {
-  return new Hono<ViewerEnv>()
-    .route("/", usage(db, (c) => (c as Context<ViewerEnv>).get("userId")));
-}
-
 /**
  * Public profile pages (/api/u/<username>/…): anyone, signed in or not, can
- * read an enabled account's usage. Only usage: cost, devices and account
- * settings have no public route.
+ * read an enabled account's usage, the owner included (there is no private
+ * copy). Only usage: devices and account settings have no public route.
  */
 export function publicProfileRoutes(db: DB) {
   const owner = (c: Context) => {

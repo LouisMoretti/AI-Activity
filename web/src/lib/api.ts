@@ -1,7 +1,7 @@
 // Typed client for the dashboard JSON API (same origin, cookie session).
 import type {
   Account, ActivityResponse, AdminOverview, AdminUser, AuthStatus, LeaderboardResponse, Profile, Device, QuotasResponse,
-  SessionsResponse, StatsResponse, SummaryResponse,
+  SessionsResponse, SummaryResponse,
 } from "../../../shared/types.ts";
 
 export class UnauthorizedError extends Error {
@@ -63,7 +63,6 @@ export const api = {
   resetPassword: (id: number, password: string) => post<{ ok: true }>(`/api/users/${id}/password`, { password }),
   /** Everyone's usage over the last `days` days, or all time (null). */
   leaderboard: (days: number | null) => get<LeaderboardResponse>(`/api/leaderboard?days=${days ?? "all"}`),
-  stats: (days: number, tool: string | null) => get<StatsResponse>(`/api/stats?days=${days}${toolQuery(tool)}`),
   // A profile's usage, public by username (the viewer's own page uses it too).
   profile: (username: string) => get<Profile>(profileBase(username)),
   activity: (username: string, days: number, tool: string | null) =>
