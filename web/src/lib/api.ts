@@ -1,6 +1,6 @@
 // Typed client for the dashboard JSON API (same origin, cookie session).
 import type {
-  Account, ActivityResponse, AdminOverview, AdminUser, AuthStatus, Profile, ProfilesResponse, Device, QuotasResponse,
+  Account, ActivityResponse, AdminOverview, AdminUser, AuthStatus, LeaderboardResponse, Profile, ProfilesResponse, Device, QuotasResponse,
   SessionsResponse, StatsResponse, SummaryResponse,
 } from "../../../shared/types.ts";
 
@@ -62,6 +62,8 @@ export const api = {
   setUserAdmin: (id: number, is_admin: boolean) => post<{ ok: true }>(`/api/users/${id}/admin`, { is_admin }),
   resetPassword: (id: number, password: string) => post<{ ok: true }>(`/api/users/${id}/password`, { password }),
   profiles: () => get<ProfilesResponse>("/api/profiles"),
+  /** Everyone's usage over the last `days` days, or all time (null). */
+  leaderboard: (days: number | null) => get<LeaderboardResponse>(`/api/leaderboard?days=${days ?? "all"}`),
   stats: (days: number, tool: string | null) => get<StatsResponse>(`/api/stats?days=${days}${toolQuery(tool)}`),
   // A profile's usage, public by username (the viewer's own page uses it too).
   profile: (username: string) => get<Profile>(profileBase(username)),

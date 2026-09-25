@@ -300,9 +300,11 @@ describe("accounts", () => {
     try {
       assert.deepEqual((await req(srv.base, "GET", "/api/auth/status")).json,
         { authenticated: false, user: null, setup_required: true });
-      for (const p of ["/api/stats", "/api/summary", "/api/profiles", "/api/devices"]) {
+      for (const p of ["/api/stats", "/api/summary", "/api/devices"]) {
         assert.equal((await req(srv.base, "GET", p)).status, 401, p);
       }
+      // The public account list is empty until the first account exists.
+      assert.deepEqual((await req(srv.base, "GET", "/api/profiles")).json.profiles, []);
       assert.equal((await req(srv.base, "POST", "/api/devices", { body: { name: "x" } })).status, 401);
       assert.equal((await req(srv.base, "POST", "/api/auth/login", { body: { username: "x", password: "y" } })).status, 400);
       // Collectors keep working before any account exists (keys from the CLI).
@@ -634,11 +636,67 @@ describe("public profile pages", () => {
       const mine = (p) => req(srv.base, "GET", p, { cookie: bob });
       assert.equal((await mine("/api/stats?days=730&user=admin")).json.events, 0);
       assert.deepEqual((await mine("/api/devices")).json.devices, []);
-      // The account list is for signed-in users only.
-      assert.deepEqual((await mine("/api/profiles")).json.profiles,
-        [{ username: "admin", display_name: "admin" }, { username: "bob", display_name: "Bob" }]);
-      assert.equal((await req(srv.base, "GET", "/api/profiles", { anon: true })).status, 401);
+      // The account list is public, like the leaderboard (disabled ones hidden).
+      const listed = [{ username: "admin", display_name: "admin" }, { username: "bob", display_name: "Bob" }];
+      assert.deepEqual((await mine("/api/profiles")).json.profiles, listed);
+      assert.deepEqual((await req(srv.base, "GET", "/api/profiles", { anon: true })).json.profiles, listed);
       assert.equal((await req(srv.base, "GET", "/api/stats", { anon: true })).status, 401);
+    } finally {
+      await srv.stop();
+    }
+  });
+});
+
+describe("leaderboard", () => {
+  test("ranks every enabled account by tokens, publicly", async () => {
+    const srv = await startServer();
+    try {
+      const admin = await login(srv.base, TEST_ADMIN.username, TEST_ADMIN.password);
+      const bob = (await register(srv.base, { username: "bob", password: "bob-password", display_name: "Bob" })).cookie;
+      await register(srv.base, { username: "idle", password: "idle-password" });
+      const gone = (await register(srv.base, { username: "gone", password: "gone-password" })).cookie;
+      const now = Math.floor(Date.now() / 1000);
+      const post = (key, over) => req(srv.base, "POST", "/api/ingest", { key, body: event(over) });
+      const adminKey = (await newDevice(srv.base, "a", admin)).key;
+      const bobKey = (await newDevice(srv.base, "b", bob)).key;
+      const goneKey = (await newDevice(srv.base, "g", gone)).key;
+      // admin: 180 tokens today; bob: 180 today + 180 yesterday + 1800 sixty days ago.
+      await post(adminKey, { session_id: "a1" });
+      await post(bobKey, { session_id: "b1", model: "claude-sonnet-5" });
+      await post(bobKey, { session_id: "b2", model: "claude-sonnet-5", occurred_at: now - 86400 });
+      await post(bobKey, { session_id: "b3", occurred_at: now - 60 * 86400,
+        usage: { input_tokens: 1000, output_tokens: 800 } });
+      await post(goneKey, { session_id: "g1", usage: { input_tokens: 99999 } });
+      await req(srv.base, "POST", `/api/users/${await userId(srv.base, "gone", admin)}/disable`, { cookie: admin });
+
+      // Public, like profile pages: same answer for visitors.
+      const month = (await req(srv.base, "GET", "/api/leaderboard?days=30", { anon: true })).json;
+      assert.deepEqual((await req(srv.base, "GET", "/api/leaderboard?days=30", { cookie: bob })).json, month);
+      assert.equal(month.range_days, 30);
+      assert.equal(month.accounts, 3);
+      assert.deepEqual(month.totals, { tokens: 540, sessions: 3, events: 3, active_accounts: 2 });
+      // Idle accounts are listed too, last, with zeros.
+      assert.deepEqual(month.entries.map((e) => [e.username, e.tokens]), [["bob", 360], ["admin", 180], ["idle", 0]]);
+      assert.deepEqual(month.entries[2], {
+        username: "idle", display_name: "idle", tokens: 0, sessions: 0, events: 0, active_days: 0,
+        top_model: null, last_active: null, current_streak: 0,
+      });
+      const b = month.entries[0];
+      assert.equal(b.display_name, "Bob");
+      assert.equal(b.sessions, 2);
+      assert.equal(b.active_days, 2);
+      assert.equal(b.top_model, "claude-sonnet-5");
+      assert.ok(b.current_streak >= 1);
+      assert.equal(month.entries[1].current_streak, 1);
+      assert.deepEqual(month.by_model.map((m) => m.name), ["claude-sonnet-5", "claude-opus-5-5"]);
+
+      const all = (await req(srv.base, "GET", "/api/leaderboard?days=all", { cookie: bob })).json;
+      assert.equal(all.range_days, null);
+      assert.equal(all.entries[0].tokens, 2160);
+      assert.equal(all.entries[0].top_model, "claude-opus-5-5");
+      assert.equal(all.activity.reduce((a, d) => a + d.tokens, 0), 2340);
+      // Disabled accounts never appear.
+      assert.ok(!all.entries.some((e) => e.username === "gone"));
     } finally {
       await srv.stop();
     }

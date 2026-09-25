@@ -1,5 +1,5 @@
 // App state: sign-in, the current page (sign-in at /, a public profile at
-// /u/<username>, /settings, /admin), data source (live or
+// /u/<username>, /leaderboard, /settings, /admin), data source (live or
 // ?demo=1), session paging, and the 15 s auto-refresh
 // (skipped while hidden or already in flight).
 import { api, NotFoundError, UnauthorizedError, type NewAccount } from "./api.ts";
@@ -11,6 +11,7 @@ import type { Account, Profile, SessionsResponse } from "../../../shared/types.t
 export type Route =
   | { page: "home" }
   | { page: "profile"; username: string }
+  | { page: "leaderboard" }
   | { page: "settings" }
   | { page: "admin" };
 
@@ -43,6 +44,7 @@ function routeFromPath(): Route {
   if (profile) return { page: "profile", username: decodeURIComponent(profile[1]) };
   if (/^\/settings\/?$/.test(path)) return { page: "settings" };
   if (/^\/admin\/?$/.test(path)) return { page: "admin" };
+  if (/^\/leaderboard\/?$/.test(path)) return { page: "leaderboard" };
   return { page: "home" };
 }
 
@@ -98,6 +100,8 @@ export class Dashboard {
       if (!auth.user) {
         this.profiles = [];
         if (route.page === "profile") await this.loadProfile(route.username);
+        // Public, like profile pages: the page loads its own data.
+        else if (route.page === "leaderboard") this.status = "ready";
         else if (route.page === "settings" || route.page === "admin") {
           this.go(`/?next=${encodeURIComponent(`/${route.page}`)}`, true);
         }

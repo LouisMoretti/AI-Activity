@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
-  Account, ActivityDay, AdminOverview, AdminUser, Profile, Breakdown, BreakdownRow, Device, Quota, Session,
+  Account, ActivityDay, AdminOverview, AdminUser, Profile, Breakdown, BreakdownRow, Device, LeaderboardEntry,
+  LeaderboardResponse, Quota, Session,
 } from "../../shared/types.ts";
 import { nowSec, type DB } from "./schema.ts";
 
@@ -434,5 +435,107 @@ export function breakdown(db: DB, userId: number, sinceSec: number, tool: string
     events: Number(t.events),
     by_model: group("model"),
     by_tool: group("tool"),
+  };
+}
+
+/** Usage rows of enabled accounts only: disabled ones leave the leaderboard. */
+const LISTED = `usage_events e JOIN users u ON u.id = e.user_id
+  WHERE u.password_hash IS NOT NULL AND u.disabled = 0`;
+
+/**
+ * Everyone's usage since sinceSec, ranked by tokens. activitySinceSec bounds
+ * the global heatmap and the streaks, which ignore the period.
+ */
+export function leaderboard(
+  db: DB, sinceSec: number, activitySinceSec: number, todayIso: string
+): Omit<LeaderboardResponse, "range_days" | "provenance"> {
+  // Every enabled account, used or not: idle ones rank last with zeros.
+  const rows = db
+    .prepare(
+      `SELECT u.id, u.username, u.display_name,
+              COALESCE(SUM(${TOKENS}), 0) AS tokens,
+              COUNT(DISTINCT e.session_id) AS sessions,
+              COUNT(e.event_id) AS events,
+              COUNT(DISTINCT date(e.occurred_at, 'unixepoch')) AS active_days,
+              MAX(e.occurred_at) AS last_active
+       FROM users u LEFT JOIN usage_events e ON e.user_id = u.id AND e.occurred_at >= ?
+       WHERE u.password_hash IS NOT NULL AND u.disabled = 0
+       GROUP BY u.id
+       ORDER BY tokens DESC, u.username COLLATE NOCASE`
+    )
+    .all(sinceSec) as (Omit<LeaderboardEntry, "top_model" | "current_streak" | "display_name"> &
+      { id: number; display_name: string | null })[];
+
+  const topModels = new Map(
+    (db
+      .prepare(
+        `SELECT user_id, model FROM (
+           SELECT e.user_id, e.model, ROW_NUMBER() OVER (
+             PARTITION BY e.user_id ORDER BY SUM(${TOKENS}) DESC, e.model
+           ) AS rn
+           FROM ${LISTED} AND e.occurred_at >= ? AND e.model IS NOT NULL
+           GROUP BY e.user_id, e.model
+         ) WHERE rn = 1`
+      )
+      .all(sinceSec) as { user_id: number; model: string }[]).map((r) => [r.user_id, r.model])
+  );
+
+  // Active days per user, newest first, to count back from today.
+  const daysByUser = new Map<number, string[]>();
+  for (const r of db
+    .prepare(
+      `SELECT DISTINCT e.user_id, date(e.occurred_at, 'unixepoch') AS day
+       FROM ${LISTED} AND e.occurred_at >= ? ORDER BY day DESC`
+    )
+    .all(activitySinceSec) as { user_id: number; day: string }[]) {
+    const list = daysByUser.get(r.user_id) ?? [];
+    list.push(r.day);
+    daysByUser.set(r.user_id, list);
+  }
+  const streak = (days: string[] = []) => {
+    let n = 0;
+    let expected = Date.parse(todayIso + "T00:00:00Z");
+    for (const d of days) {
+      if (Date.parse(d + "T00:00:00Z") !== expected) break;
+      n++;
+      expected -= 86400000;
+    }
+    return n;
+  };
+
+  const totals = db
+    .prepare(
+      `SELECT COALESCE(SUM(${TOKENS}), 0) AS tokens, COUNT(DISTINCT e.session_id) AS sessions, COUNT(*) AS events
+       FROM ${LISTED} AND e.occurred_at >= ?`
+    )
+    .get(sinceSec) as { tokens: number; sessions: number; events: number };
+
+  return {
+    accounts: rows.length,
+    totals: { ...totals, tokens: Number(totals.tokens), active_accounts: rows.filter((r) => r.events > 0).length },
+    entries: rows.map(({ id, display_name, ...r }) => ({
+      ...r,
+      tokens: Number(r.tokens),
+      username: r.username ?? "",
+      display_name: display_name || r.username || "",
+      top_model: topModels.get(id) ?? null,
+      current_streak: streak(daysByUser.get(id)),
+    })),
+    by_model: db
+      .prepare(
+        `SELECT COALESCE(e.model, 'unknown') AS name, SUM(${TOKENS}) AS tokens,
+                COUNT(DISTINCT e.session_id) AS sessions, COUNT(*) AS events
+         FROM ${LISTED} AND e.occurred_at >= ?
+         GROUP BY name ORDER BY tokens DESC`
+      )
+      .all(sinceSec) as BreakdownRow[],
+    activity: db
+      .prepare(
+        `SELECT date(e.occurred_at, 'unixepoch') AS day, SUM(${TOKENS}) AS tokens,
+                COUNT(DISTINCT e.session_id) AS sessions
+         FROM ${LISTED} AND e.occurred_at >= ?
+         GROUP BY day ORDER BY day`
+      )
+      .all(activitySinceSec) as ActivityDay[],
   };
 }

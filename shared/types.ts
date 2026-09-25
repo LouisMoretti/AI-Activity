@@ -143,3 +143,35 @@ export interface IngestResult {
   stored: boolean;
   event_id: string;
 }
+
+/** One account on the leaderboard (every enabled account, idle ones with zeros). */
+export interface LeaderboardEntry {
+  username: string;
+  display_name: string;
+  tokens: number;
+  sessions: number;
+  events: number;
+  /** UTC days with at least one event in the period. */
+  active_days: number;
+  /** Model with the most tokens in the period; null if never reported. */
+  top_model: string | null;
+  /** Latest event in the period; null when idle. */
+  last_active: number | null;
+  /** Consecutive UTC days with usage ending today (same rule as a profile's streak). */
+  current_streak: number;
+}
+
+/** Server-wide usage across every enabled account (public, like profile pages). */
+export interface LeaderboardResponse {
+  /** Period length; null = all time. */
+  range_days: number | null;
+  /** Enabled accounts, active or not (= entries.length). */
+  accounts: number;
+  totals: { tokens: number; sessions: number; events: number; active_accounts: number };
+  /** Ranked by tokens, most first. */
+  entries: LeaderboardEntry[];
+  by_model: BreakdownRow[];
+  /** Everyone's daily buckets over the last 364 UTC days, whatever the period. */
+  activity: ActivityDay[];
+  provenance: string;
+}

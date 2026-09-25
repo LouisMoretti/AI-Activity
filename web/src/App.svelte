@@ -7,6 +7,7 @@
   import CodexCard from "./components/CodexCard.svelte";
   import Conversations from "./components/Conversations.svelte";
   import DevicesPanel from "./components/DevicesPanel.svelte";
+  import Leaderboard from "./components/Leaderboard.svelte";
   import Logo from "./components/Logo.svelte";
   import NewAccountForm from "./components/NewAccountForm.svelte";
   import OpenCodeCard from "./components/OpenCodeCard.svelte";
@@ -24,6 +25,7 @@
     const page = dash.route.page;
     document.title = page === "settings" ? "Settings · AI Activity"
       : page === "admin" ? "Admin · AI Activity"
+      : page === "leaderboard" ? "Leaderboard · AI Activity"
       : page === "profile" && dash.shown ? `${dash.shown.display_name} · AI Activity${dash.vm?.demo ? " · Demo" : ""}`
         : "AI Activity";
   });
@@ -39,13 +41,17 @@
       <!-- Fictional data is always labeled; live data needs no badge. -->
       {#if dash.vm?.demo}<span class="badge demo">Demonstration data</span>{/if}
       {#if dash.account}
-        {#if dash.profiles.length > 1}
-          <ProfileSwitcher profiles={dash.profiles}
-            current={dash.route.page === "profile" ? dash.route.username : dash.account.username}
-            self={dash.account.username} onchange={(u) => dash.openProfile(u)} />
+        <!-- Profile pages carry nothing but the account menu. -->
+        {#if dash.route.page !== "profile"}
+          <a class="nav" href="/leaderboard" aria-current={dash.route.page === "leaderboard" ? "page" : undefined}
+            onclick={(e) => { e.preventDefault(); dash.go("/leaderboard"); }}>Leaderboard</a>
+          {#if dash.profiles.length > 1}
+            <ProfileSwitcher profiles={dash.profiles} current={dash.account.username}
+              self={dash.account.username} onchange={(u) => dash.openProfile(u)} />
+          {/if}
         {/if}
         <AccountMenu account={dash.account} onnavigate={(p) => dash.go(p)} onlogout={() => dash.logout()} />
-      {:else if dash.route.page === "profile"}
+      {:else if dash.route.page === "profile" || dash.route.page === "leaderboard"}
         <button type="button" class="signin" onclick={signInHere}>Sign in</button>
       {/if}
     </div>
@@ -105,6 +111,10 @@
     {/if}
   {/if}
 
+  {#if dash.route.page === "leaderboard" && dash.status === "ready"}
+    <Leaderboard self={dash.account?.username ?? null} onopen={(u) => dash.openProfile(u)} />
+  {/if}
+
   {#if dash.vm && dash.shown}
     {@const vm = dash.vm}
     <ProfileHeader profile={dash.shown} own={dash.own} />
@@ -137,6 +147,8 @@
   .gate button, .settings-head button, .signin { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 4px 10px; font-size: 12px; color: var(--text); }
   .settings-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
   .settings-head h2 { font-size: 17px; font-weight: 600; }
+  .nav { font-size: 13px; color: var(--muted); text-decoration: none; padding: 5px 8px; border-radius: var(--radius-sm); }
+  .nav:hover, .nav[aria-current="page"] { color: var(--text); background: var(--surface-2); }
   .badge { border: 1px solid var(--line); color: var(--muted); font-size: 12px; padding: 5px 10px; border-radius: var(--radius-sm); }
   .badge.demo { border-color: var(--demo-line); background: var(--demo-bg); color: var(--demo-text); }
   .notice { color: var(--warn); margin: 12px 0; text-align: center; }

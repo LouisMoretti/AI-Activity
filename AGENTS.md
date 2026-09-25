@@ -25,8 +25,13 @@ open; or first-account setup while none exists); once signed
 in it redirects to `/u/<you>`, so the address bar is the shareable link.
 `/u/<username>` is **public and read-only**, no account needed: activity,
 stats, tools/quotas and conversations ("Copy link" in the profile header).
-Clicking the avatar opens Your profile / Settings / Admin panel (admins) /
-Sign out. `/settings` (signed in) holds Account and Devices; `/admin`
+`/leaderboard` is **public** too: every enabled account (idle ones last,
+with zeros) ranked by tokens over 7 days / 30 days / all time, with
+server-wide totals, the model split and a global activity calendar. The
+header links to it and holds the profile switcher, except on `/u/<username>`,
+where only the avatar menu (or "Sign in") is shown.
+Clicking the avatar opens Your profile / Leaderboard / Settings / Admin
+panel (admins) / Sign out. `/settings` (signed in) holds Account and Devices; `/admin`
 (admins) holds the server overview and the users (make or remove admin,
 reset password, disable). The demo (`?demo=1`) needs a sign-in and only replaces your own
 page.
@@ -130,7 +135,7 @@ web/
                           QuotaCard, SessionList,
                           DevicesPanel, AccountMenu,
                           ProfilePanel, ProfileSwitcher, ProfileHeader, UsersPanel,
-                          NewAccountForm, AuthPanel,
+                          NewAccountForm, AuthPanel, Leaderboard,
                           AdminOverview, …
   src/styles/tokens.css   design tokens — components only use these variables
 public/             legacy UI, removed at the switch-over
@@ -287,8 +292,8 @@ account exists):
   sign-up, always available once the first account exists; non-admin
   account, signs in. `409` before the first account exists or if the
   username is taken, `429` after 5 accounts from one client in an hour.
-- `GET /api/profiles` → enabled accounts `{username, display_name}`
-  (signed in only, so visitors cannot list accounts).
+- `GET /api/profiles` → enabled accounts `{username, display_name}`,
+  **no session needed** (the public leaderboard lists them too).
 - Public profile pages, **no session needed**: `GET /api/u/:username` →
   `{username, display_name}`, and `/api/u/:username/stats|activity|quotas|summary|sessions`
   (same shapes as the viewer's own routes; `404` if unknown or disabled).
@@ -313,6 +318,11 @@ account exists):
   themselves, so one enabled admin remains.
 - Admin panel (admin only): `GET /api/admin/overview` → server-wide counts
   (accounts, disabled, live devices, events, sessions, last event).
+- `GET /api/leaderboard?days=30|all`, **no session needed** → every enabled
+  account, ranked by tokens in the period (`tokens`, `sessions`, `events`,
+  `active_days`, `top_model`, `last_active` (null when idle),
+  `current_streak`), plus `totals`, `accounts`, `by_model` and a 364-day
+  global `activity`. Disabled accounts never appear.
 - `GET /api/stats?days=30&tool=claude-code`
 - `GET /api/activity?days=364&tool=...` (daily buckets for the heatmap)
 - `GET /api/quotas` (latest snapshot per account + limit type)
@@ -340,6 +350,8 @@ account exists):
    Create account works for anyone (after the first account).
 9. `/u/<name>` opens without an account and shows usage only: no devices
    or account sections, for visitors and other accounts alike.
+10. `/leaderboard` opens without an account and lists every enabled
+    account, idle ones included; disabled ones never listed.
 
 ```bash
 # manual test example

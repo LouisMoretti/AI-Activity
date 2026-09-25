@@ -1,16 +1,19 @@
 import { Hono, type Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type {
-  ActivityResponse, Profile, ProfilesResponse, QuotasResponse, SessionsResponse, StatsResponse,
+  ActivityResponse, LeaderboardResponse, Profile, ProfilesResponse, QuotasResponse, SessionsResponse, StatsResponse,
   SummaryResponse,
 } from "../../shared/types.ts";
 import {
-  breakdown, countSessions, dailyBuckets, findUserByUsername, latestQuotas, listProfiles, recentSessions,
+  breakdown, countSessions, dailyBuckets, findUserByUsername, latestQuotas, leaderboard, listProfiles, recentSessions,
   toAccount, usageTotals,
 } from "../db/queries.ts";
 import { nowSec, type DB } from "../db/schema.ts";
 import { intParam } from "../lib/http.ts";
 import type { ViewerEnv } from "../lib/viewer-auth.ts";
+
+/** Days of the leaderboard's global heatmap (one year, like a profile's). */
+const LEADERBOARD_ACTIVITY_DAYS = 364;
 
 /** Whose usage a request reads. */
 type Owner = (c: Context) => number;
@@ -71,10 +74,33 @@ function usage(db: DB, owner: Owner) {
     });
 }
 
+/** Everyone's usage, ranked (/api/leaderboard). Public, like profile pages. */
+export function leaderboardRoutes(db: DB) {
+  return new Hono()
+    .get("/", (c) => {
+      const all = c.req.query("days") === "all";
+      const days = intParam(c, "days", 30, 1, 730);
+      const now = new Date();
+      const dayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) / 1000;
+      return c.json<LeaderboardResponse>({
+        range_days: all ? null : days,
+        ...leaderboard(
+          db, all ? 0 : nowSec() - days * 86400, dayStart - (LEADERBOARD_ACTIVITY_DAYS - 1) * 86400,
+          new Date(dayStart * 1000).toISOString().slice(0, 10),
+        ),
+        provenance: "measured device events of every enabled account (incremental token counts only)",
+      });
+    });
+}
+
+/** Every enabled account (/api/profiles). Public: the leaderboard lists them too. */
+export function profileListRoutes(db: DB) {
+  return new Hono().get("/", (c) => c.json<ProfilesResponse>({ profiles: listProfiles(db) }));
+}
+
 /** The signed-in viewer's own usage (/api/stats, /api/summary, …). */
 export function usageRoutes(db: DB) {
   return new Hono<ViewerEnv>()
-    .get("/profiles", (c) => c.json<ProfilesResponse>({ profiles: listProfiles(db) }))
     .route("/", usage(db, (c) => (c as Context<ViewerEnv>).get("userId")));
 }
 
