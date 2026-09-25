@@ -32,7 +32,7 @@
   <StatCard label="Sessions" value={show(stats.sessions.value, fmtNum)}>
     {#snippet detail()}
       <ShareList title="By tool" kind="tool" rows={stats.sessions.byTool} />
-      <ShareList title="By model" kind="model" rows={stats.sessions.byModel} percent={false} />
+      <ShareList title="By model" kind="model" rows={stats.sessions.byModel} of={stats.sessions.value} />
     {/snippet}
   </StatCard>
   <StatCard label="Current streak" value={stats.streak ? plural(stats.streak.current, "day") : "—"}>
