@@ -1,8 +1,8 @@
 import { Hono, type MiddlewareHandler } from "hono";
 import type { Account, AdminOverview, AdminUser } from "../../shared/types.ts";
 import {
-  adminOverview, deleteUserSessions, getUser, listAdminUsers, setDisplayName, setPasswordHash, setUserDisabled,
-  toAccount,
+  adminOverview, deleteUserSessions, getUser, listAdminUsers, setDisplayName, setPasswordHash, setUserAdmin,
+  setUserDisabled, toAccount,
 } from "../db/queries.ts";
 import type { DB } from "../db/schema.ts";
 import { readJson } from "../lib/http.ts";
@@ -69,6 +69,17 @@ export function userRoutes(db: DB) {
       setPasswordHash(db, user.id, await hashPassword(body.password as string));
       deleteUserSessions(db, user.id);
       return c.json({ ok: true });
+    })
+    // Grant or remove admin rights. Nobody changes their own role, so the
+    // admin making the request always remains: there is never zero admins.
+    .post("/:id{[0-9]+}/admin", async (c) => {
+      const user = target(c.req.param("id"));
+      if (!user) return c.json({ error: "user not found" }, 404);
+      if (user.id === c.get("userId")) return c.json({ error: "you cannot change your own role" }, 400);
+      const body = await readJson(c);
+      if (typeof body.is_admin !== "boolean") return c.json({ error: "is_admin must be true or false" }, 400);
+      setUserAdmin(db, user.id, body.is_admin);
+      return c.json({ ok: true, is_admin: body.is_admin });
     })
     .post("/:id{[0-9]+}/:action{disable|enable}", (c) => {
       const user = target(c.req.param("id"));

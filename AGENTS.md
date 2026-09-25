@@ -26,8 +26,8 @@ in it redirects to `/u/<you>`, so the address bar is the shareable link.
 stats, tools/quotas and conversations ("Copy link" in the profile header).
 Clicking the avatar opens Your profile / Settings / Admin panel (admins) /
 Sign out. `/settings` (signed in) holds Account and Devices; `/admin`
-(admins) holds the server overview and the users (reset password,
-disable). The demo (`?demo=1`) needs a sign-in and only replaces your own
+(admins) holds the server overview and the users (make or remove admin,
+reset password, disable). The demo (`?demo=1`) needs a sign-in and only replaces your own
 page.
 
 **Hard rule:** the old demo dataset was fictional and deterministic. It is only
@@ -305,7 +305,9 @@ account exists):
 - Admin only (`403` otherwise): `GET /api/users`, `POST /api/users/:id/password
   {password}` (signs that user out; not for the admin's own account, which
   goes through `/api/account/password` so a stolen session cannot take it
-  over), `POST /api/users/:id/disable|enable`. A disabled account cannot sign
+  over), `POST /api/users/:id/admin {is_admin}` (grant or remove admin
+  rights, never your own, so an admin always remains),
+  `POST /api/users/:id/disable|enable`. A disabled account cannot sign
   in and its device keys are rejected at ingest; admins cannot disable
   themselves, so one enabled admin remains.
 - Admin panel (admin only): `GET /api/admin/overview` → server-wide counts

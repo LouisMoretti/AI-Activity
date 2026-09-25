@@ -466,6 +466,24 @@ describe("profiles and user management", () => {
     assert.equal((await post("/api/users/999/disable", {}, admin)).status, 404);
   });
 
+  test("admins grant and remove admin rights, never their own", async () => {
+    const hank = (await register(srv.base, { username: "hank", password: "hank-password" })).cookie;
+    const id = await userId(srv.base, "hank", admin);
+    assert.equal((await req(srv.base, "GET", "/api/users", { cookie: hank })).status, 403);
+    assert.equal((await post(`/api/users/${id}/admin`, { is_admin: "yes" }, admin)).status, 400);
+    assert.equal((await post(`/api/users/${id}/admin`, { is_admin: true }, hank)).status, 403);
+    assert.equal((await post(`/api/users/${id}/admin`, { is_admin: true }, admin)).status, 200);
+    // Takes effect on the next request, same session.
+    assert.equal((await req(srv.base, "GET", "/api/auth/status", { cookie: hank })).json.user.is_admin, true);
+    assert.equal((await req(srv.base, "GET", "/api/users", { cookie: hank })).status, 200);
+    // Nobody changes their own role, so there is always an admin left.
+    assert.equal((await post(`/api/users/${id}/admin`, { is_admin: false }, hank)).status, 400);
+    assert.equal((await post("/api/users/1/admin", { is_admin: false }, admin)).status, 400);
+    assert.equal((await post(`/api/users/${id}/admin`, { is_admin: false }, admin)).status, 200);
+    assert.equal((await req(srv.base, "GET", "/api/users", { cookie: hank })).status, 403);
+    assert.equal((await post("/api/users/999/admin", { is_admin: true }, admin)).status, 404);
+  });
+
   test("an admin password reset signs that user out", async () => {
     await register(srv.base, { username: "gina", password: "gina-pass-1" });
     const json = { id: await userId(srv.base, "gina", admin) };

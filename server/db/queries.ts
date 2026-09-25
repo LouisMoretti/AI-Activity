@@ -114,6 +114,10 @@ export function setDisplayName(db: DB, userId: number, name: string | null): voi
   db.prepare("UPDATE users SET display_name = ? WHERE id = ?").run(name, userId);
 }
 
+export function setUserAdmin(db: DB, userId: number, isAdmin: boolean): void {
+  db.prepare("UPDATE users SET is_admin = ? WHERE id = ?").run(isAdmin ? 1 : 0, userId);
+}
+
 export function setUserDisabled(db: DB, userId: number, disabled: boolean): void {
   db.prepare("UPDATE users SET disabled = ? WHERE id = ?").run(disabled ? 1 : 0, userId);
 }

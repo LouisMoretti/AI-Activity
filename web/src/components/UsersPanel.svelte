@@ -42,6 +42,12 @@
     }
   }
 
+  function toggleAdmin(u: AdminUser) {
+    if (!u.is_admin && !confirm(`Make "${u.username}" an admin? They will manage every account, including yours.`)) return;
+    void act(() => api.setUserAdmin(u.id, !u.is_admin),
+      u.is_admin ? `"${u.username}" is no longer an admin.` : `"${u.username}" is now an admin.`);
+  }
+
   function toggle(u: AdminUser) {
     if (!u.disabled && !confirm(`Disable "${u.username}"? They are signed out and their devices stop being accepted.`)) return;
     void act(() => api.setUserDisabled(u.id, !u.disabled), u.disabled ? `"${u.username}" enabled.` : `"${u.username}" disabled.`);
@@ -72,6 +78,9 @@
           </div>
           <div class="row-actions">
             {#if u.id !== selfId}
+              <button type="button" disabled={busy} onclick={() => toggleAdmin(u)}>
+                {u.is_admin ? "Remove admin" : "Make admin"}
+              </button>
               <button type="button" disabled={busy} onclick={() => { resetting = resetting === u.id ? null : u.id; resetValue = ""; }}>
                 Reset password
               </button>

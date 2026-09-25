@@ -59,6 +59,7 @@ export const api = {
   users: () => get<{ users: AdminUser[] }>("/api/users"),
   setUserDisabled: (id: number, disabled: boolean) =>
     post<{ ok: true }>(`/api/users/${id}/${disabled ? "disable" : "enable"}`),
+  setUserAdmin: (id: number, is_admin: boolean) => post<{ ok: true }>(`/api/users/${id}/admin`, { is_admin }),
   resetPassword: (id: number, password: string) => post<{ ok: true }>(`/api/users/${id}/password`, { password }),
   profiles: () => get<ProfilesResponse>("/api/profiles"),
   stats: (days: number, tool: string | null) => get<StatsResponse>(`/api/stats?days=${days}${toolQuery(tool)}`),
