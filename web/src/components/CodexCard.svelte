@@ -6,8 +6,8 @@
   let { vm }: { vm: QuotaToolVM } = $props();
 </script>
 
-<article class="card" class:off={!vm.connected}>
-  <ToolHeader tool="codex" updatedAt={vm.connected ? vm.updatedAt : null} note={vm.connected ? "No snapshot yet" : "Connector coming soon"} />
+<article class="card">
+  <ToolHeader tool="codex" updatedAt={vm.updatedAt} note={vm.updatedAt ? "" : "No snapshot yet"} />
   <div class="windows">
     {#each vm.windows as w (w.label)}<QuotaWindow {w} tone="codex" />{/each}
   </div>
@@ -16,5 +16,4 @@
 <style>
   .card { border: 1px solid var(--line); background: var(--surface); border-radius: var(--radius); padding: 22px; }
   .windows { display: grid; gap: 22px; margin-top: 22px; }
-  .off .windows { opacity: .6; }
 </style>

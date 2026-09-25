@@ -6,9 +6,9 @@
 ## 1. What this is
 
 A personal, multi-device dashboard showing **real measured usage** of AI coding
-tools. Current scope: **Claude Code ingestion only**. Codex and OpenCode
-connectors are inventoried but not implemented yet; the UI shows them as
-"Unavailable — connector coming soon" instead of fake numbers.
+tools. Current scope: **Claude Code and Codex ingestion**. The OpenCode
+connector is inventoried but not implemented yet; the UI shows it as
+"Connector coming soon" instead of fake numbers.
 
 Layout, top to bottom: token activity (centered year calendar, readout shows
 today unless a day is hovered), four stats (all-time tokens, today, sessions,
@@ -98,7 +98,10 @@ API black-box (`test/api.test.js`), so they must stay green across refactors;
 `test/series.test.js` covers pure helpers of the web
 client; `test/dashboard.test.js` runs the client's state class
 (`dashboard.svelte.ts`, compiled with `svelte/compiler`) against a fake
-browser and fetch; `test/collector.test.js` runs the README collector.
+browser and fetch; `test/live.test.js` covers the API → view-model mapping;
+`test/collector.test.js` runs the README collector and
+`test/codex-collector.test.js` runs `collectors/codex.py` through the
+README's Codex Stop hook.
 Types: `npm run typecheck` (tsc for server, svelte-check for web). Node >= 22.18 runs the TypeScript server directly
 (type stripping, no build step), so only erasable TS syntax is allowed (no
 `enum`, no parameter properties) and relative imports keep their `.ts`
@@ -107,7 +110,8 @@ extension.
 ## 3. Architecture
 
 ```
-Claude Code statusLine one-liner (python3 via setsid, on the user's device; README.md)
+Claude Code statusLine one-liner    Codex Stop hook → collectors/codex.py
+(python3 via setsid, on the user's device; README.md)
    │  HTTPS  Authorization: Bearer <device key> (never in the URL)
    ▼
 Node server (Hono + TypeScript, server/) + SQLite (better-sqlite3)
@@ -168,6 +172,16 @@ Components never branch on live vs demo: both sources map into the same
   `~/.cache/ai-activity/offsets.json`; the first run imports all history)
   and posts one entry per Anthropic message id, detached with `setsid -f`
   so Claude Code cancelling the status line does not kill it.
+- The Codex collector (`collectors/codex.py`, copied to
+  `~/.codex/ai-activity-codex.py`, run detached by a `Stop` hook in
+  `~/.codex/hooks.json`) works the same way on the rollouts under
+  `~/.codex/sessions` and `archived_sessions` (offsets in
+  `~/.cache/ai-activity/codex.json`). Every Codex front end writes those
+  files (CLI, `codex exec`, IDE extension, desktop app), so desktop tasks
+  are counted without subscribing to its App Server: a separate App Server
+  only streams the threads it runs itself. Codex runs a new user hook only
+  after it was trusted once (`/hooks`); until then the script can run by
+  hand or from cron (idempotent).
 - Never transmit prompts, transcripts, or provider keys — metrics only.
 
 ## 4. Data model (SQLite, `data/dashboard.db`)
@@ -212,8 +226,7 @@ Counting rules:
 
 `POST /api/ingest/<tool>` with header `Authorization: Bearer <device key>`.
 The tool slug in the URL picks the payload normalizer
-(`server/lib/ingest.ts`, one entry per slug); only `claude-code` exists so
-far. There is no default: a bare `/api/ingest` and unknown slugs → `404`.
+(`server/lib/ingest.ts`, one entry per slug): `claude-code` and `codex`. There is no default: a bare `/api/ingest` and unknown slugs → `404`.
 Unknown or revoked keys → `401`. Small JSON bodies only (256 KB max).
 The payload's `tool` is optional; when present it must equal the slug
 (`400` otherwise).
@@ -295,6 +308,31 @@ Notes:
 Transcripts: `~/.claude/projects/<project>/<session>.jsonl`, subagents in
 `<session>/subagents/agent-*.jsonl` (same `sessionId`, never in the main
 file). Only ids, model, time and counts leave the device, never content.
+
+### Codex sources → payload mapping (`POST /api/ingest/codex`)
+
+Same batch shape (`messages`, `rate_limits`, `context`, `occurred_at`,
+`account_ref`), with Codex's own field names:
+
+| Rollout source | Payload field |
+| --- | --- |
+| `token_usage_record.response_id` (`resp_…`) | `messages[].response_id` (dedup key) |
+| older rollouts (no records): `token_count` → `tc_<session>_<thread total>` | `messages[].event_id` |
+| `token_usage_record.session_id` / `session_meta.id` | `messages[].session_id` |
+| latest `turn_context.model` (or `thread_settings_applied`) | `messages[].model` |
+| `token_usage_record.usage` (`input_tokens`, `cached_input_tokens`, `cache_write_input_tokens`, `output_tokens`) | `messages[].usage` |
+| `token_count.rate_limits.primary` / `secondary` (`used_percent`, `window_minutes`, `resets_at`) | `rate_limits` → `five_hour` (300 min) / `seven_day` (10080 min); other lengths dropped |
+| `token_count.info.last_token_usage.total_tokens` / `model_context_window` | `context.used_tokens` / `window_size` → `used_pct` |
+
+- OpenAI counts cached input inside `input_tokens` (and reasoning inside
+  `output_tokens`): stored input is `input_tokens − cached − cache write`,
+  so a response's stored total equals Codex's `total_tokens`. Codex's own
+  "tokens used" line excludes cached input and is smaller.
+- `thread_token_usage` / `total_token_usage` are cumulative and never
+  stored; older rollouts repeat `token_count` lines, which map to the same
+  id. Other ids (not `resp_…` / `tc_…`) store no usage.
+- `occurred_at` of a batch is when Codex measured its rate limits (the
+  `token_count` line), so a replayed backlog never overrides newer values.
 
 ## 6. Viewer + device APIs
 
@@ -382,7 +420,9 @@ account exists):
 
 ## 7. Testing checklist (acceptance criteria)
 
-1. Real Claude Code activity → new tokens and sessions appear, no duplicates.
+1. Real Claude Code or Codex activity → new tokens and sessions appear, no
+   duplicates (Codex: after `codex exec`, or any turn once the hook is
+   trusted).
 2. Resend the same message ids (every status line refresh does) →
    `deduped`, totals unchanged; a partial then final entry counts once.
 3. Two devices, same account → quota cards show the current window's value,
@@ -450,9 +490,8 @@ dev server can read to `web/`, `shared/` and `node_modules/`, so `data/`
 
 ## 9. Roadmap (later, not now)
 
-- Codex connector (App Server `thread/tokenUsage/updated`,
-  `account/rateLimits/read`, `account/usage/read`; verify desktop-task
-  tracking experimentally).
+- Codex: account-level usage from the App Server (`account/usage/read`)
+  if it ever reports something the rollouts do not.
 - OpenCode connector (`opencode stats`, session/message DB, local server
   events; record provider + billing mode per session; no 5h/weekly quota
   unless the provider exposes one).

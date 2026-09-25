@@ -57,7 +57,6 @@ export function demoDashboard(provider: Provider): DashboardVM {
     tools: visible,
     claude: {
       tool: "claude-code",
-      connected: true,
       updatedAt: now - 40,
       windows: [
         { label: "5-hour window", pct: 72, resetsAt: now + 48 * 60, spanSec: WINDOW_SPANS.five_hour },
@@ -66,7 +65,6 @@ export function demoDashboard(provider: Provider): DashboardVM {
     },
     codex: {
       tool: "codex",
-      connected: true,
       updatedAt: now - 20 * 60,
       windows: [
         { label: "5-hour window", pct: 38, resetsAt: now + 2 * 3600 + 18 * 60, spanSec: WINDOW_SPANS.five_hour },

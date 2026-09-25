@@ -1,5 +1,5 @@
 <script lang="ts">
-  let { pct, label, tone = "accent" }: { pct: number | null; label: string; tone?: "accent" | "claude" } = $props();
+  let { pct, label, tone = "accent" }: { pct: number | null; label: string; tone?: "accent" | "claude" | "codex" } = $props();
   const clamped = $derived(pct === null ? 0 : Math.max(0, Math.min(100, Math.round(pct))));
 </script>
 
@@ -15,5 +15,6 @@
   .track { height: 6px; background: var(--track); border-radius: 10px; overflow: hidden; }
   .fill { height: 100%; border-radius: 10px; background: var(--accent); }
   .fill.claude { background: var(--claude); }
+  .fill.codex { background: var(--codex); }
   .fill.high { background: var(--warn); }
 </style>

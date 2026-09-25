@@ -44,5 +44,53 @@ What it does on every status line refresh:
   `~/.cache/ai-activity`) and give up after 15 minutes.
 - Also sends the 5-hour and 7-day quotas and the context fill.
 
-The tool is part of the URL (`/api/ingest/claude-code`); a bare
-`/api/ingest` answers `404`. See `AGENTS.md` §5 for the payload contract.
+The tool is part of the URL (`/api/ingest/claude-code`, `/api/ingest/codex`);
+a bare `/api/ingest` answers `404`. See `AGENTS.md` §5 for the payload contract.
+
+## Send Codex usage from a device
+
+1. Create a device key as above (the same key can serve both tools).
+2. Copy `collectors/codex.py` to `~/.codex/ai-activity-codex.py` on the
+   device and replace `<server>` and `<device key>` at its top (or set
+   `AI_ACTIVITY_URL` / `AI_ACTIVITY_KEY` in the environment Codex runs in).
+3. Add the Stop hook to `~/.codex/hooks.json`:
+
+`~/.codex/hooks.json`:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "setsid -f python3 ~/.codex/ai-activity-codex.py >/dev/null 2>&1 </dev/null; echo '{}'", "timeout": 10 }] }
+    ]
+  }
+}
+```
+
+Codex asks you to review a new hook once (`/hooks`) before running it.
+
+What it does at the end of every turn:
+
+- Reads what was added to every rollout under `~/.codex/sessions` and
+  `~/.codex/archived_sessions` since the last successful upload. Every
+  Codex front end writes those files (CLI, `codex exec`, the IDE extension
+  and the desktop app), so tasks started anywhere are counted, including
+  ones already in progress when the hook was added.
+- Sends **one entry per model response** (`token_usage_record`, keyed by
+  its `resp_…` id) with its token counts and model. Rollouts from Codex
+  versions without those records are read from their `token_count` lines,
+  one per response, keyed by the thread's running total so a repeated line
+  counts once. Prompts, replies and tool output never leave the device.
+- The first run sends every rollout still on disk: that is the import of
+  past sessions.
+- Also sends the 5-hour and weekly rate limits and the context fill Codex
+  recorded with each response, dated when Codex measured them.
+- How far each file was sent is kept in `~/.cache/ai-activity/codex.json`
+  and only moves forward once the server accepted everything, so nothing
+  is lost while the server is down (no separate spool needed): the next
+  turn sends the backlog with its original times. Delete that file to send
+  everything again (safe: the server stores each response once).
+- `setsid -f` detaches the upload so the turn ends at once; `echo '{}'` is
+  the (empty) JSON answer Codex expects from a hook. Runs wait for each
+  other and give up after 15 minutes. The script is idempotent: it can
+  also run by hand or from cron.
