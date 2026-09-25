@@ -1,4 +1,4 @@
-# AGENTS.md — AI Activity
+# AGENTS.md — AI Activity Dashboard
 
 > All project instructions live here. `CLAUDE.md` only points to this file.
 > Everything in this repo (code, docs, UI) is in English.
