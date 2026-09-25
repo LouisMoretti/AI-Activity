@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node --env-file-if-exists=.env server/index.ts",
-    "dev": "node --env-file-if-exists=.env --watch server/index.ts",
+    "dev": "node --import ./scripts/dev-env.ts --watch server/index.ts",
     "dev:web": "vite --config web/vite.config.ts",
     "build": "vite build --config web/vite.config.ts",
     "gen-key": "node --env-file-if-exists=.env scripts/gen-key.ts",

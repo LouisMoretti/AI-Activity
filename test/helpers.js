@@ -54,11 +54,15 @@ export async function startServer({ password = "", env = {}, autoLogin = true } 
   proc.stderr.on("data", (c) => (stderr += c));
   proc.stdout.on("data", (c) => (stdout += c));
   const base = `http://127.0.0.1:${port}`;
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; ; i++) {
     try {
       if ((await fetch(`${base}/api/health`)).ok) break;
     } catch { /* not up yet */ }
     if (proc.exitCode !== null) throw new Error(`server exited: ${stderr}`);
+    if (i >= 100) {
+      proc.kill();
+      throw new Error(`server not healthy after 5 s: ${stderr || stdout}`);
+    }
     await new Promise((r) => setTimeout(r, 50));
   }
   if (auto) defaultCookies.set(base, await login(base, TEST_ADMIN.username, TEST_ADMIN.password));
@@ -80,7 +84,7 @@ export async function startServer({ password = "", env = {}, autoLogin = true } 
   };
 }
 
-/** type: content-type to send (default application/json on anything but GET; null sends none). */
+/** type: content-type to send (default application/json on anything but GET; null sends none). It overrides a content-type in `headers`. */
 export async function req(base, method, p, { body, key, cookie, raw, anon = false, type, headers: extra = {} } = {}) {
   if (cookie === undefined && !anon) cookie = defaultCookies.get(base);
   const headers = { ...extra };
@@ -142,13 +146,14 @@ export async function login(base, username, password) {
   return r.headers.get("set-cookie").split(";")[0];
 }
 
-/** Run `npm run gen-key -- <name>` against a test DB; resolves with the key. */
-export function genKey(dbPath, name) {
+/** Run `npm run gen-key -- <name> [...extra]` against a test DB; resolves with the key. */
+export function genKey(dbPath, name, ...extra) {
   return new Promise((resolve, reject) => {
-    const proc = spawn(process.execPath, [GEN_KEY, name], { env: { ...process.env, DB_PATH: dbPath } });
+    const proc = spawn(process.execPath, [GEN_KEY, name, ...extra], { env: { ...process.env, DB_PATH: dbPath } });
     let out = "";
     proc.stdout.on("data", (c) => (out += c));
-    proc.on("exit", (code) => (code === 0 ? resolve(out.match(/ak_[0-9a-f]+/)[0]) : reject(new Error(out))));
+    proc.stderr.on("data", (c) => (out += c));
+    proc.on("exit", (code) => (code === 0 ? (out.match(/ak_[0-9a-f]+/) ? resolve(out.match(/ak_[0-9a-f]+/)[0]) : reject(new Error(`no key in output: ${out}`))) : reject(new Error(out))));
   });
 }
 

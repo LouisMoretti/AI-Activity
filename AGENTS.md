@@ -83,7 +83,8 @@ Health check: `GET /api/health` → `{"ok":true}`.
 Web client (Svelte 5 + Vite, in `web/`):
 
 ```bash
-npm run dev                 # API server on :3000 (watch mode)
+npm run dev                 # API server on :3000 (watch mode; restart
+                            # it after editing .env)
 npm run dev:web             # UI with HMR on :5173, proxies /api → :3000
 npm run build               # → web/dist (the default STATIC_DIR)
 ```
@@ -135,10 +136,13 @@ web/
   src/lib/live.ts         API responses → DashboardVM ("Unavailable", never guessed)
   src/lib/demo.ts         FICTIONAL ?demo=1 dataset → DashboardVM (always labeled)
   src/lib/series.ts       pure helpers: dense UTC series, streaks, calendar grid
+  src/lib/format.ts       number, day, duration and "ago" formatting
   src/lib/dashboard.svelte.ts  state: provider, auth status, 15 s refresh
-  src/components/         StatsBar, ActivityChart (Heatmap, TrendChart),
-                          QuotaCard, SessionList,
-                          DevicesPanel, AccountMenu,
+  src/App.svelte          routes the pages; renders the site chrome once
+  src/components/         StatsRow (StatCard), ActivityChart (Heatmap,
+                          TrendChart), ClaudeCodeCard / CodexCard /
+                          OpenCodeCard (ToolHeader, QuotaWindow, Meter),
+                          Conversations, DevicesPanel, AccountMenu,
                           SiteHeader, ProfilePanel, UsersPanel,
                           NewAccountForm, AuthPanel, Leaderboard,
                           AdminOverview, …
@@ -184,10 +188,9 @@ Components never branch on live vs demo: both sources map into the same
 
 Counting rules:
 
-- Conversations = `COUNT(DISTINCT session_id)`. "Messages" means user messages,
-  separate from assistant replies and tool calls (the statusLine JSON alone
-  does not provide this count; it can be enriched from local session files —
-  otherwise the UI shows "Unavailable").
+- Conversations = `COUNT(DISTINCT session_id)`. User messages (separate
+  from assistant replies and tool calls) are not counted yet (issue #6):
+  nothing in the API or the UI shows a message count.
 - Count each message id once, with its final counts (the transcript may
   write a partial entry first). Never store the statusLine's
   `context_window.current_usage`: it re-fires with a partial then a final
@@ -294,8 +297,9 @@ account exists):
   sign-up once the first account exists; non-admin account, signs in.
   `403` while an admin has closed account creation, `409` before the first
   account exists or if the username is taken, `429` after 5 accounts from
-  one client in an hour.
-- `GET /api/profiles` → enabled accounts `{username, display_name}`,
+  one client in an hour, or while the login throttle blocks that client
+  (or everyone, at the global cap).
+- `GET /api/profiles` → enabled accounts `{username, display_name, avatar_url}`,
   **no session needed** (the public leaderboard lists them too).
 - Public profile pages, **no session needed**: `GET /api/u/:username` →
   `{username, display_name, avatar_url}`, and the usage routes below under
@@ -341,7 +345,7 @@ account exists):
   `GET /api/admin/settings` → `{signup_open}`, `POST /api/admin/settings
   {signup_open}` opens or closes account creation (stored in `settings`;
   open by default). Closing it never affects existing accounts or the CLI.
-- `GET /api/leaderboard?days=30|all`, **no session needed** → every enabled
+- `GET /api/leaderboard?days=1..730|all` (default 30; the UI uses 7, 30 and all), **no session needed** → every enabled
   account, ranked by tokens in the period (`tokens`, `sessions`, `events`,
   `active_days`, `top_model`, `last_active` (null when idle),
   `current_streak`), plus `totals`, `accounts`, `by_model` and a 364-day
