@@ -297,6 +297,11 @@ Components never branch on live vs demo: both sources map into the same
   `subscriptions`, `invites`, `app_settings` tables).
   `test/migrations.test.js` checks that a fresh database and older ones
   (`test/fixtures/schema-v0.sql`) end at the same schema with their data.
+- Migration 2 removes legacy `snapshot` rows already covered by exact
+  message rows: per user and session, every snapshot from 2 minutes before
+  the session's oldest stored message on (the ingest rule, applied to
+  databases whose collectors had already advanced their offsets before
+  the 2-minute slack existed).
 
 ### Backups
 

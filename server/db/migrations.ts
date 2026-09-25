@@ -11,7 +11,37 @@ import type { DB } from "./schema.ts";
  */
 export const MIGRATIONS: ((db: DB) => void)[] = [
   baseline,
+  cleanupCoveredSnapshots,
 ];
+
+/**
+ * 2: Apply the message-ingestion snapshot cleanup retroactively. The first
+ * version of that cleanup did not include the two-minute statusLine slack;
+ * collectors that had already advanced their offsets did not resend those
+ * old messages after the fix, leaving a snapshot one or two seconds before
+ * the first message to be counted alongside the exact transcript rows.
+ *
+ * Same rule as dropSnapshotRows (user + session, no tool), measured from the
+ * session's oldest stored message. The 120 s is SNAPSHOT_SLACK_SEC as of this
+ * migration, frozen on purpose. Each session's first message is computed once
+ * (a correlated subquery per snapshot row is quadratic and blocks startup).
+ */
+function cleanupCoveredSnapshots(db: DB): void {
+  db.exec(`
+    DELETE FROM usage_events WHERE rowid IN (
+      SELECT snapshot.rowid
+      FROM usage_events AS snapshot
+      JOIN (
+        SELECT user_id, session_id, MIN(occurred_at) AS first_at
+        FROM usage_events
+        WHERE source = 'message'
+        GROUP BY user_id, session_id
+      ) AS message USING (user_id, session_id)
+      WHERE snapshot.source = 'snapshot'
+        AND snapshot.occurred_at >= message.first_at - 120
+    )
+  `);
+}
 
 /**
  * 1: the schema as it was before versioned migrations. Every database made

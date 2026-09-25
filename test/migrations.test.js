@@ -157,6 +157,45 @@ describe("versioned migrations", () => {
     }
   });
 
+  test("version 2 removes legacy snapshots already covered by exact message rows", () => {
+    const t = tmpDb();
+    const old = new Database(t.file);
+    MIGRATIONS[0](old);
+    old.pragma("user_version = 1");
+    old.prepare("INSERT INTO users (id, created_at) VALUES (2, 0)").run();
+    old.prepare(
+      `INSERT INTO devices (id, user_id, name, key_hash, key_prefix, created_at)
+       VALUES (1, 1, 'old collector', 'hash', 'old', 0), (2, 2, 'other', 'hash2', 'oth', 0)`
+    ).run();
+    const insert = old.prepare(
+      `INSERT INTO usage_events
+         (event_id, device_id, user_id, tool, session_id, input_tokens, occurred_at, received_at, source)
+       VALUES (?, ?, ?, 'claude-code', ?, 10, ?, ?, ?)`
+    );
+    const row = (id, user, session, at, source) => insert.run(id, user, user, session, at, at, source);
+    row("message", 1, "s1", 1000, "message");
+    row("later-message", 1, "s1", 2000, "message");
+    row("covered", 1, "s1", 999, "snapshot");
+    row("at-slack", 1, "s1", 880, "snapshot");
+    row("after", 1, "s1", 1500, "snapshot");
+    row("before-slack", 1, "s1", 879, "snapshot");
+    row("only-snapshots", 1, "s2", 1000, "snapshot");
+    row("other-user", 2, "s1", 999, "snapshot");
+    old.close();
+
+    const db = openDb(t.file);
+    try {
+      assert.equal(schemaVersion(db), LATEST);
+      assert.deepEqual(
+        db.prepare("SELECT event_id FROM usage_events ORDER BY event_id").all().map((r) => r.event_id),
+        ["before-slack", "later-message", "message", "only-snapshots", "other-user"]
+      );
+    } finally {
+      db.close();
+      fs.rmSync(t.dir, { recursive: true, force: true });
+    }
+  });
+
   test("a failing migration rolls back entirely and leaves the version as it was", () => {
     const t = tmpDb();
     openDb(t.file).close();
