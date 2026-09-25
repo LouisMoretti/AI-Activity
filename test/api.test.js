@@ -1430,3 +1430,94 @@ describe("opencode ingestion", () => {
     assert.deepEqual(q, []);
   });
 });
+
+describe("rate limits", () => {
+  const post = (base, key, body) => req(base, "POST", "/api/ingest/claude-code", { key, body });
+  /**
+   * Sends up to `max` requests until one is refused. Buckets refill while
+   * the burst runs (more on a slow runner), so the check is: the burst
+   * passes, then no more than what refilled meanwhile.
+   */
+  async function burst(send, { capacity, perSec, max }) {
+    const start = Date.now();
+    let ok = 0;
+    let refused = null;
+    while (ok + (refused ? 1 : 0) < max) {
+      const r = await send();
+      if (r.status === 429) { refused = r; break; }
+      assert.equal(r.status, 200, r.text);
+      ok += 1;
+    }
+    const refilled = Math.ceil(((Date.now() - start) / 1000) * perSec);
+    assert.ok(refused, `never refused after ${ok} requests`);
+    assert.ok(ok >= capacity && ok <= capacity + refilled, `${ok} passed; burst ${capacity}, refilled ${refilled}`);
+    assert.ok(Number(refused.headers.get("retry-after")) >= 1);
+  }
+  const batch = (n, tag) => ({
+    messages: Array.from({ length: n }, (_, i) => ({ ...event(), message_id: `msg_rl_${tag}_${i}` })),
+  });
+
+  test("ingest: a device over its row budget gets 429 + Retry-After and nothing is stored; replays cost nothing; other devices are not limited", async (t) => {
+    const srv = await startServer();
+    t.after(() => srv.stop());
+    const a = await newDevice(srv.base, "flood");
+    const b = await newDevice(srv.base, "normal");
+    // Replays are free: the same batch resent many times only wrote once.
+    const same = batch(400, "same");
+    for (let i = 0; i < 60; i++) assert.equal((await post(srv.base, a.key, same)).status, 200);
+    // The burst is 20,000 rows (400 written above): the batch that crosses it is still stored...
+    for (let i = 0; i < 50; i++) assert.equal((await post(srv.base, a.key, batch(400, `a${i}`))).status, 200);
+    const events = async () => (await req(srv.base, "GET", "/api/u/admin/summary", { anon: true })).json.total.events;
+    assert.equal(await events(), 20_400);
+    // ...and leaves the device in debt: the next one is refused before anything is read.
+    const over = await post(srv.base, a.key, batch(400, "over"));
+    assert.equal(over.status, 429);
+    assert.ok(Number(over.headers.get("retry-after")) >= 1);
+    assert.equal(await events(), 20_400);
+    assert.equal((await post(srv.base, b.key, batch(1, "b"))).status, 200);
+    assert.equal(await events(), 20_401);
+  });
+
+  test("ingest: requests per device are capped too, even when they store nothing", async (t) => {
+    const srv = await startServer();
+    t.after(() => srv.stop());
+    const { key } = await newDevice(srv.base);
+    const one = event();
+    await burst(() => post(srv.base, key, one), { capacity: 300, perSec: 5, max: 1000 });
+  });
+
+  test("public reads: over the per-client budget → 429, other clients unaffected", async (t) => {
+    const srv = await startServer();
+    t.after(() => srv.stop());
+    const get = (p, ip) => req(srv.base, "GET", p, { anon: true, headers: { "cf-connecting-ip": ip } });
+    const paths = ["/api/leaderboard", "/api/u/admin/summary", "/api/profiles", "/api/u/admin/activity"];
+    let i = 0;
+    await burst(() => get(paths[i++ % 4], "203.0.113.60"), { capacity: 120, perSec: 2, max: 500 });
+    assert.equal((await get("/api/leaderboard", "203.0.113.61")).status, 200);
+    // Health and the sign-in status are not public reads.
+    assert.equal((await get("/api/health", "203.0.113.60")).status, 200);
+    assert.equal((await get("/api/auth/status", "203.0.113.60")).status, 200);
+  });
+
+  test("signed-in routes: over the per-user budget → 429, other users unaffected", async (t) => {
+    const srv = await startServer();
+    t.after(() => srv.stop());
+    await burst(() => req(srv.base, "GET", "/api/devices"), { capacity: 120, perSec: 1, max: 500 });
+    const bob = await register(srv.base, { username: "ratebob", password: "bob-password-1" });
+    assert.equal((await req(srv.base, "GET", "/api/devices", { cookie: bob.cookie })).status, 200);
+  });
+
+  test("an account has at most 20 live devices; revoking one frees a slot", async (t) => {
+    const srv = await startServer();
+    t.after(() => srv.stop());
+    const ids = [];
+    for (let i = 0; i < 20; i++) ids.push((await newDevice(srv.base, `d${i}`)).id);
+    const full = await req(srv.base, "POST", "/api/devices", { body: { name: "one too many" } });
+    assert.equal(full.status, 409);
+    assert.match(full.json.error, /at most 20 devices/);
+    assert.equal((await req(srv.base, "POST", `/api/devices/${ids[0]}/revoke`)).status, 200);
+    assert.equal((await req(srv.base, "POST", "/api/devices", { body: { name: "replacement" } })).status, 200);
+    // The server CLI is not capped.
+    assert.match(await genKey(srv.dbPath, "from-cli"), /^ak_/);
+  });
+});

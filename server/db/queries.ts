@@ -261,6 +261,10 @@ export function getDeviceKey(db: DB, userId: number, id: number): string | null 
   return row?.key ?? null;
 }
 
+export function countLiveDevices(db: DB, userId: number): number {
+  return (db.prepare("SELECT COUNT(*) AS n FROM devices WHERE user_id = ? AND revoked = 0").get(userId) as { n: number }).n;
+}
+
 export function listDevices(db: DB, userId: number): Device[] {
   const rows = db
     .prepare(

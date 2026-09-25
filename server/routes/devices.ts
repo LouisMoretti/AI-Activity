@@ -1,8 +1,9 @@
 import { Hono } from "hono";
 import type { Device } from "../../shared/types.ts";
-import { createDevice, getDeviceKey, listDevices, revokeDevice } from "../db/queries.ts";
+import { countLiveDevices, createDevice, getDeviceKey, listDevices, revokeDevice } from "../db/queries.ts";
 import type { DB } from "../db/schema.ts";
 import { readJson } from "../lib/http.ts";
+import { LIMITS } from "../lib/rate-limit.ts";
 import type { ViewerEnv } from "../lib/viewer-auth.ts";
 
 export function deviceRoutes(db: DB) {
@@ -10,6 +11,9 @@ export function deviceRoutes(db: DB) {
     .get("/", (c) => c.json<{ devices: Device[] }>({ devices: listDevices(db, c.get("userId")) }))
     .post("/", async (c) => {
       const body = await readJson(c);
+      if (countLiveDevices(db, c.get("userId")) >= LIMITS.devicesPerAccount) {
+        return c.json({ error: `at most ${LIMITS.devicesPerAccount} devices per account: revoke one first` }, 409);
+      }
       const created = createDevice(db, {
         userId: c.get("userId"),
         name: (typeof body.name === "string" && body.name.trim()) ? body.name.trim().slice(0, 80) : "unnamed device",

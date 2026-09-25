@@ -183,6 +183,14 @@ export function genKey(dbPath, name, ...extra) {
   });
 }
 
+let pollIp = 0;
+/**
+ * Headers for a test that polls public reads (waitFor every 100 ms, far
+ * faster than a dashboard): each call comes from its own client address,
+ * so the per-client rate limit never trips the test.
+ */
+export const asNewClient = () => ({ "cf-connecting-ip": `198.19.${Math.floor(++pollIp / 250) % 250}.${pollIp % 250}` });
+
 let signupIp = 0;
 /**
  * Sign up through the public form (POST /api/auth/register). Each call uses

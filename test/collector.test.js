@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { startServer, req, newDevice } from "./helpers.js";
+import { startServer, req, newDevice, asNewClient } from "./helpers.js";
 
 const README = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8");
 const statusLine = JSON.parse(`{${README.match(/```json\n([\s\S]*?)\n```/)[1]}}`).statusLine.command;
@@ -63,7 +63,7 @@ function slowProxy(target, delayMs) {
 
 describe("collector one-liner from README.md", () => {
   let srv, key, home, env, proxy, project, transcript;
-  const stats = async () => (await req(srv.base, "GET", "/api/u/admin/stats?days=730")).json;
+  const stats = async () => (await req(srv.base, "GET", "/api/u/admin/stats?days=730", { headers: asNewClient() })).json;
   const cmd = (base) => statusLine.replaceAll("<server>", base).replaceAll("<device key>", key);
   const viaProxy = () => cmd(`http://127.0.0.1:${proxy.address().port}`);
   const offsets = () => JSON.parse(fs.readFileSync(path.join(home, ".cache", "ai-activity", "offsets.json"), "utf8"));

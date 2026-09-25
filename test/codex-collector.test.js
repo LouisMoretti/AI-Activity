@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { startServer, req, newDevice } from "./helpers.js";
+import { startServer, req, newDevice, asNewClient } from "./helpers.js";
 
 const README = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8");
 const hooks = JSON.parse(README.match(/`~\/\.codex\/hooks\.json`:\n\n```json\n([\s\S]*?)\n```/)[1]);
@@ -66,7 +66,7 @@ describe("Codex collector (Stop hook from README.md)", () => {
   let srv, key, home, env, current, legacy;
   const S1 = "01a0b861-4cf4-7f10-8e5b-8d110992ee04";
   const S0 = "019e0073-fee0-7000-8000-000000000000";
-  const summary = async () => (await req(srv.base, "GET", "/api/u/admin/summary?tool=codex")).json.total;
+  const summary = async () => (await req(srv.base, "GET", "/api/u/admin/summary?tool=codex", { headers: asNewClient() })).json.total;
   const install = (server) => fs.writeFileSync(path.join(home, ".codex", "ai-activity-codex.py"),
     SCRIPT.replace("<server>", server).replace("<device key>", key));
   const state = () => JSON.parse(fs.readFileSync(path.join(home, ".cache", "ai-activity", "codex.json"), "utf8"));
