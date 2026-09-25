@@ -80,10 +80,12 @@ export async function startServer({ password = "", env = {}, autoLogin = true } 
   };
 }
 
-export async function req(base, method, p, { body, key, cookie, raw, anon = false } = {}) {
+/** type: content-type to send (default application/json on anything but GET; null sends none). */
+export async function req(base, method, p, { body, key, cookie, raw, anon = false, type, headers: extra = {} } = {}) {
   if (cookie === undefined && !anon) cookie = defaultCookies.get(base);
-  const headers = {};
-  if (body !== undefined || raw !== undefined) headers["content-type"] = "application/json";
+  const headers = { ...extra };
+  if (type === undefined) type = method === "GET" ? null : "application/json";
+  if (type) headers["content-type"] = type;
   if (key) headers.authorization = `Bearer ${key}`;
   if (cookie) headers.cookie = cookie;
   const res = await fetch(base + p, {

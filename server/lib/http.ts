@@ -18,6 +18,22 @@ export function intParam(c: Context, name: string, def: number, min: number, max
 }
 
 /**
+ * Requests that change something must be JSON, from this site. A page on
+ * another site can make a browser POST a plain HTML form (text/plain can
+ * carry a valid JSON body) with no CORS preflight: without this check it
+ * could sign the visitor in to an account of its choosing, or sign them
+ * out. application/json cannot be sent cross-site without a preflight,
+ * which this server never answers.
+ */
+export const jsonOnly: MiddlewareHandler = async (c, next) => {
+  if (c.req.method === "GET" || c.req.method === "HEAD") return next();
+  if (c.req.header("sec-fetch-site") === "cross-site") return c.json({ error: "cross-site request refused" }, 403);
+  const type = (c.req.header("content-type") || "").split(";")[0].trim().toLowerCase();
+  if (type !== "application/json") return c.json({ error: "send the body as application/json" }, 415);
+  await next();
+};
+
+/**
  * Reject bodies over maxBytes with a 413. Unlike hono/body-limit, the rest
  * of an oversized body is drained (and discarded) before responding, so the
  * client's keep-alive connection stays usable instead of being reset.
