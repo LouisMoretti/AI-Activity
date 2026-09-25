@@ -79,13 +79,16 @@
       }
       copiedId = d.id;
       setTimeout(() => { if (copiedId === d.id) copiedId = null; }, 2000);
-    } catch (err) {
+    } catch {
       // No clipboard access: show the key so it can be copied by hand.
       try {
         created = { name: d.name, key: await key };
         copied = false;
-      } catch {
-        error = (err as Error).message;
+      } catch (keyErr) {
+        // The key request itself failed (e.g. revoked in another tab): show
+        // its error, not the clipboard's, and drop the stale button.
+        error = (keyErr as Error).message;
+        void refresh();
       }
     }
   }
