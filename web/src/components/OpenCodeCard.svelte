@@ -65,9 +65,9 @@
 </article>
 
 <style>
-  .card { grid-column: 1 / -1; border: 1px solid var(--line); background: var(--surface); border-radius: var(--radius); padding: 22px; display: grid; grid-template-columns: minmax(200px, 1fr) minmax(0, 2fr); }
+  .card { border: 1px solid var(--line); background: var(--surface); border-radius: var(--radius); padding: 22px; display: grid; grid-template-columns: minmax(170px, .8fr) minmax(0, 2fr); }
   section { min-width: 0; }
-  .today { padding-right: 28px; }
+  .today { padding-right: 24px; }
   .today .label { margin: 22px 0 8px; }
   .conversations { padding-left: 28px; border-left: 1px solid var(--line); }
   .head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; min-height: 31px; }
@@ -75,8 +75,8 @@
   .status { margin-left: auto; display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; white-space: nowrap; }
   .value { font-size: 22px; font-weight: 550; font-variant-numeric: tabular-nums; line-height: 1.1; margin-bottom: 6px; }
   small { color: var(--muted); font-size: 12px; font-weight: 400; }
-  .rows { display: grid; gap: 10px; }
-  .row { display: flex; align-items: center; gap: 10px; }
+  .rows { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .row { display: flex; align-items: center; gap: 10px; min-width: 0; }
   .model { font-family: var(--mono); font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .model i { font-style: normal; color: var(--faint); }
   .row .meta { margin-left: auto; flex-shrink: 0; white-space: nowrap; }
