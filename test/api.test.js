@@ -235,14 +235,14 @@ describe("basics (signed in as the test admin)", () => {
   test("static serving never escapes the web root", async () => {
     for (const p of ["/%2e%2e/package.json", "/..%2fpackage.json", "/%2e%2e%2f.env.example"]) {
       const r = await req(srv.base, "GET", p);
-      assert.doesNotMatch(r.text, /"dependencies"|DASHBOARD_PASSWORD/, p);
+      assert.doesNotMatch(r.text, /"dependencies"|DB_PATH/, p);
     }
   });
 });
 
-describe("locked server (DASHBOARD_PASSWORD bootstraps an admin account)", () => {
+describe("locked server (first account made from the CLI)", () => {
   let srv;
-  before(async () => { srv = await startServer({ password: "hunter2" }); });
+  before(async () => { srv = await startServer({ password: "hunter2-pass" }); });
   after(() => srv.stop());
 
   test("viewer APIs require login; ingest and health stay reachable", async () => {
@@ -257,11 +257,11 @@ describe("locked server (DASHBOARD_PASSWORD bootstraps an admin account)", () =>
   test("login / logout cycle", async () => {
     const bad = (body) => req(srv.base, "POST", "/api/auth/login", { body });
     assert.equal((await bad({ username: "admin", password: "wrong" })).status, 401);
-    assert.equal((await bad({ password: "hunter2" })).status, 401);
+    assert.equal((await bad({ password: "hunter2-pass" })).status, 401);
     // Unknown user and wrong password are indistinguishable.
-    assert.deepEqual((await bad({ username: "nobody", password: "hunter2" })).json,
+    assert.deepEqual((await bad({ username: "nobody", password: "hunter2-pass" })).json,
       (await bad({ username: "admin", password: "nope" })).json);
-    const ok = await req(srv.base, "POST", "/api/auth/login", { body: { username: "ADMIN", password: "hunter2" } });
+    const ok = await req(srv.base, "POST", "/api/auth/login", { body: { username: "ADMIN", password: "hunter2-pass" } });
     assert.equal(ok.status, 200);
     const cookie = ok.headers.get("set-cookie").split(";")[0];
     assert.match(ok.headers.get("set-cookie"), /HttpOnly/);
@@ -275,12 +275,12 @@ describe("locked server (DASHBOARD_PASSWORD bootstraps an admin account)", () =>
   });
 
   test("session cookie is Secure only over HTTPS", async () => {
-    const plain = await req(srv.base, "POST", "/api/auth/login", { body: { username: "admin", password: "hunter2" } });
+    const plain = await req(srv.base, "POST", "/api/auth/login", { body: { username: "admin", password: "hunter2-pass" } });
     assert.doesNotMatch(plain.headers.get("set-cookie"), /Secure/);
     const r = await fetch(srv.base + "/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json", "x-forwarded-proto": "https" },
-      body: JSON.stringify({ username: "admin", password: "hunter2" }),
+      body: JSON.stringify({ username: "admin", password: "hunter2-pass" }),
     });
     assert.match(r.headers.get("set-cookie"), /Secure/);
   });
@@ -292,10 +292,10 @@ describe("locked server (DASHBOARD_PASSWORD bootstraps an admin account)", () =>
       body: JSON.stringify({ username: "admin", password }),
     });
     for (let i = 0; i < 10; i++) assert.equal((await attempt("nope", "203.0.113.9")).status, 401);
-    const blocked = await attempt("hunter2", "203.0.113.9");
+    const blocked = await attempt("hunter2-pass", "203.0.113.9");
     assert.equal(blocked.status, 429);
     assert.ok(Number(blocked.headers.get("retry-after")) > 0);
-    assert.equal((await attempt("hunter2", "203.0.113.10")).status, 200);
+    assert.equal((await attempt("hunter2-pass", "203.0.113.10")).status, 200);
   });
 });
 

@@ -30,17 +30,23 @@ function freePort() {
 /**
  * Boot the server on a temp DB. Without a password, an admin account is
  * created and signed in, and req() uses that session by default (pass
- * `anon: true` for an anonymous call). `autoLogin: false` without a
- * password boots with no account at all.
+ * `anon: true` for an anonymous call). With a password, an "admin" account
+ * with that password is created but not signed in. `autoLogin: false`
+ * without a password boots with no account at all.
  */
 export async function startServer({ password = "", env = {}, autoLogin = true } = {}) {
   const auto = autoLogin && !password;
   if (auto) password = TEST_ADMIN.password;
   const port = await freePort();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ai-usage-test-"));
-  const dbPath = path.join(dir, "t.db");
+  const dbPath = env.DB_PATH ?? path.join(dir, "t.db");
+  // The first account, made from the CLI like on a real server.
+  if (password) {
+    const add = await userCli(dbPath, ["add", TEST_ADMIN.username], password);
+    if (add.code !== 0) throw new Error(`admin create failed: ${add.out}`);
+  }
   const proc = spawn(process.execPath, [SERVER_ENTRY], {
-    env: { ...process.env, PORT: String(port), DB_PATH: dbPath, DASHBOARD_PASSWORD: password, ...env },
+    env: { ...process.env, PORT: String(port), DB_PATH: dbPath, ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stderr = "";
