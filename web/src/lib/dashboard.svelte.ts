@@ -2,7 +2,7 @@
 // /u/<username>, /leaderboard, /settings, /admin), data source (live or
 // ?demo=1), session paging, and the 15 s auto-refresh
 // (skipped while hidden or already in flight).
-import { api, NotFoundError, UnauthorizedError, type NewAccount } from "./api.ts";
+import { api, NotFoundError, onSessionLost, UnauthorizedError, type NewAccount } from "./api.ts";
 import { demoDashboard } from "./demo.ts";
 import { ACTIVITY_DAYS, liveDashboard, type LiveData } from "./live.ts";
 import type { DashboardVM } from "./view-model.ts";
@@ -26,14 +26,23 @@ const REFRESH_MS = 15000;
 const SESSIONS_MAX_PAGE = 200;
 export const SESSIONS_PAGE = 10;
 
-/** The first `limit` sessions, in as many server pages as needed. */
+/**
+ * The first `limit` sessions, in as many server pages as needed. A session
+ * active between two page requests moves to the top and would come back on
+ * a later page: keep its first copy only (the list is keyed by it).
+ */
 async function fetchSessions(username: string, limit: number): Promise<SessionsResponse> {
   const first = await api.sessions(username, Math.min(limit, SESSIONS_MAX_PAGE), null, 0);
+  const key = (s: { tool: string; session_id: string }) => `${s.tool}\u0000${s.session_id}`;
+  const seen = new Set(first.sessions.map(key));
   const sessions = [...first.sessions];
-  while (sessions.length < Math.min(limit, first.total)) {
-    const page = await api.sessions(username, Math.min(limit - sessions.length, SESSIONS_MAX_PAGE), null, sessions.length);
+  let fetched = first.sessions.length;
+  // Count unique sessions, not fetched rows: a duplicate must not shorten the list.
+  while (sessions.length < limit && fetched < first.total) {
+    const page = await api.sessions(username, Math.min(limit - sessions.length, SESSIONS_MAX_PAGE), null, fetched);
     if (!page.sessions.length) break;
-    sessions.push(...page.sessions);
+    fetched += page.sessions.length;
+    for (const s of page.sessions) if (!seen.has(key(s))) { seen.add(key(s)); sessions.push(s); }
   }
   return { ...first, sessions };
 }
@@ -41,7 +50,12 @@ async function fetchSessions(username: string, limit: number): Promise<SessionsR
 function routeFromPath(): Route {
   const path = location.pathname;
   const profile = path.match(/^\/u\/([^/]+)\/?$/);
-  if (profile) return { page: "profile", username: decodeURIComponent(profile[1]) };
+  if (profile) {
+    // A stray "%" (a mistyped link) must not stop the whole app.
+    let username = profile[1];
+    try { username = decodeURIComponent(username); } catch { /* keep it raw: it will be "missing" */ }
+    return { page: "profile", username };
+  }
   if (/^\/settings\/?$/.test(path)) return { page: "settings" };
   if (/^\/admin\/?$/.test(path)) return { page: "admin" };
   if (/^\/leaderboard\/?$/.test(path)) return { page: "leaderboard" };
@@ -60,8 +74,11 @@ function nextPath(): string | null {
 const same = (a: string | undefined, b: string | undefined) =>
   a !== undefined && b !== undefined && a.toLowerCase() === b.toLowerCase();
 
+const demoInUrl = () => new URLSearchParams(location.search).get("demo") === "1";
+
 export class Dashboard {
-  readonly demo = new URLSearchParams(location.search).get("demo") === "1";
+  /** ?demo=1 in the current address (in-app navigation drops it). */
+  demo = $state(demoInUrl());
   route = $state<Route>(routeFromPath());
   status = $state<Status>("loading");
   sessionsLimit = $state(SESSIONS_PAGE);
@@ -116,6 +133,8 @@ export class Dashboard {
       if (route.page === "profile") await this.loadProfile(route.username);
       else this.status = "ready";
     } catch (e) {
+      // Navigated elsewhere meanwhile: the queued reload decides, not this.
+      if (this.route !== route) return;
       if (e instanceof UnauthorizedError) this.signedOut();
       else if (e instanceof NotFoundError) {
         this.live = null;
@@ -153,6 +172,9 @@ export class Dashboard {
 
   /** Navigate within the app (path may carry a query string). */
   go(path: string, replace = false): void {
+    // "/" only redirects a signed-in viewer to their profile: go there
+    // directly, so Back does not land on the same page again.
+    if (path === "/" && this.account) path = profilePath(this.account.username);
     if (replace) history.replaceState(null, "", path);
     else history.pushState(null, "", path);
     this.showPath();
@@ -165,6 +187,7 @@ export class Dashboard {
   /** Sync with the URL (after go(), or back/forward). */
   private showPath(): void {
     this.route = routeFromPath();
+    this.demo = demoInUrl();
     this.live = null;
     this.shown = null;
     this.sessionsLimit = SESSIONS_PAGE;
@@ -202,6 +225,13 @@ export class Dashboard {
     this.go("/");
   }
 
+  /** The session ended elsewhere: sign in again, then come back here. */
+  private sessionLost(): void {
+    if (!this.account) return;
+    this.signedOut();
+    this.go(`/?next=${encodeURIComponent(location.pathname)}`, true);
+  }
+
   /** Drop everything the previous account could see. */
   private signedOut(): void {
     this.account = null;
@@ -215,14 +245,18 @@ export class Dashboard {
     void this.load();
     const onPop = () => this.showPath();
     window.addEventListener("popstate", onPop);
-    // Only profile pages show live data worth refreshing.
+    onSessionLost(() => this.sessionLost());
+    // Profile pages refresh their live data (not the fixed demo); any page
+    // that could not reach the server retries.
     const tick = () => {
-      if (!document.hidden && !this.demo && this.route.page === "profile") void this.load();
+      if (document.hidden) return;
+      if (this.status === "error" || (this.route.page === "profile" && !this.vm?.demo)) void this.load();
     };
     const id = setInterval(tick, REFRESH_MS);
     document.addEventListener("visibilitychange", tick);
     return () => {
       clearInterval(id);
+      onSessionLost(null);
       window.removeEventListener("popstate", onPop);
       document.removeEventListener("visibilitychange", tick);
     };

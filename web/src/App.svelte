@@ -14,6 +14,7 @@
   import Section from "./components/Section.svelte";
   import StatsRow from "./components/StatsRow.svelte";
   import UsersPanel from "./components/UsersPanel.svelte";
+  import { untrack } from "svelte";
   import { Dashboard } from "./lib/dashboard.svelte.ts";
 
   const dash = new Dashboard();
@@ -24,7 +25,9 @@
     : dash.route.page === "settings" && dash.account ? { label: "Settings" }
     : dash.route.page === "admin" && dash.account ? { label: "Admin panel" }
     : null);
-  $effect(() => dash.start());
+  // start() reads state (the route) while loading: untracked, so navigating
+  // does not tear down and restart the polling.
+  $effect(() => untrack(() => dash.start()));
   $effect(() => {
     const page = dash.route.page;
     document.title = page === "settings" ? "Settings · AI Activity"
