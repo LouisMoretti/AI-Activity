@@ -115,6 +115,13 @@ export interface AuthStatus {
   user: Account | null;
   /** No account exists yet: the first one needs the setup code (or the CLI). */
   setup_required: boolean;
+  /** Anyone may create an account from the sign-in page (an admin setting). */
+  signup_open: boolean;
+}
+
+/** Server settings an admin changes from the admin panel. */
+export interface AdminSettings {
+  signup_open: boolean;
 }
 
 /** Admin panel overview (whole server, all accounts). */

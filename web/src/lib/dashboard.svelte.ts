@@ -67,6 +67,8 @@ export class Dashboard {
   sessionsLimit = $state(SESSIONS_PAGE);
   /** The signed-in account; null when signed out. */
   account = $state<Account | null>(null);
+  /** Anyone may create an account from the sign-in page (an admin setting). */
+  signupOpen = $state(true);
   /** The profile on screen. */
   shown = $state<Profile | null>(null);
   private live = $state<LiveData | null>(null);
@@ -95,6 +97,7 @@ export class Dashboard {
     try {
       const auth = await api.authStatus();
       this.account = auth.user;
+      this.signupOpen = auth.signup_open;
       if (!auth.user) {
         if (route.page === "profile") await this.loadProfile(route.username);
         // Public, like profile pages: the page loads its own data.

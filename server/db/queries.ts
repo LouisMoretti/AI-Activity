@@ -160,6 +160,18 @@ export function createAccount(
   })();
 }
 
+/** Whether anyone may create an account from the sign-in page (open unless an admin closed it). */
+export function signupOpen(db: DB): boolean {
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'signup_open'").get() as { value: string } | undefined;
+  return row?.value !== "0";
+}
+
+export function setSignupOpen(db: DB, open: boolean): void {
+  db.prepare(
+    "INSERT INTO settings (key, value) VALUES ('signup_open', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+  ).run(open ? "1" : "0");
+}
+
 /** Counts for the admin overview. */
 export function adminOverview(db: DB): AdminOverview {
   const n = (sql: string) => (db.prepare(sql).get() as { n: number | null }).n ?? 0;
