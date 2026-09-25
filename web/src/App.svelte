@@ -7,7 +7,7 @@
   import CodexCard from "./components/CodexCard.svelte";
   import Conversations from "./components/Conversations.svelte";
   import DevicesPanel from "./components/DevicesPanel.svelte";
-  import InviteSignup from "./components/InviteSignup.svelte";
+  import Leaderboard from "./components/Leaderboard.svelte";
   import Logo from "./components/Logo.svelte";
   import NewAccountForm from "./components/NewAccountForm.svelte";
   import OpenCodeCard from "./components/OpenCodeCard.svelte";
@@ -15,11 +15,9 @@
   import ProfilePanel from "./components/ProfilePanel.svelte";
   import ProfileSwitcher from "./components/ProfileSwitcher.svelte";
   import Section from "./components/Section.svelte";
-  import Segmented from "./components/Segmented.svelte";
   import StatsRow from "./components/StatsRow.svelte";
   import UsersPanel from "./components/UsersPanel.svelte";
   import { Dashboard } from "./lib/dashboard.svelte.ts";
-  import type { Provider } from "./lib/view-model.ts";
 
   const dash = new Dashboard();
   $effect(() => dash.start());
@@ -27,16 +25,10 @@
     const page = dash.route.page;
     document.title = page === "settings" ? "Settings · AI Activity"
       : page === "admin" ? "Admin · AI Activity"
+      : page === "leaderboard" ? "Leaderboard · AI Activity"
       : page === "profile" && dash.shown ? `${dash.shown.display_name} · AI Activity${dash.vm?.demo ? " · Demo" : ""}`
         : "AI Activity";
   });
-
-  const providers: { value: Provider; label: string }[] = [
-    { value: "all", label: "All tools" },
-    { value: "claude-code", label: "Claude Code" },
-    { value: "codex", label: "Codex" },
-    { value: "opencode", label: "OpenCode" },
-  ];
 
   /** Back to the sign-in screen, then here. */
   const signInHere = () => dash.go(`/?next=${encodeURIComponent(location.pathname)}`);
@@ -46,33 +38,27 @@
   <header class="top">
     <a class="brand" href="/" onclick={(e) => { e.preventDefault(); dash.go("/"); }}><Logo /><h1>AI Activity</h1></a>
     <div class="top-right">
-      {#if dash.vm}
-        <span class="badge" class:demo={dash.vm.demo} class:live={!dash.vm.demo}>{dash.vm.demo ? "Demonstration data" : "Live data"}</span>
-      {/if}
+      <!-- Fictional data is always labeled; live data needs no badge. -->
+      {#if dash.vm?.demo}<span class="badge demo">Demonstration data</span>{/if}
       {#if dash.account}
-        {#if dash.profiles.length > 1}
-          <ProfileSwitcher profiles={dash.profiles}
-            current={dash.route.page === "profile" ? dash.route.username : dash.account.username}
-            self={dash.account.username} onchange={(u) => dash.openProfile(u)} />
+        <!-- Profile pages carry nothing but the account menu. -->
+        {#if dash.route.page !== "profile"}
+          <a class="nav" href="/leaderboard" aria-current={dash.route.page === "leaderboard" ? "page" : undefined}
+            onclick={(e) => { e.preventDefault(); dash.go("/leaderboard"); }}>Leaderboard</a>
+          {#if dash.profiles.length > 1}
+            <ProfileSwitcher profiles={dash.profiles} current={dash.account.username}
+              self={dash.account.username} onchange={(u) => dash.openProfile(u)} />
+          {/if}
         {/if}
         <AccountMenu account={dash.account} onnavigate={(p) => dash.go(p)} onlogout={() => dash.logout()} />
-      {:else if dash.route.page === "profile"}
+      {:else if dash.route.page === "profile" || dash.route.page === "leaderboard"}
         <button type="button" class="signin" onclick={signInHere}>Sign in</button>
       {/if}
     </div>
   </header>
 
-  {#if dash.route.page === "invite"}
-    {#if dash.status === "signed-out"}
-      <InviteSignup token={dash.route.token} oncreate={(a, c) => dash.createAccount(a, c)} onsignin={() => dash.go("/")} />
-    {:else if dash.account}
-      <p class="gate">
-        This is an invite link for someone else: open it signed out, e.g. in a private window.
-        <button type="button" onclick={() => dash.go("/")}>Go to your profile</button>
-      </p>
-    {/if}
-  {:else if dash.status === "signed-out"}
-    <AuthPanel signupOpen={dash.signupOpen} onlogin={(u, p) => dash.login(u, p)} oncreate={(a, c) => dash.createAccount(a, c)} />
+  {#if dash.status === "signed-out"}
+    <AuthPanel onlogin={(u, p) => dash.login(u, p)} oncreate={(a, c) => dash.createAccount(a, c)} />
   {:else if dash.status === "setup"}
     <NewAccountForm withSetupCode title="Create the first account"
       intro="No account exists yet. The setup code is printed in the server log. This account becomes the admin and keeps the data collected so far."
@@ -125,13 +111,14 @@
     {/if}
   {/if}
 
+  {#if dash.route.page === "leaderboard" && dash.status === "ready"}
+    <Leaderboard self={dash.account?.username ?? null} onopen={(u) => dash.openProfile(u)} />
+  {/if}
+
   {#if dash.vm && dash.shown}
     {@const vm = dash.vm}
     <ProfileHeader profile={dash.shown} own={dash.own} />
 
-    <div class="toolbar">
-      <Segmented label="Tools" options={providers} value={dash.provider} onchange={(p) => dash.setProvider(p)} />
-    </div>
 
     <ActivityChart series={vm.series} today={vm.today} demo={vm.demo} hasActivity={vm.hasActivity} />
     <StatsRow stats={vm.stats} />
@@ -160,17 +147,15 @@
   .gate button, .settings-head button, .signin { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 4px 10px; font-size: 12px; color: var(--text); }
   .settings-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
   .settings-head h2 { font-size: 17px; font-weight: 600; }
+  .nav { font-size: 13px; color: var(--muted); text-decoration: none; padding: 5px 8px; border-radius: var(--radius-sm); }
+  .nav:hover, .nav[aria-current="page"] { color: var(--text); background: var(--surface-2); }
   .badge { border: 1px solid var(--line); color: var(--muted); font-size: 12px; padding: 5px 10px; border-radius: var(--radius-sm); }
   .badge.demo { border-color: var(--demo-line); background: var(--demo-bg); color: var(--demo-text); }
-  .toolbar { display: flex; justify-content: center; margin-bottom: 8px; }
   .notice { color: var(--warn); margin: 12px 0; text-align: center; }
   .tools { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr)); gap: 16px; }
   @media (max-width: 720px) {
     main { padding: 24px 16px 40px; }
     .top { gap: 12px; align-items: flex-start; }
     h1 { white-space: nowrap; }
-    /* The demo label must stay visible; "Live data" is the default and can go. */
-    .badge.live { display: none; }
-    .toolbar { justify-content: flex-start; overflow-x: auto; }
   }
 </style>

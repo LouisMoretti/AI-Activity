@@ -11,7 +11,7 @@ import { accountRoutes, adminRoutes, userRoutes } from "./routes/account.ts";
 import { authRoutes } from "./routes/auth.ts";
 import { deviceRoutes } from "./routes/devices.ts";
 import { ingestRoutes } from "./routes/ingest.ts";
-import { publicProfileRoutes, usageRoutes } from "./routes/usage.ts";
+import { leaderboardRoutes, profileListRoutes, publicProfileRoutes, usageRoutes } from "./routes/usage.ts";
 
 /** setupCode: one-time code for creating the first account from the browser (null once one exists). */
 export function createApp(db: DB, config: Config, setupCode: string | null = null) {
@@ -26,8 +26,10 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
     .get("/health", (c) => c.json({ ok: true }))
     .route("/auth", authRoutes(db, auth, setupCode))
     .route("/ingest", ingestRoutes(db))
-    // Public, read-only: profile pages are shareable links.
+    // Public, read-only: profile pages, the account list and the leaderboard.
     .route("/u/:username", publicProfileRoutes(db))
+    .route("/leaderboard", leaderboardRoutes(db))
+    .route("/profiles", profileListRoutes(db))
     // Everything below requires a viewer session.
     .use(auth.require)
     .route("/", usageRoutes(db))

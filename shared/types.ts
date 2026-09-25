@@ -113,8 +113,6 @@ export interface AuthStatus {
   user: Account | null;
   /** No account exists yet: the first one needs the setup code (or the CLI). */
   setup_required: boolean;
-  /** Anyone may create an account from the sign-in page (admin setting). */
-  signup_open: boolean;
 }
 
 /** Admin panel overview (whole server, all accounts). */
@@ -127,20 +125,6 @@ export interface AdminOverview {
   sessions: number;
   /** When the server last received usage, or null. */
   last_event_at: number | null;
-  pending_invites: number;
-}
-
-export interface AdminSettings {
-  signup_open: boolean;
-}
-
-/** A pending invite link, as listed for admins (the token is never listed). */
-export interface Invite {
-  id: number;
-  created_at: number;
-  expires_at: number;
-  /** Username of the admin who created it. */
-  created_by: string;
 }
 
 /** A profile page anyone signed in can open (read-only usage). */
@@ -158,4 +142,36 @@ export interface IngestResult {
   deduped: boolean;
   stored: boolean;
   event_id: string;
+}
+
+/** One account on the leaderboard (every enabled account, idle ones with zeros). */
+export interface LeaderboardEntry {
+  username: string;
+  display_name: string;
+  tokens: number;
+  sessions: number;
+  events: number;
+  /** UTC days with at least one event in the period. */
+  active_days: number;
+  /** Model with the most tokens in the period; null if never reported. */
+  top_model: string | null;
+  /** Latest event in the period; null when idle. */
+  last_active: number | null;
+  /** Consecutive UTC days with usage ending today (same rule as a profile's streak). */
+  current_streak: number;
+}
+
+/** Server-wide usage across every enabled account (public, like profile pages). */
+export interface LeaderboardResponse {
+  /** Period length; null = all time. */
+  range_days: number | null;
+  /** Enabled accounts, active or not (= entries.length). */
+  accounts: number;
+  totals: { tokens: number; sessions: number; events: number; active_accounts: number };
+  /** Ranked by tokens, most first. */
+  entries: LeaderboardEntry[];
+  by_model: BreakdownRow[];
+  /** Everyone's daily buckets over the last 364 UTC days, whatever the period. */
+  activity: ActivityDay[];
+  provenance: string;
 }

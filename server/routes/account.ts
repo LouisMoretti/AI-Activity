@@ -1,19 +1,15 @@
 import { Hono, type MiddlewareHandler } from "hono";
-import type { Account, AdminUser } from "../../shared/types.ts";
-import { randomBytes } from "node:crypto";
-import type { AdminOverview, AdminSettings, Invite } from "../../shared/types.ts";
+import type { Account, AdminOverview, AdminUser } from "../../shared/types.ts";
 import {
-  adminOverview, createAccount, createInvite, setSignupOpen, signupOpen, deleteUserSessions, findUserByUsername, getUser, hashKey, listAdminUsers,
-  listPendingInvites, revokeInvite, setDisplayName, setPasswordHash, setUserDisabled, toAccount,
+  adminOverview, deleteUserSessions, getUser, listAdminUsers, setDisplayName, setPasswordHash, setUserAdmin,
+  setUserDisabled, toAccount,
 } from "../db/queries.ts";
-import { nowSec } from "../db/schema.ts";
 import type { DB } from "../db/schema.ts";
 import { readJson } from "../lib/http.ts";
-import { hashPassword, passwordProblem, usernameProblem, verifyPassword } from "../lib/passwords.ts";
+import { hashPassword, passwordProblem, verifyPassword } from "../lib/passwords.ts";
 import type { ViewerAuth, ViewerEnv } from "../lib/viewer-auth.ts";
 
 const DISPLAY_NAME_MAX = 60;
-const INVITE_SEC = 7 * 86400;
 
 /** Trimmed display name, or null to fall back to the username. */
 const displayName = (v: unknown) =>
@@ -61,35 +57,6 @@ export function userRoutes(db: DB) {
   return new Hono<ViewerEnv>()
     .use(requireAdmin)
     .get("/", (c) => c.json<{ users: AdminUser[] }>({ users: listAdminUsers(db) }))
-    .get("/invites", (c) => c.json<{ invites: Invite[] }>({ invites: listPendingInvites(db) }))
-    // The token is returned once; only its hash is stored.
-    .post("/invites", (c) => {
-      const token = randomBytes(24).toString("base64url");
-      const expires_at = nowSec() + INVITE_SEC;
-      const id = createInvite(db, hashKey(token), c.get("userId"), expires_at);
-      return c.json({ ok: true, id, token, expires_at });
-    })
-    .post("/invites/:id{[0-9]+}/revoke", (c) =>
-      revokeInvite(db, Number(c.req.param("id"))) ? c.json({ ok: true }) : c.json({ error: "invite not found" }, 404))
-    .post("/", async (c) => {
-      const body = await readJson(c);
-      const username = typeof body.username === "string" ? body.username.trim() : "";
-      const problem = usernameProblem(username) ?? passwordProblem(body.password);
-      if (problem) return c.json({ error: problem }, 400);
-      const taken = () => c.json({ error: "that username is taken" }, 409);
-      if (findUserByUsername(db, username)) return taken();
-      const password_hash = await hashPassword(body.password as string);
-      try {
-        const id = createAccount(db, {
-          username, display_name: displayName(body.display_name), password_hash, is_admin: body.is_admin === true,
-        });
-        return c.json({ ok: true, id });
-      } catch (err) {
-        // Created meanwhile (double submit, CLI) while the password was hashing.
-        if ((err as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE") return taken();
-        throw err;
-      }
-    })
     .post("/:id{[0-9]+}/password", async (c) => {
       const user = target(c.req.param("id"));
       if (!user) return c.json({ error: "user not found" }, 404);
@@ -103,6 +70,17 @@ export function userRoutes(db: DB) {
       deleteUserSessions(db, user.id);
       return c.json({ ok: true });
     })
+    // Grant or remove admin rights. Nobody changes their own role, so the
+    // admin making the request always remains: there is never zero admins.
+    .post("/:id{[0-9]+}/admin", async (c) => {
+      const user = target(c.req.param("id"));
+      if (!user) return c.json({ error: "user not found" }, 404);
+      if (user.id === c.get("userId")) return c.json({ error: "you cannot change your own role" }, 400);
+      const body = await readJson(c);
+      if (typeof body.is_admin !== "boolean") return c.json({ error: "is_admin must be true or false" }, 400);
+      setUserAdmin(db, user.id, body.is_admin);
+      return c.json({ ok: true, is_admin: body.is_admin });
+    })
     .post("/:id{[0-9]+}/:action{disable|enable}", (c) => {
       const user = target(c.req.param("id"));
       if (!user) return c.json({ error: "user not found" }, 404);
@@ -115,16 +93,9 @@ export function userRoutes(db: DB) {
     });
 }
 
-/** Admin panel: server-wide overview and settings. */
+/** Admin panel: server-wide overview. */
 export function adminRoutes(db: DB) {
   return new Hono<ViewerEnv>()
     .use(requireAdmin)
-    .get("/overview", (c) => c.json<AdminOverview>(adminOverview(db)))
-    .get("/settings", (c) => c.json<AdminSettings>({ signup_open: signupOpen(db) }))
-    .post("/settings", async (c) => {
-      const body = await readJson(c);
-      if (typeof body.signup_open !== "boolean") return c.json({ error: "signup_open must be true or false" }, 400);
-      setSignupOpen(db, body.signup_open);
-      return c.json<AdminSettings>({ signup_open: signupOpen(db) });
-    });
+    .get("/overview", (c) => c.json<AdminOverview>(adminOverview(db)));
 }

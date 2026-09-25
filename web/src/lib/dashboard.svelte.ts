@@ -1,19 +1,19 @@
 // App state: sign-in, the current page (sign-in at /, a public profile at
-// /u/<username>, /settings, /invite/<token>), data source (live or
-// ?demo=1), provider filter, session paging, and the 15 s auto-refresh
+// /u/<username>, /leaderboard, /settings, /admin), data source (live or
+// ?demo=1), session paging, and the 15 s auto-refresh
 // (skipped while hidden or already in flight).
 import { api, NotFoundError, UnauthorizedError, type NewAccount } from "./api.ts";
 import { demoDashboard } from "./demo.ts";
 import { ACTIVITY_DAYS, liveDashboard, type LiveData } from "./live.ts";
-import type { DashboardVM, Provider } from "./view-model.ts";
+import type { DashboardVM } from "./view-model.ts";
 import type { Account, Profile, SessionsResponse } from "../../../shared/types.ts";
 
 export type Route =
   | { page: "home" }
   | { page: "profile"; username: string }
+  | { page: "leaderboard" }
   | { page: "settings" }
-  | { page: "admin" }
-  | { page: "invite"; token: string };
+  | { page: "admin" };
 
 /**
  * "signed-out": sign-in screen; "setup": no account exists yet;
@@ -27,11 +27,11 @@ const SESSIONS_MAX_PAGE = 200;
 export const SESSIONS_PAGE = 10;
 
 /** The first `limit` sessions, in as many server pages as needed. */
-async function fetchSessions(username: string, limit: number, tool: string | null): Promise<SessionsResponse> {
-  const first = await api.sessions(username, Math.min(limit, SESSIONS_MAX_PAGE), tool, 0);
+async function fetchSessions(username: string, limit: number): Promise<SessionsResponse> {
+  const first = await api.sessions(username, Math.min(limit, SESSIONS_MAX_PAGE), null, 0);
   const sessions = [...first.sessions];
   while (sessions.length < Math.min(limit, first.total)) {
-    const page = await api.sessions(username, Math.min(limit - sessions.length, SESSIONS_MAX_PAGE), tool, sessions.length);
+    const page = await api.sessions(username, Math.min(limit - sessions.length, SESSIONS_MAX_PAGE), null, sessions.length);
     if (!page.sessions.length) break;
     sessions.push(...page.sessions);
   }
@@ -42,10 +42,9 @@ function routeFromPath(): Route {
   const path = location.pathname;
   const profile = path.match(/^\/u\/([^/]+)\/?$/);
   if (profile) return { page: "profile", username: decodeURIComponent(profile[1]) };
-  const invite = path.match(/^\/invite\/([^/]+)\/?$/);
-  if (invite) return { page: "invite", token: decodeURIComponent(invite[1]) };
   if (/^\/settings\/?$/.test(path)) return { page: "settings" };
   if (/^\/admin\/?$/.test(path)) return { page: "admin" };
+  if (/^\/leaderboard\/?$/.test(path)) return { page: "leaderboard" };
   return { page: "home" };
 }
 
@@ -64,13 +63,10 @@ const same = (a: string | undefined, b: string | undefined) =>
 export class Dashboard {
   readonly demo = new URLSearchParams(location.search).get("demo") === "1";
   route = $state<Route>(routeFromPath());
-  provider = $state<Provider>("all");
   status = $state<Status>("loading");
   sessionsLimit = $state(SESSIONS_PAGE);
   /** The signed-in account; null when signed out. */
   account = $state<Account | null>(null);
-  /** Anyone may create an account from the sign-in page. */
-  signupOpen = $state(false);
   /** Every profile, for the switcher (signed in only). */
   profiles = $state<Profile[]>([]);
   /** The profile on screen. */
@@ -85,8 +81,8 @@ export class Dashboard {
   vm = $derived<DashboardVM | null>(
     this.route.page !== "profile" ? null
       // Demo data only on the viewer's own page, and only once signed in.
-      : this.demo && this.own ? demoDashboard(this.provider)
-        : this.live ? liveDashboard(this.live, this.provider)
+      : this.demo && this.own ? demoDashboard("all")
+        : this.live ? liveDashboard(this.live, "all")
           : null
   );
 
@@ -101,10 +97,11 @@ export class Dashboard {
     try {
       const auth = await api.authStatus();
       this.account = auth.user;
-      this.signupOpen = auth.signup_open;
       if (!auth.user) {
         this.profiles = [];
         if (route.page === "profile") await this.loadProfile(route.username);
+        // Public, like profile pages: the page loads its own data.
+        else if (route.page === "leaderboard") this.status = "ready";
         else if (route.page === "settings" || route.page === "admin") {
           this.go(`/?next=${encodeURIComponent(`/${route.page}`)}`, true);
         }
@@ -135,25 +132,19 @@ export class Dashboard {
   }
 
   private async loadProfile(username: string): Promise<void> {
-    const tool = this.provider === "all" ? null : this.provider;
     const [profile, summary, activity, quotas, sessions] = await Promise.all([
       api.profile(username),
-      api.summary(username, tool),
-      api.activity(username, ACTIVITY_DAYS, tool),
+      // Every tool, always: there is no tool filter.
+      api.summary(username, null),
+      api.activity(username, ACTIVITY_DAYS, null),
       api.quotas(username),
-      fetchSessions(username, this.sessionsLimit, tool),
+      fetchSessions(username, this.sessionsLimit),
     ]);
     // Navigated elsewhere while this was in flight: its queued reload wins.
     if (this.route.page !== "profile" || this.route.username !== username) return;
     this.shown = profile;
     this.live = { summary, activity, quotas, sessions };
     this.status = "ready";
-  }
-
-  setProvider(p: Provider): void {
-    this.provider = p;
-    this.sessionsLimit = SESSIONS_PAGE;
-    void this.load();
   }
 
   showMoreSessions(): void {
@@ -193,14 +184,10 @@ export class Dashboard {
     return null;
   }
 
-  /**
-   * Create an account and sign in: the first one (setup code), one from an
-   * invite link, or an open sign-up from the sign-in page.
-   */
+  /** Create an account and sign in: the first one (setup code), or a sign-up. */
   async createAccount(a: NewAccount, setupCode: string | null): Promise<string | null> {
     try {
       if (setupCode !== null) await api.setup(setupCode, a);
-      else if (this.route.page === "invite") await api.signup(this.route.token, a);
       else await api.register(a);
     } catch (e) {
       // The only 401 here is a wrong setup code.

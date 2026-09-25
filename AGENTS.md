@@ -14,21 +14,27 @@ Layout, top to bottom: token activity (centered year calendar, readout shows
 today unless a day is hovered), four stats (all-time tokens, today, sessions,
 current streak; hover shows the split by tool and model, or the longest
 streak), one card per tool (Claude Code, Codex, OpenCode are separate
-components), recent conversations (10 + "Show more"). No cost or
-subscription tracking (removed on purpose). Palette: the
+components), recent conversations (10 + "Show more"). No tool filter:
+every tool is always shown. No cost or subscription tracking (removed on
+purpose). Only demo data carries a badge ("Demonstration data"). Palette: the
 original dark theme; type: Geist, with Geist Mono only for ids and model
 names. Quota bars carry a mark for how far into the window we are.
 
-**Pages:** `/` has two tabs, Sign in and Create account (open sign-up, which
-admins can close; or first-account setup while none exists); once signed
+**Pages:** `/` has two tabs, Sign in and Create account (sign-up is always
+open; or first-account setup while none exists); once signed
 in it redirects to `/u/<you>`, so the address bar is the shareable link.
 `/u/<username>` is **public and read-only**, no account needed: activity,
 stats, tools/quotas and conversations ("Copy link" in the profile header).
-Clicking the avatar opens Your profile / Settings / Admin panel (admins) /
-Sign out. `/settings` (signed in) holds Account and Devices; `/admin`
-(admins) holds the server overview, the open sign-up switch, users and
-invite links. The demo
-(`?demo=1`) needs a sign-in and only replaces your own page.
+`/leaderboard` is **public** too: every enabled account (idle ones last,
+with zeros) ranked by tokens over 7 days / 30 days / all time, with
+server-wide totals, the model split and a global activity calendar. The
+header links to it and holds the profile switcher, except on `/u/<username>`,
+where only the avatar menu (or "Sign in") is shown.
+Clicking the avatar opens Your profile / Leaderboard / Settings / Admin
+panel (admins) / Sign out. `/settings` (signed in) holds Account and Devices; `/admin`
+(admins) holds the server overview and the users (make or remove admin,
+reset password, disable). The demo (`?demo=1`) needs a sign-in and only replaces your own
+page.
 
 **Hard rule:** the old demo dataset was fictional and deterministic. It is only
 visible via `?demo=1` (once signed in), always labeled "Demonstration data",
@@ -47,11 +53,10 @@ Viewer accounts. Nothing is viewable until the first one exists; that first
 account is an admin and owns the data collected so far (collectors keep
 posting with `gen-key` keys meanwhile). Create it in the browser with the
 one-time **setup code** the server prints at start (new on every start, only
-while no account exists), or from the CLI. After that, anyone can create an
-account from the sign-in page while open sign-up is on (default; 5 accounts
-per client per hour), and admins can switch it off in `/admin`. Invite links
-(single use, 7 days, the invited person picks their own username and
-password) work either way.
+while no account exists), or from the CLI. After that, sign-up is free:
+anyone creates their own account from the sign-in page (5 accounts per
+client per hour). There are no invite links and no accounts created from
+the admin panel (the server CLI `npm run user -- add` still works).
 
 ```bash
 npm run user -- add louis --name "Louis"   # password prompt (or piped stdin)
@@ -130,7 +135,7 @@ web/
                           QuotaCard, SessionList,
                           DevicesPanel, AccountMenu,
                           ProfilePanel, ProfileSwitcher, ProfileHeader, UsersPanel,
-                          NewAccountForm, InviteSignup, AuthPanel,
+                          NewAccountForm, AuthPanel, Leaderboard,
                           AdminOverview, …
   src/styles/tokens.css   design tokens — components only use these variables
 public/             legacy UI, removed at the switch-over
@@ -284,17 +289,11 @@ account exists):
   first account only (`409` once one exists), throttled like a login; the
   code ignores case, spaces and dashes. Signs in.
 - `POST /api/auth/register {username, password, display_name}`: open
-  sign-up, non-admin account, signs in. `403` when an admin closed sign-up,
-  `409` before the first account exists or if the username is taken, `429`
-  after 5 accounts from one client in an hour. `GET /api/auth/status` also
-  returns `signup_open`.
-- `GET /api/auth/invite/:token` → `{valid, expires_at}`;
-  `POST /api/auth/signup {invite, username, password, display_name}` creates
-  a non-admin account and uses the invite up atomically (`404` if invalid,
-  used, revoked or expired; `409` if the username is taken, invite kept).
-  Signs in.
-- `GET /api/profiles` → enabled accounts `{username, display_name}`
-  (signed in only, so visitors cannot list accounts).
+  sign-up, always available once the first account exists; non-admin
+  account, signs in. `409` before the first account exists or if the
+  username is taken, `429` after 5 accounts from one client in an hour.
+- `GET /api/profiles` → enabled accounts `{username, display_name}`,
+  **no session needed** (the public leaderboard lists them too).
 - Public profile pages, **no session needed**: `GET /api/u/:username` →
   `{username, display_name}`, and `/api/u/:username/stats|activity|quotas|summary|sessions`
   (same shapes as the viewer's own routes; `404` if unknown or disabled).
@@ -309,20 +308,21 @@ account exists):
 - `POST /api/account {display_name}` (empty → falls back to the username),
   `POST /api/account/password {current_password, new_password}` (throttled
   like a login; signs out the user's other sessions).
-- Admin only (`403` otherwise): `GET /api/users`, `POST /api/users
-  {username, password, display_name, is_admin}`, `POST /api/users/:id/password
+- Admin only (`403` otherwise): `GET /api/users`, `POST /api/users/:id/password
   {password}` (signs that user out; not for the admin's own account, which
   goes through `/api/account/password` so a stolen session cannot take it
-  over), `POST /api/users/:id/disable|enable`. A disabled account cannot sign
+  over), `POST /api/users/:id/admin {is_admin}` (grant or remove admin
+  rights, never your own, so an admin always remains),
+  `POST /api/users/:id/disable|enable`. A disabled account cannot sign
   in and its device keys are rejected at ingest; admins cannot disable
   themselves, so one enabled admin remains.
 - Admin panel (admin only): `GET /api/admin/overview` → server-wide counts
-  (accounts, disabled, live devices, events, sessions, last event, pending
-  invites); `GET|POST /api/admin/settings` `{signup_open: boolean}`.
-- Invites (admin only): `GET /api/users/invites` (pending only, never the
-  token), `POST /api/users/invites` → `{id, token, expires_at}` (token shown
-  once, stored hashed; the link is `/invite/<token>`),
-  `POST /api/users/invites/:id/revoke`.
+  (accounts, disabled, live devices, events, sessions, last event).
+- `GET /api/leaderboard?days=30|all`, **no session needed** → every enabled
+  account, ranked by tokens in the period (`tokens`, `sessions`, `events`,
+  `active_days`, `top_model`, `last_active` (null when idle),
+  `current_streak`), plus `totals`, `accounts`, `by_model` and a 364-day
+  global `activity`. Disabled accounts never appear.
 - `GET /api/stats?days=30&tool=claude-code`
 - `GET /api/activity?days=364&tool=...` (daily buckets for the heatmap)
 - `GET /api/quotas` (latest snapshot per account + limit type)
@@ -347,10 +347,11 @@ account exists):
    never does.
 8. `/` signed out: sign-in (or first-account) screen; signed in: redirect
    to `/u/<you>`. `/settings` and `/admin` signed out: sign-in, then back.
-   Invite links work once. With open sign-up off, Create account says so and
-   `POST /api/auth/register` answers `403`.
+   Create account works for anyone (after the first account).
 9. `/u/<name>` opens without an account and shows usage only: no devices
    or account sections, for visitors and other accounts alike.
+10. `/leaderboard` opens without an account and lists every enabled
+    account, idle ones included; disabled ones never listed.
 
 ```bash
 # manual test example

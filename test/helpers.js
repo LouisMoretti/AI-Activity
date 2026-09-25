@@ -143,3 +143,25 @@ export function genKey(dbPath, name) {
     proc.on("exit", (code) => (code === 0 ? resolve(out.match(/ak_[0-9a-f]+/)[0]) : reject(new Error(out))));
   });
 }
+
+let signupIp = 0;
+/**
+ * Sign up through the public form (POST /api/auth/register). Each call uses
+ * its own client address so the per-client sign-up limit never interferes.
+ * Resolves with the response and the new session cookie.
+ */
+export async function register(base, body, ip = `198.18.${Math.floor(++signupIp / 250)}.${signupIp % 250}`) {
+  const r = await fetch(`${base}/api/auth/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": ip },
+    body: JSON.stringify(body),
+  });
+  const json = await r.json().catch(() => null);
+  return { status: r.status, json, headers: r.headers, cookie: r.headers.get("set-cookie")?.split(";")[0] ?? null };
+}
+
+/** An account's id, looked up by an admin session (the default one if omitted). */
+export async function userId(base, username, cookie) {
+  const users = (await req(base, "GET", "/api/users", { cookie })).json.users;
+  return users.find((u) => u.username === username).id;
+}

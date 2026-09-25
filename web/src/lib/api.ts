@@ -1,6 +1,6 @@
 // Typed client for the dashboard JSON API (same origin, cookie session).
 import type {
-  Account, ActivityResponse, AdminOverview, AdminSettings, AdminUser, AuthStatus, Invite, Profile, ProfilesResponse, Device, QuotasResponse,
+  Account, ActivityResponse, AdminOverview, AdminUser, AuthStatus, LeaderboardResponse, Profile, ProfilesResponse, Device, QuotasResponse,
   SessionsResponse, StatsResponse, SummaryResponse,
 } from "../../../shared/types.ts";
 
@@ -50,28 +50,20 @@ export const api = {
   logout: () => post<{ ok: true }>("/api/auth/logout"),
   /** First account, with the setup code from the server log; signs in. */
   setup: (setup_code: string, a: NewAccount) => post<{ ok: true }>("/api/auth/setup", { setup_code, ...a }),
-  inviteStatus: (token: string) =>
-    get<{ valid: boolean; expires_at: number | null }>(`/api/auth/invite/${encodeURIComponent(token)}`),
-  /** Open sign-up from the sign-in page (when an admin allows it); signs in. */
+  /** Sign-up from the sign-in page (open to anyone); signs in. */
   register: (a: NewAccount) => post<{ ok: true }>("/api/auth/register", a),
   adminOverview: () => get<AdminOverview>("/api/admin/overview"),
-  adminSettings: () => get<AdminSettings>("/api/admin/settings"),
-  setSignupOpen: (signup_open: boolean) => post<AdminSettings>("/api/admin/settings", { signup_open }),
-  /** Account from an invite link; signs in. */
-  signup: (invite: string, a: NewAccount) => post<{ ok: true }>("/api/auth/signup", { invite, ...a }),
-  invites: () => get<{ invites: Invite[] }>("/api/users/invites"),
-  createInvite: () => post<{ id: number; token: string; expires_at: number }>("/api/users/invites"),
-  revokeInvite: (id: number) => post<{ ok: true }>(`/api/users/invites/${id}/revoke`),
   updateProfile: (display_name: string) => post<{ user: Account }>("/api/account", { display_name }),
   changePassword: (current_password: string, new_password: string) =>
     post<{ ok: true }>("/api/account/password", { current_password, new_password }),
   users: () => get<{ users: AdminUser[] }>("/api/users"),
-  createUser: (u: { username: string; display_name: string; password: string; is_admin: boolean }) =>
-    post<{ id: number }>("/api/users", u),
   setUserDisabled: (id: number, disabled: boolean) =>
     post<{ ok: true }>(`/api/users/${id}/${disabled ? "disable" : "enable"}`),
+  setUserAdmin: (id: number, is_admin: boolean) => post<{ ok: true }>(`/api/users/${id}/admin`, { is_admin }),
   resetPassword: (id: number, password: string) => post<{ ok: true }>(`/api/users/${id}/password`, { password }),
   profiles: () => get<ProfilesResponse>("/api/profiles"),
+  /** Everyone's usage over the last `days` days, or all time (null). */
+  leaderboard: (days: number | null) => get<LeaderboardResponse>(`/api/leaderboard?days=${days ?? "all"}`),
   stats: (days: number, tool: string | null) => get<StatsResponse>(`/api/stats?days=${days}${toolQuery(tool)}`),
   // A profile's usage, public by username (the viewer's own page uses it too).
   profile: (username: string) => get<Profile>(profileBase(username)),

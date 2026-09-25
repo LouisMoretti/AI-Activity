@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
-  Account, ActivityDay, AdminOverview, AdminUser, Invite, Profile, Breakdown, BreakdownRow, Device, Quota, Session,
+  Account, ActivityDay, AdminOverview, AdminUser, Profile, Breakdown, BreakdownRow, Device, LeaderboardEntry,
+  LeaderboardResponse, Quota, Session,
 } from "../../shared/types.ts";
 import { nowSec, type DB } from "./schema.ts";
 
@@ -114,6 +115,10 @@ export function setDisplayName(db: DB, userId: number, name: string | null): voi
   db.prepare("UPDATE users SET display_name = ? WHERE id = ?").run(name, userId);
 }
 
+export function setUserAdmin(db: DB, userId: number, isAdmin: boolean): void {
+  db.prepare("UPDATE users SET is_admin = ? WHERE id = ?").run(isAdmin ? 1 : 0, userId);
+}
+
 export function setUserDisabled(db: DB, userId: number, disabled: boolean): void {
   db.prepare("UPDATE users SET disabled = ? WHERE id = ?").run(disabled ? 1 : 0, userId);
 }
@@ -144,18 +149,6 @@ export function createAccount(
   })();
 }
 
-/** Anyone may create an account from the sign-in page (default: yes). */
-export function signupOpen(db: DB): boolean {
-  const row = db.prepare("SELECT value FROM app_settings WHERE key = 'signup_open'").get() as { value: string } | undefined;
-  return row ? row.value === "1" : true;
-}
-
-export function setSignupOpen(db: DB, open: boolean): void {
-  db.prepare(
-    "INSERT INTO app_settings (key, value) VALUES ('signup_open', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-  ).run(open ? "1" : "0");
-}
-
 /** Counts for the admin overview. */
 export function adminOverview(db: DB): AdminOverview {
   const n = (sql: string) => (db.prepare(sql).get() as { n: number | null }).n ?? 0;
@@ -166,60 +159,12 @@ export function adminOverview(db: DB): AdminOverview {
     events: n("SELECT COUNT(*) AS n FROM usage_events"),
     sessions: n("SELECT COUNT(DISTINCT session_id) AS n FROM usage_events"),
     last_event_at: (db.prepare("SELECT MAX(received_at) AS n FROM usage_events").get() as { n: number | null }).n,
-    pending_invites: listPendingInvites(db).length,
   };
 }
 
 /** Create the first account only; null when one already exists (lost race). */
 export function createFirstAccount(db: DB, a: Parameters<typeof createAccount>[1]): number | null {
   return db.transaction(() => (accountsExist(db) ? null : createAccount(db, a)))();
-}
-
-export function createInvite(db: DB, tokenHash: string, createdBy: number, expiresAt: number): number {
-  return Number(db
-    .prepare("INSERT INTO invites (token_hash, created_by, created_at, expires_at) VALUES (?, ?, ?, ?)")
-    .run(tokenHash, createdBy, nowSec(), expiresAt).lastInsertRowid);
-}
-
-const USABLE_INVITE = "used_by IS NULL AND revoked = 0 AND expires_at > ?";
-
-/** Invites that can still be used, newest first. */
-export function listPendingInvites(db: DB): Invite[] {
-  return db
-    .prepare(
-      `SELECT i.id, i.created_at, i.expires_at, COALESCE(u.username, '') AS created_by
-       FROM invites i LEFT JOIN users u ON u.id = i.created_by
-       WHERE ${USABLE_INVITE}
-       ORDER BY i.id DESC`
-    )
-    .all(nowSec()) as Invite[];
-}
-
-export function revokeInvite(db: DB, id: number): boolean {
-  return db.prepare(`UPDATE invites SET revoked = 1 WHERE id = ? AND ${USABLE_INVITE}`).run(id, nowSec()).changes > 0;
-}
-
-export function findUsableInvite(db: DB, tokenHash: string): { id: number; expires_at: number } | null {
-  return (db
-    .prepare(`SELECT id, expires_at FROM invites WHERE token_hash = ? AND ${USABLE_INVITE}`)
-    .get(tokenHash, nowSec()) as { id: number; expires_at: number } | undefined) ?? null;
-}
-
-/**
- * Create an account from an invite and use the invite up, atomically.
- * Null when the invite is no longer usable. Throws SQLITE_CONSTRAINT_UNIQUE
- * when the username is taken.
- */
-export function redeemInvite(
-  db: DB, tokenHash: string, a: Omit<Parameters<typeof createAccount>[1], "is_admin">
-): number | null {
-  return db.transaction(() => {
-    const invite = findUsableInvite(db, tokenHash);
-    if (!invite) return null;
-    const id = createAccount(db, { ...a, is_admin: false });
-    db.prepare("UPDATE invites SET used_by = ?, used_at = ? WHERE id = ?").run(id, nowSec(), invite.id);
-    return id;
-  })();
 }
 
 export function setPasswordHash(db: DB, userId: number, hash: string): void {
@@ -490,5 +435,107 @@ export function breakdown(db: DB, userId: number, sinceSec: number, tool: string
     events: Number(t.events),
     by_model: group("model"),
     by_tool: group("tool"),
+  };
+}
+
+/** Usage rows of enabled accounts only: disabled ones leave the leaderboard. */
+const LISTED = `usage_events e JOIN users u ON u.id = e.user_id
+  WHERE u.password_hash IS NOT NULL AND u.disabled = 0`;
+
+/**
+ * Everyone's usage since sinceSec, ranked by tokens. activitySinceSec bounds
+ * the global heatmap and the streaks, which ignore the period.
+ */
+export function leaderboard(
+  db: DB, sinceSec: number, activitySinceSec: number, todayIso: string
+): Omit<LeaderboardResponse, "range_days" | "provenance"> {
+  // Every enabled account, used or not: idle ones rank last with zeros.
+  const rows = db
+    .prepare(
+      `SELECT u.id, u.username, u.display_name,
+              COALESCE(SUM(${TOKENS}), 0) AS tokens,
+              COUNT(DISTINCT e.session_id) AS sessions,
+              COUNT(e.event_id) AS events,
+              COUNT(DISTINCT date(e.occurred_at, 'unixepoch')) AS active_days,
+              MAX(e.occurred_at) AS last_active
+       FROM users u LEFT JOIN usage_events e ON e.user_id = u.id AND e.occurred_at >= ?
+       WHERE u.password_hash IS NOT NULL AND u.disabled = 0
+       GROUP BY u.id
+       ORDER BY tokens DESC, u.username COLLATE NOCASE`
+    )
+    .all(sinceSec) as (Omit<LeaderboardEntry, "top_model" | "current_streak" | "display_name"> &
+      { id: number; display_name: string | null })[];
+
+  const topModels = new Map(
+    (db
+      .prepare(
+        `SELECT user_id, model FROM (
+           SELECT e.user_id, e.model, ROW_NUMBER() OVER (
+             PARTITION BY e.user_id ORDER BY SUM(${TOKENS}) DESC, e.model
+           ) AS rn
+           FROM ${LISTED} AND e.occurred_at >= ? AND e.model IS NOT NULL
+           GROUP BY e.user_id, e.model
+         ) WHERE rn = 1`
+      )
+      .all(sinceSec) as { user_id: number; model: string }[]).map((r) => [r.user_id, r.model])
+  );
+
+  // Active days per user, newest first, to count back from today.
+  const daysByUser = new Map<number, string[]>();
+  for (const r of db
+    .prepare(
+      `SELECT DISTINCT e.user_id, date(e.occurred_at, 'unixepoch') AS day
+       FROM ${LISTED} AND e.occurred_at >= ? ORDER BY day DESC`
+    )
+    .all(activitySinceSec) as { user_id: number; day: string }[]) {
+    const list = daysByUser.get(r.user_id) ?? [];
+    list.push(r.day);
+    daysByUser.set(r.user_id, list);
+  }
+  const streak = (days: string[] = []) => {
+    let n = 0;
+    let expected = Date.parse(todayIso + "T00:00:00Z");
+    for (const d of days) {
+      if (Date.parse(d + "T00:00:00Z") !== expected) break;
+      n++;
+      expected -= 86400000;
+    }
+    return n;
+  };
+
+  const totals = db
+    .prepare(
+      `SELECT COALESCE(SUM(${TOKENS}), 0) AS tokens, COUNT(DISTINCT e.session_id) AS sessions, COUNT(*) AS events
+       FROM ${LISTED} AND e.occurred_at >= ?`
+    )
+    .get(sinceSec) as { tokens: number; sessions: number; events: number };
+
+  return {
+    accounts: rows.length,
+    totals: { ...totals, tokens: Number(totals.tokens), active_accounts: rows.filter((r) => r.events > 0).length },
+    entries: rows.map(({ id, display_name, ...r }) => ({
+      ...r,
+      tokens: Number(r.tokens),
+      username: r.username ?? "",
+      display_name: display_name || r.username || "",
+      top_model: topModels.get(id) ?? null,
+      current_streak: streak(daysByUser.get(id)),
+    })),
+    by_model: db
+      .prepare(
+        `SELECT COALESCE(e.model, 'unknown') AS name, SUM(${TOKENS}) AS tokens,
+                COUNT(DISTINCT e.session_id) AS sessions, COUNT(*) AS events
+         FROM ${LISTED} AND e.occurred_at >= ?
+         GROUP BY name ORDER BY tokens DESC`
+      )
+      .all(sinceSec) as BreakdownRow[],
+    activity: db
+      .prepare(
+        `SELECT date(e.occurred_at, 'unixepoch') AS day, SUM(${TOKENS}) AS tokens,
+                COUNT(DISTINCT e.session_id) AS sessions
+         FROM ${LISTED} AND e.occurred_at >= ?
+         GROUP BY day ORDER BY day`
+      )
+      .all(activitySinceSec) as ActivityDay[],
   };
 }
