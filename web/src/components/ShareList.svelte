@@ -2,17 +2,20 @@
   import { fmtCompact } from "../lib/format.ts";
   import { toolName, type ShareRow } from "../lib/view-model.ts";
 
-  let { title, rows, kind, percent = true, max = 8 }: {
+  let { title, rows, kind, of = null, max = 8 }: {
     title: string;
     rows: ShareRow[];
     kind: "tool" | "model";
-    percent?: boolean; // off when rows can overlap (a session can use several models)
+    of?: number | null; // share denominator when rows overlap (a session can use several models); else their sum
     max?: number; // rows shown; the rest are summed into one "others" row
   } = $props();
-  const total = $derived(rows.reduce((a, r) => a + r.value, 0));
-  const shown = $derived(rows.length > max ? rows.slice(0, max - 1) : rows);
-  const rest = $derived(rows.slice(shown.length));
+  const total = $derived(of ?? rows.reduce((a, r) => a + r.value, 0));
+  // Largest share first; the "others" row always stays last.
+  const sorted = $derived([...rows].sort((a, b) => b.value - a.value));
+  const shown = $derived(sorted.length > max ? sorted.slice(0, max - 1) : sorted);
+  const rest = $derived(sorted.slice(shown.length));
   const restValue = $derived(rest.reduce((a, r) => a + r.value, 0));
+  const pct = (value: number) => `${Math.round((value / total) * 100)}%`;
   const label = (name: string) => (kind === "tool" ? toolName(name) : name);
   // provider/model (OpenCode): the provider is dimmed so the model reads first.
   const split = (name: string) => {
@@ -22,11 +25,13 @@
 </script>
 
 {#snippet num(value: number)}
-  <span class="num">{fmtCompact(value)}{#if percent && total}<small> · {Math.round((value / total) * 100)} %</small>{/if}</span>
+  <span class="num">{fmtCompact(value)}</span>
+  <span class="pct">{total ? pct(value) : ""}</span>
 {/snippet}
 
 <div class="block">
   <div class="title">{title}</div>
+  <div class="rows">
   {#each shown as r (r.name)}
     {@const n = split(label(r.name))}
     <div class="row">
@@ -42,15 +47,19 @@
       {@render num(restValue)}
     </div>
   {/if}
+  </div>
 </div>
 
 <style>
   .block + :global(.block) { margin-top: 12px; }
   .title { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); margin-bottom: 6px; }
-  .row { display: flex; justify-content: space-between; gap: 16px; font-size: 12px; padding: 2px 0; }
+  /* Name, tokens and share in columns: the numbers line up without padding. */
+  .rows { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; column-gap: 12px; row-gap: 4px; font-size: 12px; }
+  .row { display: contents; }
+  .row.muted { display: block; grid-column: 1 / -1; color: var(--muted); }
   .name { color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .name i { font-style: normal; color: var(--faint); }
-  .num { flex-shrink: 0; white-space: nowrap; }
+  .num, .pct { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .pct { color: var(--faint); font-size: 11px; }
   .mono { font-family: var(--mono); font-size: 11px; }
-  small { color: var(--faint); font-size: 11px; }
 </style>
