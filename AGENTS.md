@@ -116,13 +116,12 @@ Browser dashboard (web/: Svelte 5 + TypeScript, built by Vite)
 server/
   index.ts          boot: config, DB, listen
   app.ts            Hono app: /api mount, viewer-auth gate, static + SPA fallback
-  config.ts         env → Config (PORT, DB_PATH, DASHBOARD_USER/PASSWORD, STATIC_DIR)
+  config.ts         env → Config (PORT, DB_PATH, STATIC_DIR)
   db/schema.ts      open + migrate
   db/queries.ts     every SQL statement lives here
   lib/ingest.ts     payload normalization (flat + raw statusLine shapes)
   lib/viewer-auth.ts  viewer sessions + login throttling
   lib/passwords.ts    scrypt hashing, username/password rules
-  lib/accounts.ts     DASHBOARD_PASSWORD → first account migration
   lib/setup.ts        one-time setup code for the first account
   lib/avatar.ts       profile picture link allowlist
   lib/http.ts
@@ -153,10 +152,9 @@ Components never branch on live vs demo: both sources map into the same
   API is scoped to the signed-in user (`c.get("userId")`, set by
   `viewer-auth.ts`). Sessions live in `viewer_sessions` (token stored as a
   SHA-256 hash), so they survive restarts.
-- Migration from the shared-password phase: if `DASHBOARD_PASSWORD` is set
-  and no account exists, boot creates an admin account named
-  `DASHBOARD_USER` (default `admin`) with that password. After that the
-  variable is ignored.
+- The first account is created with the setup code or `npm run user --
+  add`: both need access to the server, so whoever reaches the public
+  tunnel first cannot take it.
 - The local collector is just a bash `POST` from the Claude Code statusLine.
   This repo only provides the endpoint plus the documented contract below.
 - Never transmit prompts, transcripts, or provider keys — metrics only.
