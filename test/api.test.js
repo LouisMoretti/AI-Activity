@@ -3,7 +3,7 @@ import Database from "better-sqlite3";
 import os from "node:os";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { startServer, req, newDevice, event, userCli, login, genKey, register, userId, TEST_ADMIN } from "./helpers.js";
+import { startServer, req, newDevice, event, codexResponse, userCli, login, genKey, register, userId, TEST_ADMIN } from "./helpers.js";
 
 /** A plausible reset time for a current quota window (a far-future one is dropped). */
 const soon = () => Math.floor(Date.now() / 1000) + 3600;
@@ -48,7 +48,7 @@ describe("basics (signed in as the test admin)", () => {
     const post = (p, body = event()) => req(srv.base, "POST", p, { body, key, anon: true });
     assert.equal((await post("/api/ingest")).status, 404);
     assert.equal((await post("/api/ingest/")).status, 404);
-    assert.equal((await post("/api/ingest/codex", event({ tool: "codex" }))).status, 404);
+    assert.equal((await post("/api/ingest/opencode", event({ tool: "opencode" }))).status, 404);
     assert.equal((await post("/api/ingest/constructor")).status, 404);
     assert.equal((await req(srv.base, "GET", "/api/ingest/claude-code", { anon: true })).status, 404);
     assert.equal((await post("/api/ingest/claude-code")).json.stored, true);
@@ -1190,5 +1190,82 @@ describe("web root without index.html", () => {
       await srv.stop();
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("codex ingestion", () => {
+  let srv, key;
+  const post = (body) => req(srv.base, "POST", "/api/ingest/codex", { body, key });
+  const summary = async (tool = "codex") => (await req(srv.base, "GET", `/api/u/admin/summary?tool=${tool}`)).json.total;
+
+  before(async () => {
+    srv = await startServer();
+    key = (await newDevice(srv.base, "codex")).key;
+  });
+  after(() => srv.stop());
+
+  test("a response is stored once, cached input and reasoning counted once", async () => {
+    // OpenAI counts cached input inside input_tokens and reasoning inside output_tokens.
+    const m = codexResponse({ response_id: "resp_a", usage: {
+      input_tokens: 1000, cached_input_tokens: 800, cache_write_input_tokens: 0, output_tokens: 50, reasoning_output_tokens: 20,
+    } });
+    const r = await post({ messages: [m] });
+    assert.deepEqual(r.json, { ok: true, messages: 1, stored: 1, updated: 0, deduped: 0 });
+    assert.deepEqual((await post({ messages: [m] })).json, { ok: true, messages: 1, stored: 0, updated: 0, deduped: 1 });
+    const t = await summary();
+    assert.equal(t.tokens, 1050);
+    assert.equal(t.events, 1);
+    assert.deepEqual(t.by_model.map((x) => x.name), ["gpt-6-astra"]);
+    assert.equal((await summary("claude-code")).events, 0);
+    const s = (await req(srv.base, "GET", "/api/u/admin/sessions?tool=codex")).json.sessions[0];
+    assert.equal(s.tool, "codex");
+    assert.equal(s.session_id, m.session_id);
+  });
+
+  test("only Codex response ids or legacy token_count ids are stored", async () => {
+    const before = (await summary()).events;
+    const r = await post({ messages: [
+      codexResponse({ response_id: "msg_not_codex" }),
+      codexResponse({ response_id: undefined }),
+      codexResponse({ response_id: undefined, event_id: "01a0-random" }),
+      codexResponse({ response_id: undefined, event_id: "tc_019e0073-fee_12345" }),
+      codexResponse({ response_id: undefined, event_id: "tc_019e0073-fee_12345" }),
+    ] });
+    assert.equal(r.json.messages, 2);
+    assert.equal(r.json.stored, 1);
+    assert.equal((await summary()).events, before + 1);
+  });
+
+  test("a flat event is accepted too", async () => {
+    const r = await post({ tool: "codex", ...codexResponse({ response_id: "resp_flat" }) });
+    assert.equal(r.json.stored, true);
+    assert.equal(r.json.event_id, "resp_flat");
+    assert.equal((await req(srv.base, "POST", "/api/ingest/codex", { body: { tool: "claude-code" }, key })).status, 400);
+  });
+
+  test("primary / secondary rate limits become the 5-hour and weekly windows", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    await post({ messages: [], occurred_at: now - 60, rate_limits: {
+      primary: { used_percent: 17, window_minutes: 300, resets_at: now + 3600 },
+      secondary: { used_percent: 75, window_minutes: 10080, resets_at: now + 86400 },
+      tertiary: { used_percent: 5, window_minutes: 60, resets_at: now + 600 },
+    } });
+    // A stale value from another device, measured earlier, does not win.
+    await post({ messages: [], occurred_at: now - 600, rate_limits: {
+      primary: { used_percent: 3, window_minutes: 300, resets_at: now + 3000 },
+      // Resets further away than a week: dropped.
+      secondary: { used_percent: 1, window_minutes: 10080, resets_at: now + 30 * 86400 },
+    } });
+    const q = (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas.filter((x) => x.tool === "codex");
+    assert.deepEqual(q.map((x) => [x.limit_type, x.used_pct]), [["five_hour", 17], ["seven_day", 75]]);
+    assert.equal(q[0].measured_at, now - 60);
+  });
+
+  test("the context gauge is computed from the last request's tokens", async () => {
+    const m = codexResponse({ response_id: "resp_ctx", session_id: "codex-ctx" });
+    await post({ messages: [m], context: { session_id: "codex-ctx", used_tokens: 51680, window_size: 258400 } });
+    const s = (await req(srv.base, "GET", "/api/u/admin/sessions?tool=codex&limit=50")).json.sessions.find((x) => x.session_id === "codex-ctx");
+    assert.equal(s.context_used_pct, 20);
+    assert.equal(s.context_window_size, 258400);
   });
 });

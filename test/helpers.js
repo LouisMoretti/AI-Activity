@@ -125,6 +125,19 @@ export function event(over = {}) {
 }
 
 /** Run `npm run user -- <args>` against a test DB, piping the password on stdin. */
+/** One Codex response as the collector sends it (rollout token_usage_record). */
+export function codexResponse(over = {}) {
+  return {
+    response_id: `resp_${Math.random().toString(36).slice(2)}`,
+    session_id: "01a0b861-4cf4-7f10-8e5b-8d110992ee04",
+    turn_id: "01a0b873-1871-70e2-9708-12e7c0fa6012",
+    model: "gpt-6-astra",
+    occurred_at: Math.floor(Date.now() / 1000) - 120,
+    usage: { input_tokens: 300, cached_input_tokens: 200, cache_write_input_tokens: 0, output_tokens: 40, reasoning_output_tokens: 10 },
+    ...over,
+  };
+}
+
 export function userCli(dbPath, args, password = "") {
   return new Promise((resolve) => {
     const proc = spawn(process.execPath, [USER_CLI, ...args], {
