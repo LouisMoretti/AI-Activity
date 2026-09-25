@@ -5,7 +5,7 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { Config } from "./config.ts";
 import type { DB } from "./db/schema.ts";
-import { limitBody } from "./lib/http.ts";
+import { jsonOnly, limitBody } from "./lib/http.ts";
 import { createViewerAuth } from "./lib/viewer-auth.ts";
 import { accountRoutes, adminRoutes, userRoutes } from "./routes/account.ts";
 import { authRoutes } from "./routes/auth.ts";
@@ -19,6 +19,7 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
 
   const api = new Hono()
     .use(limitBody(256 * 1024))
+    .use(jsonOnly)
     .use(async (c, next) => {
       await next();
       c.header("cache-control", "no-store");

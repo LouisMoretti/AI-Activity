@@ -12,7 +12,7 @@ export function deviceRoutes(db: DB) {
       const body = await readJson(c);
       const created = createDevice(db, {
         userId: c.get("userId"),
-        name: String(body.name || "unnamed device").slice(0, 80),
+        name: (typeof body.name === "string" && body.name.trim()) ? body.name.trim().slice(0, 80) : "unnamed device",
       });
       // The full key is returned once and never stored in plain text.
       return c.json({ ok: true, id: created.id, key: created.key });
