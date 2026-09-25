@@ -7,6 +7,7 @@ import type { Config } from "./config.ts";
 import type { DB } from "./db/schema.ts";
 import { clientInfo } from "./lib/client.ts";
 import { jsonOnly, limitBody, readCache } from "./lib/http.ts";
+import { LIMITS, rateLimit, tokenBuckets } from "./lib/rate-limit.ts";
 import { createViewerAuth } from "./lib/viewer-auth.ts";
 import { accountRoutes, adminRoutes, userRoutes } from "./routes/account.ts";
 import { authRoutes } from "./routes/auth.ts";
@@ -18,6 +19,8 @@ import { leaderboardRoutes, profileListRoutes, publicProfileRoutes } from "./rou
 export function createApp(db: DB, config: Config, setupCode: string | null = null) {
   const auth = createViewerAuth(db, clientInfo(config.trustProxy));
   const cache = readCache(db);
+  const publicReads = rateLimit(tokenBuckets(LIMITS.publicReads), (c) => auth.clientId(c));
+  const perUser = rateLimit(tokenBuckets(LIMITS.sessionRequests), (c) => String(c.get("userId")));
 
   const api = new Hono()
     .use(limitBody(256 * 1024))
@@ -30,6 +33,9 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
     .route("/auth", authRoutes(db, auth, setupCode))
     .route("/ingest", ingestRoutes(db))
     // Public, read-only: profile pages, the account list and the leaderboard.
+    .use("/u/*", publicReads)
+    .use("/leaderboard", publicReads)
+    .use("/profiles", publicReads)
     .use("/u/*", cache)
     .use("/leaderboard", cache)
     .route("/u/:username", publicProfileRoutes(db))
@@ -37,6 +43,7 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
     .route("/profiles", profileListRoutes(db))
     // Everything below requires a viewer session.
     .use(auth.require)
+    .use(perUser)
     .route("/devices", deviceRoutes(db))
     .route("/account", accountRoutes(db, auth))
     .route("/users", userRoutes(db))

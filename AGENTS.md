@@ -142,7 +142,8 @@ git pull && docker compose up -d --build                  # upgrade
 Tests: `npm test` boots the real server on a temp DB and exercises the HTTP
 API black-box (`test/api.test.js`), so they must stay green across refactors;
 `test/migrations.test.js` upgrades old databases through the
-migrations; `test/backup.test.js` backs up during writes, prunes and
+migrations; `test/rate-limit.test.js` covers the token buckets;
+`test/backup.test.js` backs up during writes, prunes and
 restores; `test/client.test.js` covers client addresses behind proxies;
 `test/series.test.js` covers pure helpers of the web
 client; `test/dashboard.test.js` runs the client's state class
@@ -186,6 +187,7 @@ server/
   lib/avatar.ts       profile picture link allowlist
   lib/backup.ts       consistent snapshots, retention, restore
   lib/client.ts       client address + HTTPS behind the tunnel or TRUST_PROXY
+  lib/rate-limit.ts   token buckets + LIMITS (ingest, public reads, per user)
   lib/http.ts
   routes/           auth, ingest, usage (public profiles + leaderboard),
                     devices, account (profile + admin users)
@@ -358,6 +360,13 @@ Counting rules:
 The tool slug in the URL picks the payload normalizer
 (`server/lib/ingest.ts`, one entry per slug): `claude-code`, `codex` and `opencode`. There is no default: a bare `/api/ingest` and unknown slugs → `404`.
 Unknown or revoked keys → `401`. Small JSON bodies only (256 KB max).
+Rate limits per device key: 300 requests (refill 5/s) and 20,000 rows
+written (stored or updated; refill 10/s). Over either → `429` with
+`Retry-After`, checked before the body is read, so nothing is stored. A
+batch is charged what it wrote, after the fact (it can push the device
+into debt), and replays cost nothing: the collectors resend the same
+backlog on their next run and get further each time. The burst covers a
+first import of about a month of history.
 The payload's `tool` is optional; when present it must equal the slug
 (`400` otherwise).
 
@@ -567,6 +576,18 @@ account exists):
   `GET /api/admin/settings` → `{signup_open}`, `POST /api/admin/settings
   {signup_open}` opens or closes account creation (stored in `settings`;
   open by default). Closing it never affects existing accounts or the CLI.
+- Rate limits (`LIMITS` in `server/lib/rate-limit.ts`, token buckets in
+  memory: they reset when the server restarts). Over one → `429` with
+  `Retry-After`:
+  - public reads (`/api/u/…`, `/api/leaderboard`, `/api/profiles`): 120
+    per client (the client address above), refill 2/s. A dashboard polls
+    about 5 of them every 15 s;
+  - signed-in routes (`/api/devices`, `/api/account`, `/api/users`,
+    `/api/admin`): 120 per user, refill 1/s;
+  - at most 20 live devices per account (`POST /api/devices` → `409`;
+    revoking one frees a slot; `npm run gen-key` is not capped);
+  - ingest: per device key (§5). Health and `/api/auth/*` are not rate
+    limited (login, setup and sign-up have their own throttles above).
 - Public reads (`/api/u/…`, `/api/leaderboard`) are cached in memory until
   the database changes (this server's writes or the CLI's) and for 30 s at
   most (`readCache` in `server/lib/http.ts`).

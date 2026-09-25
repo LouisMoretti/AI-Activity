@@ -6,6 +6,7 @@ import {
 import { nowSec, type DB } from "../db/schema.ts";
 import { readJson } from "../lib/http.ts";
 import { hasConsumption, normalizerFor } from "../lib/ingest.ts";
+import { LIMITS, tokenBuckets, tooManyRequests } from "../lib/rate-limit.ts";
 import { bearerKey } from "../lib/viewer-auth.ts";
 
 /**
@@ -14,6 +15,9 @@ import { bearerKey } from "../lib/viewer-auth.ts";
  * is no default tool, so a bare /api/ingest is a 404.
  */
 export function ingestRoutes(db: DB) {
+  // Per device key: a leaked key can only add rows this fast (revoke it).
+  const requests = tokenBuckets(LIMITS.ingestRequests);
+  const writes = tokenBuckets(LIMITS.ingestWrites);
   return new Hono().post("/:tool", async (c) => {
     const tool = c.req.param("tool");
     const normalize = normalizerFor(tool);
@@ -25,6 +29,12 @@ export function ingestRoutes(db: DB) {
     }
     const device = findDeviceByKey(db, key);
     if (!device) return c.json({ error: "unknown or revoked device key" }, 401);
+    // Checked before reading the body: an answer over the limit stores
+    // nothing, and the collector sends the same backlog next run.
+    const bucket = String(device.id);
+    const wait = Math.max(requests.wait(bucket), writes.wait(bucket));
+    if (wait) return tooManyRequests(c, wait);
+    requests.take(bucket);
 
     const body = await readJson(c);
     // The URL says which tool this is; a payload claiming another one is a
@@ -70,6 +80,7 @@ export function ingestRoutes(db: DB) {
         });
       }
     })();
+    writes.take(bucket, counts.stored + counts.updated);
 
     if (!batch.single) return c.json<IngestBatchResult>({ ok: true, messages: batch.messages.length, ...counts });
     const result = single as UpsertResult | null;
