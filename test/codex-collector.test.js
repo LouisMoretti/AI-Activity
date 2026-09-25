@@ -124,7 +124,8 @@ describe("Codex collector (Stop hook from README.md)", () => {
     db.close();
     assert.deepEqual(utcOffsets, [330]);
     // The offset stops before the half-written line.
-    assert.equal(state()[current][0], fs.readFileSync(current).lastIndexOf(10) + 1);
+    const complete = fs.readFileSync(current).lastIndexOf(10) + 1;
+    assert.ok(await waitFor(() => state()[current]?.[0] === complete), "the offset stops before the half-written line");
   });
 
   test("later runs send only what was added", async () => {
@@ -162,7 +163,8 @@ describe("Codex collector (Stop hook from README.md)", () => {
     await run(hookCommand, env);
     assert.ok(await waitFor(async () => (await summary()).events === before.events + 1));
     assert.equal((await summary()).tokens - before.tokens, 207);
-    assert.equal(state()[current][0], fs.statSync(current).size);
+    // The detached collector saves its offsets after the server answered.
+    assert.ok(await waitFor(() => state()[current]?.[0] === fs.statSync(current).size), "the offset moves past the bad line");
   });
 
   test("a run cut short keeps the files already sent", async () => {

@@ -94,13 +94,57 @@ npm run build               # → web/dist (the default STATIC_DIR)
 
 CI (`.github/workflows/ci.yml`) runs typecheck, the web build and tests
 (tests serve `web/dist`, so the build comes first) on
-every PR and push to main.
+every PR and push to main, on x64 and ARM64 runners (`better-sqlite3` is
+native). It also builds the Docker image on both and smoke-tests it
+(healthy, setup code, first account, device key, backup, clean stop).
+
+### Deploy (Docker + Caddy)
+
+Production runs in Docker behind **Caddy** (reverse proxy, automatic
+HTTPS). `compose.yaml` has three services: `app` (the server; no published
+port, only reachable on the compose network), `caddy` (ports 80/443,
+`Caddyfile`, certificates in the `caddy_data` volume) and `backup` (the same
+image, `npm run backup` every day into the `data` volume).
+
+```bash
+# .env next to compose.yaml
+SITE_ADDRESS=ai.example.com        # DNS A/AAAA record → this server
+# SITE_ADDRESS=http://localhost + HTTP_PORT=8080 to try it without TLS
+
+docker compose up -d --build       # build, start, restart on crash/reboot
+docker compose logs app            # setup code for the first account
+docker compose exec app node scripts/user.ts add louis   # or the setup code
+docker compose exec app node scripts/gen-key.ts "laptop" [--user alice]
+docker compose exec app node scripts/backup.ts
+git pull && docker compose up -d --build                  # upgrade
+```
+
+- The image (`Dockerfile`) is `node:22-slim` (glibc: `better-sqlite3` has
+  prebuilt binaries for amd64 and arm64 on Node 22; Node 24 would compile
+  from source), runs as `node`, has a `HEALTHCHECK` on `/api/health`, and
+  `npm ci` runs inside it (never copy the host's `node_modules`).
+- Data lives in the `data` volume mounted on `/data` (`DB_PATH=/data/dashboard.db`,
+  `BACKUP_DIR=/data/backups`): mount the directory, never the database file
+  alone (its `-wal` / `-shm` sit next to it). `docker stop` sends SIGTERM:
+  the server closes SQLite, which checkpoints the WAL.
+- Client addresses: Caddy sets `X-Forwarded-For` to the client's address,
+  and the app trusts it only from `TRUST_PROXY` (the compose network
+  `PROXY_SUBNET`, default `172.29.94.0/24`, which only Caddy shares with
+  the app; change it if that range is taken). Without it every visitor
+  would look like one client to the login throttle and the sign-up cap.
+- Restore: `docker compose stop app backup`, then
+  `docker compose run --rm --no-deps app node scripts/restore.ts /data/backups/<file>`,
+  then `docker compose start app backup`.
+- Before going live: revoke and reissue every device key used through
+  quick tunnels, then point the collectors (statusLine, Codex hook,
+  OpenCode plugin) at the new URL.
 
 Tests: `npm test` boots the real server on a temp DB and exercises the HTTP
 API black-box (`test/api.test.js`), so they must stay green across refactors;
 `test/migrations.test.js` upgrades old databases through the
 migrations; `test/backup.test.js` backs up during writes, prunes and
-restores; `test/series.test.js` covers pure helpers of the web
+restores; `test/client.test.js` covers client addresses behind proxies;
+`test/series.test.js` covers pure helpers of the web
 client; `test/dashboard.test.js` runs the client's state class
 (`dashboard.svelte.ts`, compiled with `svelte/compiler`) against a fake
 browser and fetch; `test/live.test.js` covers the API → view-model mapping;
@@ -141,6 +185,7 @@ server/
   lib/setup.ts        one-time setup code for the first account
   lib/avatar.ts       profile picture link allowlist
   lib/backup.ts       consistent snapshots, retention, restore
+  lib/client.ts       client address + HTTPS behind the tunnel or TRUST_PROXY
   lib/http.ts
   routes/           auth, ingest, usage (public profiles + leaderboard),
                     devices, account (profile + admin users)
@@ -269,7 +314,8 @@ npm run restore -- data/backups/dashboard-20260925-134052.db   # server stopped
   Then it prunes: the newest backup of each of the last 7 days and of each
   of the last 4 ISO weeks stay. Only names of that exact shape are ever
   deleted (`-pre-v2`, `-pre-restore` copies and other files stay).
-- Schedule it daily, e.g. a cron line on the server:
+- Schedule it daily: in Docker, the compose file's `backup` service does
+  (`BACKUP_EVERY_SEC`, default 86400); else a cron line on the server, e.g.
   `15 3 * * * cd /srv/ai-activity && npm run -s backup`.
 - Copy the backups **off the machine** too, or they die with its disk:
   e.g. `rsync -a data/backups/ backup-host:ai-activity/` or `rclone sync
@@ -487,10 +533,13 @@ account exists):
   included, until the window ends). Login, setup and password change count
   each attempt as a failure before hashing (a parallel burst cannot slip
   through) and a right password only takes back that one attempt: signing
-  in to another account never resets the count. The client is
-  `CF-Connecting-IP`, trusted only from localhost (the tunnel or the Vite
-  proxy), else the socket address. The session cookie is `Secure` when the
-  request is HTTPS (incl. `X-Forwarded-Proto`).
+  in to another account never resets the count. The client
+  (`server/lib/client.ts`) is `CF-Connecting-IP` from localhost (the quick
+  tunnel or the Vite proxy); the last `X-Forwarded-For` address from a
+  `TRUST_PROXY` peer (Caddy in Docker; earlier entries can be forged);
+  else the socket address. The session cookie is `Secure` when the request
+  is HTTPS (`X-Forwarded-Proto` counts only from those same proxies). An
+  invalid `TRUST_PROXY` stops the server at start.
 - Every `/api` request other than GET must be `Content-Type:
   application/json` (`415` otherwise) and not `Sec-Fetch-Site: cross-site`
   (`403`): a cross-site HTML form could otherwise post JSON-looking
@@ -589,7 +638,8 @@ curl -s localhost:3000/api/u/<you>/quotas ; echo
 
 ## 8. Testing with the user (Cloudflare tunnel) — REQUIRED
 
-After `npm start` works locally:
+Quick tunnels are for testing sessions only; the deployed server is
+reached through Caddy (§2, Deploy). After `npm start` works locally:
 
 1. Install `cloudflared` if missing (https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/).
 2. Start the tunnel:

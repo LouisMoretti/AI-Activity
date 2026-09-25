@@ -1,10 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
-import { getConnInfo } from "@hono/node-server/conninfo";
 import type { Context, MiddlewareHandler } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import type { Account } from "../../shared/types.ts";
 import { deleteViewerSession, insertViewerSession, toAccount, viewerSessionUser } from "../db/queries.ts";
 import { nowSec, type DB } from "../db/schema.ts";
+import type { ClientInfo } from "./client.ts";
 
 const COOKIE = "dash_session";
 const SESSION_SEC = 30 * 86400;
@@ -25,36 +25,12 @@ export type ViewerEnv = {
 
 const tokenHash = (token: string) => createHash("sha256").update(token).digest("hex");
 
-const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
-
-/**
- * Behind the Cloudflare tunnel (or the Vite dev proxy) every request comes
- * from localhost, and Cloudflare sets CF-Connecting-IP to the real client
- * address. The header is only trusted from localhost: a client reaching the
- * server directly (e.g. on the LAN) could otherwise send a new one on every
- * request and escape the per-client limits.
- */
-export function clientId(c: Context): string {
-  let peer = "unknown";
-  try {
-    peer = getConnInfo(c).remote.address || "unknown";
-  } catch {
-    // Not a Node socket (tests with app.request): keep "unknown".
-  }
-  const cf = c.req.header("cf-connecting-ip");
-  return cf && LOOPBACK.has(peer) ? cf : peer;
-}
-
-/** HTTPS as seen by the browser, including through the tunnel. */
-const isHttps = (c: Context) =>
-  new URL(c.req.url).protocol === "https:" || c.req.header("x-forwarded-proto") === "https";
-
 /**
  * Per-user viewer sessions, stored hashed in SQLite so they survive a
  * restart. Every viewer API needs one: with no account yet, nothing is
  * readable until the first account is created (npm run user -- add).
  */
-export function createViewerAuth(db: DB) {
+export function createViewerAuth(db: DB, { clientId, isHttps }: ClientInfo) {
   let fails = new Map<string, number>(); // client → failures in window
   let failsTotal = 0;
   let windowStart = Date.now();
@@ -77,6 +53,8 @@ export function createViewerAuth(db: DB) {
 
   return {
     resolve,
+    /** The client address the per-client limits count (see client.ts). */
+    clientId,
     /** The current session's token hash (to keep it when signing out elsewhere). */
     sessionHash: (c: Context) => {
       const token = cookieToken(c);

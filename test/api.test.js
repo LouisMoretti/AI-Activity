@@ -526,6 +526,25 @@ describe("login throttling under load", () => {
     assert.deepEqual(statuses.slice(0, 5), [200, 200, 200, 200, 200]);
     assert.ok(statuses.slice(5).every((s) => s === 429), String(statuses));
   });
+
+  test("behind a trusted proxy (TRUST_PROXY), each X-Forwarded-For client gets its own budget", async (t) => {
+    const lan = Object.values(os.networkInterfaces()).flat().find((i) => i && i.family === "IPv4" && !i.internal);
+    if (!lan) return t.skip("no non-loopback IPv4 address to connect from");
+    const proxied = await startServer({ password: "hunter2-pass", env: { TRUST_PROXY: `${lan.address}/32` } });
+    t.after(() => proxied.stop());
+    const base = proxied.base.replace("127.0.0.1", lan.address);
+    const guess = (ip) => req(base, "POST", "/api/auth/login", {
+      anon: true, body: { username: "admin", password: "nope" }, headers: { "x-forwarded-for": `198.51.100.99, ${ip}` },
+    });
+    for (let i = 0; i < 10; i++) assert.equal((await guess("203.0.113.40")).status, 401);
+    assert.equal((await guess("203.0.113.40")).status, 429);
+    // Another visitor behind the same proxy is not locked out.
+    assert.equal((await guess("203.0.113.41")).status, 401);
+  });
+
+  test("an invalid TRUST_PROXY stops the server at start", async () => {
+    await assert.rejects(startServer({ autoLogin: false, env: { TRUST_PROXY: "caddy" } }), /TRUST_PROXY: "caddy"/);
+  });
 });
 
 describe("accounts", () => {
