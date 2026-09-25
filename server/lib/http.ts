@@ -1,4 +1,5 @@
 import type { Context, MiddlewareHandler } from "hono";
+import type { DB } from "../db/schema.ts";
 import { HTTPException } from "hono/http-exception";
 
 /** Parse a JSON body, turning malformed input into a 400. */
@@ -16,6 +17,22 @@ export async function readJson(c: Context): Promise<Record<string, unknown>> {
 export function intParam(c: Context, name: string, def: number, min: number, max: number): number {
   return Math.min(Math.max(Number(c.req.query(name)) || def, min), max);
 }
+
+/**
+ * Requests that change something must be JSON, from this site. A page on
+ * another site can make a browser POST a plain HTML form (text/plain can
+ * carry a valid JSON body) with no CORS preflight: without this check it
+ * could sign the visitor in to an account of its choosing, or sign them
+ * out. application/json cannot be sent cross-site without a preflight,
+ * which this server never answers.
+ */
+export const jsonOnly: MiddlewareHandler = async (c, next) => {
+  if (c.req.method === "GET" || c.req.method === "HEAD") return next();
+  if (c.req.header("sec-fetch-site") === "cross-site") return c.json({ error: "cross-site request refused" }, 403);
+  const type = (c.req.header("content-type") || "").split(";")[0].trim().toLowerCase();
+  if (type !== "application/json") return c.json({ error: "send the body as application/json" }, 415);
+  await next();
+};
 
 /**
  * Reject bodies over maxBytes with a 413. Unlike hono/body-limit, the rest
@@ -41,5 +58,36 @@ export function limitBody(maxBytes: number): MiddlewareHandler {
       duplex: "half",
     } as RequestInit);
     await next();
+  };
+}
+
+const CACHE_TTL_MS = 30_000;
+const CACHE_MAX = 500;
+
+/**
+ * Cache successful GET answers of public read routes (profiles, leaderboard)
+ * until the database changes, or for 30 s at most (time-based windows such
+ * as "today" and "last 30 days" move on their own). Every open dashboard
+ * polls every 15 s, so an idle server answers from memory. "Changed" is
+ * total_changes() for this server's own writes and PRAGMA data_version for
+ * writes from another connection (the npm run user / gen-key CLI).
+ */
+export function readCache(db: DB): MiddlewareHandler {
+  const cache = new Map<string, { version: string; at: number; body: string }>();
+  const changes = db.prepare("SELECT total_changes() AS n");
+  return async (c, next) => {
+    if (c.req.method !== "GET") return next();
+    const url = new URL(c.req.url);
+    const key = url.pathname + url.search;
+    const version = `${(changes.get() as { n: number }).n}:${db.pragma("data_version", { simple: true })}`;
+    const hit = cache.get(key);
+    if (hit && hit.version === version && Date.now() - hit.at < CACHE_TTL_MS) {
+      return c.body(hit.body, 200, { "content-type": "application/json" });
+    }
+    await next();
+    if (c.res.status !== 200) return;
+    cache.delete(key);
+    cache.set(key, { version, at: Date.now(), body: await c.res.clone().text() });
+    if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value!);
   };
 }

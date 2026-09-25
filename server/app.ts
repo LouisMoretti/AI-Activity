@@ -5,7 +5,7 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { Config } from "./config.ts";
 import type { DB } from "./db/schema.ts";
-import { limitBody } from "./lib/http.ts";
+import { jsonOnly, limitBody, readCache } from "./lib/http.ts";
 import { createViewerAuth } from "./lib/viewer-auth.ts";
 import { accountRoutes, adminRoutes, userRoutes } from "./routes/account.ts";
 import { authRoutes } from "./routes/auth.ts";
@@ -16,9 +16,11 @@ import { leaderboardRoutes, profileListRoutes, publicProfileRoutes } from "./rou
 /** setupCode: one-time code for creating the first account from the browser (null once one exists). */
 export function createApp(db: DB, config: Config, setupCode: string | null = null) {
   const auth = createViewerAuth(db);
+  const cache = readCache(db);
 
   const api = new Hono()
     .use(limitBody(256 * 1024))
+    .use(jsonOnly)
     .use(async (c, next) => {
       await next();
       c.header("cache-control", "no-store");
@@ -27,6 +29,8 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
     .route("/auth", authRoutes(db, auth, setupCode))
     .route("/ingest", ingestRoutes(db))
     // Public, read-only: profile pages, the account list and the leaderboard.
+    .use("/u/*", cache)
+    .use("/leaderboard", cache)
     .route("/u/:username", publicProfileRoutes(db))
     .route("/leaderboard", leaderboardRoutes(db))
     .route("/profiles", profileListRoutes(db))

@@ -83,7 +83,8 @@ Health check: `GET /api/health` → `{"ok":true}`.
 Web client (Svelte 5 + Vite, in `web/`):
 
 ```bash
-npm run dev                 # API server on :3000 (watch mode)
+npm run dev                 # API server on :3000 (watch mode; restart
+                            # it after editing .env)
 npm run dev:web             # UI with HMR on :5173, proxies /api → :3000
 npm run build               # → web/dist (the default STATIC_DIR)
 ```
@@ -94,8 +95,10 @@ every PR and push to main.
 
 Tests: `npm test` boots the real server on a temp DB and exercises the HTTP
 API black-box (`test/api.test.js`), so they must stay green across refactors;
-`test/series.test.js` and `test/format.test.js` cover pure helpers of the web
-client.
+`test/series.test.js` covers pure helpers of the web
+client; `test/dashboard.test.js` runs the client's state class
+(`dashboard.svelte.ts`, compiled with `svelte/compiler`) against a fake
+browser and fetch; `test/collector.test.js` runs the README collector.
 Types: `npm run typecheck` (tsc for server, svelte-check for web). Node >= 22.18 runs the TypeScript server directly
 (type stripping, no build step), so only erasable TS syntax is allowed (no
 `enum`, no parameter properties) and relative imports keep their `.ts`
@@ -135,10 +138,13 @@ web/
   src/lib/live.ts         API responses → DashboardVM ("Unavailable", never guessed)
   src/lib/demo.ts         FICTIONAL ?demo=1 dataset → DashboardVM (always labeled)
   src/lib/series.ts       pure helpers: dense UTC series, streaks, calendar grid
+  src/lib/format.ts       number, day, duration and "ago" formatting
   src/lib/dashboard.svelte.ts  state: provider, auth status, 15 s refresh
-  src/components/         StatsBar, ActivityChart (Heatmap, TrendChart),
-                          QuotaCard, SessionList,
-                          DevicesPanel, AccountMenu,
+  src/App.svelte          routes the pages; renders the site chrome once
+  src/components/         StatsRow (StatCard), ActivityChart (Heatmap,
+                          TrendChart), ClaudeCodeCard / CodexCard /
+                          OpenCodeCard (ToolHeader, QuotaWindow, Meter),
+                          Conversations, DevicesPanel, AccountMenu,
                           SiteHeader, ProfilePanel, UsersPanel,
                           NewAccountForm, AuthPanel, Leaderboard,
                           AdminOverview, …
@@ -182,16 +188,19 @@ Components never branch on live vs demo: both sources map into the same
   (`five_hour`, `seven_day`): account, limit type, % used, reset time,
   measurement date (an unchanged value only moves the latest row's
   measurement date forward). Never summed; see §5 for which row is shown.
+- Reads go through two covering indexes on `usage_events`
+  (`idx_usage_user_read`: user, time, tool, session, model, token counts;
+  `idx_usage_user_session_read`: user, session, tool, time, token counts).
+  Any new read query should be answerable from one of them.
 - Migrations are additive (`ADD COLUMN` when missing) and also drop the
   leftovers of removed features: `usage_events.cost_estimated_usd` and the
   `billing_records`, `subscriptions`, `invites`, `app_settings` tables.
 
 Counting rules:
 
-- Conversations = `COUNT(DISTINCT session_id)`. "Messages" means user messages,
-  separate from assistant replies and tool calls (the statusLine JSON alone
-  does not provide this count; it can be enriched from local session files —
-  otherwise the UI shows "Unavailable").
+- Conversations = `COUNT(DISTINCT session_id)`. User messages (separate
+  from assistant replies and tool calls) are not counted yet (issue #6):
+  nothing in the API or the UI shows a message count.
 - Count each message id once, with its final counts (the transcript may
   write a partial entry first). Never store the statusLine's
   `context_window.current_usage`: it re-fires with a partial then a final
@@ -303,8 +312,9 @@ account exists):
   sign-up once the first account exists; non-admin account, signs in.
   `403` while an admin has closed account creation, `409` before the first
   account exists or if the username is taken, `429` after 5 accounts from
-  one client in an hour.
-- `GET /api/profiles` → enabled accounts `{username, display_name}`,
+  one client in an hour, or while the login throttle blocks that client
+  (or everyone, at the global cap).
+- `GET /api/profiles` → enabled accounts `{username, display_name, avatar_url}`,
   **no session needed** (the public leaderboard lists them too).
 - Public profile pages, **no session needed**: `GET /api/u/:username` →
   `{username, display_name, avatar_url}`, and the usage routes below under
@@ -314,10 +324,19 @@ account exists):
   always need a session and only ever act on the signed-in user.
 - Unknown usernames and wrong passwords get the same `401` and the same
   hashing cost.
-- Login is throttled: 10 failures per client (`CF-Connecting-IP` behind the
-  tunnel) or 50 in total per 15 min → `429` with `Retry-After` (the global
-  cap locks everyone out, owner included, until the window ends). The session
-  cookie is `Secure` when the request is HTTPS (incl. `X-Forwarded-Proto`).
+- Login is throttled: 10 failures per client or 50 in total per 15 min →
+  `429` with `Retry-After` (the global cap locks everyone out, owner
+  included, until the window ends). Login, setup and password change count
+  each attempt as a failure before hashing (a parallel burst cannot slip
+  through) and a right password only takes back that one attempt: signing
+  in to another account never resets the count. The client is
+  `CF-Connecting-IP`, trusted only from localhost (the tunnel or the Vite
+  proxy), else the socket address. The session cookie is `Secure` when the
+  request is HTTPS (incl. `X-Forwarded-Proto`).
+- Every `/api` request other than GET must be `Content-Type:
+  application/json` (`415` otherwise) and not `Sec-Fetch-Site: cross-site`
+  (`403`): a cross-site HTML form could otherwise post JSON-looking
+  `text/plain` and sign the visitor in to another account.
 - `POST /api/account {display_name?, avatar_url?}` (only the fields sent
   change; empty display name → the username, empty picture → the initial).
   Profile pictures are links, never uploads: every visitor's browser loads
@@ -341,7 +360,10 @@ account exists):
   `GET /api/admin/settings` → `{signup_open}`, `POST /api/admin/settings
   {signup_open}` opens or closes account creation (stored in `settings`;
   open by default). Closing it never affects existing accounts or the CLI.
-- `GET /api/leaderboard?days=30|all`, **no session needed** → every enabled
+- Public reads (`/api/u/…`, `/api/leaderboard`) are cached in memory until
+  the database changes (this server's writes or the CLI's) and for 30 s at
+  most (`readCache` in `server/lib/http.ts`).
+- `GET /api/leaderboard?days=1..730|all` (default 30; the UI uses 7, 30 and all), **no session needed** → every enabled
   account, ranked by tokens in the period (`tokens`, `sessions`, `events`,
   `active_days`, `top_model`, `last_active` (null when idle),
   `current_streak`), plus `totals`, `accounts`, `by_model` and a 364-day

@@ -12,9 +12,25 @@ export class NotFoundError extends Error {
   constructor() { super("not found"); }
 }
 
+let sessionLost: (() => void) | null = null;
+
+/**
+ * Called when a request that needs the viewer's session answers 401: the
+ * session ended elsewhere (password changed or reset, account disabled).
+ * Not for /api/auth/*, where a 401 means wrong credentials.
+ */
+export function onSessionLost(fn: (() => void) | null): void {
+  sessionLost = fn;
+}
+
+function unauthorized(path: string): UnauthorizedError {
+  if (!path.startsWith("/api/auth/")) sessionLost?.();
+  return new UnauthorizedError();
+}
+
 async function get<T>(path: string): Promise<T> {
   const r = await fetch(path);
-  if (r.status === 401) throw new UnauthorizedError();
+  if (r.status === 401) throw unauthorized(path);
   if (r.status === 404) throw new NotFoundError();
   if (!r.ok) throw new Error(`request failed: ${r.status}`);
   return r.json() as Promise<T>;
@@ -27,7 +43,7 @@ async function post<T>(path: string, body: unknown = {}): Promise<T> {
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (r.status === 401) throw new UnauthorizedError();
+  if (r.status === 401) throw unauthorized(path);
   const json = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(json.error || `request failed: ${r.status}`);
   return json as T;

@@ -439,6 +439,73 @@ describe("locked server (first account made from the CLI)", () => {
     assert.ok(Number(blocked.headers.get("retry-after")) > 0);
     assert.equal((await attempt("hunter2-pass", "203.0.113.10")).status, 200);
   });
+
+  test("signing in to another account between guesses does not reset the count", async () => {
+    const ip = "203.0.113.20";
+    const attempt = (username, password) => req(srv.base, "POST", "/api/auth/login", {
+      anon: true, body: { username, password }, headers: { "cf-connecting-ip": ip },
+    });
+    assert.equal((await register(srv.base, { username: "guesser", password: "guesser-pass" })).status, 200);
+    for (let i = 0; i < 9; i++) assert.equal((await attempt("admin", "nope")).status, 401);
+    assert.equal((await attempt("guesser", "guesser-pass")).status, 200);
+    assert.equal((await attempt("admin", "nope")).status, 401);
+    assert.equal((await attempt("admin", "nope")).status, 429);
+    assert.equal((await attempt("guesser", "guesser-pass")).status, 429);
+  });
+
+  test("state-changing requests must be same-site JSON", async () => {
+    const cookie = await login(srv.base, "admin", "hunter2-pass");
+    // A cross-site HTML form can send text/plain that happens to be JSON.
+    const form = await req(srv.base, "POST", "/api/auth/login", {
+      anon: true, type: "text/plain", raw: JSON.stringify({ username: "admin", password: "hunter2-pass" }),
+    });
+    assert.equal(form.status, 415);
+    assert.equal(form.headers.get("set-cookie"), null);
+    assert.equal((await req(srv.base, "POST", "/api/auth/logout", { type: null, cookie })).status, 415);
+    assert.equal((await req(srv.base, "POST", "/api/account", { type: "application/x-www-form-urlencoded", raw: "display_name=x", cookie })).status, 415);
+    const cross = await req(srv.base, "POST", "/api/account", { body: { display_name: "x" }, headers: { "sec-fetch-site": "cross-site" }, cookie });
+    assert.equal(cross.status, 403);
+    assert.equal((await req(srv.base, "POST", "/api/account", { body: {}, type: "application/json; charset=utf-8", cookie })).status, 200);
+    assert.equal((await req(srv.base, "GET", "/api/devices", { type: "text/plain", cookie })).status, 200);
+  });
+
+  test("a device name that is not text falls back to the default", async () => {
+    const cookie = await login(srv.base, "admin", "hunter2-pass");
+    const r = await req(srv.base, "POST", "/api/devices", { body: { name: { toString: 1 } }, cookie });
+    assert.equal(r.status, 200);
+    const d = (await req(srv.base, "GET", "/api/devices", { cookie })).json.devices.find((x) => x.id === r.json.id);
+    assert.equal(d.name, "unnamed device");
+  });
+});
+
+describe("login throttling under load", () => {
+  let srv;
+  before(async () => { srv = await startServer(); });
+  after(() => srv.stop());
+
+  test("a burst of parallel guesses is counted before hashing", async () => {
+    const guess = () => req(srv.base, "POST", "/api/auth/login", {
+      anon: true, body: { username: "admin", password: "nope" }, headers: { "cf-connecting-ip": "203.0.113.30" },
+    });
+    const statuses = (await Promise.all(Array.from({ length: 40 }, guess))).map((r) => r.status);
+    assert.equal(statuses.filter((s) => s === 401).length, 10);
+    assert.equal(statuses.filter((s) => s === 429).length, 30);
+  });
+
+  test("CF-Connecting-IP is only trusted from localhost", async (t) => {
+    const lan = Object.values(os.networkInterfaces()).flat().find((i) => i && i.family === "IPv4" && !i.internal);
+    if (!lan) return t.skip("no non-loopback IPv4 address to connect from");
+    const base = srv.base.replace("localhost", lan.address).replace("127.0.0.1", lan.address);
+    // From the LAN, a new header on every request must not buy a new budget.
+    const statuses = [];
+    for (let i = 0; i < 12; i++) {
+      statuses.push((await req(base, "POST", "/api/auth/register", {
+        anon: true, body: { username: `lan${i}`, password: "lan-password-1" }, headers: { "cf-connecting-ip": `198.51.100.${i}` },
+      })).status);
+    }
+    assert.deepEqual(statuses.slice(0, 5), [200, 200, 200, 200, 200]);
+    assert.ok(statuses.slice(5).every((s) => s === 429), String(statuses));
+  });
 });
 
 describe("accounts", () => {
@@ -838,6 +905,36 @@ describe("public profile pages", () => {
   });
 });
 
+describe("read cache", () => {
+  let srv, key;
+  before(async () => {
+    srv = await startServer();
+    key = (await newDevice(srv.base, "cache")).key;
+  });
+  after(() => srv.stop());
+
+  test("public reads are fresh after any write, from the server or the CLI", async () => {
+    const board = async () => (await req(srv.base, "GET", "/api/leaderboard?days=30", { anon: true })).json;
+    const tokens = async () => (await req(srv.base, "GET", "/api/u/admin/summary", { anon: true })).json.total.tokens;
+    const before = await board();
+    assert.deepEqual(await board(), before);
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ usage: { input_tokens: 5 } }) });
+    assert.equal((await board()).totals.tokens, before.totals.tokens + 5);
+    assert.equal(await tokens(), before.totals.tokens + 5);
+    // Another connection (the CLI) writing to the same DB.
+    assert.equal((await userCli(srv.dbPath, ["add", "cliuser"], "cli-password-1")).code, 0);
+    assert.ok((await board()).entries.some((e) => e.username === "cliuser"));
+  });
+
+  test("read indexes replace the old ones", async () => {
+    const db = new Database(srv.dbPath, { readonly: true });
+    const names = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'usage_events'").all().map((r) => r.name);
+    db.close();
+    assert.ok(names.includes("idx_usage_user_read") && names.includes("idx_usage_user_session_read"), String(names));
+    assert.ok(!names.includes("idx_usage_device_prompt") && !names.includes("idx_usage_user_time"), String(names));
+  });
+});
+
 describe("leaderboard", () => {
   test("ranks every enabled account by tokens, publicly", async () => {
     const srv = await startServer();
@@ -877,7 +974,7 @@ describe("leaderboard", () => {
       assert.equal(b.sessions, 2);
       assert.equal(b.active_days, 2);
       assert.equal(b.top_model, "claude-sonnet-5");
-      assert.ok(b.current_streak >= 1);
+      assert.equal(b.current_streak, 2); // events today and yesterday
       assert.equal(month.entries[1].current_streak, 1);
       assert.deepEqual(month.by_model.map((m) => m.name), ["claude-sonnet-5", "claude-opus-5-5"]);
 
@@ -931,7 +1028,7 @@ describe("summary, sessions and context (redesign APIs)", () => {
     await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: { messages: [m("msg_c3", at - 5)] } });
     const r = (await req(srv.base, "GET", "/api/u/admin/sessions?limit=1")).json;
     assert.equal(r.sessions.length, 1);
-    assert.ok(r.total >= 3);
+    assert.equal(r.total, 3); // sessions a, b and ctx
     const ctx = (await req(srv.base, "GET", "/api/u/admin/sessions?limit=50")).json.sessions.find((s) => s.session_id === "ctx");
     assert.equal(ctx.context_used_pct, 35);
     assert.equal(ctx.context_window_size, 200000);
@@ -952,6 +1049,85 @@ describe("shutdown", () => {
       assert.ok(!fs.existsSync(`${srv.dbPath}-wal`));
     } finally {
       await srv.stop();
+    }
+  });
+});
+
+describe("limits, bounds and admin edge cases", () => {
+  test("the global cap of 50 failures locks every client, owner included", async () => {
+    const srv = await startServer();
+    try {
+      const attempt = (ip, password = "nope") => req(srv.base, "POST", "/api/auth/login", {
+        anon: true, body: { username: TEST_ADMIN.username, password }, headers: { "cf-connecting-ip": ip },
+      });
+      for (let c = 0; c < 5; c++) for (let i = 0; i < 10; i++) assert.equal((await attempt(`203.0.113.${100 + c}`)).status, 401);
+      const owner = await attempt("203.0.113.200", TEST_ADMIN.password);
+      assert.equal(owner.status, 429);
+      assert.ok(Number(owner.headers.get("retry-after")) > 0);
+      // Sign-up is refused while the cap holds, too.
+      const r = await req(srv.base, "POST", "/api/auth/register", {
+        anon: true, body: { username: "late", password: "late-password" }, headers: { "cf-connecting-ip": "203.0.113.201" },
+      });
+      assert.equal(r.status, 429);
+    } finally {
+      srv.stop();
+    }
+  });
+
+  test("guessing the current password is throttled like a login", async () => {
+    const srv = await startServer();
+    try {
+      const change = (current) => req(srv.base, "POST", "/api/account/password", {
+        body: { current_password: current, new_password: "new-password-1" },
+      });
+      for (let i = 0; i < 10; i++) assert.equal((await change("nope")).status, 400);
+      assert.equal((await change(TEST_ADMIN.password)).status, 429);
+    } finally {
+      srv.stop();
+    }
+  });
+
+  test("query parameters are clamped to their documented bounds", async () => {
+    const srv = await startServer();
+    try {
+      const days = async (q) => (await req(srv.base, "GET", `/api/u/admin/stats?${q}`)).json.range_days;
+      assert.deepEqual([await days("days=99999"), await days("days=-5"), await days("days=abc"), await days("")], [730, 1, 30, 30]);
+      const board = async (q) => (await req(srv.base, "GET", `/api/leaderboard?${q}`, { anon: true })).json.range_days;
+      assert.deepEqual([await board("days=7"), await board("days=all"), await board("days=99999"), await board("")], [7, null, 730, 30]);
+      for (const q of ["limit=999", "limit=-1", "offset=-4", "limit=abc&offset=abc"]) {
+        assert.equal((await req(srv.base, "GET", `/api/u/admin/sessions?${q}`)).status, 200, q);
+      }
+    } finally {
+      srv.stop();
+    }
+  });
+
+  test("admin actions on an unknown user id are 404", async () => {
+    const srv = await startServer();
+    try {
+      assert.equal((await req(srv.base, "POST", "/api/users/99999/enable")).status, 404);
+      assert.equal((await req(srv.base, "POST", "/api/users/99999/disable")).status, 404);
+      assert.equal((await req(srv.base, "POST", "/api/users/99999/admin", { body: { is_admin: true } })).status, 404);
+      assert.equal((await req(srv.base, "POST", "/api/users/99999/password", { body: { password: "long-enough-1" } })).status, 404);
+    } finally {
+      srv.stop();
+    }
+  });
+
+  test("CLI: user list and gen-key --user", async () => {
+    const srv = await startServer();
+    try {
+      assert.equal((await userCli(srv.dbPath, ["add", "carol", "--name", "Carol"], "carol-password")).code, 0);
+      const list = await userCli(srv.dbPath, ["list"]);
+      assert.equal(list.code, 0);
+      assert.match(list.out, /#1 admin \(admin\)/);
+      assert.match(list.out, /#\d+ carol\n/);
+      const key = await genKey(srv.dbPath, "carol-laptop", "--user", "carol");
+      assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event() })).json.stored, true);
+      assert.equal((await req(srv.base, "GET", "/api/u/carol/stats?days=730", { anon: true })).json.events, 1);
+      await assert.rejects(genKey(srv.dbPath, "x", "--user", "nobody"), /no user "nobody"/);
+    } finally {
+      srv.stop();
     }
   });
 });
@@ -990,6 +1166,9 @@ describe("migrations", () => {
       const cols = db.prepare("PRAGMA table_info(usage_events)").all().map((c) => c.name);
       assert.ok(!cols.includes("cost_estimated_usd"));
       assert.equal(db.prepare("SELECT input_tokens FROM usage_events WHERE event_id = 'e1'").get().input_tokens, 42);
+      // Rows from before per-message ingestion are snapshot rows: messages of
+      // their session replace them (see "messages replace … snapshot rows").
+      assert.equal(db.prepare("SELECT source FROM usage_events WHERE event_id = 'e1'").get().source, "snapshot");
     } finally {
       db.close();
       fs.rmSync(dir, { recursive: true, force: true });

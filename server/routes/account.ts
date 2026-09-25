@@ -38,7 +38,7 @@ export function accountRoutes(db: DB, auth: ViewerAuth) {
     })
     .post("/password", async (c) => {
       const body = await readJson(c);
-      const wait = auth.throttled(c);
+      const wait = auth.attempt(c);
       if (wait) {
         c.header("retry-after", String(wait));
         return c.json({ error: "too many failed attempts, try again later" }, 429);
@@ -46,9 +46,8 @@ export function accountRoutes(db: DB, auth: ViewerAuth) {
       const user = getUser(db, c.get("userId"))!;
       const current = typeof body.current_password === "string" ? body.current_password : "";
       // Guessing the current password from a stolen session is throttled like a login.
-      const ok = await verifyPassword(current, user.password_hash);
-      auth.record(c, ok);
-      if (!ok) return c.json({ error: "current password is wrong" }, 400);
+      if (!(await verifyPassword(current, user.password_hash))) return c.json({ error: "current password is wrong" }, 400);
+      auth.succeeded(c);
       const problem = passwordProblem(body.new_password);
       if (problem) return c.json({ error: problem }, 400);
       setPasswordHash(db, user.id, await hashPassword(body.new_password as string));

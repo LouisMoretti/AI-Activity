@@ -12,6 +12,24 @@
   const weeks = $derived(calendarWeeks(series));
   const max = $derived(peak(series));
   const months = $derived(monthLabels(weeks, monthShort));
+
+  // One tab stop for the whole calendar (today, or the last day moved to);
+  // arrow keys move a day (up/down) or a week (left/right).
+  let focusDay = $state<string | null>(null);
+  const days = $derived(series.map((d) => d.day));
+  const current = $derived(focusDay && days.includes(focusDay) ? focusDay : days.includes(today) ? today : days.at(-1));
+  let grid = $state<HTMLDivElement>();
+  const STEP: Record<string, number> = { ArrowUp: -1, ArrowDown: 1, ArrowLeft: -7, ArrowRight: 7, Home: -Infinity, End: Infinity };
+
+  function move(e: KeyboardEvent, day: string) {
+    const step = STEP[e.key];
+    if (step === undefined) return;
+    e.preventDefault();
+    const i = days.indexOf(day);
+    const next = days[Math.min(Math.max(i + step, 0), days.length - 1)] ?? day;
+    focusDay = next;
+    grid?.querySelector<HTMLButtonElement>(`[data-day="${next}"]`)?.focus();
+  }
 </script>
 
 <div class="cal" role="group" aria-label="Daily tokens, last 52 weeks" onmouseleave={() => onhover(null)}>
@@ -21,7 +39,7 @@
   <div class="weekdays" aria-hidden="true">
     <span></span><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span>
   </div>
-  <div class="grid">
+  <div class="grid" bind:this={grid}>
     {#each weeks as week, wi (wi)}
       {#each week as d, di (di)}
         {#if d}
@@ -30,8 +48,11 @@
             class:today={d.day === today}
             style:background="var(--heat-{level(d.tokens, max)})"
             aria-label={describe(d)}
+            data-day={d.day}
+            tabindex={d.day === current ? 0 : -1}
+            onkeydown={(e) => move(e, d.day)}
             onmouseenter={() => onhover(d)}
-            onfocus={() => onhover(d)}
+            onfocus={() => { focusDay = d.day; onhover(d); }}
             onblur={() => onhover(null)}
             onclick={() => onhover(d)}
           ></button>
