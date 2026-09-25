@@ -7,7 +7,7 @@ import path from "node:path";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { startServer, req, newDevice } from "./helpers.js";
+import { startServer, req, newDevice, asNewClient } from "./helpers.js";
 
 const SCRIPT = fs.readFileSync(new URL("../collectors/opencode.py", import.meta.url), "utf8");
 const PLUGIN = fs.readFileSync(new URL("../collectors/opencode-plugin.js", import.meta.url), "utf8");
@@ -26,7 +26,7 @@ async function waitFor(fn, ms = 15000) {
 
 describe("OpenCode collector (plugin from README.md)", () => {
   let srv, key, home, db, hooks;
-  const summary = async () => (await req(srv.base, "GET", "/api/u/admin/summary?tool=opencode")).json.total;
+  const summary = async () => (await req(srv.base, "GET", "/api/u/admin/summary?tool=opencode", { headers: asNewClient() })).json.total;
   const configDir = () => path.join(home, ".config", "opencode");
   const install = (server) => fs.writeFileSync(path.join(configDir(), "ai-activity-opencode.py"),
     SCRIPT.replace("<server>", server).replace("<device key>", key));
