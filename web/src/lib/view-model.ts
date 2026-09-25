@@ -32,7 +32,6 @@ export interface QuotaWindowVM {
 
 export interface QuotaToolVM {
   tool: "claude-code" | "codex";
-  connected: boolean;
   updatedAt: number | null; // latest snapshot time
   windows: QuotaWindowVM[];
 }

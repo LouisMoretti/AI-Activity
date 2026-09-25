@@ -27,15 +27,14 @@ function figure(b: Breakdown, metric: "tokens" | "sessions"): FigureVM {
   };
 }
 
-function claudeQuotas(q: QuotasResponse): QuotaToolVM {
+function toolQuotas(q: QuotasResponse, tool: QuotaToolVM["tool"]): QuotaToolVM {
   const find = (type: keyof typeof WINDOW_SPANS) =>
-    q.quotas.find((x) => x.tool === "claude-code" && x.limit_type === type);
+    q.quotas.find((x) => x.tool === tool && x.limit_type === type);
   const five = find("five_hour");
   const week = find("seven_day");
   const updated = Math.max(five?.measured_at ?? 0, week?.measured_at ?? 0);
   return {
-    tool: "claude-code",
-    connected: true,
+    tool,
     updatedAt: updated || null,
     windows: [
       { label: "5-hour window", pct: five?.used_pct ?? null, resetsAt: five?.resets_at ?? null, spanSec: WINDOW_SPANS.five_hour },
@@ -43,16 +42,6 @@ function claudeQuotas(q: QuotasResponse): QuotaToolVM {
     ],
   };
 }
-
-const codexNotConnected: QuotaToolVM = {
-  tool: "codex",
-  connected: false,
-  updatedAt: null,
-  windows: [
-    { label: "5-hour window", pct: null, resetsAt: null, spanSec: WINDOW_SPANS.five_hour },
-    { label: "This week", pct: null, resetsAt: null, spanSec: WINDOW_SPANS.seven_day },
-  ],
-};
 
 const asTool = (t: string): ToolKey =>
   t === "codex" || t === "opencode" ? t : "claude-code";
@@ -81,8 +70,8 @@ export function liveDashboard(d: LiveData, provider: Provider): DashboardVM {
       streak: hasActivity ? streaks(series) : null,
     },
     tools: toolsFor(provider),
-    claude: claudeQuotas(d.quotas),
-    codex: codexNotConnected,
+    claude: toolQuotas(d.quotas, "claude-code"),
+    codex: toolQuotas(d.quotas, "codex"),
     sessions,
     sessionsTotal: d.sessions.total,
   };

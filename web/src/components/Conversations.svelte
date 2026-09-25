@@ -23,7 +23,7 @@
           <span class="when"><i class="dot" class:recent={clock.now - s.lastActive < RECENT_SEC}></i>{fmtAgo(s.lastActive, clock.now)}</span>
         </div>
         {#if s.context}
-          <Meter pct={s.context.pct} label="Context used" tone={s.tool === "claude-code" ? "claude" : "accent"} />
+          <Meter pct={s.context.pct} label="Context used" tone={s.tool === "claude-code" ? "claude" : s.tool === "codex" ? "codex" : "accent"} />
           <div class="ctx">Context {fmtPct(s.context.pct)} %{s.context.size ? ` of ${fmtCompact(s.context.size)}` : ""}</div>
         {/if}
       </div>
