@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { openDb } from "../server/db/schema.ts";
-import { pruneBackups } from "../server/lib/backup.ts";
+import { backupTo, pruneBackups } from "../server/lib/backup.ts";
 import { startServer, req, newDevice, event } from "./helpers.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -162,6 +162,55 @@ describe("backups", () => {
       const ok = await script("restore", dbPath, [path.join(dir, "backups", file)]);
       assert.equal(ok.code, 0, ok.out);
       assert.ok(backupsIn(path.join(dir, "backups")).some((n) => n.endsWith("-pre-restore.db")));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("backups in the same second get distinct names; the directory is made private even if it existed", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ai-usage-samesec-"));
+    try {
+      const out = path.join(dir, "backups");
+      fs.mkdirSync(out, { mode: 0o755 });
+      fs.chmodSync(out, 0o755);
+      const db = openDb(path.join(dir, "dashboard.db"));
+      const now = new Date("2026-09-25T13:40:52Z");
+      try {
+        const a = backupTo(db, out, { now });
+        const b = backupTo(db, out, { now });
+        const c = backupTo(db, out, { now, suffix: "-pre-v2" });
+        assert.equal(path.basename(a.file), "dashboard-20260925-134052.db");
+        assert.equal(path.basename(b.file), "dashboard-20260925-134052-2.db");
+        assert.equal(path.basename(c.file), "dashboard-20260925-134052-pre-v2.db");
+      } finally {
+        db.close();
+      }
+      assert.equal(fs.statSync(out).mode & 0o777, 0o700);
+      for (const f of fs.readdirSync(out)) assert.equal(fs.statSync(path.join(out, f)).mode & 0o777, 0o600, f);
+      // The -2 copy is a rotated backup too; the pre-upgrade one never is.
+      pruneBackups(out, path.join(dir, "dashboard.db"), { daily: 1, weekly: 0 });
+      assert.deepEqual(backupsIn(out).length, 2);
+      assert.ok(backupsIn(out).includes("dashboard-20260925-134052-pre-v2.db"));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("restoring over a corrupt database sets it aside instead of failing", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ai-usage-corrupt-"));
+    try {
+      const dbPath = path.join(dir, "dashboard.db");
+      openDb(dbPath).close();
+      assert.equal((await script("backup", dbPath)).code, 0);
+      const [file] = backupsIn(path.join(dir, "backups"));
+      fs.writeFileSync(dbPath, "this is not a database anymore");
+      const r = await script("restore", dbPath, [path.join(dir, "backups", file)]);
+      assert.equal(r.code, 0, r.out);
+      assert.match(r.out, /could not be read/);
+      assert.ok(fs.readdirSync(dir).some((n) => n.startsWith("dashboard.db.corrupt-")));
+      const db = new Database(dbPath, { readonly: true });
+      assert.equal(db.pragma("integrity_check", { simple: true }), "ok");
+      db.close();
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

@@ -24,9 +24,9 @@
   };
 </script>
 
-{#snippet num(value: number)}
+{#snippet num(value: number, share = true)}
   <span class="num">{fmtCompact(value)}</span>
-  <span class="pct">{total ? pct(value) : ""}</span>
+  <span class="pct">{share && total ? pct(value) : ""}</span>
 {/snippet}
 
 <div class="block">
@@ -44,7 +44,8 @@
   {#if rest.length}
     <div class="row">
       <span class="name" title={rest.map((r) => label(r.name)).join(", ")}>{rest.length} others</span>
-      {@render num(restValue)}
+      <!-- Overlapping rows (of set): their sum counts a session once per model, so no share. -->
+      {@render num(restValue, of === null)}
     </div>
   {/if}
   </div>
