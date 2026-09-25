@@ -30,7 +30,7 @@ function usage(db: DB, owner: Owner) {
         ...totals,
         total_tokens: Number(totals.total_tokens),
         has_data: Number(totals.events) > 0,
-        provenance: "measured device events (incremental token counts only)",
+        provenance: "measured messages (one row per Anthropic message id)",
       });
     })
     .get("/activity", (c) => {
@@ -38,13 +38,13 @@ function usage(db: DB, owner: Owner) {
       const tool = c.req.query("tool") || null;
       return c.json<ActivityResponse>({
         days: dailyBuckets(db, owner(c), nowSec() - days * 86400, tool),
-        provenance: "measured device events",
+        provenance: "measured messages",
       });
     })
     .get("/quotas", (c) =>
       c.json<QuotasResponse>({
         quotas: latestQuotas(db, owner(c)),
-        provenance: "latest snapshot provided by the account (never summed across devices)",
+        provenance: "quota snapshots reported by the account's devices (never summed across devices)",
       }))
     .get("/summary", (c) => {
       const uid = owner(c);
@@ -57,7 +57,7 @@ function usage(db: DB, owner: Owner) {
         day: new Date(dayStart * 1000).toISOString().slice(0, 10),
         total: breakdown(db, uid, 0, tool),
         today: breakdown(db, uid, dayStart, tool),
-        provenance: "measured device events (incremental token counts only)",
+        provenance: "measured messages (one row per Anthropic message id)",
       });
     })
     .get("/sessions", (c) => {
@@ -68,7 +68,7 @@ function usage(db: DB, owner: Owner) {
           db, uid, intParam(c, "limit", 10, 1, 200), tool, intParam(c, "offset", 0, 0, Number.MAX_SAFE_INTEGER),
         ),
         total: countSessions(db, uid, tool),
-        provenance: "grouped by unique session id from device events",
+        provenance: "grouped by unique session id from measured messages",
       });
     });
 }
@@ -87,7 +87,7 @@ export function leaderboardRoutes(db: DB) {
           db, all ? 0 : nowSec() - days * 86400, dayStart - (LEADERBOARD_ACTIVITY_DAYS - 1) * 86400,
           new Date(dayStart * 1000).toISOString().slice(0, 10),
         ),
-        provenance: "measured device events of every enabled account (incremental token counts only)",
+        provenance: "measured messages of every enabled account (one row per Anthropic message id)",
       });
     });
 }

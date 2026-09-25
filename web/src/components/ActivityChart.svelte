@@ -20,20 +20,25 @@
   const describe = (d: DayPoint) =>
     `${fmtDay(d.day)}: ${d.tokens ? `${fmtNum(d.tokens)} tokens` : "no activity"}${demo ? " (fictional)" : ""}`;
 
+  // The hovered day as of the latest refresh (the series is rebuilt every 15 s).
+  const hoveredNow = $derived(hovered ? series.find((d) => d.day === hovered!.day) ?? hovered : null);
+  const hasSeries = $derived(series.length > 0);
+
   // Without a hovered cell, the readout shows today.
   const readout = $derived.by(() => {
     if (view === "daily") {
-      if (!hasActivity && !hovered) return "No measured activity yet. Connect a device to see real tokens here.";
-      return describe(hovered ?? todayPoint);
+      if (!hasActivity && !hoveredNow) return "No measured activity yet. Connect a device to see real tokens here.";
+      return describe(hoveredNow ?? todayPoint);
     }
     const src = demo ? "fictional data" : "measured data";
     return view === "weekly" ? `Tokens per week · ${src}` : `Total tokens over time · ${src}`;
   });
 
   // Narrow screens scroll the calendar: start on the most recent weeks.
-  // Re-applied when the area resizes (rotation, late layout).
+  // Re-applied when the area resizes (rotation, late layout), not on every
+  // refresh: someone scrolled back to older months stays there.
   $effect(() => {
-    if (!scroller || !view || !series.length) return;
+    if (!scroller || !view || !hasSeries) return;
     const el = scroller;
     const toEnd = () => { el.scrollLeft = el.scrollWidth; };
     requestAnimationFrame(toEnd);

@@ -31,8 +31,7 @@ function newAccountFields(body: Record<string, unknown>) {
  */
 export function authRoutes(db: DB, auth: ViewerAuth, setupCode: string | null) {
   /** 429 with Retry-After when this client (or everyone) failed too often. */
-  const throttle = (c: Context) => {
-    const wait = auth.throttled(c);
+  const tooMany = (c: Context, wait: number) => {
     if (!wait) return null;
     c.header("retry-after", String(wait));
     return c.json({ error: "too many failed attempts, try again later" }, 429);
@@ -55,7 +54,9 @@ export function authRoutes(db: DB, auth: ViewerAuth, setupCode: string | null) {
     // unless an admin closed it.
     .post("/register", async (c) => {
       const body = await readJson(c);
-      const limited = throttle(c);
+      // Only checks the login throttle: registering checks no password, so
+      // there is no failure to count (sign-ups have their own cap below).
+      const limited = tooMany(c, auth.throttled(c));
       if (limited) return limited;
       if (!accountsExist(db)) return c.json({ error: "create the first account with the setup code" }, 409);
       if (!signupOpen(db)) return c.json({ error: "sign-up is closed on this server" }, 403);
@@ -92,27 +93,28 @@ export function authRoutes(db: DB, auth: ViewerAuth, setupCode: string | null) {
       const body = await readJson(c);
       const username = typeof body.username === "string" ? body.username.trim() : "";
       const password = typeof body.password === "string" ? body.password.slice(0, PASSWORD_MAX + 1) : "";
-      const limited = throttle(c);
-      if (limited) return limited;
       if (!accountsExist(db)) return c.json({ error: "no account yet: create the first one" }, 400);
+      const limited = tooMany(c, auth.attempt(c));
+      if (limited) return limited;
       const user = username ? findUserByUsername(db, username) : null;
       const usable = user && !user.disabled ? user.password_hash : null;
       // Always hash, even for unknown users, so timing does not reveal them.
       const ok = await verifyPassword(password, usable);
-      auth.record(c, ok);
       if (!ok || !user) return c.json({ error: "invalid username or password" }, 401);
+      auth.succeeded(c);
       auth.login(c, user.id);
       return c.json({ ok: true });
     })
     // First account, from the browser: needs the setup code from the server log.
     .post("/setup", async (c) => {
       const body = await readJson(c);
-      const limited = throttle(c);
-      if (limited) return limited;
       if (accountsExist(db) || !setupCode) return c.json({ error: "an account already exists: sign in" }, 409);
-      const ok = setupCodeMatches(setupCode, body.setup_code);
-      auth.record(c, ok);
-      if (!ok) return c.json({ error: "wrong setup code: copy it from the server log" }, 401);
+      const limited = tooMany(c, auth.attempt(c));
+      if (limited) return limited;
+      if (!setupCodeMatches(setupCode, body.setup_code)) {
+        return c.json({ error: "wrong setup code: copy it from the server log" }, 401);
+      }
+      auth.succeeded(c);
       const fields = newAccountFields(body);
       if (typeof fields === "string") return c.json({ error: fields }, 400);
       const id = createFirstAccount(db, {
