@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Deploys one commit of main from its GHCR image. Installed as root at
+# /usr/local/bin/ai-activity-deploy (never run from the checkout: a commit
+# must not change what the deploy key can do) and run by the deploy key's
+# forced command, which passes the commit id in SSH_ORIGINAL_COMMAND.
+# By hand: ai-activity-deploy <commit>. See AGENTS.md, "Continuous deployment".
+set -euo pipefail
+
+APP_DIR=${AI_ACTIVITY_DIR:-/srv/ai-activity}
+IMAGE=${AI_ACTIVITY_IMAGE:-ghcr.io/louismoretti/ai-activity}
+
+sha=${SSH_ORIGINAL_COMMAND-${1:-}}
+if [[ ! $sha =~ ^[0-9a-f]{40}$ ]]; then
+  echo "usage: ai-activity-deploy <40-character commit id>" >&2
+  exit 2
+fi
+
+cd "$APP_DIR"
+exec 9>.deploy.lock
+flock 9 # one deploy at a time
+
+git fetch --quiet origin main
+if ! git merge-base --is-ancestor "$sha" origin/main 2>/dev/null; then
+  echo "refused: $sha is not on origin/main" >&2
+  exit 1
+fi
+# A slow run for an older commit must not undo a newer deploy. Going back on
+# purpose: ALLOW_OLDER=1 ai-activity-deploy <commit> (the SSH key cannot set it).
+current=$(git rev-parse HEAD)
+if [[ $current != "$sha" && ${ALLOW_OLDER:-} != 1 ]] \
+  && git merge-base --is-ancestor "$sha" "$current"; then
+  echo "skipped: $current is newer than $sha"
+  exit 0
+fi
+
+echo "deploying $sha (was $current)"
+# Pull first: a missing image leaves the running version and checkout as is.
+docker pull --quiet "$IMAGE:$sha"
+# compose.yaml matches the image.
+git checkout --quiet --detach "$sha"
+
+# Remember the image in .env, so manual `docker compose` commands use it too.
+tmp=$(mktemp .env.XXXXXX)
+{ grep -v '^APP_IMAGE=' .env 2>/dev/null || true; echo "APP_IMAGE=$IMAGE:$sha"; } > "$tmp"
+chmod 600 "$tmp"
+mv "$tmp" .env
+export APP_IMAGE="$IMAGE:$sha"
+
+if ! docker compose up -d --no-build --remove-orphans --wait --wait-timeout 180; then
+  docker compose ps
+  docker compose logs --tail 80 app
+  echo "deploy of $sha failed: see the logs above" >&2
+  exit 1
+fi
+
+# Old images of this app, then untagged leftovers. Volumes are never touched.
+docker images "$IMAGE" --format '{{.Repository}}:{{.Tag}}' \
+  | grep -vxF "$IMAGE:$sha" | xargs -r docker rmi >/dev/null 2>&1 || true
+docker image prune -f >/dev/null
+echo "deployed $sha"

@@ -100,24 +100,42 @@ native). It also builds the Docker image on both and smoke-tests it
 
 ### Deploy (Docker + Caddy)
 
-Production runs in Docker behind **Caddy** (reverse proxy, automatic
-HTTPS). `compose.yaml` has three services: `app` (the server; no published
-port, only reachable on the compose network), `caddy` (ports 80/443,
-`Caddyfile`, certificates in the `caddy_data` volume) and `backup` (the same
-image, `npm run backup` every day into the `data` volume).
+Production runs in Docker behind the server's own **Caddy** container
+(reverse proxy, automatic HTTPS), which this repo does not ship.
+`compose.yaml` has two services: `app` (the server; no published port) and
+`backup` (the same image, `npm run backup` every day into the `data`
+volume). It creates the `ai-activity-proxy` network (`PROXY_SUBNET`,
+default `172.29.94.0/24`), where the app answers as `ai-activity`; Caddy
+joins it. Start this stack first: it creates the network.
+
+```yaml
+# Caddy's compose file: add the network to the caddy service
+services:
+  caddy:
+    networks: [default, ai-activity-proxy]   # keep its existing networks
+networks:
+  ai-activity-proxy:
+    external: true
+```
+
+```
+# Caddy's Caddyfile (DNS A/AAAA record → this server), then reload Caddy
+ai.example.com {
+	encode zstd gzip
+	reverse_proxy ai-activity:3000
+}
+```
 
 ```bash
-# .env next to compose.yaml
-SITE_ADDRESS=ai.example.com        # DNS A/AAAA record → this server
-# SITE_ADDRESS=http://localhost + HTTP_PORT=8080 to try it without TLS
-
 docker compose up -d --build       # build, start, restart on crash/reboot
 docker compose logs app            # setup code for the first account
 docker compose exec app node scripts/user.ts add louis   # or the setup code
 docker compose exec app node scripts/gen-key.ts "laptop" [--user alice]
 docker compose exec app node scripts/backup.ts
-git pull && docker compose up -d --build                  # upgrade
+git pull && docker compose up -d --build                  # upgrade by hand
 ```
+
+Upgrades are normally deployed from GitHub (Continuous deployment below).
 
 - The image (`Dockerfile`) is `node:22-slim` (glibc: `better-sqlite3` has
   prebuilt binaries for amd64 and arm64 on Node 22; Node 24 would compile
@@ -127,19 +145,81 @@ git pull && docker compose up -d --build                  # upgrade
   `BACKUP_DIR=/data/backups`): mount the directory, never the database file
   alone (its `-wal` / `-shm` sit next to it). `docker stop` sends SIGTERM:
   the server closes SQLite, which checkpoints the WAL.
-- Client addresses: Caddy sets `X-Forwarded-For` to the client's address,
-  and the app trusts it only from `TRUST_PROXY` (the compose network
-  `PROXY_SUBNET`, default `172.29.94.0/24`, which only Caddy shares with
-  the app; change it if that range is taken). Without it every visitor
+- Client addresses: Caddy sets `X-Forwarded-For` to the client's address
+  (it replaces what the client sent, unless Caddy's `trusted_proxies` says
+  otherwise), and the app trusts it only from `TRUST_PROXY`, the whole
+  `ai-activity-proxy` subnet. So nothing but Caddy and the app may join
+  that network: any other container on it could forge client addresses.
+  Change `PROXY_SUBNET` if the range is taken. Without it every visitor
   would look like one client to the login throttle and the sign-up cap.
-  The network is IPv4 only: IPv6 visitors may all arrive as its gateway
-  address, depending on the host's Docker setup (issue #102).
+  IPv6 visitors may all reach Caddy as one address, depending on how
+  Caddy's own network and the host's Docker are set up (issue #102).
 - Restore: `docker compose stop app backup`, then
   `docker compose run --rm --no-deps app node scripts/restore.ts /data/backups/<file>`,
   then `docker compose start app backup`.
 - Before going live: revoke and reissue every device key used through
   quick tunnels, then point the collectors (statusLine, Codex hook,
   OpenCode plugin) at the new URL.
+- Logs rotate (`x-logging` in `compose.yaml`: 3 × 10 MB per container);
+  Docker keeps them forever otherwise.
+
+### Continuous deployment (GHCR + SSH)
+
+Once CI passes on a push to main, `.github/workflows/deploy.yml` builds the
+image on native amd64 and arm64 runners, publishes it as
+`ghcr.io/louismoretti/ai-activity:<commit>` (and `:latest`), then connects
+over SSH and runs `deploy/ai-activity-deploy <commit>` on the server. It can
+also be run by hand (Actions → Deploy → Run workflow, on main). The server
+never builds: it pulls the tested image.
+
+The deploy script: checks the commit is on `origin/main` and not older than
+the one deployed (a slow run never undoes a newer deploy), pulls the image
+(a missing one changes nothing), checks the commit out so `compose.yaml`
+matches it, writes `APP_IMAGE=<image>:<commit>` into `.env` (so manual
+`docker compose` commands use it too), runs
+`docker compose up -d --wait` (non-zero and the app's logs if it does not
+become healthy), then removes this app's older images. Volumes are never
+touched. Migrations run at start and back the database up first (§4).
+
+Server setup, once (Docker Compose ≥ 2.20 for `--wait-timeout`):
+
+```bash
+sudo useradd -m -s /bin/bash deploy && sudo usermod -aG docker deploy
+sudo mkdir /srv/ai-activity && sudo chown deploy: /srv/ai-activity
+sudo -u deploy git clone https://github.com/LouisMoretti/AI-Activity /srv/ai-activity
+sudo -u deploy install -m 600 /dev/null /srv/ai-activity/.env   # PROXY_SUBNET=… if needed
+# Outside the checkout, owned by root: a commit cannot change what the key runs.
+sudo install -o root -g root -m 755 /srv/ai-activity/deploy/ai-activity-deploy /usr/local/bin/
+ssh-keygen -t ed25519 -N '' -C github-deploy -f deploy_key    # on your machine
+# /home/deploy/.ssh/authorized_keys (dir 700, file 600, owned by deploy):
+restrict,command="/usr/local/bin/ai-activity-deploy" ssh-ed25519 AAAA… github-deploy
+ssh-keyscan -p 22 ai.example.com      # from a trusted network; check the fingerprint
+```
+
+GitHub, Settings → Environments → `production`: deployment branches
+limited to `main` (reviewers optional); secret `DEPLOY_SSH_KEY` (the private
+key); variables `DEPLOY_HOST`, `DEPLOY_KNOWN_HOSTS` (the `ssh-keyscan`
+lines), optional `DEPLOY_USER` (default `deploy`) and `DEPLOY_PORT`
+(default 22). After the first publish, make the GHCR package public
+(Package settings → Change visibility; it holds no secret), or run
+`docker login ghcr.io` as `deploy` with a `read:packages` token: the
+first deploy fails on the pull until then, re-run it. Once it has run (it
+creates `ai-activity-proxy`), add the network and the site to Caddy (above).
+
+- The key's forced command ignores what the client asks for except the
+  commit id (40 hex characters), and `restrict` turns off shells, PTYs and
+  forwarding. `deploy` is in the `docker` group, which is root-equivalent:
+  that forced command is what keeps a leaked key from being a root shell.
+- Workflows of pull requests and forks never get the environment's
+  secrets; `deploy.yml` only deploys green pushes to main of this repo.
+- After changing `deploy/ai-activity-deploy`, install it again (the
+  `install` line above): the server never runs it from the checkout.
+- Roll back on the server: `ALLOW_OLDER=1 ai-activity-deploy <commit>`
+  (commits with this deploy setup only), restoring the `-pre-v<N>` backup
+  first if the newer version migrated the database (§4). Main's next push
+  deploys forward again.
+- Manual upgrade without GitHub: `git pull && docker compose up -d --build`
+  with `APP_IMAGE` removed from `.env`.
 
 Tests: `npm test` boots the real server on a temp DB and exercises the HTTP
 API black-box (`test/api.test.js`), so they must stay green across refactors;
@@ -568,7 +648,7 @@ account exists):
   in to another account never resets the count. The client
   (`server/lib/client.ts`) is `CF-Connecting-IP` from localhost (the quick
   tunnel or the Vite proxy); the last `X-Forwarded-For` address from a
-  `TRUST_PROXY` peer (Caddy in Docker; earlier entries can be forged);
+  `TRUST_PROXY` peer (the Caddy container; earlier entries can be forged);
   else the socket address. The session cookie is `Secure` when the request
   is HTTPS (`X-Forwarded-Proto` counts only from those same proxies). An
   invalid `TRUST_PROXY` stops the server at start.

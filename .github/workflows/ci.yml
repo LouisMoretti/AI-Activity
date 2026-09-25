@@ -49,7 +49,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - run: SITE_ADDRESS=ci.example docker compose config --quiet
+      - run: docker compose config --quiet
       - run: docker build -t ai-activity:ci .
       - name: Smoke test the container
         run: |
