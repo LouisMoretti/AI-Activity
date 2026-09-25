@@ -11,7 +11,7 @@ import { accountRoutes, adminRoutes, userRoutes } from "./routes/account.ts";
 import { authRoutes } from "./routes/auth.ts";
 import { deviceRoutes } from "./routes/devices.ts";
 import { ingestRoutes } from "./routes/ingest.ts";
-import { leaderboardRoutes, profileListRoutes, publicProfileRoutes, usageRoutes } from "./routes/usage.ts";
+import { leaderboardRoutes, profileListRoutes, publicProfileRoutes } from "./routes/usage.ts";
 
 /** setupCode: one-time code for creating the first account from the browser (null once one exists). */
 export function createApp(db: DB, config: Config, setupCode: string | null = null) {
@@ -32,7 +32,6 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
     .route("/profiles", profileListRoutes(db))
     // Everything below requires a viewer session.
     .use(auth.require)
-    .route("/", usageRoutes(db))
     .route("/devices", deviceRoutes(db))
     .route("/account", accountRoutes(db, auth))
     .route("/users", userRoutes(db))

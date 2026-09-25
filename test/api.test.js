@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import Database from "better-sqlite3";
 import os from "node:os";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -6,7 +7,7 @@ import { startServer, req, newDevice, event, userCli, login, genKey, register, u
 
 describe("basics (signed in as the test admin)", () => {
   let srv, key;
-  const stats = async () => (await req(srv.base, "GET", "/api/stats?days=730")).json;
+  const stats = async () => (await req(srv.base, "GET", "/api/u/admin/stats?days=730")).json;
 
   before(async () => {
     srv = await startServer();
@@ -48,7 +49,7 @@ describe("basics (signed in as the test admin)", () => {
     assert.equal(after.total_tokens - before.total_tokens, 180);
     assert.equal(after.events - before.events, 1);
     assert.equal(after.has_data, true);
-    const sessions = (await req(srv.base, "GET", "/api/sessions?limit=50")).json.sessions;
+    const sessions = (await req(srv.base, "GET", "/api/u/admin/sessions?limit=50")).json.sessions;
     assert.ok(sessions.some((s) => s.session_id === "sess-A" && s.tokens === 180));
   });
 
@@ -82,7 +83,7 @@ describe("basics (signed in as the test admin)", () => {
     });
     assert.equal(r.json.stored, false);
     assert.equal((await stats()).events, before.events);
-    const q = (await req(srv.base, "GET", "/api/quotas")).json.quotas;
+    const q = (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas;
     assert.ok(q.some((x) => x.account_ref === "empty-acct" && x.used_pct === 12));
   });
 
@@ -112,7 +113,7 @@ describe("basics (signed in as the test admin)", () => {
     await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "shared", rate_limits: rl(30) }) });
     await new Promise((r) => setTimeout(r, 1100)); // measured_at has 1 s resolution
     await req(srv.base, "POST", "/api/ingest", { key: other, body: event({ account_ref: "shared", rate_limits: rl(45) }) });
-    const rows = (await req(srv.base, "GET", "/api/quotas")).json.quotas
+    const rows = (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas
       .filter((q) => q.account_ref === "shared" && q.limit_type === "five_hour");
     assert.equal(rows.length, 1);
     assert.equal(rows[0].used_pct, 45);
@@ -122,7 +123,7 @@ describe("basics (signed in as the test admin)", () => {
     const rl = (pct) => ({ seven_day: { used_percentage: pct } });
     await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "fast", rate_limits: rl(10) }) });
     await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "fast", rate_limits: rl(11) }) });
-    const rows = (await req(srv.base, "GET", "/api/quotas")).json.quotas.filter((q) => q.account_ref === "fast");
+    const rows = (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas.filter((q) => q.account_ref === "fast");
     assert.equal(rows.length, 1);
     assert.equal(rows[0].used_pct, 11);
   });
@@ -132,7 +133,7 @@ describe("basics (signed in as the test admin)", () => {
     const q = (pct) => ({ five_hour: { used_percentage: pct, resets_at: now + 3600 } });
     await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "replay", rate_limits: q(60), occurred_at: now }) });
     await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "replay", rate_limits: q(10), occurred_at: now - 7200 }) });
-    const quotas = (await req(srv.base, "GET", "/api/quotas")).json.quotas.filter((x) => x.account_ref === "replay");
+    const quotas = (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas.filter((x) => x.account_ref === "replay");
     assert.equal(quotas.length, 1);
     assert.equal(quotas[0].used_pct, 60);
   });
@@ -143,16 +144,16 @@ describe("basics (signed in as the test admin)", () => {
     await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "same", rate_limits: q, occurred_at: now - 60 }) });
     await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "same", rate_limits: q, occurred_at: now }) });
     await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "same", rate_limits: q, occurred_at: now - 30 }) });
-    const rows = (await req(srv.base, "GET", "/api/quotas")).json.quotas.filter((x) => x.account_ref === "same");
+    const rows = (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas.filter((x) => x.account_ref === "same");
     assert.equal(rows.length, 1);
     assert.equal(rows[0].used_pct, 12);
     assert.equal(rows[0].measured_at, now);
   });
 
   test("payload without rate_limits creates no quota rows", async () => {
-    const before = (await req(srv.base, "GET", "/api/quotas")).json.quotas.length;
+    const before = (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas.length;
     await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "no-limits" }) });
-    const q = (await req(srv.base, "GET", "/api/quotas")).json.quotas;
+    const q = (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas;
     assert.equal(q.length, before);
     assert.ok(!q.some((x) => x.account_ref === "no-limits"));
   });
@@ -162,7 +163,7 @@ describe("basics (signed in as the test admin)", () => {
     const now = Math.floor(Date.now() / 1000);
     await req(srv.base, "POST", "/api/ingest", { key, body: event({ occurred_at: now - 3 * day }) });
     await req(srv.base, "POST", "/api/ingest", { key, body: event({ occurred_at: (now - 10 * day) * 1000 }) }); // ms accepted
-    const days = (await req(srv.base, "GET", "/api/activity?days=30")).json.days.map((d) => d.day);
+    const days = (await req(srv.base, "GET", "/api/u/admin/activity?days=30")).json.days.map((d) => d.day);
     assert.deepEqual(days, [...days].sort());
     const iso = (s) => new Date(s * 1000).toISOString().slice(0, 10);
     assert.ok(days.includes(iso(now - 3 * day)));
@@ -172,7 +173,7 @@ describe("basics (signed in as the test admin)", () => {
   test("occurred_at in the future is clamped to the receive time", async () => {
     const now = Math.floor(Date.now() / 1000);
     await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: "future", occurred_at: now + 400 * 86400 }) });
-    const s = (await req(srv.base, "GET", "/api/sessions?limit=200")).json.sessions.find((x) => x.session_id === "future");
+    const s = (await req(srv.base, "GET", "/api/u/admin/sessions?limit=200")).json.sessions.find((x) => x.session_id === "future");
     assert.ok(s.last_seen <= Math.floor(Date.now() / 1000));
     assert.ok(s.last_seen >= now);
   });
@@ -182,7 +183,7 @@ describe("basics (signed in as the test admin)", () => {
     await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: "switch", model: "claude-sonnet-5", occurred_at: now - 60 }) });
     await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: "switch", model: "claude-opus-5-5", occurred_at: now }) });
     await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: "switch", model: "claude-haiku-4-5", occurred_at: now - 30 }) });
-    const s = (await req(srv.base, "GET", "/api/sessions?limit=200")).json.sessions.find((x) => x.session_id === "switch");
+    const s = (await req(srv.base, "GET", "/api/u/admin/sessions?limit=200")).json.sessions.find((x) => x.session_id === "switch");
     assert.equal(s.model, "claude-opus-5-5");
   });
 
@@ -191,22 +192,26 @@ describe("basics (signed in as the test admin)", () => {
     for (let i = 0; i < 5; i++) {
       await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: `page-${i}`, occurred_at: now + i }) });
     }
-    const all = (await req(srv.base, "GET", "/api/sessions?limit=200")).json;
-    const p1 = (await req(srv.base, "GET", "/api/sessions?limit=2")).json.sessions;
-    const p2 = (await req(srv.base, "GET", "/api/sessions?limit=2&offset=2")).json.sessions;
+    const all = (await req(srv.base, "GET", "/api/u/admin/sessions?limit=200")).json;
+    const p1 = (await req(srv.base, "GET", "/api/u/admin/sessions?limit=2")).json.sessions;
+    const p2 = (await req(srv.base, "GET", "/api/u/admin/sessions?limit=2&offset=2")).json.sessions;
     assert.deepEqual([...p1, ...p2].map((s) => s.session_id), all.sessions.slice(0, 4).map((s) => s.session_id));
-    const past = (await req(srv.base, "GET", `/api/sessions?limit=5&offset=${all.total}`)).json;
+    const past = (await req(srv.base, "GET", `/api/u/admin/sessions?limit=5&offset=${all.total}`)).json;
     assert.deepEqual(past.sessions, []);
     assert.equal(past.total, all.total);
   });
 
-  test("cost and subscription routes are gone", async () => {
+  test("removed routes are gone", async () => {
     assert.equal((await req(srv.base, "GET", "/api/billing")).status, 404);
+    // Own usage is read from the public profile, like anyone else's.
+    for (const p of ["/api/stats", "/api/activity", "/api/quotas", "/api/summary", "/api/sessions"]) {
+      assert.equal((await req(srv.base, "GET", p)).status, 404, p);
+    }
     assert.equal((await req(srv.base, "POST", "/api/billing/subscription", { body: { tool: "claude-code" } })).status, 404);
   });
 
   test("tool filter on stats", async () => {
-    const r = (await req(srv.base, "GET", "/api/stats?days=30&tool=codex")).json;
+    const r = (await req(srv.base, "GET", "/api/u/admin/stats?days=30&tool=codex")).json;
     assert.equal(r.events, 0);
     assert.equal(r.has_data, false);
   });
@@ -242,7 +247,7 @@ describe("locked server (DASHBOARD_PASSWORD bootstraps an admin account)", () =>
 
   test("viewer APIs require login; ingest and health stay reachable", async () => {
     assert.equal((await req(srv.base, "GET", "/api/health")).status, 200);
-    assert.equal((await req(srv.base, "GET", "/api/stats")).status, 401);
+    assert.equal((await req(srv.base, "GET", "/api/devices")).status, 401);
     assert.equal((await req(srv.base, "POST", "/api/devices", { body: { name: "x" } })).status, 401);
     assert.equal((await req(srv.base, "POST", "/api/ingest", { body: event(), key: "ak_nope" })).status, 401);
     const st = (await req(srv.base, "GET", "/api/auth/status")).json;
@@ -260,13 +265,13 @@ describe("locked server (DASHBOARD_PASSWORD bootstraps an admin account)", () =>
     assert.equal(ok.status, 200);
     const cookie = ok.headers.get("set-cookie").split(";")[0];
     assert.match(ok.headers.get("set-cookie"), /HttpOnly/);
-    assert.equal((await req(srv.base, "GET", "/api/stats", { cookie })).status, 200);
+    assert.equal((await req(srv.base, "GET", "/api/devices", { cookie })).status, 200);
     const me = (await req(srv.base, "GET", "/api/auth/status", { cookie })).json;
     assert.deepEqual(me.user, { id: 1, username: "admin", display_name: "admin", avatar_url: null, is_admin: true });
     const d = await newDevice(srv.base, "locked-dev", cookie);
     assert.equal((await req(srv.base, "POST", "/api/ingest", { body: event(), key: d.key })).json.stored, true);
     await req(srv.base, "POST", "/api/auth/logout", { cookie });
-    assert.equal((await req(srv.base, "GET", "/api/stats", { cookie })).status, 401);
+    assert.equal((await req(srv.base, "GET", "/api/devices", { cookie })).status, 401);
   });
 
   test("session cookie is Secure only over HTTPS", async () => {
@@ -300,7 +305,7 @@ describe("accounts", () => {
     try {
       assert.deepEqual((await req(srv.base, "GET", "/api/auth/status")).json,
         { authenticated: false, user: null, setup_required: true });
-      for (const p of ["/api/stats", "/api/summary", "/api/devices"]) {
+      for (const p of ["/api/devices", "/api/users", "/api/admin/overview"]) {
         assert.equal((await req(srv.base, "GET", p)).status, 401, p);
       }
       // The public account list is empty until the first account exists.
@@ -319,7 +324,7 @@ describe("accounts", () => {
         authenticated: true, setup_required: false,
         user: { id: 1, username: "louis", display_name: "Louis", avatar_url: null, is_admin: true },
       });
-      assert.equal((await req(srv.base, "GET", "/api/stats?days=730", { cookie })).json.events, 1);
+      assert.equal((await req(srv.base, "GET", "/api/u/louis/stats?days=730", { cookie })).json.events, 1);
       assert.equal((await req(srv.base, "POST", "/api/ingest", { key, body: event() })).json.stored, true);
     } finally {
       await srv.stop();
@@ -338,7 +343,7 @@ describe("accounts", () => {
     }
   });
 
-  test("each user only sees their own devices, usage and quotas", async () => {
+  test("usage lands on the device owner; devices stay private", async () => {
     const srv = await startServer({ password: "admin-pass" });
     try {
       assert.equal((await userCli(srv.dbPath, ["add", "bob"], "bob-password")).code, 0);
@@ -352,11 +357,11 @@ describe("accounts", () => {
       }) });
 
       const get = async (p, cookie) => (await req(srv.base, "GET", p, { cookie })).json;
-      assert.equal((await get("/api/stats?days=730", admin)).events, 0);
-      assert.equal((await get("/api/stats?days=730", bob)).events, 1);
-      assert.deepEqual((await get("/api/quotas", admin)).quotas, []);
-      assert.equal((await get("/api/quotas", bob)).quotas.length, 1);
-      assert.equal((await get("/api/sessions", admin)).total, 0);
+      assert.equal((await get("/api/u/admin/stats?days=730", admin)).events, 0);
+      assert.equal((await get("/api/u/bob/stats?days=730", bob)).events, 1);
+      assert.deepEqual((await get("/api/u/admin/quotas", admin)).quotas, []);
+      assert.equal((await get("/api/u/bob/quotas", bob)).quotas.length, 1);
+      assert.equal((await get("/api/u/admin/sessions", admin)).total, 0);
       assert.deepEqual((await get("/api/devices", admin)).devices.map((d) => d.name), ["admin-laptop"]);
       assert.deepEqual((await get("/api/devices", bob)).devices.map((d) => d.name), ["bob-laptop"]);
       // Revoking another user's device looks like an unknown id.
@@ -375,7 +380,7 @@ describe("accounts", () => {
         body: { username: "admin", password: "admin-pass" }, cookie: first,
       });
       assert.equal(again.status, 200);
-      assert.equal((await req(srv.base, "GET", "/api/stats", { cookie: first })).status, 401);
+      assert.equal((await req(srv.base, "GET", "/api/devices", { cookie: first })).status, 401);
     } finally {
       await srv.stop();
     }
@@ -390,7 +395,7 @@ describe("accounts", () => {
       await first.stop();
       const second = await startServer({ env, autoLogin: false });
       try {
-        assert.equal((await req(second.base, "GET", "/api/stats", { cookie })).status, 200);
+        assert.equal((await req(second.base, "GET", "/api/devices", { cookie })).status, 200);
       } finally {
         await second.stop();
       }
@@ -404,7 +409,7 @@ describe("accounts", () => {
     try {
       const cookie = await login(srv.base, "admin", "admin-pass");
       assert.equal((await userCli(srv.dbPath, ["passwd", "admin"], "new-admin-pass")).code, 0);
-      assert.equal((await req(srv.base, "GET", "/api/stats", { cookie })).status, 401);
+      assert.equal((await req(srv.base, "GET", "/api/devices", { cookie })).status, 401);
       assert.equal((await req(srv.base, "POST", "/api/auth/login", { body: { username: "admin", password: "admin-pass" } })).status, 401);
       await login(srv.base, "admin", "new-admin-pass");
     } finally {
@@ -473,8 +478,8 @@ describe("profiles and user management", () => {
     assert.equal((await post("/api/account/password", { current_password: "nope", new_password: "dave-pass-2" }, here)).status, 400);
     assert.equal((await post("/api/account/password", { current_password: "dave-pass-1", new_password: "x" }, here)).status, 400);
     assert.equal((await post("/api/account/password", { current_password: "dave-pass-1", new_password: "dave-pass-2" }, here)).status, 200);
-    assert.equal((await req(srv.base, "GET", "/api/stats", { cookie: here })).status, 200);
-    assert.equal((await req(srv.base, "GET", "/api/stats", { cookie: elsewhere })).status, 401);
+    assert.equal((await req(srv.base, "GET", "/api/devices", { cookie: here })).status, 200);
+    assert.equal((await req(srv.base, "GET", "/api/devices", { cookie: elsewhere })).status, 401);
     await login(srv.base, "dave", "dave-pass-2");
   });
 
@@ -484,7 +489,7 @@ describe("profiles and user management", () => {
     const frank = await login(srv.base, "frank", "frank-pass");
     const dev = await newDevice(srv.base, "frank-laptop", frank);
     assert.equal((await post(`/api/users/${json.id}/disable`, {}, admin)).status, 200);
-    assert.equal((await req(srv.base, "GET", "/api/stats", { cookie: frank })).status, 401);
+    assert.equal((await req(srv.base, "GET", "/api/devices", { cookie: frank })).status, 401);
     assert.equal((await post("/api/auth/login", { username: "frank", password: "frank-pass" })).status, 401);
     assert.equal((await req(srv.base, "POST", "/api/ingest", { key: dev.key, body: event() })).status, 401);
     assert.equal((await post(`/api/users/${json.id}/enable`, {}, admin)).status, 200);
@@ -517,7 +522,7 @@ describe("profiles and user management", () => {
     const json = { id: await userId(srv.base, "gina", admin) };
     const gina = await login(srv.base, "gina", "gina-pass-1");
     assert.equal((await post(`/api/users/${json.id}/password`, { password: "gina-pass-2" }, admin)).status, 200);
-    assert.equal((await req(srv.base, "GET", "/api/stats", { cookie: gina })).status, 401);
+    assert.equal((await req(srv.base, "GET", "/api/devices", { cookie: gina })).status, 401);
     await login(srv.base, "gina", "gina-pass-2");
     // An admin's own password needs the current one (the Account section).
     assert.equal((await post("/api/users/1/password", { password: "taken-over" }, admin)).status, 400);
@@ -543,7 +548,7 @@ describe("creating accounts from the site", () => {
       const cookie = ok.headers.get("set-cookie").split(";")[0];
       const st = (await req(srv.base, "GET", "/api/auth/status", { cookie })).json;
       assert.deepEqual(st.user, { id: 1, username: "louis", display_name: "Louis", avatar_url: null, is_admin: true });
-      assert.equal((await req(srv.base, "GET", "/api/stats?days=730", { cookie })).json.events, 1);
+      assert.equal((await req(srv.base, "GET", "/api/u/louis/stats?days=730", { cookie })).json.events, 1);
       assert.equal((await setup({ ...me, username: "second", setup_code: code })).status, 409);
     } finally {
       await srv.stop();
@@ -658,15 +663,14 @@ describe("public profile pages", () => {
           assert.ok([401, 404].includes((await get(p)).status), p);
         }
       }
-      // Bob's own endpoints stay his, whatever the query says.
+      // Bob's devices stay his.
       const mine = (p) => req(srv.base, "GET", p, { cookie: bob });
-      assert.equal((await mine("/api/stats?days=730&user=admin")).json.events, 0);
       assert.deepEqual((await mine("/api/devices")).json.devices, []);
       // The account list is public, like the leaderboard (disabled ones hidden).
       const listed = [{ username: "admin", display_name: "admin", avatar_url: null }, { username: "bob", display_name: "Bob", avatar_url: null }];
       assert.deepEqual((await mine("/api/profiles")).json.profiles, listed);
       assert.deepEqual((await req(srv.base, "GET", "/api/profiles", { anon: true })).json.profiles, listed);
-      assert.equal((await req(srv.base, "GET", "/api/stats", { anon: true })).status, 401);
+      assert.equal((await req(srv.base, "GET", "/api/devices", { anon: true })).status, 401);
     } finally {
       await srv.stop();
     }
@@ -741,7 +745,7 @@ describe("summary, sessions and context (redesign APIs)", () => {
     const now = Math.floor(Date.now() / 1000);
     await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: "a", model: "claude-opus-5-5", occurred_at: now }) });
     await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: "b", model: "claude-sonnet-5", occurred_at: now - 40 * 86400 }) });
-    const s = (await req(srv.base, "GET", "/api/summary")).json;
+    const s = (await req(srv.base, "GET", "/api/u/admin/summary")).json;
     assert.equal(s.total.tokens, 360);
     assert.equal(s.total.sessions, 2);
     assert.equal(s.today.tokens, 180);
@@ -749,7 +753,7 @@ describe("summary, sessions and context (redesign APIs)", () => {
     assert.deepEqual(s.total.by_model.map((r) => r.name).sort(), ["claude-opus-5-5", "claude-sonnet-5"]);
     assert.deepEqual(s.total.by_tool, [{ name: "claude-code", tokens: 360, sessions: 2, events: 2 }]);
     assert.equal(s.day, new Date().toISOString().slice(0, 10));
-    assert.equal((await req(srv.base, "GET", "/api/summary?tool=codex")).json.total.tokens, 0);
+    assert.equal((await req(srv.base, "GET", "/api/u/admin/summary?tool=codex")).json.total.tokens, 0);
   });
 
   test("sessions report the latest context fill and a total for paging", async () => {
@@ -763,15 +767,15 @@ describe("summary, sessions and context (redesign APIs)", () => {
       context_window: { context_window_size: 200000, used_percentage: 35, current_usage: { input_tokens: 6 } },
     } });
     await req(srv.base, "POST", "/api/ingest", { key, body: { session_id: "ctx", prompt_id: "c3", occurred_at: at - 5, usage: { input_tokens: 7 } } });
-    const r = (await req(srv.base, "GET", "/api/sessions?limit=1")).json;
+    const r = (await req(srv.base, "GET", "/api/u/admin/sessions?limit=1")).json;
     assert.equal(r.sessions.length, 1);
     assert.ok(r.total >= 3);
-    const ctx = (await req(srv.base, "GET", "/api/sessions?limit=50")).json.sessions.find((s) => s.session_id === "ctx");
+    const ctx = (await req(srv.base, "GET", "/api/u/admin/sessions?limit=50")).json.sessions.find((s) => s.session_id === "ctx");
     assert.equal(ctx.context_used_pct, 35);
     assert.equal(ctx.context_window_size, 200000);
-    const noCtx = (await req(srv.base, "GET", "/api/sessions?limit=50")).json.sessions.find((s) => s.session_id === "a");
+    const noCtx = (await req(srv.base, "GET", "/api/u/admin/sessions?limit=50")).json.sessions.find((s) => s.session_id === "a");
     assert.equal(noCtx.context_used_pct, null);
-    assert.equal((await req(srv.base, "GET", "/api/sessions?tool=codex")).json.total, 0);
+    assert.equal((await req(srv.base, "GET", "/api/u/admin/sessions?tool=codex")).json.total, 0);
   });
 });
 
@@ -786,6 +790,47 @@ describe("shutdown", () => {
       assert.ok(!fs.existsSync(`${srv.dbPath}-wal`));
     } finally {
       await srv.stop();
+    }
+  });
+});
+
+describe("migrations", () => {
+  test("leftovers of removed features are dropped, measured data kept", async () => {
+    const dir = fs.mkdtempSync(`${os.tmpdir()}/ai-usage-legacy-`);
+    const dbPath = `${dir}/t.db`;
+    const old = new Database(dbPath);
+    old.exec(`
+      CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL);
+      CREATE TABLE devices (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, name TEXT NOT NULL,
+        key_hash TEXT NOT NULL UNIQUE, key_prefix TEXT NOT NULL DEFAULT '', revoked INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL);
+      CREATE TABLE usage_events (event_id TEXT PRIMARY KEY, device_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+        tool TEXT NOT NULL, session_id TEXT, prompt_id TEXT, model TEXT,
+        input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+        cost_estimated_usd REAL, occurred_at INTEGER NOT NULL, received_at INTEGER NOT NULL);
+      CREATE TABLE billing_records (id INTEGER PRIMARY KEY);
+      CREATE TABLE subscriptions (id INTEGER PRIMARY KEY);
+      CREATE TABLE invites (id INTEGER PRIMARY KEY);
+      CREATE TABLE app_settings (key TEXT PRIMARY KEY);
+      INSERT INTO users (id, created_at) VALUES (1, 0);
+      INSERT INTO devices (user_id, name, key_hash, created_at) VALUES (1, 'old', 'h', 0);
+      INSERT INTO usage_events (event_id, device_id, user_id, tool, input_tokens, cost_estimated_usd, occurred_at, received_at)
+        VALUES ('e1', 1, 1, 'claude-code', 42, 0.1, 0, 0);
+    `);
+    old.close();
+    const srv = await startServer({ env: { DB_PATH: dbPath }, autoLogin: false });
+    await srv.stop();
+    const db = new Database(dbPath, { readonly: true });
+    try {
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((r) => r.name);
+      for (const t of ["billing_records", "subscriptions", "invites", "app_settings"]) assert.ok(!tables.includes(t), t);
+      const cols = db.prepare("PRAGMA table_info(usage_events)").all().map((c) => c.name);
+      assert.ok(!cols.includes("cost_estimated_usd"));
+      assert.equal(db.prepare("SELECT input_tokens FROM usage_events WHERE event_id = 'e1'").get().input_tokens, 42);
+    } finally {
+      db.close();
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });

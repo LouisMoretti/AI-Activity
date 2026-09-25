@@ -50,6 +50,7 @@ and never presented as a real measurement.
 npm install
 cp .env.example .env        # set PORT, DB_PATH (loaded by npm start/dev/
                             # gen-key/user; real env vars win)
+npm run build               # the UI, served from web/dist
 npm start                   # http://localhost:3000
 ```
 
@@ -83,12 +84,11 @@ Web client (Svelte 5 + Vite, in `web/`):
 ```bash
 npm run dev                 # API server on :3000 (watch mode)
 npm run dev:web             # UI with HMR on :5173, proxies /api → :3000
-npm run build               # → web/dist
-STATIC_DIR=web/dist npm start   # serve the built UI (default is still public/
-                                # until the redesign switch-over)
+npm run build               # → web/dist (the default STATIC_DIR)
 ```
 
-CI (`.github/workflows/ci.yml`) runs typecheck, tests and the web build on
+CI (`.github/workflows/ci.yml`) runs typecheck, the web build and tests
+(tests serve `web/dist`, so the build comes first) on
 every PR and push to main.
 
 Tests: `npm test` boots the real server on a temp DB and exercises the HTTP
@@ -107,7 +107,7 @@ Claude Code statusLine (bash POST, on the user's device, NOT this repo)
    │  HTTPS  Authorization: Bearer <device key> (never in the URL)
    ▼
 Node server (Hono + TypeScript, server/) + SQLite (better-sqlite3)
-   │  serves the static web root (STATIC_DIR, default public/) + JSON APIs
+   │  serves the static web root (STATIC_DIR, default web/dist) + JSON APIs
    ▼
 Browser dashboard (web/: Svelte 5 + TypeScript, built by Vite)
 ```
@@ -126,7 +126,7 @@ server/
   lib/setup.ts        one-time setup code for the first account
   lib/avatar.ts       profile picture link allowlist
   lib/http.ts
-  routes/           auth, ingest, usage (stats/activity/quotas/sessions),
+  routes/           auth, ingest, usage (public profiles + leaderboard),
                     devices, account (profile + admin users)
 shared/types.ts     API response types shared with the web client
 web/
@@ -143,7 +143,6 @@ web/
                           NewAccountForm, AuthPanel, Leaderboard,
                           AdminOverview, …
   src/styles/tokens.css   design tokens — components only use these variables
-public/             legacy UI, removed at the switch-over
 ```
 
 Components never branch on live vs demo: both sources map into the same
@@ -173,9 +172,9 @@ Components never branch on live vs demo: both sources map into the same
 - `quota_snapshots` — one row per observed quota window
   (`five_hour`, `seven_day`): account, limit type, % used, window length,
   reset time, measurement date. Latest snapshot wins; never summed.
-- Older databases may still contain `usage_events.cost_estimated_usd` and
-  the `billing_records` / `subscriptions` tables from the removed cost
-  feature; nothing reads or writes them.
+- Migrations are additive (`ADD COLUMN` when missing) and also drop the
+  leftovers of removed features: `usage_events.cost_estimated_usd` and the
+  `billing_records`, `subscriptions`, `invites`, `app_settings` tables.
 
 Counting rules:
 
@@ -300,8 +299,9 @@ account exists):
 - `GET /api/profiles` → enabled accounts `{username, display_name}`,
   **no session needed** (the public leaderboard lists them too).
 - Public profile pages, **no session needed**: `GET /api/u/:username` →
-  `{username, display_name}`, and `/api/u/:username/stats|activity|quotas|summary|sessions`
-  (same shapes as the viewer's own routes; `404` if unknown or disabled).
+  `{username, display_name, avatar_url}`, and the usage routes below under
+  `/api/u/:username/` (`404` if unknown or disabled). They are the only
+  copy: the signed-in viewer reads their own page through them too.
   Nothing private has a public route: devices, account and users
   always need a session and only ever act on the signed-in user.
 - Unknown usernames and wrong passwords get the same `401` and the same
@@ -335,13 +335,15 @@ account exists):
   `active_days`, `top_model`, `last_active` (null when idle),
   `current_streak`), plus `totals`, `accounts`, `by_model` and a 364-day
   global `activity`. Disabled accounts never appear.
-- `GET /api/stats?days=30&tool=claude-code`
-- `GET /api/activity?days=364&tool=...` (daily buckets for the heatmap)
-- `GET /api/quotas` (latest snapshot per account + limit type)
-- `GET /api/summary?tool=...` (all-time and current-UTC-day tokens,
-  sessions, events, each split `by_model` and `by_tool`)
-- `GET /api/sessions?limit=10&offset=0&tool=...` (grouped by unique session id, with
-  latest `context_used_pct` / `context_window_size`, plus `total` for paging)
+- Usage, public, under `/api/u/:username/`:
+  - `stats?days=30&tool=claude-code`
+  - `activity?days=364&tool=...` (daily buckets for the heatmap)
+  - `quotas` (latest snapshot per account + limit type)
+  - `summary?tool=...` (all-time and current-UTC-day tokens, sessions,
+    events, each split `by_model` and `by_tool`)
+  - `sessions?limit=10&offset=0&tool=...` (grouped by unique session id,
+    with latest `context_used_pct` / `context_window_size`, plus `total`
+    for paging)
 - `GET /api/devices`, `POST /api/devices {name}` (returns key once),
   `POST /api/devices/:id/revoke`
 
@@ -376,8 +378,8 @@ curl -s localhost:3000/api/ingest -H "Authorization: Bearer $KEY" \
     "cache_creation_input_tokens":10,"cache_read_input_tokens":20},
   "rate_limits":{"five_hour":{"used_percentage":23.5,"resets_at":1999999999}},
   "occurred_at":1750000000}'
-curl -s 'localhost:3000/api/stats?days=365' ; echo
-curl -s localhost:3000/api/quotas ; echo
+curl -s 'localhost:3000/api/u/<you>/stats?days=365' ; echo
+curl -s localhost:3000/api/u/<you>/quotas ; echo
 ```
 
 ## 8. Testing with the user (Cloudflare tunnel) — REQUIRED
@@ -401,7 +403,7 @@ Live review (edits show up instantly for the tester): keep the Node API on
 instead, which proxies `/api` to :3000 and pushes changes over HMR:
 
 ```bash
-STATIC_DIR=web/dist npm run dev     # API on :3000, restarts on server/ edits
+npm run dev                         # API on :3000, restarts on server/ edits
 npm run dev:web                     # UI on :5173 with HMR
 cloudflared tunnel --url http://localhost:5173
 ```
