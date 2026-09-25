@@ -54,6 +54,8 @@ export function authRoutes(db: DB, auth: ViewerAuth, setupCode: string | null) {
     // unless an admin closed it.
     .post("/register", async (c) => {
       const body = await readJson(c);
+      // Only checks the login throttle: registering checks no password, so
+      // there is no failure to count (sign-ups have their own cap below).
       const limited = tooMany(c, auth.throttled(c));
       if (limited) return limited;
       if (!accountsExist(db)) return c.json({ error: "create the first account with the setup code" }, 409);
