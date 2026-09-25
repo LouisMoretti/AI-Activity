@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { Config } from "./config.ts";
 import type { DB } from "./db/schema.ts";
+import { clientInfo } from "./lib/client.ts";
 import { jsonOnly, limitBody, readCache } from "./lib/http.ts";
 import { createViewerAuth } from "./lib/viewer-auth.ts";
 import { accountRoutes, adminRoutes, userRoutes } from "./routes/account.ts";
@@ -15,7 +16,7 @@ import { leaderboardRoutes, profileListRoutes, publicProfileRoutes } from "./rou
 
 /** setupCode: one-time code for creating the first account from the browser (null once one exists). */
 export function createApp(db: DB, config: Config, setupCode: string | null = null) {
-  const auth = createViewerAuth(db);
+  const auth = createViewerAuth(db, clientInfo(config.trustProxy));
   const cache = readCache(db);
 
   const api = new Hono()

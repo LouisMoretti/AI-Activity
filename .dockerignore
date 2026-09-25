@@ -1,0 +1,14 @@
+# Never in the image: the database, secrets, local builds and history.
+node_modules
+data
+.env
+.env.*
+!.env.example
+web/dist
+.git
+.github
+logs
+test
+collectors
+**/__pycache__
+web/src/lib/.dashboard.test-build.js

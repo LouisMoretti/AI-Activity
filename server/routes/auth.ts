@@ -7,7 +7,7 @@ import {
   hashPassword, PASSWORD_MAX, passwordProblem, usernameProblem, verifyPassword,
 } from "../lib/passwords.ts";
 import { setupCodeMatches } from "../lib/setup.ts";
-import { clientId, type ViewerAuth } from "../lib/viewer-auth.ts";
+import type { ViewerAuth } from "../lib/viewer-auth.ts";
 
 /** Open sign-up: accounts one client may create per window (spam guard). */
 const SIGNUPS_PER_CLIENT = 5;
@@ -64,7 +64,7 @@ export function authRoutes(db: DB, auth: ViewerAuth, setupCode: string | null) {
         signups = new Map();
         signupWindow = Date.now();
       }
-      const client = clientId(c);
+      const client = auth.clientId(c);
       if ((signups.get(client) ?? 0) >= SIGNUPS_PER_CLIENT) {
         c.header("retry-after", String(Math.ceil((signupWindow + SIGNUP_WINDOW_MS - Date.now()) / 1000)));
         return c.json({ error: "too many accounts created from here, try again later" }, 429);
