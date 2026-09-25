@@ -53,7 +53,7 @@ const str = (v: unknown): string | null =>
   v === undefined || v === null ? null : String(v);
 
 /**
- * Normalize an ingest payload.
+ * Normalize a Claude Code payload (POST /api/ingest/claude-code).
  *
  * Accepts the documented flat contract AND a near-raw Claude Code
  * statusLine shape ({ model: {id}, cost: {...}, context_window:
@@ -63,7 +63,7 @@ const str = (v: unknown): string | null =>
  * are stored. Cumulative totals (total_input_tokens, total_cost_usd)
  * are deliberately ignored for summation.
  */
-export function normalizeIngest(body: unknown): NormalizedEvent {
+function normalizeClaudeCode(body: unknown): NormalizedEvent {
   const src: Obj = isObj(body) ? body : {};
   const now = nowSec();
 
@@ -76,9 +76,6 @@ export function normalizeIngest(body: unknown): NormalizedEvent {
   else if (isObj(src.model)) {
     model = str(src.model.id || src.model.display_name || null);
   }
-
-  let tool = typeof src.tool === "string" ? src.tool : "claude-code";
-  if (tool === "claude") tool = "claude-code";
 
   const limits: Obj = isObj(src.rate_limits) ? src.rate_limits : {};
   const quotas: NormalizedQuota[] = [];
@@ -106,7 +103,7 @@ export function normalizeIngest(body: unknown): NormalizedEvent {
 
   return {
     event_id: providedId || randomUUID(),
-    tool,
+    tool: "claude-code",
     session_id: str(src.session_id ?? src.sessionId),
     prompt_id: str(src.prompt_id ?? src.promptId),
     model,
@@ -124,6 +121,18 @@ export function normalizeIngest(body: unknown): NormalizedEvent {
       : "default",
     quotas,
   };
+}
+
+/**
+ * One normalizer per tool slug, picked by the ingest URL
+ * (/api/ingest/<slug>). A tool is ingestable once it has an entry here.
+ */
+const normalizers = new Map<string, (body: unknown) => NormalizedEvent>([
+  ["claude-code", normalizeClaudeCode],
+]);
+
+export function normalizerFor(tool: string): ((body: unknown) => NormalizedEvent) | null {
+  return normalizers.get(tool) ?? null;
 }
 
 /** Empty snapshots (session start, zero tokens) carry no consumption. */

@@ -21,28 +21,44 @@ describe("basics (signed in as the test admin)", () => {
   });
 
   test("ingest rejects missing, unknown and revoked keys", async () => {
-    assert.equal((await req(srv.base, "POST", "/api/ingest", { body: event() })).status, 401);
-    assert.equal((await req(srv.base, "POST", "/api/ingest", { body: event(), key: "ak_nope" })).status, 401);
+    assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { body: event() })).status, 401);
+    assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { body: event(), key: "ak_nope" })).status, 401);
     const d = await newDevice(srv.base, "to-revoke");
-    assert.equal((await req(srv.base, "POST", "/api/ingest", { body: event(), key: d.key })).status, 200);
+    assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { body: event(), key: d.key })).status, 200);
     assert.equal((await req(srv.base, "POST", `/api/devices/${d.id}/revoke`)).status, 200);
-    assert.equal((await req(srv.base, "POST", "/api/ingest", { body: event(), key: d.key })).status, 401);
+    assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { body: event(), key: d.key })).status, 401);
     // Idempotent: SQLite counts matched rows even when the value is unchanged.
     assert.equal((await req(srv.base, "POST", `/api/devices/${d.id}/revoke`)).status, 200);
     assert.equal((await req(srv.base, "POST", "/api/devices/999999/revoke")).status, 404);
   });
 
   test("ingest rejects bad JSON, oversized bodies and unsupported tools", async () => {
-    assert.equal((await req(srv.base, "POST", "/api/ingest", { raw: "{nope", key })).status, 400);
+    assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { raw: "{nope", key })).status, 400);
     const big = JSON.stringify({ pad: "x".repeat(300 * 1024) });
-    assert.equal((await req(srv.base, "POST", "/api/ingest", { raw: big, key })).status, 413);
-    assert.equal((await req(srv.base, "POST", "/api/ingest", { body: event({ tool: "codex" }), key })).status, 400);
+    assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { raw: big, key })).status, 413);
+    assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { body: event({ tool: "codex" }), key })).status, 400);
+    assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { body: event({ tool: "claude" }), key })).status, 400);
+  });
+
+  test("ingest is routed by tool slug, with no default tool", async () => {
+    // anon: collectors send a device key, never a viewer session cookie.
+    const post = (p, body = event()) => req(srv.base, "POST", p, { body, key, anon: true });
+    assert.equal((await post("/api/ingest")).status, 404);
+    assert.equal((await post("/api/ingest/")).status, 404);
+    assert.equal((await post("/api/ingest/codex", event({ tool: "codex" }))).status, 404);
+    assert.equal((await post("/api/ingest/constructor")).status, 404);
+    assert.equal((await req(srv.base, "GET", "/api/ingest/claude-code", { anon: true })).status, 404);
+    assert.equal((await post("/api/ingest/claude-code")).json.stored, true);
+    // The payload's tool is optional: the URL already says which tool it is.
+    const { tool, ...noTool } = event({ session_id: "slug-only" });
+    const r = await req(srv.base, "POST", "/api/ingest/claude-code", { body: noTool, key });
+    assert.equal(r.json.stored, true);
   });
 
   test("measured event shows up in stats, activity and sessions", async () => {
     const before = await stats();
     const ev = event({ session_id: "sess-A" });
-    const r = await req(srv.base, "POST", "/api/ingest", { body: ev, key });
+    const r = await req(srv.base, "POST", "/api/ingest/claude-code", { body: ev, key });
     assert.equal(r.json.stored, true);
     assert.equal(r.json.deduped, false);
     const after = await stats();
@@ -55,20 +71,20 @@ describe("basics (signed in as the test admin)", () => {
 
   test("replaying the same event_id is deduped, totals unchanged", async () => {
     const ev = event();
-    await req(srv.base, "POST", "/api/ingest", { body: ev, key });
+    await req(srv.base, "POST", "/api/ingest/claude-code", { body: ev, key });
     const mid = await stats();
-    const r = await req(srv.base, "POST", "/api/ingest", { body: ev, key });
+    const r = await req(srv.base, "POST", "/api/ingest/claude-code", { body: ev, key });
     assert.equal(r.json.deduped, true);
     assert.deepEqual(await stats(), mid);
   });
 
   test("identical snapshot for same prompt is deduped; distinct snapshots are kept", async () => {
     const base = event({ prompt_id: "prompt-multi" });
-    await req(srv.base, "POST", "/api/ingest", { body: base, key });
+    await req(srv.base, "POST", "/api/ingest/claude-code", { body: base, key });
     const mid = await stats();
-    const dup = await req(srv.base, "POST", "/api/ingest", { body: { ...base, event_id: "other-id-1" }, key });
+    const dup = await req(srv.base, "POST", "/api/ingest/claude-code", { body: { ...base, event_id: "other-id-1" }, key });
     assert.equal(dup.json.deduped, true);
-    const next = await req(srv.base, "POST", "/api/ingest", {
+    const next = await req(srv.base, "POST", "/api/ingest/claude-code", {
       body: { ...base, event_id: "other-id-2", usage: { input_tokens: 7, output_tokens: 3 } }, key,
     });
     assert.equal(next.json.stored, true);
@@ -77,7 +93,7 @@ describe("basics (signed in as the test admin)", () => {
 
   test("empty snapshot stores no usage row but records quotas", async () => {
     const before = await stats();
-    const r = await req(srv.base, "POST", "/api/ingest", {
+    const r = await req(srv.base, "POST", "/api/ingest/claude-code", {
       key,
       body: event({ usage: {}, account_ref: "empty-acct", rate_limits: { five_hour: { used_percentage: 12, resets_at: 1999999999 } } }),
     });
@@ -89,7 +105,7 @@ describe("basics (signed in as the test admin)", () => {
 
   test("raw statusLine shape accepted; cost fields ignored", async () => {
     const before = await stats();
-    const r = await req(srv.base, "POST", "/api/ingest", {
+    const r = await req(srv.base, "POST", "/api/ingest/claude-code", {
       key,
       body: {
         session_id: "raw-sess", prompt_id: "raw-p",
@@ -103,16 +119,16 @@ describe("basics (signed in as the test admin)", () => {
     assert.equal(after.total_tokens - before.total_tokens, 1001);
     assert.equal(after.estimated_usd, undefined);
     // A cost-only snapshot is not usage.
-    const costOnly = await req(srv.base, "POST", "/api/ingest", { key, body: { session_id: "raw-sess", cost_estimated_usd_delta: 0.5 } });
+    const costOnly = await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: { session_id: "raw-sess", cost_estimated_usd_delta: 0.5 } });
     assert.equal(costOnly.json.stored, false);
   });
 
   test("two devices on the same account: latest quota snapshot wins, never summed", async () => {
     const other = (await newDevice(srv.base, "second")).key;
     const rl = (pct) => ({ five_hour: { used_percentage: pct, resets_at: 1999999999 } });
-    await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "shared", rate_limits: rl(30) }) });
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ account_ref: "shared", rate_limits: rl(30) }) });
     await new Promise((r) => setTimeout(r, 1100)); // measured_at has 1 s resolution
-    await req(srv.base, "POST", "/api/ingest", { key: other, body: event({ account_ref: "shared", rate_limits: rl(45) }) });
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key: other, body: event({ account_ref: "shared", rate_limits: rl(45) }) });
     const rows = (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas
       .filter((q) => q.account_ref === "shared" && q.limit_type === "five_hour");
     assert.equal(rows.length, 1);
@@ -121,8 +137,8 @@ describe("basics (signed in as the test admin)", () => {
 
   test("snapshots within the same second still yield one row per window", async () => {
     const rl = (pct) => ({ seven_day: { used_percentage: pct } });
-    await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "fast", rate_limits: rl(10) }) });
-    await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "fast", rate_limits: rl(11) }) });
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ account_ref: "fast", rate_limits: rl(10) }) });
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ account_ref: "fast", rate_limits: rl(11) }) });
     const rows = (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas.filter((q) => q.account_ref === "fast");
     assert.equal(rows.length, 1);
     assert.equal(rows[0].used_pct, 11);
@@ -131,8 +147,8 @@ describe("basics (signed in as the test admin)", () => {
   test("a replayed stale snapshot does not replace a newer quota", async () => {
     const now = Math.floor(Date.now() / 1000);
     const q = (pct) => ({ five_hour: { used_percentage: pct, resets_at: now + 3600 } });
-    await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "replay", rate_limits: q(60), occurred_at: now }) });
-    await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "replay", rate_limits: q(10), occurred_at: now - 7200 }) });
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ account_ref: "replay", rate_limits: q(60), occurred_at: now }) });
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ account_ref: "replay", rate_limits: q(10), occurred_at: now - 7200 }) });
     const quotas = (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas.filter((x) => x.account_ref === "replay");
     assert.equal(quotas.length, 1);
     assert.equal(quotas[0].used_pct, 60);
@@ -141,9 +157,9 @@ describe("basics (signed in as the test admin)", () => {
   test("an unchanged quota value refreshes its measured_at", async () => {
     const now = Math.floor(Date.now() / 1000);
     const q = { seven_day: { used_percentage: 12, resets_at: now + 86400 } };
-    await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "same", rate_limits: q, occurred_at: now - 60 }) });
-    await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "same", rate_limits: q, occurred_at: now }) });
-    await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "same", rate_limits: q, occurred_at: now - 30 }) });
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ account_ref: "same", rate_limits: q, occurred_at: now - 60 }) });
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ account_ref: "same", rate_limits: q, occurred_at: now }) });
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ account_ref: "same", rate_limits: q, occurred_at: now - 30 }) });
     const rows = (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas.filter((x) => x.account_ref === "same");
     assert.equal(rows.length, 1);
     assert.equal(rows[0].used_pct, 12);
@@ -152,7 +168,7 @@ describe("basics (signed in as the test admin)", () => {
 
   test("payload without rate_limits creates no quota rows", async () => {
     const before = (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas.length;
-    await req(srv.base, "POST", "/api/ingest", { key, body: event({ account_ref: "no-limits" }) });
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ account_ref: "no-limits" }) });
     const q = (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas;
     assert.equal(q.length, before);
     assert.ok(!q.some((x) => x.account_ref === "no-limits"));
@@ -161,8 +177,8 @@ describe("basics (signed in as the test admin)", () => {
   test("spooled events with old occurred_at land on their own day, ordered", async () => {
     const day = 86400;
     const now = Math.floor(Date.now() / 1000);
-    await req(srv.base, "POST", "/api/ingest", { key, body: event({ occurred_at: now - 3 * day }) });
-    await req(srv.base, "POST", "/api/ingest", { key, body: event({ occurred_at: (now - 10 * day) * 1000 }) }); // ms accepted
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ occurred_at: now - 3 * day }) });
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ occurred_at: (now - 10 * day) * 1000 }) }); // ms accepted
     const days = (await req(srv.base, "GET", "/api/u/admin/activity?days=30")).json.days.map((d) => d.day);
     assert.deepEqual(days, [...days].sort());
     const iso = (s) => new Date(s * 1000).toISOString().slice(0, 10);
@@ -172,7 +188,7 @@ describe("basics (signed in as the test admin)", () => {
 
   test("occurred_at in the future is clamped to the receive time", async () => {
     const now = Math.floor(Date.now() / 1000);
-    await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: "future", occurred_at: now + 400 * 86400 }) });
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ session_id: "future", occurred_at: now + 400 * 86400 }) });
     const s = (await req(srv.base, "GET", "/api/u/admin/sessions?limit=200")).json.sessions.find((x) => x.session_id === "future");
     assert.ok(s.last_seen <= Math.floor(Date.now() / 1000));
     assert.ok(s.last_seen >= now);
@@ -180,9 +196,9 @@ describe("basics (signed in as the test admin)", () => {
 
   test("a session reports its latest model, not the largest name", async () => {
     const now = Math.floor(Date.now() / 1000);
-    await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: "switch", model: "claude-sonnet-5", occurred_at: now - 60 }) });
-    await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: "switch", model: "claude-opus-5-5", occurred_at: now }) });
-    await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: "switch", model: "claude-haiku-4-5", occurred_at: now - 30 }) });
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ session_id: "switch", model: "claude-sonnet-5", occurred_at: now - 60 }) });
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ session_id: "switch", model: "claude-opus-5-5", occurred_at: now }) });
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ session_id: "switch", model: "claude-haiku-4-5", occurred_at: now - 30 }) });
     const s = (await req(srv.base, "GET", "/api/u/admin/sessions?limit=200")).json.sessions.find((x) => x.session_id === "switch");
     assert.equal(s.model, "claude-opus-5-5");
   });
@@ -190,7 +206,7 @@ describe("basics (signed in as the test admin)", () => {
   test("sessions page with offset past the per-request cap", async () => {
     const now = Math.floor(Date.now() / 1000);
     for (let i = 0; i < 5; i++) {
-      await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: `page-${i}`, occurred_at: now + i }) });
+      await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ session_id: `page-${i}`, occurred_at: now + i }) });
     }
     const all = (await req(srv.base, "GET", "/api/u/admin/sessions?limit=200")).json;
     const p1 = (await req(srv.base, "GET", "/api/u/admin/sessions?limit=2")).json.sessions;
@@ -249,7 +265,7 @@ describe("locked server (first account made from the CLI)", () => {
     assert.equal((await req(srv.base, "GET", "/api/health")).status, 200);
     assert.equal((await req(srv.base, "GET", "/api/devices")).status, 401);
     assert.equal((await req(srv.base, "POST", "/api/devices", { body: { name: "x" } })).status, 401);
-    assert.equal((await req(srv.base, "POST", "/api/ingest", { body: event(), key: "ak_nope" })).status, 401);
+    assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { body: event(), key: "ak_nope" })).status, 401);
     const st = (await req(srv.base, "GET", "/api/auth/status")).json;
     assert.deepEqual(st, { authenticated: false, user: null, setup_required: false, signup_open: true });
   });
@@ -269,7 +285,7 @@ describe("locked server (first account made from the CLI)", () => {
     const me = (await req(srv.base, "GET", "/api/auth/status", { cookie })).json;
     assert.deepEqual(me.user, { id: 1, username: "admin", display_name: "admin", avatar_url: null, is_admin: true });
     const d = await newDevice(srv.base, "locked-dev", cookie);
-    assert.equal((await req(srv.base, "POST", "/api/ingest", { body: event(), key: d.key })).json.stored, true);
+    assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { body: event(), key: d.key })).json.stored, true);
     await req(srv.base, "POST", "/api/auth/logout", { cookie });
     assert.equal((await req(srv.base, "GET", "/api/devices", { cookie })).status, 401);
   });
@@ -314,7 +330,7 @@ describe("accounts", () => {
       assert.equal((await req(srv.base, "POST", "/api/auth/login", { body: { username: "x", password: "y" } })).status, 400);
       // Collectors keep working before any account exists (keys from the CLI).
       const key = await genKey(srv.dbPath, "pre-accounts");
-      assert.equal((await req(srv.base, "POST", "/api/ingest", { key, body: event() })).json.stored, true);
+      assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event() })).json.stored, true);
 
       const add = await userCli(srv.dbPath, ["add", "louis", "--name", "Louis"], "correct horse");
       assert.equal(add.code, 0, add.out);
@@ -325,7 +341,7 @@ describe("accounts", () => {
         user: { id: 1, username: "louis", display_name: "Louis", avatar_url: null, is_admin: true },
       });
       assert.equal((await req(srv.base, "GET", "/api/u/louis/stats?days=730", { cookie })).json.events, 1);
-      assert.equal((await req(srv.base, "POST", "/api/ingest", { key, body: event() })).json.stored, true);
+      assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event() })).json.stored, true);
     } finally {
       await srv.stop();
     }
@@ -351,7 +367,7 @@ describe("accounts", () => {
       const bob = await login(srv.base, "bob", "bob-password");
       const adminDev = await newDevice(srv.base, "admin-laptop", admin);
       const bobDev = await newDevice(srv.base, "bob-laptop", bob);
-      await req(srv.base, "POST", "/api/ingest", { key: bobDev.key, body: event({
+      await req(srv.base, "POST", "/api/ingest/claude-code", { key: bobDev.key, body: event({
         session_id: "bob-s",
         rate_limits: { five_hour: { used_percentage: 42, resets_at: 1999999999 } },
       }) });
@@ -491,9 +507,9 @@ describe("profiles and user management", () => {
     assert.equal((await post(`/api/users/${json.id}/disable`, {}, admin)).status, 200);
     assert.equal((await req(srv.base, "GET", "/api/devices", { cookie: frank })).status, 401);
     assert.equal((await post("/api/auth/login", { username: "frank", password: "frank-pass" })).status, 401);
-    assert.equal((await req(srv.base, "POST", "/api/ingest", { key: dev.key, body: event() })).status, 401);
+    assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { key: dev.key, body: event() })).status, 401);
     assert.equal((await post(`/api/users/${json.id}/enable`, {}, admin)).status, 200);
-    assert.equal((await req(srv.base, "POST", "/api/ingest", { key: dev.key, body: event() })).status, 200);
+    assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { key: dev.key, body: event() })).status, 200);
     await login(srv.base, "frank", "frank-pass");
     assert.equal((await post("/api/users/1/disable", {}, admin)).status, 400);
     assert.equal((await post("/api/users/999/disable", {}, admin)).status, 404);
@@ -537,7 +553,7 @@ describe("creating accounts from the site", () => {
       const code = srv.setupCode();
       assert.match(code, /^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/);
       const key = await genKey(srv.dbPath, "pre-accounts");
-      await req(srv.base, "POST", "/api/ingest", { key, body: event() });
+      await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event() });
       const setup = (body) => req(srv.base, "POST", "/api/auth/setup", { body });
       const me = { username: "louis", password: "first-pass", display_name: "Louis" };
       assert.equal((await setup({ ...me, setup_code: "AAAA-BBBB-CCCC" })).status, 401);
@@ -635,7 +651,7 @@ describe("open sign-up and admin panel", () => {
     const srv = await startServer();
     try {
       const { key } = await newDevice(srv.base);
-      await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: "o1" }) });
+      await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ session_id: "o1" }) });
       await register(srv.base, { username: "neo", password: "neo-password" });
       const o = (await req(srv.base, "GET", "/api/admin/overview")).json;
       assert.equal(o.accounts, 2);
@@ -660,7 +676,7 @@ describe("public profile pages", () => {
       await req(srv.base, "POST", `/api/users/${await userId(srv.base, "gone", admin)}/disable`, { cookie: admin });
       const bob = await login(srv.base, "bob", "bob-password");
       const dev = await newDevice(srv.base, "admin-laptop", admin);
-      await req(srv.base, "POST", "/api/ingest", { key: dev.key, body: event({
+      await req(srv.base, "POST", "/api/ingest/claude-code", { key: dev.key, body: event({
         session_id: "admin-s",
         rate_limits: { five_hour: { used_percentage: 12, resets_at: 1999999999 } },
       }) });
@@ -705,7 +721,7 @@ describe("leaderboard", () => {
       await register(srv.base, { username: "idle", password: "idle-password" });
       const gone = (await register(srv.base, { username: "gone", password: "gone-password" })).cookie;
       const now = Math.floor(Date.now() / 1000);
-      const post = (key, over) => req(srv.base, "POST", "/api/ingest", { key, body: event(over) });
+      const post = (key, over) => req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event(over) });
       const adminKey = (await newDevice(srv.base, "a", admin)).key;
       const bobKey = (await newDevice(srv.base, "b", bob)).key;
       const goneKey = (await newDevice(srv.base, "g", gone)).key;
@@ -762,8 +778,8 @@ describe("summary, sessions and context (redesign APIs)", () => {
 
   test("summary splits all-time and today by model and tool", async () => {
     const now = Math.floor(Date.now() / 1000);
-    await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: "a", model: "claude-opus-5-5", occurred_at: now }) });
-    await req(srv.base, "POST", "/api/ingest", { key, body: event({ session_id: "b", model: "claude-sonnet-5", occurred_at: now - 40 * 86400 }) });
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ session_id: "a", model: "claude-opus-5-5", occurred_at: now }) });
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ session_id: "b", model: "claude-sonnet-5", occurred_at: now - 40 * 86400 }) });
     const s = (await req(srv.base, "GET", "/api/u/admin/summary")).json;
     assert.equal(s.total.tokens, 360);
     assert.equal(s.total.sessions, 2);
@@ -777,15 +793,15 @@ describe("summary, sessions and context (redesign APIs)", () => {
 
   test("sessions report the latest context fill and a total for paging", async () => {
     const at = Math.floor(Date.now() / 1000);
-    await req(srv.base, "POST", "/api/ingest", { key, body: {
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: {
       session_id: "ctx", prompt_id: "c1", occurred_at: at - 10,
       context_window: { context_window_size: 200000, used_percentage: 20, current_usage: { input_tokens: 5 } },
     } });
-    await req(srv.base, "POST", "/api/ingest", { key, body: {
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: {
       session_id: "ctx", prompt_id: "c2", occurred_at: at,
       context_window: { context_window_size: 200000, used_percentage: 35, current_usage: { input_tokens: 6 } },
     } });
-    await req(srv.base, "POST", "/api/ingest", { key, body: { session_id: "ctx", prompt_id: "c3", occurred_at: at - 5, usage: { input_tokens: 7 } } });
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: { session_id: "ctx", prompt_id: "c3", occurred_at: at - 5, usage: { input_tokens: 7 } } });
     const r = (await req(srv.base, "GET", "/api/u/admin/sessions?limit=1")).json;
     assert.equal(r.sessions.length, 1);
     assert.ok(r.total >= 3);
@@ -803,7 +819,7 @@ describe("shutdown", () => {
     const srv = await startServer();
     try {
       const { key } = await newDevice(srv.base);
-      await req(srv.base, "POST", "/api/ingest", { key, body: event() });
+      await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event() });
       assert.ok(fs.existsSync(`${srv.dbPath}-wal`));
       assert.equal(await srv.kill(), 0);
       assert.ok(!fs.existsSync(`${srv.dbPath}-wal`));

@@ -120,7 +120,7 @@ server/
   config.ts         env → Config (PORT, DB_PATH, STATIC_DIR)
   db/schema.ts      open + migrate
   db/queries.ts     every SQL statement lives here
-  lib/ingest.ts     payload normalization (flat + raw statusLine shapes)
+  lib/ingest.ts     payload normalizers, one per tool slug
   lib/viewer-auth.ts  viewer sessions + login throttling
   lib/passwords.ts    scrypt hashing, username/password rules
   lib/setup.ts        one-time setup code for the first account
@@ -190,8 +190,13 @@ Counting rules:
 
 ## 5. Ingestion API
 
-`POST /api/ingest` with header `Authorization: Bearer <device key>`.
+`POST /api/ingest/<tool>` with header `Authorization: Bearer <device key>`.
+The tool slug in the URL picks the payload normalizer
+(`server/lib/ingest.ts`, one entry per slug); only `claude-code` exists so
+far. There is no default: a bare `/api/ingest` and unknown slugs → `404`.
 Unknown or revoked keys → `401`. Small JSON bodies only (256 KB max).
+The payload's `tool` is optional; when present it must equal the slug
+(`400` otherwise).
 
 ```json
 {
@@ -260,7 +265,7 @@ Official contract: https://code.claude.com/docs/en/statusline
 # ~/.claude/statusline-post.sh — reads statusLine JSON on stdin,
 # POSTs metrics, never changes the visible status line output.
 input=$(cat)
-ENDPOINT="https://<tunnel-url>/api/ingest"
+ENDPOINT="https://<tunnel-url>/api/ingest/claude-code"
 KEY="<device key from npm run gen-key>"
 SPOOL=~/.ai-usage/spool
 mkdir -p "$SPOOL"
@@ -376,7 +381,7 @@ account exists):
 ```bash
 # manual test example
 KEY=<device key>
-curl -s localhost:3000/api/ingest -H "Authorization: Bearer $KEY" \
+curl -s localhost:3000/api/ingest/claude-code -H "Authorization: Bearer $KEY" \
   -H 'content-type: application/json' -d '{
   "event_id":"test-1","tool":"claude-code","session_id":"s1",
   "prompt_id":"p1","model":"claude-opus-5-5",
