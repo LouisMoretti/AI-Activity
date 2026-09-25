@@ -9,7 +9,6 @@
   import Leaderboard from "./components/Leaderboard.svelte";
   import NewAccountForm from "./components/NewAccountForm.svelte";
   import OpenCodeCard from "./components/OpenCodeCard.svelte";
-  import ProfileHeader from "./components/ProfileHeader.svelte";
   import ProfilePanel from "./components/ProfilePanel.svelte";
   import SiteHeader from "./components/SiteHeader.svelte";
   import Section from "./components/Section.svelte";
@@ -18,11 +17,18 @@
   import { Dashboard } from "./lib/dashboard.svelte.ts";
 
   const dash = new Dashboard();
+  // Breadcrumb after "AI Activity" in the header: where you are.
+  const crumb = $derived(
+    dash.route.page === "profile" ? (dash.shown ? { label: `@${dash.shown.username}`, mono: true } : null)
+    : dash.route.page === "leaderboard" ? { label: "Leaderboard" }
+    : dash.route.page === "settings" && dash.account ? { label: "Settings" }
+    : dash.route.page === "admin" && dash.account ? { label: "Admin panel" }
+    : null);
   $effect(() => dash.start());
   $effect(() => {
     const page = dash.route.page;
     document.title = page === "settings" ? "Settings · AI Activity"
-      : page === "admin" ? "Admin · AI Activity"
+      : page === "admin" ? "Admin panel · AI Activity"
       : page === "leaderboard" ? "Leaderboard · AI Activity"
       : page === "profile" && dash.shown ? `${dash.shown.display_name} · AI Activity${dash.vm?.demo ? " · Demo" : ""}`
         : "AI Activity";
@@ -33,6 +39,7 @@
      outside the page branches, so every page gets exactly the same. -->
 <div class="shell">
   <SiteHeader account={dash.account} demo={!!dash.vm?.demo}
+    {crumb}
     signIn={dash.status !== "loading" && dash.status !== "signed-out" && dash.status !== "setup"}
     onnavigate={(p) => dash.go(p)} onlogout={() => dash.logout()} />
 
@@ -57,11 +64,6 @@
     {/if}
 
     {#if dash.route.page === "settings" && dash.account && dash.status === "ready"}
-      <div class="settings-head">
-        <h2>Settings</h2>
-        <button type="button" onclick={() => dash.go("/")}>Back to your profile</button>
-      </div>
-
       <Section title="Account" subtitle="Your profile and password">
         {#key dash.account.id}
           <ProfilePanel account={dash.account} onchange={() => dash.load()} />
@@ -75,10 +77,6 @@
     {/if}
 
     {#if dash.route.page === "admin" && dash.account && dash.status === "ready"}
-      <div class="settings-head">
-        <h2>Admin</h2>
-        <button type="button" onclick={() => dash.go("/")}>Back to your profile</button>
-      </div>
       {#if dash.account.is_admin}
         <Section title="Overview" subtitle="The whole server, every account">
           <AdminOverview />
@@ -97,9 +95,6 @@
 
     {#if dash.vm && dash.shown}
       {@const vm = dash.vm}
-      <ProfileHeader profile={dash.shown} own={dash.own} />
-
-
       <ActivityChart series={vm.series} today={vm.today} demo={vm.demo} hasActivity={vm.hasActivity} />
       <StatsRow stats={vm.stats} />
 
@@ -121,9 +116,7 @@
 <style>
   .shell { max-width: 1080px; margin: 0 auto; padding: 44px 42px 56px; }
   .gate { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 20px; color: var(--muted); font-size: 13px; line-height: 1.6; }
-  .gate button, .settings-head button { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 4px 10px; font-size: 12px; color: var(--text); }
-  .settings-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
-  .settings-head h2 { font-size: 17px; font-weight: 600; }
+  .gate button { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 4px 10px; font-size: 12px; color: var(--text); }
   .notice { color: var(--warn); margin: 12px 0; text-align: center; }
   .tools { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr)); gap: 16px; }
   @media (max-width: 720px) {

@@ -3,9 +3,12 @@
   import AccountMenu from "./AccountMenu.svelte";
   import Logo from "./Logo.svelte";
 
-  // Same header on every page: nothing here may depend on the route.
-  let { account, demo, signIn, onnavigate, onlogout }: {
+  // Same header on every page: it never reads the route itself, the page
+  // only hands it the breadcrumb.
+  let { account, demo, crumb, signIn, onnavigate, onlogout }: {
     account: Account | null;
+    /** Current page, shown as "AI Activity / <label>". */
+    crumb: { label: string; mono?: boolean } | null;
     /** Fictional data on screen: always labeled. */
     demo: boolean;
     /** Show "Sign in" when signed out (off on the sign-in screen itself). */
@@ -16,7 +19,10 @@
 </script>
 
 <header class="top">
-  <a class="brand" href="/" onclick={(e) => { e.preventDefault(); onnavigate("/"); }}><Logo /><h1>AI Activity</h1></a>
+  <div class="left">
+    <a class="brand" href="/" onclick={(e) => { e.preventDefault(); onnavigate("/"); }}><Logo /><h1>AI Activity</h1></a>
+    {#if crumb}<span class="crumb"><span class="sep" aria-hidden="true">/</span><span class="label" class:mono={crumb.mono}>{crumb.label}</span></span>{/if}
+  </div>
   <div class="top-right">
     {#if demo}<span class="badge demo">Demonstration data</span>{/if}
     {#if account}
@@ -30,6 +36,10 @@
 
 <style>
   .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 28px; }
+  .left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .crumb { display: flex; align-items: center; gap: 10px; min-width: 0; color: var(--muted); font-size: 15px; }
+  .crumb .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sep { color: var(--line); font-size: 19px; font-weight: 300; }
   .brand { display: flex; align-items: center; gap: 11px; color: inherit; text-decoration: none; }
   h1 { font-size: 19px; font-weight: 600; letter-spacing: -0.4px; }
   .top-right { display: flex; align-items: center; gap: 12px; min-width: 0; flex-wrap: wrap; justify-content: flex-end; }

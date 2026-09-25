@@ -63,10 +63,7 @@
 </script>
 
 <div class="head">
-  <div>
-    <h2>Leaderboard</h2>
-    <span class="muted">Measured usage of every account, {periodText}</span>
-  </div>
+  <span class="muted">Measured usage of every account, {periodText}</span>
   <Segmented label="Period" value={period} onchange={(v) => (period = v)} options={PERIODS} />
 </div>
 
@@ -139,7 +136,6 @@
 
 <style>
   .head { display: flex; justify-content: space-between; align-items: center; gap: 12px 16px; flex-wrap: wrap; margin-bottom: 20px; }
-  h2 { font-size: 17px; font-weight: 600; }
   .muted { color: var(--muted); font-size: 13px; }
   .error { color: var(--warn); margin: 8px 0; font-size: 13px; }
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 12px; }
