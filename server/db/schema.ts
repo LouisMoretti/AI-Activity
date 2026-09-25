@@ -93,7 +93,9 @@ function migrate(db: DB): void {
   // Every read (stats, summary, activity, sessions, leaderboard) filters by
   // user and time and only needs these columns: the covering index lets
   // SQLite answer from the index alone instead of the table. The session
-  // index serves the per-session lookups (model, context, snapshot cleanup).
+  // index groups the session list from the index; the per-session lookups
+  // (latest model and context, snapshot cleanup) use it to find their rows
+  // but read those columns from the table.
   db.exec(`
     DROP INDEX IF EXISTS idx_usage_user_time;
     DROP INDEX IF EXISTS idx_usage_device_prompt;
@@ -102,7 +104,6 @@ function migrate(db: DB): void {
       user_id, occurred_at, tool, session_id, model,
       input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
     );
-    DROP INDEX IF EXISTS idx_usage_user_session;
     CREATE INDEX IF NOT EXISTS idx_usage_user_session_read ON usage_events(
       user_id, session_id, tool, occurred_at,
       input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
