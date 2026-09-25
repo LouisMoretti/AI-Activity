@@ -2,7 +2,7 @@
 // /u/<username>, /leaderboard, /settings, /admin), data source (live or
 // ?demo=1), session paging, and the 15 s auto-refresh
 // (skipped while hidden or already in flight).
-import { api, NotFoundError, onSessionLost, UnauthorizedError, type NewAccount } from "./api.ts";
+import { api, NotFoundError, onSessionLost, RateLimitedError, UnauthorizedError, type NewAccount } from "./api.ts";
 import { demoDashboard } from "./demo.ts";
 import { ACTIVITY_DAYS, liveDashboard, type LiveData } from "./live.ts";
 import type { DashboardVM } from "./view-model.ts";
@@ -139,6 +139,8 @@ export class Dashboard {
       else if (e instanceof NotFoundError) {
         this.live = null;
         this.status = "missing";
+      } else if (e instanceof RateLimitedError && this.status === "ready") {
+        // Keep showing the last data; the next refresh tries again.
       } else this.status = "error";
     } finally {
       this.inFlight = false;

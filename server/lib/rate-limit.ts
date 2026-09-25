@@ -1,19 +1,27 @@
 import type { Context, MiddlewareHandler } from "hono";
 
 /**
- * Limits, sized so normal use never meets them (AGENTS.md §6):
- * - ingest, per device key: requests, and rows written (stored or updated;
- *   replays cost nothing, so a collector resending a backlog past a limit
- *   still gets further on every run). The burst covers a first import of
- *   a month of history;
- * - public reads, per client: a dashboard polls ~5 routes every 15 s
- *   (20/min); 120/min leaves room for several tabs;
+ * Limits, sized so normal use never meets them (AGENTS.md §5, §6):
+ * - ingest, per device key and tool (one key serves every tool on a
+ *   machine; a Claude Code import must not hold up Codex):
+ *   - requests that write rows or only carry quotas / context;
+ *   - replays: batches whose messages were all stored already. Collectors
+ *     resend their whole backlog after any refusal (the Claude Code one
+ *     only saves its offsets once a run is fully accepted), so replays get
+ *     their own, much larger budget and pass even while rows are limited;
+ *   - rows written (stored or updated). The burst covers a first import of
+ *     a month of history; past it, a batch that would write is rolled back
+ *     (its quotas and context are still kept) until the budget refills;
+ * - public reads, per client: a dashboard polls 7 routes every 15 s
+ *   (28/min); 300 with 5/s leaves room for about ten tabs behind one
+ *   address;
  * - signed-in routes (devices, account, users, admin), per user.
  */
 export const LIMITS = {
   ingestRequests: { capacity: 300, perSec: 5 },
+  ingestReplays: { capacity: 3000, perSec: 50 },
   ingestWrites: { capacity: 20_000, perSec: 10 },
-  publicReads: { capacity: 120, perSec: 2 },
+  publicReads: { capacity: 300, perSec: 5 },
   sessionRequests: { capacity: 120, perSec: 1 },
   /** Live (not revoked) devices per account, from Settings; the CLI is not capped. */
   devicesPerAccount: 20,
