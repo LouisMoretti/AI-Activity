@@ -51,8 +51,8 @@ and never presented as a real measurement.
 
 ```bash
 npm install
-cp .env.example .env        # set PORT, DB_PATH (loaded by npm start/dev/
-                            # gen-key/user; real env vars win)
+cp .env.example .env        # set PORT, DB_PATH, BACKUP_DIR (loaded by npm
+                            # start/dev/gen-key/user/backup; real env vars win)
 npm run build               # the UI, served from web/dist
 npm start                   # http://localhost:3000
 ```
@@ -99,7 +99,8 @@ every PR and push to main.
 Tests: `npm test` boots the real server on a temp DB and exercises the HTTP
 API black-box (`test/api.test.js`), so they must stay green across refactors;
 `test/migrations.test.js` upgrades old databases through the
-migrations; `test/series.test.js` covers pure helpers of the web
+migrations; `test/backup.test.js` backs up during writes, prunes and
+restores; `test/series.test.js` covers pure helpers of the web
 client; `test/dashboard.test.js` runs the client's state class
 (`dashboard.svelte.ts`, compiled with `svelte/compiler`) against a fake
 browser and fetch; `test/live.test.js` covers the API → view-model mapping;
@@ -130,7 +131,7 @@ Browser dashboard (web/: Svelte 5 + TypeScript, built by Vite)
 server/
   index.ts          boot: config, DB, listen
   app.ts            Hono app: /api mount, viewer-auth gate, static + SPA fallback
-  config.ts         env → Config (PORT, DB_PATH, STATIC_DIR)
+  config.ts         env → Config (PORT, DB_PATH, STATIC_DIR, BACKUP_DIR)
   db/schema.ts      open + migrate (runs pending migrations)
   db/migrations.ts  ordered schema migrations (PRAGMA user_version)
   db/queries.ts     every SQL statement lives here
@@ -139,6 +140,7 @@ server/
   lib/passwords.ts    scrypt hashing, username/password rules
   lib/setup.ts        one-time setup code for the first account
   lib/avatar.ts       profile picture link allowlist
+  lib/backup.ts       consistent snapshots, retention, restore
   lib/http.ts
   routes/           auth, ingest, usage (public profiles + leaderboard),
                     devices, account (profile + admin users)
@@ -231,7 +233,9 @@ Components never branch on live vs demo: both sources map into the same
   `npm run user`, `gen-key`), each pending one runs in its own transaction
   with its version bump, so a failure leaves the database at the last
   completed step. A database at a higher version than the code knows (made
-  by a newer server) is refused at start.
+  by a newer server) is refused at start. An existing database with
+  pending migrations is backed up first (`<BACKUP_DIR>/dashboard-…-pre-v<N>.db`,
+  never pruned), so an upgrade can be undone with `npm run restore`.
 - To change the schema, append one function to `MIGRATIONS`, never edit or
   reorder a shipped one, and write it without "already done?" guards (it
   runs once per database). SQLite cannot alter a column in place: a type or
@@ -244,6 +248,43 @@ Components never branch on live vs demo: both sources map into the same
   `subscriptions`, `invites`, `app_settings` tables).
   `test/migrations.test.js` checks that a fresh database and older ones
   (`test/fixtures/schema-v0.sql`) end at the same schema with their data.
+
+### Backups
+
+`data/dashboard.db` runs in WAL mode: never copy the file while the server
+runs (recent writes sit in `dashboard.db-wal`, and a copy can catch a
+half-written page).
+
+```bash
+npm run backup                          # safe while the server runs
+npm run backup -- --out /mnt/backups --keep-daily 7 --keep-weekly 4
+npm run restore -- data/backups/dashboard-20260925-134052.db   # server stopped
+```
+
+- `backup` takes a `VACUUM INTO` snapshot (one self-contained file, every
+  write committed before it started), writes it under a temporary name,
+  runs `integrity_check` on it and only then names it
+  `dashboard-YYYYMMDD-HHMMSS.db` (UTC) in `BACKUP_DIR` (default
+  `data/backups`, mode 700, files 600). It exits non-zero on any failure.
+  Then it prunes: the newest backup of each of the last 7 days and of each
+  of the last 4 ISO weeks stay. Only names of that exact shape are ever
+  deleted (`-pre-v2`, `-pre-restore` copies and other files stay).
+- Schedule it daily, e.g. a cron line on the server:
+  `15 3 * * * cd /srv/ai-activity && npm run -s backup`.
+- Copy the backups **off the machine** too, or they die with its disk:
+  e.g. `rsync -a data/backups/ backup-host:ai-activity/` or `rclone sync
+  data/backups remote:ai-activity` (an rclone `crypt` remote encrypts
+  them). Backups hold password, session and device key hashes and the
+  copyable device keys: the destination must be private.
+- `restore` checks the backup (integrity, schema not newer than the code),
+  refuses while anything has the database open (it must leave WAL mode,
+  which needs every other connection gone), saves the current database as
+  `…-pre-restore.db`, then replaces it and removes the stale `-wal` /
+  `-shm`. Sessions are rolled back with it: users may have to sign in again,
+  and events posted after the backup are missing: the collectors only send
+  what their offsets say is new. Deleting `~/.cache/ai-activity/*.json` on
+  a device makes its next run resend its whole local history (dedup makes
+  that safe).
 
 Counting rules:
 

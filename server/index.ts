@@ -6,7 +6,7 @@ import { openDb } from "./db/schema.ts";
 import { newSetupCode } from "./lib/setup.ts";
 
 const config = loadConfig();
-const db = openDb(config.dbPath);
+const db = openDb(config.dbPath, config.backupDir);
 // New on every start and only in this log: whoever creates the first
 // account from the browser must be able to read the server's output.
 const setupCode = accountsExist(db) ? null : newSetupCode();

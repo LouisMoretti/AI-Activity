@@ -47,7 +47,8 @@ const option = (name: string) => {
   return i >= 0 ? rest[i + 1] ?? null : null;
 };
 
-const db = openDb(loadConfig().dbPath);
+const config = loadConfig();
+const db = openDb(config.dbPath, config.backupDir);
 
 if (cmd === "add") {
   const problem = usernameProblem(username);
