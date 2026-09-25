@@ -15,10 +15,14 @@ concurrency:
 jobs:
   check:
     # arm64 too: better-sqlite3 is native, and the server may run on ARM.
+    # The x64 job keeps the name "check": the main branch ruleset requires it.
+    name: ${{ matrix.name }}
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-latest, ubuntu-24.04-arm]
+        include:
+          - { runner: ubuntu-latest, name: check }
+          - { runner: ubuntu-24.04-arm, name: check (arm64) }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
@@ -34,10 +38,13 @@ jobs:
 
   docker:
     # The image builds and runs on both platforms (nothing is pushed).
+    name: ${{ matrix.name }}
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-latest, ubuntu-24.04-arm]
+        include:
+          - { runner: ubuntu-latest, name: docker }
+          - { runner: ubuntu-24.04-arm, name: docker (arm64) }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
