@@ -105,7 +105,7 @@
         <div class="tools">
           {#if vm.tools.includes("claude-code")}<ClaudeCodeCard vm={vm.claude} />{/if}
           {#if vm.tools.includes("codex")}<CodexCard vm={vm.codex} />{/if}
-          {#if vm.tools.includes("opencode")}<OpenCodeCard />{/if}
+          {#if vm.tools.includes("opencode")}<OpenCodeCard vm={vm.opencode} />{/if}
         </div>
       </Section>
 

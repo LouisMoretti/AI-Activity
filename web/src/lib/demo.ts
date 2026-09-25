@@ -71,6 +71,8 @@ export function demoDashboard(provider: Provider): DashboardVM {
         { label: "This week", pct: 64, resetsAt: now + 4 * 86400, spanSec: WINDOW_SPANS.seven_day },
       ],
     },
+    // The fictional dataset has no OpenCode usage.
+    opencode: { tokens: null, today: null, sessions: null, providers: [] },
     sessions,
     sessionsTotal: sessions.length,
   };

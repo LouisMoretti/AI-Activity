@@ -124,7 +124,6 @@ export function event(over = {}) {
   };
 }
 
-/** Run `npm run user -- <args>` against a test DB, piping the password on stdin. */
 /** One Codex response as the collector sends it (rollout token_usage_record). */
 export function codexResponse(over = {}) {
   return {
@@ -138,6 +137,20 @@ export function codexResponse(over = {}) {
   };
 }
 
+/** One OpenCode assistant message as the collector sends it (opencode.db). */
+export function opencodeMessage(over = {}) {
+  return {
+    message_id: `msg_${Math.random().toString(36).slice(2)}`,
+    session_id: "ses_f274ca90cffecUog3NvACbUq3j",
+    provider_id: "anthropic",
+    model_id: "claude-sonnet-5",
+    occurred_at: Math.floor(Date.now() / 1000) - 120,
+    usage: { input_tokens: 325, output_tokens: 1241, reasoning_tokens: 10, cache_read_tokens: 26353, cache_write_tokens: 0, total_tokens: 27929 },
+    ...over,
+  };
+}
+
+/** Run `npm run user -- <args>` against a test DB, piping the password on stdin. */
 export function userCli(dbPath, args, password = "") {
   return new Promise((resolve) => {
     const proc = spawn(process.execPath, [USER_CLI, ...args], {

@@ -3,7 +3,7 @@ import Database from "better-sqlite3";
 import os from "node:os";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { startServer, req, newDevice, event, codexResponse, userCli, login, genKey, register, userId, TEST_ADMIN } from "./helpers.js";
+import { startServer, req, newDevice, event, codexResponse, opencodeMessage, userCli, login, genKey, register, userId, TEST_ADMIN } from "./helpers.js";
 
 /** A plausible reset time for a current quota window (a far-future one is dropped). */
 const soon = () => Math.floor(Date.now() / 1000) + 3600;
@@ -65,7 +65,7 @@ describe("basics (signed in as the test admin)", () => {
     const post = (p, body = event()) => req(srv.base, "POST", p, { body, key, anon: true });
     assert.equal((await post("/api/ingest")).status, 404);
     assert.equal((await post("/api/ingest/")).status, 404);
-    assert.equal((await post("/api/ingest/opencode", event({ tool: "opencode" }))).status, 404);
+    assert.equal((await post("/api/ingest/cursor", event({ tool: "cursor" }))).status, 404);
     assert.equal((await post("/api/ingest/constructor")).status, 404);
     assert.equal((await req(srv.base, "GET", "/api/ingest/claude-code", { anon: true })).status, 404);
     assert.equal((await post("/api/ingest/claude-code")).json.stored, true);
@@ -1336,5 +1336,78 @@ describe("codex ingestion", () => {
     const s = (await req(srv.base, "GET", "/api/u/admin/sessions?tool=codex&limit=50")).json.sessions.find((x) => x.session_id === "codex-ctx");
     assert.equal(s.context_used_pct, 20);
     assert.equal(s.context_window_size, 258400);
+  });
+});
+
+describe("opencode ingestion", () => {
+  let srv, key;
+  const post = (body) => req(srv.base, "POST", "/api/ingest/opencode", { body, key });
+  const summary = async (tool = "opencode") => (await req(srv.base, "GET", `/api/u/admin/summary?tool=${tool}`)).json.total;
+
+  before(async () => {
+    srv = await startServer();
+    key = (await newDevice(srv.base, "opencode")).key;
+  });
+  after(() => srv.stop());
+
+  test("a message is stored once, as provider/model, reasoning added to output", async () => {
+    // OpenCode 1.18 counts reasoning apart: its total adds it.
+    const m = opencodeMessage();
+    assert.deepEqual((await post({ messages: [m] })).json, { ok: true, messages: 1, stored: 1, updated: 0, deduped: 0 });
+    assert.deepEqual((await post({ messages: [m] })).json, { ok: true, messages: 1, stored: 0, updated: 0, deduped: 1 });
+    const t = await summary();
+    assert.equal(t.tokens, 27929);
+    assert.equal(t.events, 1);
+    assert.deepEqual(t.by_model.map((x) => x.name), ["anthropic/claude-sonnet-5"]);
+    assert.equal((await summary("claude-code")).events, 0);
+    const s = (await req(srv.base, "GET", "/api/u/admin/sessions?tool=opencode")).json.sessions[0];
+    assert.equal(s.tool, "opencode");
+    assert.equal(s.session_id, m.session_id);
+  });
+
+  test("reasoning already inside output is not counted twice", async () => {
+    const before = (await summary()).tokens;
+    await post({ messages: [opencodeMessage({ usage: {
+      input_tokens: 100, output_tokens: 50, reasoning_tokens: 20, cache_read_tokens: 0, cache_write_tokens: 0, total_tokens: 150,
+    } })] });
+    // No total: OpenCode 1.18 semantics, reasoning is added.
+    await post({ messages: [opencodeMessage({ usage: { input_tokens: 100, output_tokens: 50, reasoning_tokens: 20 } })] });
+    assert.equal((await summary()).tokens - before, 150 + 170);
+  });
+
+  test("an OpenCode id never collides with the same Anthropic message id", async () => {
+    const id = "msg_0d8b79c14001nstvFNseBdTpVD";
+    await req(srv.base, "POST", "/api/ingest/claude-code", { body: event({ event_id: id }), key });
+    const r = await post({ messages: [opencodeMessage({ message_id: id })] });
+    assert.equal(r.json.stored, 1);
+  });
+
+  test("only OpenCode message ids are stored, and a flat event is accepted", async () => {
+    const r = await post({ messages: [
+      opencodeMessage({ message_id: "resp_not_opencode" }),
+      opencodeMessage({ message_id: undefined }),
+      opencodeMessage({ usage: undefined }),
+    ] });
+    assert.equal(r.json.messages, 0);
+    const flat = await post({ tool: "opencode", ...opencodeMessage({ message_id: "msg_flat" }) });
+    assert.equal(flat.json.stored, true);
+    assert.equal(flat.json.event_id, "opencode:msg_flat");
+    assert.equal((await req(srv.base, "POST", "/api/ingest/opencode", { body: { tool: "codex" }, key })).status, 400);
+  });
+
+  test("a partial message is replaced by its final counts", async () => {
+    const before = (await summary()).tokens;
+    const m = opencodeMessage({ usage: { input_tokens: 10, output_tokens: 5, reasoning_tokens: 0 } });
+    await post({ messages: [m] });
+    const r = await post({ messages: [{ ...m, usage: { input_tokens: 10, output_tokens: 90, reasoning_tokens: 0 } }] });
+    assert.equal(r.json.updated, 1);
+    assert.equal((await summary()).tokens - before, 100);
+  });
+
+  test("no quota is recorded", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    await post({ messages: [], rate_limits: { five_hour: { used_percentage: 10, resets_at: now + 3600 } } });
+    const q = (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas.filter((x) => x.tool === "opencode");
+    assert.deepEqual(q, []);
   });
 });

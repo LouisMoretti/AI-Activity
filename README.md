@@ -51,10 +51,11 @@ counts on that local day for every visitor: it never moves afterwards,
 even if you travel. "Today" and the streak end on the day it is at the
 offset of your latest entry. Entries sent before collectors had offsets
 count as UTC days; delete `~/.cache/ai-activity/offsets.json` (and
-`codex.json`) once to resend the history with offsets: nothing is counted
+`codex.json`, `opencode.json`) once to resend the history with offsets: nothing is counted
 twice, the server only adds the missing offsets.
 
-The tool is part of the URL (`/api/ingest/claude-code`, `/api/ingest/codex`);
+The tool is part of the URL (`/api/ingest/claude-code`, `/api/ingest/codex`,
+`/api/ingest/opencode`);
 a bare `/api/ingest` answers `404`. See `AGENTS.md` §5 for the payload contract.
 
 ## Send Codex usage from a device
@@ -104,4 +105,38 @@ What it does at the end of every turn:
 - `setsid -f` detaches the upload so the turn ends at once; `echo '{}'` is
   the (empty) JSON answer Codex expects from a hook. Runs wait for each
   other and give up after 15 minutes. The script is idempotent: it can
+  also run by hand or from cron.
+
+## Send OpenCode usage from a device
+
+1. Create a device key as above (the same key serves every tool).
+2. Copy `collectors/opencode.py` to `~/.config/opencode/ai-activity-opencode.py`
+   and replace `<server>` and `<device key>` at its top (or set
+   `AI_ACTIVITY_URL` / `AI_ACTIVITY_KEY` in the environment OpenCode runs in).
+3. Copy `collectors/opencode-plugin.js` to
+   `~/.config/opencode/plugins/ai-activity.js`. OpenCode loads it at start.
+
+What it does:
+
+- The plugin runs the collector, detached, when OpenCode starts and
+  whenever a session goes idle (one run at a time).
+- The collector reads OpenCode's own database
+  (`~/.local/share/opencode/opencode.db`, read-only) and sends **one entry
+  per assistant message** (keyed by its `msg_…` id) with its token counts,
+  provider and model (stored as `provider/model`) and the machine's UTC
+  offset at that time. It selects numeric fields only: prompts, replies,
+  tool output, titles and paths are never read.
+- Subagent sessions are sent as their root session, so a conversation
+  with subagents counts once.
+- OpenCode counts reasoning apart from output; it is added to output, like
+  OpenCode's own totals, never twice.
+- The first run sends the whole database: that is the import of past
+  sessions.
+- No 5-hour or weekly limit: OpenCode has none of its own, so the card
+  lists usage per provider instead.
+- How far the database was sent is kept in
+  `~/.cache/ai-activity/opencode.json` and only moves forward once the
+  server accepted a batch, so nothing is lost while the server is down (the
+  database is the queue). Delete that file to send everything again (safe:
+  the server stores each message once). The script is idempotent: it can
   also run by hand or from cron.
