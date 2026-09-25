@@ -20,20 +20,26 @@ export const MIGRATIONS: ((db: DB) => void)[] = [
  * collectors that had already advanced their offsets did not resend those
  * old messages after the fix, leaving a snapshot one or two seconds before
  * the first message to be counted alongside the exact transcript rows.
+ *
+ * Same rule as dropSnapshotRows (user + session, no tool), measured from the
+ * session's oldest stored message. The 120 s is SNAPSHOT_SLACK_SEC as of this
+ * migration, frozen on purpose. Each session's first message is computed once
+ * (a correlated subquery per snapshot row is quadratic and blocks startup).
  */
 function cleanupCoveredSnapshots(db: DB): void {
   db.exec(`
-    DELETE FROM usage_events AS snapshot
-    WHERE snapshot.source = 'snapshot'
-      AND snapshot.session_id IS NOT NULL
-      AND snapshot.occurred_at >= (
-        SELECT MIN(message.occurred_at) - 120
-        FROM usage_events AS message
-        WHERE message.user_id = snapshot.user_id
-          AND message.session_id = snapshot.session_id
-          AND message.tool = snapshot.tool
-          AND message.source = 'message'
-      )
+    DELETE FROM usage_events WHERE rowid IN (
+      SELECT snapshot.rowid
+      FROM usage_events AS snapshot
+      JOIN (
+        SELECT user_id, session_id, MIN(occurred_at) AS first_at
+        FROM usage_events
+        WHERE source = 'message'
+        GROUP BY user_id, session_id
+      ) AS message USING (user_id, session_id)
+      WHERE snapshot.source = 'snapshot'
+        AND snapshot.occurred_at >= message.first_at - 120
+    )
   `);
 }
 
