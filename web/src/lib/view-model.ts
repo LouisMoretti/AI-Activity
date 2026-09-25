@@ -36,6 +36,14 @@ export interface QuotaToolVM {
   windows: QuotaWindowVM[];
 }
 
+/** OpenCode has no quota of its own: its card lists usage per provider. */
+export interface OpenCodeVM {
+  tokens: number | null; // all time; null → no usage yet
+  today: number | null;
+  sessions: number | null;
+  providers: ShareRow[]; // all-time tokens per provider (the part of provider/model before the slash)
+}
+
 export interface SessionVM {
   tool: ToolKey;
   id: string;
@@ -56,6 +64,7 @@ export interface DashboardVM {
   tools: ToolKey[]; // cards to show for the current filter
   claude: QuotaToolVM;
   codex: QuotaToolVM;
+  opencode: OpenCodeVM;
   sessions: SessionVM[];
   sessionsTotal: number;
 }

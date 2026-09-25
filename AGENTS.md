@@ -6,9 +6,9 @@
 ## 1. What this is
 
 A personal, multi-device dashboard showing **real measured usage** of AI coding
-tools. Current scope: **Claude Code and Codex ingestion**. The OpenCode
-connector is inventoried but not implemented yet; the UI shows it as
-"Connector coming soon" instead of fake numbers.
+tools. Current scope: **Claude Code, Codex and OpenCode ingestion**.
+OpenCode has no quota of its own: its card shows tokens, conversations and
+the split by provider, and its limits as "Unavailable".
 
 Layout, top to bottom: token activity (centered year calendar, readout shows
 today unless a day is hovered), four stats (all-time tokens, today, sessions,
@@ -101,7 +101,8 @@ client; `test/dashboard.test.js` runs the client's state class
 browser and fetch; `test/live.test.js` covers the API → view-model mapping;
 `test/collector.test.js` runs the README collector and
 `test/codex-collector.test.js` runs `collectors/codex.py` through the
-README's Codex Stop hook.
+README's Codex Stop hook; `test/opencode-collector.test.js` runs
+`collectors/opencode.py` through its plugin on a fake OpenCode database.
 Types: `npm run typecheck` (tsc for server, svelte-check for web). Node >= 22.18 runs the TypeScript server directly
 (type stripping, no build step), so only erasable TS syntax is allowed (no
 `enum`, no parameter properties) and relative imports keep their `.ts`
@@ -111,7 +112,8 @@ extension.
 
 ```
 Claude Code statusLine one-liner    Codex Stop hook → collectors/codex.py
-(python3 via setsid, on the user's device; README.md)
+OpenCode plugin → collectors/opencode.py
+(python3, detached, on the user's device; README.md)
    │  HTTPS  Authorization: Bearer <device key> (never in the URL)
    ▼
 Node server (Hono + TypeScript, server/) + SQLite (better-sqlite3)
@@ -182,6 +184,15 @@ Components never branch on live vs demo: both sources map into the same
   only streams the threads it runs itself. Codex runs a new user hook only
   after it was trusted once (`/hooks`); until then the script can run by
   hand or from cron (idempotent).
+- The OpenCode collector (`collectors/opencode.py`, copied to
+  `~/.config/opencode/ai-activity-opencode.py`) reads OpenCode's SQLite
+  database read-only (`~/.local/share/opencode/opencode.db`), selecting
+  numeric fields only (never the `part` table, titles or paths). It sends
+  assistant messages changed since the last accepted `time_updated`
+  (`~/.cache/ai-activity/opencode.json`), so the database is the queue.
+  The plugin (`collectors/opencode-plugin.js` →
+  `~/.config/opencode/plugins/ai-activity.js`) runs it detached at
+  OpenCode start and on every `session.idle`, one run at a time.
 - Never transmit prompts, transcripts, or provider keys — metrics only.
 
 ## 4. Data model (SQLite, `data/dashboard.db`)
@@ -236,7 +247,7 @@ Counting rules:
 
 `POST /api/ingest/<tool>` with header `Authorization: Bearer <device key>`.
 The tool slug in the URL picks the payload normalizer
-(`server/lib/ingest.ts`, one entry per slug): `claude-code` and `codex`. There is no default: a bare `/api/ingest` and unknown slugs → `404`.
+(`server/lib/ingest.ts`, one entry per slug): `claude-code`, `codex` and `opencode`. There is no default: a bare `/api/ingest` and unknown slugs → `404`.
 Unknown or revoked keys → `401`. Small JSON bodies only (256 KB max).
 The payload's `tool` is optional; when present it must equal the slug
 (`400` otherwise).
@@ -351,6 +362,35 @@ Same batch shape (`messages`, `rate_limits`, `context`, `occurred_at`,
 - `occurred_at` of a batch is when Codex measured its rate limits (the
   `token_count` line), so a replayed backlog never overrides newer values.
 
+### OpenCode sources → payload mapping (`POST /api/ingest/opencode`)
+
+`{messages: [...]}`, one entry per assistant message of `opencode.db`
+(OpenCode 1.18 schema; `message.data` is JSON):
+
+| Database source | Payload field |
+| --- | --- |
+| `message.id` (`msg_…`) | `messages[].message_id` → stored as `opencode:<id>` |
+| `message.session_id`, walked up `session.parent_id` to the root | `messages[].session_id` |
+| `data.providerID` / `data.modelID` | `provider_id` / `model_id` → model `provider/model` |
+| `data.time.completed` (else `created`), ms | `occurred_at` (s) |
+| machine clock at that time | `messages[].utc_offset_min` |
+| `data.tokens.input` / `output` / `reasoning` / `cache.read` / `cache.write` / `total` | `usage.input_tokens` / `output_tokens` / `reasoning_tokens` / `cache_read_tokens` / `cache_write_tokens` / `total_tokens` |
+
+- The `opencode:` prefix is required: OpenCode ids look like Anthropic ids
+  (`msg_…`) and must never collide with them. Other ids store no usage.
+- OpenCode 1.18 counts reasoning apart from output (its `total` adds it):
+  stored output is `output + reasoning`. When `total` shows reasoning
+  already inside output (`total = input + output + cache`, reasoning ≤
+  output), it is not added twice. Input excludes the cache already.
+- Subagent (child) sessions are sent as their root session, so a
+  conversation counts once, like Claude Code subagents.
+- A message still being written is sent with its partial counts and
+  replaced by its final ones (more output tokens → `updated`).
+- No `rate_limits` are recorded, whatever the payload holds: OpenCode has
+  no 5-hour or weekly window. `cost` is never read. Billing mode per
+  session (BYOK vs OpenCode's own) is not recorded yet: it cannot be told
+  from the database (a zero cost is free, subscription or unknown price).
+
 ## 6. Viewer + device APIs
 
 Viewer (cookie session after `POST /api/auth/login {username, password}`;
@@ -444,9 +484,9 @@ account exists):
 
 ## 7. Testing checklist (acceptance criteria)
 
-1. Real Claude Code or Codex activity → new tokens and sessions appear, no
-   duplicates (Codex: after `codex exec`, or any turn once the hook is
-   trusted).
+1. Real Claude Code, Codex or OpenCode activity → new tokens and sessions
+   appear, no duplicates (Codex: after `codex exec`, or any turn once the
+   hook is trusted; OpenCode: once a session goes idle).
 2. Resend the same message ids (every status line refresh does) →
    `deduped`, totals unchanged; a partial then final entry counts once.
 3. Two devices, same account → quota cards show the current window's value,
@@ -518,6 +558,6 @@ dev server can read to `web/`, `shared/` and `node_modules/`, so `data/`
 
 - Codex: account-level usage from the App Server (`account/usage/read`)
   if it ever reports something the rollouts do not.
-- OpenCode connector (`opencode stats`, session/message DB, local server
-  events; record provider + billing mode per session; no 5h/weekly quota
-  unless the provider exposes one).
+- OpenCode: billing mode per session (BYOK vs OpenCode's own), once it
+  can be told apart without guessing; a quota only if a provider exposes
+  one.

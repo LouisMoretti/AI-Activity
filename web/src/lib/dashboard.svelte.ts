@@ -150,18 +150,19 @@ export class Dashboard {
   }
 
   private async loadProfile(username: string): Promise<void> {
-    const [profile, summary, activity, quotas, sessions] = await Promise.all([
+    const [profile, summary, activity, quotas, sessions, opencode] = await Promise.all([
       api.profile(username),
       // Every tool, always: there is no tool filter.
       api.summary(username, null),
       api.activity(username, ACTIVITY_DAYS, null),
       api.quotas(username),
       fetchSessions(username, this.sessionsLimit),
+      api.summary(username, "opencode"),
     ]);
     // Navigated elsewhere while this was in flight: its queued reload wins.
     if (this.route.page !== "profile" || this.route.username !== username) return;
     this.shown = profile;
-    this.live = { summary, activity, quotas, sessions };
+    this.live = { summary, activity, quotas, sessions, opencode };
     this.status = "ready";
   }
 

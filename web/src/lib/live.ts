@@ -6,7 +6,7 @@ import type {
 import { denseSeries, streaks } from "./series.ts";
 import {
   toolsFor, WINDOW_SPANS, type DashboardVM, type FigureVM, type Provider,
-  type QuotaToolVM, type SessionVM, type ToolKey,
+  type OpenCodeVM, type QuotaToolVM, type SessionVM, type ToolKey,
 } from "./view-model.ts";
 
 export interface LiveData {
@@ -14,6 +14,8 @@ export interface LiveData {
   activity: ActivityResponse;
   quotas: QuotasResponse;
   sessions: SessionsResponse;
+  /** summary?tool=opencode: its models are stored as provider/model. */
+  opencode: SummaryResponse;
 }
 
 export const ACTIVITY_DAYS = 364;
@@ -40,6 +42,21 @@ function toolQuotas(q: QuotasResponse, tool: QuotaToolVM["tool"]): QuotaToolVM {
       { label: "5-hour window", pct: five?.used_pct ?? null, resetsAt: five?.resets_at ?? null, spanSec: WINDOW_SPANS.five_hour },
       { label: "This week", pct: week?.used_pct ?? null, resetsAt: week?.resets_at ?? null, spanSec: WINDOW_SPANS.seven_day },
     ],
+  };
+}
+
+function openCode(s: SummaryResponse): OpenCodeVM {
+  const providers = new Map<string, number>();
+  for (const m of s.total.by_model) {
+    const name = m.name.includes("/") ? m.name.slice(0, m.name.indexOf("/")) : m.name;
+    providers.set(name, (providers.get(name) ?? 0) + m.tokens);
+  }
+  const has = s.total.events > 0;
+  return {
+    tokens: has ? s.total.tokens : null,
+    today: has ? s.today.tokens : null,
+    sessions: has ? s.total.sessions : null,
+    providers: [...providers].map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value),
   };
 }
 
@@ -72,6 +89,7 @@ export function liveDashboard(d: LiveData, provider: Provider): DashboardVM {
     tools: toolsFor(provider),
     claude: toolQuotas(d.quotas, "claude-code"),
     codex: toolQuotas(d.quotas, "codex"),
+    opencode: openCode(d.opencode),
     sessions,
     sessionsTotal: d.sessions.total,
   };

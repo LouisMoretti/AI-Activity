@@ -288,6 +288,65 @@ function normalizeCodex(body: unknown): NormalizedBatch {
   return { tool: "codex", messages, quotas, account_ref: accountRef(src), measured_at: measuredAt, context, single };
 }
 
+/** OpenCode message ids (msg_…), stored with a prefix: they look like Anthropic ids. */
+const OPENCODE_ID = /^msg_[A-Za-z0-9_-]{1,200}$/;
+
+/**
+ * One OpenCode assistant message, read from OpenCode's local database.
+ * OpenCode 1.18 counts reasoning apart from output (its total adds it), so
+ * it is added to output; when a total shows it already inside output (as
+ * OpenAI counts it), it is not added twice. Input already excludes the cache.
+ */
+function toOpenCodeMessage(m: Obj, now: number): NormalizedMessage | null {
+  const raw = m.message_id ?? m.event_id;
+  if (typeof raw !== "string" || !OPENCODE_ID.test(raw)) return null;
+  const u: Obj = isObj(m.usage) ? m.usage : {};
+  const input = toInt(u.input_tokens);
+  const output = toInt(u.output_tokens);
+  const reasoning = toInt(u.reasoning_tokens);
+  const cacheRead = toInt(u.cache_read_tokens);
+  const cacheWrite = toInt(u.cache_write_tokens);
+  const total = optNum(u.total_tokens);
+  const inOutput = reasoning > 0 && reasoning <= output && total === input + output + cacheRead + cacheWrite;
+  const provider = str(m.provider_id);
+  const model = str(m.model_id);
+  return {
+    event_id: `opencode:${raw}`,
+    session_id: str(m.session_id),
+    prompt_id: null,
+    model: model ? (provider ? `${provider}/${model}` : model) : null,
+    input_tokens: input,
+    output_tokens: inOutput ? output : output + reasoning,
+    cache_read_tokens: cacheRead,
+    cache_write_tokens: cacheWrite,
+    context_window_size: null,
+    context_used_pct: null,
+    occurred_at: eventTime(m.occurred_at, now),
+    utc_offset_min: utcOffset(m.utc_offset_min),
+  };
+}
+
+/**
+ * Normalize an OpenCode payload (POST /api/ingest/opencode): { messages: [...] }
+ * read from OpenCode's local database (~/.local/share/opencode/opencode.db).
+ * OpenCode is multi-provider and has no 5-hour or weekly limit of its own,
+ * so no quota is recorded; the model is stored as provider/model.
+ */
+function normalizeOpenCode(body: unknown): NormalizedBatch {
+  const src: Obj = isObj(body) ? body : {};
+  const now = nowSec();
+  const single = !Array.isArray(src.messages);
+  const messages: NormalizedMessage[] = [];
+  for (const m of single ? [src] : src.messages as unknown[]) {
+    const msg = isObj(m) && isObj(m.usage) ? toOpenCodeMessage(m, now) : null;
+    if (msg) messages.push(msg);
+  }
+  return {
+    tool: "opencode", messages, quotas: [], account_ref: accountRef(src),
+    measured_at: eventTime(src.occurred_at, now), context: null, single,
+  };
+}
+
 /**
  * One normalizer per tool slug, picked by the ingest URL
  * (/api/ingest/<slug>). A tool is ingestable once it has an entry here.
@@ -295,6 +354,7 @@ function normalizeCodex(body: unknown): NormalizedBatch {
 const normalizers = new Map<string, (body: unknown) => NormalizedBatch>([
   ["claude-code", normalizeClaudeCode],
   ["codex", normalizeCodex],
+  ["opencode", normalizeOpenCode],
 ]);
 
 export function normalizerFor(tool: string): ((body: unknown) => NormalizedBatch) | null {
