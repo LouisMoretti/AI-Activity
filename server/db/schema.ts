@@ -116,6 +116,10 @@ function migrate(db: DB): void {
       created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_viewer_sessions_user ON viewer_sessions(user_id);
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `);
 
   // Ensure at least one user exists: before any account is set up, every

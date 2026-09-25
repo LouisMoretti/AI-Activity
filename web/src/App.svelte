@@ -45,7 +45,7 @@
 
   <main>
     {#if dash.status === "signed-out"}
-      <AuthPanel onlogin={(u, p) => dash.login(u, p)} oncreate={(a, c) => dash.createAccount(a, c)} />
+      <AuthPanel signupOpen={dash.signupOpen} onlogin={(u, p) => dash.login(u, p)} oncreate={(a, c) => dash.createAccount(a, c)} />
     {:else if dash.status === "setup"}
       <NewAccountForm withSetupCode title="Create the first account"
         intro="No account exists yet. The setup code is printed in the server log. This account becomes the admin and keeps the data collected so far."

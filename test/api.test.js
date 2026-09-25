@@ -251,7 +251,7 @@ describe("locked server (first account made from the CLI)", () => {
     assert.equal((await req(srv.base, "POST", "/api/devices", { body: { name: "x" } })).status, 401);
     assert.equal((await req(srv.base, "POST", "/api/ingest", { body: event(), key: "ak_nope" })).status, 401);
     const st = (await req(srv.base, "GET", "/api/auth/status")).json;
-    assert.deepEqual(st, { authenticated: false, user: null, setup_required: false });
+    assert.deepEqual(st, { authenticated: false, user: null, setup_required: false, signup_open: true });
   });
 
   test("login / logout cycle", async () => {
@@ -304,7 +304,7 @@ describe("accounts", () => {
     const srv = await startServer({ autoLogin: false });
     try {
       assert.deepEqual((await req(srv.base, "GET", "/api/auth/status")).json,
-        { authenticated: false, user: null, setup_required: true });
+        { authenticated: false, user: null, setup_required: true, signup_open: true });
       for (const p of ["/api/devices", "/api/users", "/api/admin/overview"]) {
         assert.equal((await req(srv.base, "GET", p)).status, 401, p);
       }
@@ -321,7 +321,7 @@ describe("accounts", () => {
       const cookie = await login(srv.base, "louis", "correct horse");
       const st = (await req(srv.base, "GET", "/api/auth/status", { cookie })).json;
       assert.deepEqual(st, {
-        authenticated: true, setup_required: false,
+        authenticated: true, setup_required: false, signup_open: true,
         user: { id: 1, username: "louis", display_name: "Louis", avatar_url: null, is_admin: true },
       });
       assert.equal((await req(srv.base, "GET", "/api/u/louis/stats?days=730", { cookie })).json.events, 1);
@@ -580,8 +580,27 @@ describe("open sign-up and admin panel", () => {
       const me = (await req(srv.base, "GET", "/api/auth/status", { cookie })).json.user;
       assert.deepEqual(me, { id: me.id, username: "neo", display_name: "Neo", avatar_url: null, is_admin: false });
       assert.equal((await req(srv.base, "GET", "/api/admin/overview", { cookie })).status, 403);
-      // Sign-up cannot be closed: the setting and its route are gone.
-      assert.equal((await req(srv.base, "POST", "/api/admin/settings", { body: { signup_open: false } })).status, 404);
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  test("an admin closes and reopens account creation", async () => {
+    const srv = await startServer();
+    try {
+      const neo = (await register(srv.base, { username: "neo", password: "neo-password" })).cookie;
+      const settings = (body, cookie) => req(srv.base, "POST", "/api/admin/settings", { body, cookie });
+      assert.equal((await req(srv.base, "GET", "/api/admin/settings", { cookie: neo })).status, 403);
+      assert.equal((await settings({ signup_open: false }, neo)).status, 403);
+      assert.equal((await settings({ signup_open: "no" })).status, 400);
+      assert.deepEqual((await settings({ signup_open: false })).json, { signup_open: false });
+      assert.equal((await req(srv.base, "GET", "/api/auth/status", { anon: true })).json.signup_open, false);
+      assert.equal((await register(srv.base, { username: "trinity", password: "trinity-password" })).status, 403);
+      // Existing accounts still sign in, and the CLI still creates accounts.
+      await login(srv.base, "neo", "neo-password");
+      assert.equal((await userCli(srv.dbPath, ["add", "morpheus"], "morpheus-password")).code, 0);
+      assert.deepEqual((await settings({ signup_open: true })).json, { signup_open: true });
+      assert.equal((await register(srv.base, { username: "trinity", password: "trinity-password" })).status, 200);
     } finally {
       await srv.stop();
     }

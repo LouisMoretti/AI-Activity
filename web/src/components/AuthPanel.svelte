@@ -3,7 +3,9 @@
   import NewAccountForm from "./NewAccountForm.svelte";
   import Segmented from "./Segmented.svelte";
 
-  let { onlogin, oncreate }: {
+  let { signupOpen, onlogin, oncreate }: {
+    /** An admin allows creating accounts from here. */
+    signupOpen: boolean;
     onlogin: (username: string, password: string) => Promise<string | null>;
     oncreate: (a: NewAccount, setupCode: string | null) => Promise<string | null>;
   } = $props();
@@ -25,12 +27,14 @@
 
 <div class="card">
   <div class="head">
-    <h2>{tab === "signin" ? "Welcome back" : "Create your account"}</h2>
-    <Segmented label="Sign in or create an account" value={tab} onchange={(t) => (tab = t)}
-      options={[{ value: "signin", label: "Sign in" }, { value: "signup", label: "Create account" }]} />
+    <h2>{tab === "signin" || !signupOpen ? "Welcome back" : "Create your account"}</h2>
+    {#if signupOpen}
+      <Segmented label="Sign in or create an account" value={tab} onchange={(t) => (tab = t)}
+        options={[{ value: "signin", label: "Sign in" }, { value: "signup", label: "Create account" }]} />
+    {/if}
   </div>
 
-  {#if tab === "signin"}
+  {#if tab === "signin" || !signupOpen}
     <form onsubmit={submit}>
       <label>Username
         <input autocomplete="username" autocapitalize="none" spellcheck="false" required bind:value={username} />
@@ -40,6 +44,7 @@
       </label>
       <button type="submit" disabled={busy}>Sign in</button>
       {#if error}<p class="error" role="alert">{error}</p>{/if}
+      {#if !signupOpen}<p class="muted">Account creation is closed on this server.</p>{/if}
     </form>
   {:else}
     <NewAccountForm framed={false} submitLabel="Create account" {oncreate}
@@ -57,4 +62,5 @@
   button[type="submit"] { justify-self: start; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 7px 14px; color: var(--text); background: var(--surface-2); }
   button:disabled { opacity: .5; cursor: default; }
   .error { color: var(--warn); font-size: 13px; }
+  .muted { color: var(--muted); font-size: 13px; }
 </style>

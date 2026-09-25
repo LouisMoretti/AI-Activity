@@ -1,8 +1,8 @@
 import { Hono, type MiddlewareHandler } from "hono";
-import type { Account, AdminOverview, AdminUser } from "../../shared/types.ts";
+import type { Account, AdminOverview, AdminSettings, AdminUser } from "../../shared/types.ts";
 import {
   adminOverview, deleteUserSessions, getUser, listAdminUsers, setAvatarUrl, setDisplayName, setPasswordHash, setUserAdmin,
-  setUserDisabled, toAccount,
+  setSignupOpen, setUserDisabled, signupOpen, toAccount,
 } from "../db/queries.ts";
 import type { DB } from "../db/schema.ts";
 import { parseAvatarUrl } from "../lib/avatar.ts";
@@ -100,9 +100,16 @@ export function userRoutes(db: DB) {
     });
 }
 
-/** Admin panel: server-wide overview. */
+/** Admin panel: server-wide overview and settings. */
 export function adminRoutes(db: DB) {
   return new Hono<ViewerEnv>()
     .use(requireAdmin)
-    .get("/overview", (c) => c.json<AdminOverview>(adminOverview(db)));
+    .get("/overview", (c) => c.json<AdminOverview>(adminOverview(db)))
+    .get("/settings", (c) => c.json<AdminSettings>({ signup_open: signupOpen(db) }))
+    .post("/settings", async (c) => {
+      const body = await readJson(c);
+      if (typeof body.signup_open !== "boolean") return c.json({ error: "signup_open must be true or false" }, 400);
+      setSignupOpen(db, body.signup_open);
+      return c.json<AdminSettings>({ signup_open: signupOpen(db) });
+    });
 }

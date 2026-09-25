@@ -20,8 +20,8 @@ purpose). Only demo data carries a badge ("Demonstration data"). Palette: the
 original dark theme; type: Geist, with Geist Mono only for ids and model
 names. Quota bars carry a mark for how far into the window we are.
 
-**Pages:** `/` has two tabs, Sign in and Create account (sign-up is always
-open; or first-account setup while none exists); once signed
+**Pages:** `/` has two tabs, Sign in and Create account (sign-up is open
+unless an admin closed it; or first-account setup while none exists); once signed
 in it redirects to `/u/<you>`, so the address bar is the shareable link.
 `/u/<username>` is **public and read-only**, no account needed: activity,
 stats, tools/quotas and conversations.
@@ -36,8 +36,8 @@ passes the breadcrumb); site chrome (a
 future footer too) is rendered once in `App.svelte`, outside the pages.
 Clicking the avatar opens Your profile / Leaderboard / Settings / Admin
 panel (admins) / Sign out. `/settings` (signed in) holds Account and Devices; `/admin`
-(admins) holds the server overview and the users (make or remove admin,
-reset password, disable). The demo (`?demo=1`) needs a sign-in and only replaces your own
+(admins) holds the server overview, the account-creation switch and the
+users (make or remove admin, reset password, disable). The demo (`?demo=1`) needs a sign-in and only replaces your own
 page.
 
 **Hard rule:** the old demo dataset was fictional and deterministic. It is only
@@ -58,10 +58,11 @@ Viewer accounts. Nothing is viewable until the first one exists; that first
 account is an admin and owns the data collected so far (collectors keep
 posting with `gen-key` keys meanwhile). Create it in the browser with the
 one-time **setup code** the server prints at start (new on every start, only
-while no account exists), or from the CLI. After that, sign-up is free:
+while no account exists), or from the CLI. After that, sign-up is open:
 anyone creates their own account from the sign-in page (5 accounts per
-client per hour). There are no invite links and no accounts created from
-the admin panel (the server CLI `npm run user -- add` still works).
+client per hour), until an admin turns account creation off in the admin
+panel. There are no invite links and no accounts created from the admin
+panel (the server CLI `npm run user -- add` always works).
 
 ```bash
 npm run user -- add louis --name "Louis"   # password prompt (or piped stdin)
@@ -162,8 +163,10 @@ Components never branch on live vs demo: both sources map into the same
 ## 4. Data model (SQLite, `data/dashboard.db`)
 
 - `users` — viewer accounts (`username` unique, case-insensitive;
-  `password_hash`, `is_admin`, `disabled`, `avatar_url`). Every other table carries
+  `password_hash`, `is_admin`, `disabled`, `avatar_url`). Device, usage, quota and session tables carry
   `user_id`. `viewer_sessions` holds hashed session tokens with expiry.
+- `settings` — server-wide key/value settings set from the admin panel
+  (`signup_open`: `0` closes account creation; absent means open).
 
 - `usage_events` — one row per **incremental** consumption event: tokens
   consumed since the last event, model, session/task id, device, date.
@@ -284,16 +287,17 @@ Viewer (cookie session after `POST /api/auth/login {username, password}`;
 every viewer API answers `401` without one, including before the first
 account exists):
 
-- `GET /api/auth/status` → `{authenticated, user, setup_required}` (`user` is
-  `{id, username, display_name, is_admin}` or null; `setup_required` while no
-  account exists), `POST /api/auth/logout`
+- `GET /api/auth/status` → `{authenticated, user, setup_required, signup_open}`
+  (`user` is `{id, username, display_name, avatar_url, is_admin}` or null;
+  `setup_required` while no account exists), `POST /api/auth/logout`
 - `POST /api/auth/setup {setup_code, username, password, display_name}`:
   first account only (`409` once one exists), throttled like a login; the
   code ignores case, spaces and dashes. Signs in.
 - `POST /api/auth/register {username, password, display_name}`: open
-  sign-up, always available once the first account exists; non-admin
-  account, signs in. `409` before the first account exists or if the
-  username is taken, `429` after 5 accounts from one client in an hour.
+  sign-up once the first account exists; non-admin account, signs in.
+  `403` while an admin has closed account creation, `409` before the first
+  account exists or if the username is taken, `429` after 5 accounts from
+  one client in an hour.
 - `GET /api/profiles` → enabled accounts `{username, display_name}`,
   **no session needed** (the public leaderboard lists them too).
 - Public profile pages, **no session needed**: `GET /api/u/:username` →
@@ -328,6 +332,9 @@ account exists):
   themselves, so one enabled admin remains.
 - Admin panel (admin only): `GET /api/admin/overview` → server-wide counts
   (accounts, disabled, live devices, events, sessions, last event).
+  `GET /api/admin/settings` → `{signup_open}`, `POST /api/admin/settings
+  {signup_open}` opens or closes account creation (stored in `settings`;
+  open by default). Closing it never affects existing accounts or the CLI.
 - `GET /api/leaderboard?days=30|all`, **no session needed** → every enabled
   account, ranked by tokens in the period (`tokens`, `sessions`, `events`,
   `active_days`, `top_model`, `last_active` (null when idle),
@@ -359,7 +366,8 @@ account exists):
    never does.
 8. `/` signed out: sign-in (or first-account) screen; signed in: redirect
    to `/u/<you>`. `/settings` and `/admin` signed out: sign-in, then back.
-   Create account works for anyone (after the first account).
+   Create account works for anyone (after the first account) until an
+   admin closes it; then the tab is hidden and `register` answers `403`.
 9. `/u/<name>` opens without an account and shows usage only: no devices
    or account sections, for visitors and other accounts alike.
 10. `/leaderboard` opens without an account and lists every enabled

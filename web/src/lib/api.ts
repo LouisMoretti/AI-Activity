@@ -1,6 +1,6 @@
 // Typed client for the dashboard JSON API (same origin, cookie session).
 import type {
-  Account, ActivityResponse, AdminOverview, AdminUser, AuthStatus, LeaderboardResponse, Profile, Device, QuotasResponse,
+  Account, ActivityResponse, AdminOverview, AdminSettings, AdminUser, AuthStatus, LeaderboardResponse, Profile, Device, QuotasResponse,
   SessionsResponse, SummaryResponse,
 } from "../../../shared/types.ts";
 
@@ -53,6 +53,8 @@ export const api = {
   /** Sign-up from the sign-in page (open to anyone); signs in. */
   register: (a: NewAccount) => post<{ ok: true }>("/api/auth/register", a),
   adminOverview: () => get<AdminOverview>("/api/admin/overview"),
+  adminSettings: () => get<AdminSettings>("/api/admin/settings"),
+  setSignupOpen: (signup_open: boolean) => post<AdminSettings>("/api/admin/settings", { signup_open }),
   updateProfile: (fields: { display_name?: string; avatar_url?: string }) => post<{ user: Account }>("/api/account", fields),
   changePassword: (current_password: string, new_password: string) =>
     post<{ ok: true }>("/api/account/password", { current_password, new_password }),
