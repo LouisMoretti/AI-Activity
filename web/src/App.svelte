@@ -19,7 +19,7 @@
   const dash = new Dashboard();
   // Breadcrumb after "AI Activity" in the header: where you are.
   const crumb = $derived(
-    dash.route.page === "profile" ? (dash.shown ? { label: `@${dash.shown.username}`, mono: true } : null)
+    dash.route.page === "profile" ? (dash.shown ? { label: `@${dash.shown.username}`, mono: true, picture: { name: dash.shown.display_name, url: dash.shown.avatar_url } } : null)
     : dash.route.page === "leaderboard" ? { label: "Leaderboard" }
     : dash.route.page === "settings" && dash.account ? { label: "Settings" }
     : dash.route.page === "admin" && dash.account ? { label: "Admin panel" }

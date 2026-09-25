@@ -95,6 +95,7 @@ function migrate(db: DB): void {
     ["password_hash", "TEXT"],
     ["is_admin", "INTEGER NOT NULL DEFAULT 0"],
     ["disabled", "INTEGER NOT NULL DEFAULT 0"],
+    ["avatar_url", "TEXT"],
   ]) {
     if (!userCols.has(col)) db.exec(`ALTER TABLE users ADD COLUMN ${col} ${type}`);
   }

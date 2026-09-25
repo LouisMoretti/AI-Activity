@@ -61,6 +61,7 @@ export interface UserRow {
   id: number;
   username: string | null;
   display_name: string | null;
+  avatar_url: string | null;
   password_hash: string | null;
   is_admin: number;
   disabled: number;
@@ -71,8 +72,14 @@ export function toAccount(u: UserRow): Account {
     id: u.id,
     username: u.username ?? "",
     display_name: u.display_name || u.username || "",
+    avatar_url: u.avatar_url,
     is_admin: Boolean(u.is_admin),
   };
+}
+
+export function toProfile(u: UserRow): Profile {
+  const { username, display_name, avatar_url } = toAccount(u);
+  return { username, display_name, avatar_url };
 }
 
 /** True once at least one account can log in; before that nothing is viewable (setup). */
@@ -93,7 +100,7 @@ export function listUsers(db: DB): UserRow[] {
 export function listProfiles(db: DB): Profile[] {
   return (db
     .prepare("SELECT * FROM users WHERE password_hash IS NOT NULL AND disabled = 0 ORDER BY username COLLATE NOCASE")
-    .all() as UserRow[]).map((u) => ({ username: u.username ?? "", display_name: toAccount(u).display_name }));
+    .all() as UserRow[]).map(toProfile);
 }
 
 export function getUser(db: DB, id: number): UserRow | null {
@@ -113,6 +120,10 @@ export function listAdminUsers(db: DB): AdminUser[] {
 
 export function setDisplayName(db: DB, userId: number, name: string | null): void {
   db.prepare("UPDATE users SET display_name = ? WHERE id = ?").run(name, userId);
+}
+
+export function setAvatarUrl(db: DB, userId: number, url: string | null): void {
+  db.prepare("UPDATE users SET avatar_url = ? WHERE id = ?").run(url, userId);
 }
 
 export function setUserAdmin(db: DB, userId: number, isAdmin: boolean): void {
@@ -452,7 +463,7 @@ export function leaderboard(
   // Every enabled account, used or not: idle ones rank last with zeros.
   const rows = db
     .prepare(
-      `SELECT u.id, u.username, u.display_name,
+      `SELECT u.id, u.username, u.display_name, u.avatar_url,
               COALESCE(SUM(${TOKENS}), 0) AS tokens,
               COUNT(DISTINCT e.session_id) AS sessions,
               COUNT(e.event_id) AS events,
@@ -463,8 +474,8 @@ export function leaderboard(
        GROUP BY u.id
        ORDER BY tokens DESC, u.username COLLATE NOCASE`
     )
-    .all(sinceSec) as (Omit<LeaderboardEntry, "top_model" | "current_streak" | "display_name"> &
-      { id: number; display_name: string | null })[];
+    .all(sinceSec) as (Omit<LeaderboardEntry, "top_model" | "current_streak" | "display_name" | "avatar_url"> &
+      { id: number; display_name: string | null; avatar_url: string | null })[];
 
   const topModels = new Map(
     (db
@@ -513,8 +524,9 @@ export function leaderboard(
   return {
     accounts: rows.length,
     totals: { ...totals, tokens: Number(totals.tokens), active_accounts: rows.filter((r) => r.events > 0).length },
-    entries: rows.map(({ id, display_name, ...r }) => ({
+    entries: rows.map(({ id, display_name, avatar_url, ...r }) => ({
       ...r,
+      avatar_url,
       tokens: Number(r.tokens),
       username: r.username ?? "",
       display_name: display_name || r.username || "",

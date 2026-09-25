@@ -7,6 +7,7 @@
   import { ACTIVITY_DAYS } from "../lib/live.ts";
   import { denseSeries } from "../lib/series.ts";
   import ActivityChart from "./ActivityChart.svelte";
+  import Avatar from "./Avatar.svelte";
   import Section from "./Section.svelte";
   import Segmented from "./Segmented.svelte";
 
@@ -82,7 +83,7 @@
         <li class:me={same(e.username, self)} class:idle={!e.events}>
           <span class="rank" class:medal={i < 3 && e.tokens > 0} aria-label="Rank {i + 1}">{medal(i, e.tokens)}</span>
           <a class="who" href={profilePath(e.username)} onclick={(ev) => { ev.preventDefault(); onopen(e.username); }}>
-            <span class="avatar" aria-hidden="true">{e.display_name.slice(0, 1).toUpperCase()}</span>
+            <Avatar name={e.display_name} url={e.avatar_url} size={32} />
             <span class="names">
               <strong>{e.display_name}{same(e.username, self) ? " (you)" : ""}</strong>
               <small class="mono">@{e.username}</small>
@@ -156,7 +157,6 @@
   .rank.medal { font-size: 18px; }
   .who { display: flex; align-items: center; gap: 10px; min-width: 0; color: inherit; text-decoration: none; }
   .who:hover strong { text-decoration: underline; }
-  .avatar { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; flex: none; background: var(--raised); border: 1px solid var(--line); font-size: 14px; font-weight: 500; }
   .names { min-width: 0; }
   .names strong { display: block; font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .names small { display: block; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }

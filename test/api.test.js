@@ -262,7 +262,7 @@ describe("locked server (DASHBOARD_PASSWORD bootstraps an admin account)", () =>
     assert.match(ok.headers.get("set-cookie"), /HttpOnly/);
     assert.equal((await req(srv.base, "GET", "/api/stats", { cookie })).status, 200);
     const me = (await req(srv.base, "GET", "/api/auth/status", { cookie })).json;
-    assert.deepEqual(me.user, { id: 1, username: "admin", display_name: "admin", is_admin: true });
+    assert.deepEqual(me.user, { id: 1, username: "admin", display_name: "admin", avatar_url: null, is_admin: true });
     const d = await newDevice(srv.base, "locked-dev", cookie);
     assert.equal((await req(srv.base, "POST", "/api/ingest", { body: event(), key: d.key })).json.stored, true);
     await req(srv.base, "POST", "/api/auth/logout", { cookie });
@@ -317,7 +317,7 @@ describe("accounts", () => {
       const st = (await req(srv.base, "GET", "/api/auth/status", { cookie })).json;
       assert.deepEqual(st, {
         authenticated: true, setup_required: false,
-        user: { id: 1, username: "louis", display_name: "Louis", is_admin: true },
+        user: { id: 1, username: "louis", display_name: "Louis", avatar_url: null, is_admin: true },
       });
       assert.equal((await req(srv.base, "GET", "/api/stats?days=730", { cookie })).json.events, 1);
       assert.equal((await req(srv.base, "POST", "/api/ingest", { key, body: event() })).json.stored, true);
@@ -425,7 +425,7 @@ describe("profiles and user management", () => {
   test("admins list accounts; others cannot", async () => {
     const carol = (await register(srv.base, { username: "carol", password: "carol-pass", display_name: " Carol " })).cookie;
     const me = (await req(srv.base, "GET", "/api/auth/status", { cookie: carol })).json.user;
-    assert.deepEqual(me, { id: me.id, username: "carol", display_name: "Carol", is_admin: false });
+    assert.deepEqual(me, { id: me.id, username: "carol", display_name: "Carol", avatar_url: null, is_admin: false });
     assert.equal((await req(srv.base, "GET", "/api/users", { cookie: carol })).status, 403);
     assert.equal((await req(srv.base, "GET", "/api/admin/overview", { cookie: carol })).status, 403);
     // Accounts are only created by signing up: there is no admin creation route.
@@ -438,6 +438,32 @@ describe("profiles and user management", () => {
     const r = await post("/api/account", { display_name: "Louis M." }, admin);
     assert.equal(r.json.user.display_name, "Louis M.");
     assert.equal((await post("/api/account", { display_name: "  " }, admin)).json.user.display_name, "admin");
+  });
+
+  test("profile picture: only https links to allowed image hosts, public everywhere", async () => {
+    const pic = "https://avatars.githubusercontent.com/u/12345?v=4";
+    const r = await post("/api/account", { avatar_url: ` ${pic} ` }, admin);
+    assert.equal(r.json.user.avatar_url, pic);
+    // Changing only the picture keeps the display name, and the other way round.
+    assert.equal(r.json.user.display_name, "admin");
+    assert.equal((await post("/api/account", { display_name: "Admin" }, admin)).json.user.avatar_url, pic);
+    for (const ok of ["https://github.com/octocat.png", "https://www.gravatar.com/avatar/" + "a".repeat(32) + "?s=200",
+      "https://i.imgur.com/abc1234.jpg"]) {
+      assert.equal((await post("/api/account", { avatar_url: ok }, admin)).status, 200, ok);
+    }
+    for (const bad of ["http://github.com/octocat.png", "https://evil.example/x.png", "https://github.com/octocat",
+      "https://user:pw@i.imgur.com/abc1234.jpg", "https://i.imgur.com:8443/abc1234.jpg", "javascript:alert(1)",
+      "https://github.com.evil.example/a.png", "https://gist.github.com/x.png", 42, "https://i.imgur.com/" + "a".repeat(600)]) {
+      assert.equal((await post("/api/account", { avatar_url: bad }, admin)).status, 400, String(bad));
+    }
+    await post("/api/account", { avatar_url: pic }, admin);
+    const anon = { anon: true };
+    assert.equal((await req(srv.base, "GET", "/api/u/admin", anon)).json.avatar_url, pic);
+    const board = (await req(srv.base, "GET", "/api/leaderboard?days=30", anon)).json;
+    assert.equal(board.entries.find((e) => e.username === "admin").avatar_url, pic);
+    // Empty clears it.
+    assert.equal((await post("/api/account", { avatar_url: "" }, admin)).json.user.avatar_url, null);
+    await post("/api/account", { display_name: "" }, admin);
   });
 
   test("password change needs the current one and signs out other sessions", async () => {
@@ -516,7 +542,7 @@ describe("creating accounts from the site", () => {
       assert.equal(ok.status, 200);
       const cookie = ok.headers.get("set-cookie").split(";")[0];
       const st = (await req(srv.base, "GET", "/api/auth/status", { cookie })).json;
-      assert.deepEqual(st.user, { id: 1, username: "louis", display_name: "Louis", is_admin: true });
+      assert.deepEqual(st.user, { id: 1, username: "louis", display_name: "Louis", avatar_url: null, is_admin: true });
       assert.equal((await req(srv.base, "GET", "/api/stats?days=730", { cookie })).json.events, 1);
       assert.equal((await setup({ ...me, username: "second", setup_code: code })).status, 409);
     } finally {
@@ -547,7 +573,7 @@ describe("open sign-up and admin panel", () => {
       assert.equal(r.status, 200);
       const cookie = r.cookie;
       const me = (await req(srv.base, "GET", "/api/auth/status", { cookie })).json.user;
-      assert.deepEqual(me, { id: me.id, username: "neo", display_name: "Neo", is_admin: false });
+      assert.deepEqual(me, { id: me.id, username: "neo", display_name: "Neo", avatar_url: null, is_admin: false });
       assert.equal((await req(srv.base, "GET", "/api/admin/overview", { cookie })).status, 403);
       // Sign-up cannot be closed: the setting and its route are gone.
       assert.equal((await req(srv.base, "POST", "/api/admin/settings", { body: { signup_open: false } })).status, 404);
@@ -618,7 +644,7 @@ describe("public profile pages", () => {
       // Signed out, and signed in as someone else: same public view.
       for (const cookie of [undefined, bob]) {
         const get = (p) => req(srv.base, "GET", p, cookie ? { cookie } : { anon: true });
-        assert.deepEqual((await get("/api/u/admin")).json, { username: "admin", display_name: "admin" });
+        assert.deepEqual((await get("/api/u/admin")).json, { username: "admin", display_name: "admin", avatar_url: null });
         assert.equal((await get("/api/u/ADMIN/stats?days=730")).json.events, 1);
         assert.equal((await get("/api/u/admin/summary")).json.total.sessions, 1);
         assert.equal((await get("/api/u/admin/activity")).json.days.length, 1);
@@ -637,7 +663,7 @@ describe("public profile pages", () => {
       assert.equal((await mine("/api/stats?days=730&user=admin")).json.events, 0);
       assert.deepEqual((await mine("/api/devices")).json.devices, []);
       // The account list is public, like the leaderboard (disabled ones hidden).
-      const listed = [{ username: "admin", display_name: "admin" }, { username: "bob", display_name: "Bob" }];
+      const listed = [{ username: "admin", display_name: "admin", avatar_url: null }, { username: "bob", display_name: "Bob", avatar_url: null }];
       assert.deepEqual((await mine("/api/profiles")).json.profiles, listed);
       assert.deepEqual((await req(srv.base, "GET", "/api/profiles", { anon: true })).json.profiles, listed);
       assert.equal((await req(srv.base, "GET", "/api/stats", { anon: true })).status, 401);
@@ -678,7 +704,7 @@ describe("leaderboard", () => {
       // Idle accounts are listed too, last, with zeros.
       assert.deepEqual(month.entries.map((e) => [e.username, e.tokens]), [["bob", 360], ["admin", 180], ["idle", 0]]);
       assert.deepEqual(month.entries[2], {
-        username: "idle", display_name: "idle", tokens: 0, sessions: 0, events: 0, active_days: 0,
+        username: "idle", display_name: "idle", avatar_url: null, tokens: 0, sessions: 0, events: 0, active_days: 0,
         top_model: null, last_active: null, current_streak: 0,
       });
       const b = month.entries[0];

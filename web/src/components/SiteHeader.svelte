@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Account } from "../../../shared/types.ts";
   import AccountMenu from "./AccountMenu.svelte";
+  import Avatar from "./Avatar.svelte";
   import Logo from "./Logo.svelte";
 
   // Same header on every page: it never reads the route itself, the page
@@ -8,7 +9,7 @@
   let { account, demo, crumb, signIn, onnavigate, onlogout }: {
     account: Account | null;
     /** Current page, shown as "AI Activity / <label>". */
-    crumb: { label: string; mono?: boolean } | null;
+    crumb: { label: string; mono?: boolean; picture?: { name: string; url: string | null } } | null;
     /** Fictional data on screen: always labeled. */
     demo: boolean;
     /** Show "Sign in" when signed out (off on the sign-in screen itself). */
@@ -21,7 +22,7 @@
 <header class="top">
   <div class="left">
     <a class="brand" href="/" onclick={(e) => { e.preventDefault(); onnavigate("/"); }}><Logo /><h1>AI Activity</h1></a>
-    {#if crumb}<span class="crumb"><span class="sep" aria-hidden="true">/</span><span class="label" class:mono={crumb.mono}>{crumb.label}</span></span>{/if}
+    {#if crumb}<span class="crumb"><span class="sep" aria-hidden="true">/</span>{#if crumb.picture}<Avatar name={crumb.picture.name} url={crumb.picture.url} size={22} />{/if}<span class="label" class:mono={crumb.mono}>{crumb.label}</span></span>{/if}
   </div>
   <div class="top-right">
     {#if demo}<span class="badge demo">Demonstration data</span>{/if}

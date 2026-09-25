@@ -2,11 +2,13 @@
   import { untrack } from "svelte";
   import type { Account } from "../../../shared/types.ts";
   import { api } from "../lib/api.ts";
+  import Avatar from "./Avatar.svelte";
 
   let { account, onchange }: { account: Account; onchange: () => void } = $props();
 
   // Seeded once from the account; the field is then the user's to edit.
   let name = $state(untrack(() => (account.display_name === account.username ? "" : account.display_name)));
+  let avatar = $state(untrack(() => account.avatar_url ?? ""));
   let nameMsg = $state<{ ok: boolean; text: string } | null>(null);
   let current = $state("");
   let next = $state("");
@@ -17,7 +19,7 @@
   async function saveName(e: SubmitEvent) {
     e.preventDefault();
     try {
-      await api.updateProfile(name);
+      await api.updateProfile({ display_name: name, avatar_url: avatar.trim() });
       nameMsg = { ok: true, text: "Saved." };
       onchange();
     } catch (err) {
@@ -51,6 +53,13 @@
     <label>Display name
       <input maxlength="60" placeholder={account.username} bind:value={name} />
     </label>
+    <label>Profile picture link
+      <span class="pic">
+        <Avatar name={name.trim() || account.username} url={avatar.trim() || null} size={36} />
+        <input type="url" inputmode="url" maxlength="500" placeholder="https://github.com/{account.username}.png" bind:value={avatar} />
+      </span>
+      <small>An image from GitHub, Gravatar or Imgur. Anyone can see it.</small>
+    </label>
     <div class="actions">
       <button type="submit">Save</button>
       {#if nameMsg}<span class:ok={nameMsg.ok} class:error={!nameMsg.ok} role="status">{nameMsg.text}</span>{/if}
@@ -82,6 +91,9 @@
   form { border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 20px 18px; display: grid; gap: 12px; align-content: start; }
   h3 { font-size: 14px; font-weight: 500; }
   label { display: grid; gap: 5px; font-size: 12px; color: var(--muted); }
+  .pic { display: flex; align-items: center; gap: 10px; }
+  .pic input { flex: 1; min-width: 0; }
+  small { font-size: 12px; }
   input { background: var(--bg); border: 1px solid var(--line); color: var(--text); border-radius: var(--radius-sm); padding: 6px 10px; font: inherit; font-size: 14px; }
   .actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   button { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 6px 12px; }

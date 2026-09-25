@@ -53,7 +53,7 @@ export const api = {
   /** Sign-up from the sign-in page (open to anyone); signs in. */
   register: (a: NewAccount) => post<{ ok: true }>("/api/auth/register", a),
   adminOverview: () => get<AdminOverview>("/api/admin/overview"),
-  updateProfile: (display_name: string) => post<{ user: Account }>("/api/account", { display_name }),
+  updateProfile: (fields: { display_name?: string; avatar_url?: string }) => post<{ user: Account }>("/api/account", fields),
   changePassword: (current_password: string, new_password: string) =>
     post<{ ok: true }>("/api/account/password", { current_password, new_password }),
   users: () => get<{ users: AdminUser[] }>("/api/users"),
