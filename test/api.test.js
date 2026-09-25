@@ -41,10 +41,14 @@ describe("basics (signed in as the test admin)", () => {
   });
 
   test("ingest is routed by tool slug, with no default tool", async () => {
-    assert.equal((await req(srv.base, "POST", "/api/ingest", { body: event(), key })).status, 404);
-    assert.equal((await req(srv.base, "POST", "/api/ingest/", { body: event(), key })).status, 404);
-    assert.equal((await req(srv.base, "POST", "/api/ingest/codex", { body: event({ tool: "codex" }), key })).status, 404);
-    assert.equal((await req(srv.base, "POST", "/api/ingest/constructor", { body: event(), key })).status, 404);
+    // anon: collectors send a device key, never a viewer session cookie.
+    const post = (p, body = event()) => req(srv.base, "POST", p, { body, key, anon: true });
+    assert.equal((await post("/api/ingest")).status, 404);
+    assert.equal((await post("/api/ingest/")).status, 404);
+    assert.equal((await post("/api/ingest/codex", event({ tool: "codex" }))).status, 404);
+    assert.equal((await post("/api/ingest/constructor")).status, 404);
+    assert.equal((await req(srv.base, "GET", "/api/ingest/claude-code", { anon: true })).status, 404);
+    assert.equal((await post("/api/ingest/claude-code")).json.stored, true);
     // The payload's tool is optional: the URL already says which tool it is.
     const { tool, ...noTool } = event({ session_id: "slug-only" });
     const r = await req(srv.base, "POST", "/api/ingest/claude-code", { body: noTool, key });

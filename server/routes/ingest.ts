@@ -76,5 +76,8 @@ export function ingestRoutes(db: DB) {
       stored: result.inserted,
       event_id: ev.event_id,
     });
-  });
+  })
+    // Collectors have no viewer session: without this, a bare /api/ingest
+    // would fall through to the session gate and look like a 401.
+    .all("*", (c) => c.json({ error: "use POST /api/ingest/<tool>, e.g. /api/ingest/claude-code" }, 404));
 }
