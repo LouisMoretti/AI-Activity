@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
+import { backupTo } from "../lib/backup.ts";
 import { MIGRATIONS } from "./migrations.ts";
 
 export type DB = Database.Database;
@@ -9,12 +10,25 @@ export function nowSec(): number {
   return Math.floor(Date.now() / 1000);
 }
 
-export function openDb(dbPath: string): DB {
+/** Where backups go unless BACKUP_DIR says otherwise: next to the database. */
+export const defaultBackupDir = (dbPath: string) => path.join(path.dirname(dbPath), "backups");
+
+/**
+ * Opens (or creates) the database and brings it to the latest schema. An
+ * existing database with migrations pending is backed up first
+ * (`<backupDir>/dashboard-…-pre-v<latest>.db`), so an upgrade can be undone
+ * with npm run restore.
+ */
+export function openDb(dbPath: string, backupDir = defaultBackupDir(dbPath)): DB {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new Database(dbPath);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   try {
+    if (schemaVersion(db) < MIGRATIONS.length && hasTables(db)) {
+      const { file } = backupTo(db, backupDir, { suffix: `-pre-v${MIGRATIONS.length}` });
+      console.log(`Backed up ${dbPath} before upgrading its schema: ${file}`);
+    }
     migrate(db);
   } catch (err) {
     db.close();
@@ -22,6 +36,9 @@ export function openDb(dbPath: string): DB {
   }
   return db;
 }
+
+const hasTables = (db: DB) =>
+  (db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table'").get() as { n: number }).n > 0;
 
 export function schemaVersion(db: DB): number {
   return db.pragma("user_version", { simple: true }) as number;

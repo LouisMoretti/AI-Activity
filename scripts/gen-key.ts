@@ -6,7 +6,8 @@ import { openDb } from "../server/db/schema.ts";
 const args = process.argv.slice(2);
 const u = args.indexOf("--user");
 const username = u >= 0 ? args.splice(u, 2)[1] : null;
-const db = openDb(loadConfig().dbPath);
+const config = loadConfig();
+const db = openDb(config.dbPath, config.backupDir);
 const name = args[0] || "unnamed device";
 const user = username ? findUserByUsername(db, username) : null;
 if (username && !user) {
