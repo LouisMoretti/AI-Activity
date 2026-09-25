@@ -93,5 +93,6 @@ export const api = {
   devices: () => get<{ devices: Device[] }>("/api/devices"),
   /** The full key is only ever returned here, once. */
   createDevice: (name: string) => post<{ id: number; key: string }>("/api/devices", { name }),
+  deviceKey: (id: number) => get<{ key: string }>(`/api/devices/${id}/key`),
   revokeDevice: (id: number) => post<{ ok: true }>(`/api/devices/${id}/revoke`),
 };

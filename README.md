@@ -3,7 +3,8 @@
 ## Send Claude Code usage from a device
 
 1. Create a device key on the server: `npm run gen-key -- "my-laptop"`, or
-   **Settings → Devices** in the dashboard. The key is shown once.
+   **Settings → Devices** in the dashboard (one key per machine, it serves
+   every tool on it; **Copy key** there gives it back any time).
 2. Add this to `~/.claude/settings.json` on the device, replacing
    `<server>` (e.g. `http://localhost:3000` or your tunnel URL) and
    `<device key>`:

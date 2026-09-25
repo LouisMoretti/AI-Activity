@@ -15,6 +15,6 @@ if (username && !user) {
 }
 const { id, key } = createDevice(db, { userId: user?.id ?? getDefaultUserId(db), name });
 console.log(`Device #${id} (${name}) created${user ? ` for ${user.username}` : ""}.`);
-console.log(`Ingestion key (shown once, store it on the device):\n${key}`);
+console.log(`Ingestion key (also copyable later from Settings → Devices):\n${key}`);
 console.log(`Header for POSTs: Authorization: Bearer ${key}`);
 db.close();

@@ -35,6 +35,23 @@ describe("basics (signed in as the test admin)", () => {
     assert.equal((await req(srv.base, "POST", "/api/devices/999999/revoke")).status, 404);
   });
 
+  test("a device key can be copied again, one at a time, by its owner only", async () => {
+    const d = await newDevice(srv.base, "to-copy");
+    const listed = (await req(srv.base, "GET", "/api/devices")).json.devices.find((x) => x.id === d.id);
+    assert.equal(listed.has_key, true);
+    assert.equal(listed.key, undefined);
+    assert.deepEqual((await req(srv.base, "GET", `/api/devices/${d.id}/key`)).json, { key: d.key });
+    assert.equal((await req(srv.base, "GET", `/api/devices/${d.id}/key`, { anon: true })).status, 401);
+    const eve = await register(srv.base, { username: "keyeve", password: "eve-password-1" });
+    assert.equal((await req(srv.base, "GET", `/api/devices/${d.id}/key`, { cookie: eve.cookie })).status, 404);
+    assert.equal((await req(srv.base, "GET", "/api/devices/999999/key")).status, 404);
+    // Revoking forgets the key.
+    assert.equal((await req(srv.base, "POST", `/api/devices/${d.id}/revoke`)).status, 200);
+    assert.equal((await req(srv.base, "GET", `/api/devices/${d.id}/key`)).status, 404);
+    const revoked = (await req(srv.base, "GET", "/api/devices")).json.devices.find((x) => x.id === d.id);
+    assert.equal(revoked.has_key, false);
+  });
+
   test("ingest rejects bad JSON, oversized bodies and unsupported tools", async () => {
     assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { raw: "{nope", key })).status, 400);
     const big = JSON.stringify({ pad: "x".repeat(300 * 1024) });
@@ -361,7 +378,10 @@ describe("basics (signed in as the test admin)", () => {
   test("device list never exposes key hashes", async () => {
     const devices = (await req(srv.base, "GET", "/api/devices")).json.devices;
     assert.ok(devices.length > 0);
-    for (const d of devices) assert.equal(d.key_hash, undefined);
+    for (const d of devices) {
+      assert.equal(d.key_hash, undefined);
+      assert.equal(d.key, undefined);
+    }
   });
 
   test("static index is served, unknown API is 404", async () => {
