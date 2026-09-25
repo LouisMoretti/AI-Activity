@@ -2,6 +2,8 @@
 // --env-file-if-exists and crashes with ENOENT when it does not exist, so the
 // dev script loads it here instead. Real environment variables still win.
 // Edits to .env need a restart in dev (the watcher only follows imports).
-import fs from "node:fs";
-
-if (fs.existsSync(".env")) process.loadEnvFile(".env");
+try {
+  process.loadEnvFile(".env");
+} catch (err) {
+  if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+}

@@ -84,7 +84,7 @@ export async function startServer({ password = "", env = {}, autoLogin = true } 
   };
 }
 
-/** type: content-type to send (default application/json on anything but GET; null sends none). */
+/** type: content-type to send (default application/json on anything but GET; null sends none). It overrides a content-type in `headers`. */
 export async function req(base, method, p, { body, key, cookie, raw, anon = false, type, headers: extra = {} } = {}) {
   if (cookie === undefined && !anon) cookie = defaultCookies.get(base);
   const headers = { ...extra };
@@ -153,7 +153,7 @@ export function genKey(dbPath, name, ...extra) {
     let out = "";
     proc.stdout.on("data", (c) => (out += c));
     proc.stderr.on("data", (c) => (out += c));
-    proc.on("exit", (code) => (code === 0 ? resolve(out.match(/ak_[0-9a-f]+/)[0]) : reject(new Error(out))));
+    proc.on("exit", (code) => (code === 0 ? (out.match(/ak_[0-9a-f]+/) ? resolve(out.match(/ak_[0-9a-f]+/)[0]) : reject(new Error(`no key in output: ${out}`))) : reject(new Error(out))));
   });
 }
 
