@@ -26,7 +26,7 @@
 <div class="card">
   <div class="head">
     <h2>{tab === "signin" ? "Welcome back" : "Create your account"}</h2>
-    <Segmented label="Sign in or create an account" value={tab} onchange={(t) => (tab = t)}
+    <Segmented stretch label="Sign in or create an account" value={tab} onchange={(t) => (tab = t)}
       options={[{ value: "signin", label: "Sign in" }, { value: "signup", label: "Create account" }]} />
   </div>
 
@@ -54,7 +54,7 @@
   form { display: grid; gap: 12px; }
   label { display: grid; gap: 5px; font-size: 12px; color: var(--muted); }
   input { background: var(--bg); border: 1px solid var(--line); color: var(--text); border-radius: var(--radius-sm); padding: 7px 10px; font: inherit; font-size: 14px; }
-  button[type="submit"] { justify-self: start; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 7px 14px; color: var(--text); background: var(--surface-2); }
+  button[type="submit"] { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 7px 14px; color: var(--text); background: var(--surface-2); }
   button:disabled { opacity: .5; cursor: default; }
   .error { color: var(--warn); font-size: 13px; }
 </style>
