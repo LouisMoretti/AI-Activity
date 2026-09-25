@@ -37,8 +37,9 @@ async function fetchSessions(username: string, limit: number): Promise<SessionsR
   const seen = new Set(first.sessions.map(key));
   const sessions = [...first.sessions];
   let fetched = first.sessions.length;
-  while (fetched < Math.min(limit, first.total)) {
-    const page = await api.sessions(username, Math.min(limit - fetched, SESSIONS_MAX_PAGE), null, fetched);
+  // Count unique sessions, not fetched rows: a duplicate must not shorten the list.
+  while (sessions.length < limit && fetched < first.total) {
+    const page = await api.sessions(username, Math.min(limit - sessions.length, SESSIONS_MAX_PAGE), null, fetched);
     if (!page.sessions.length) break;
     fetched += page.sessions.length;
     for (const s of page.sessions) if (!seen.has(key(s))) { seen.add(key(s)); sessions.push(s); }
