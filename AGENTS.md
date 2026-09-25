@@ -28,8 +28,9 @@ stats, tools/quotas and conversations ("Copy link" in the profile header).
 `/leaderboard` is **public** too: every enabled account (idle ones last,
 with zeros) ranked by tokens over 7 days / 30 days / all time, with
 server-wide totals, the model split and a global activity calendar. The
-header links to it and holds the profile switcher, except on `/u/<username>`,
-where only the avatar menu (or "Sign in") is shown.
+header (`SiteHeader`) is the same on every page: logo, demo badge, and the
+avatar menu (or "Sign in"). It never depends on the route; site chrome (a
+future footer too) is rendered once in `App.svelte`, outside the pages.
 Clicking the avatar opens Your profile / Leaderboard / Settings / Admin
 panel (admins) / Sign out. `/settings` (signed in) holds Account and Devices; `/admin`
 (admins) holds the server overview and the users (make or remove admin,
@@ -134,7 +135,7 @@ web/
   src/components/         StatsBar, ActivityChart (Heatmap, TrendChart),
                           QuotaCard, SessionList,
                           DevicesPanel, AccountMenu,
-                          ProfilePanel, ProfileSwitcher, ProfileHeader, UsersPanel,
+                          SiteHeader, ProfilePanel, ProfileHeader, UsersPanel,
                           NewAccountForm, AuthPanel, Leaderboard,
                           AdminOverview, …
   src/styles/tokens.css   design tokens — components only use these variables

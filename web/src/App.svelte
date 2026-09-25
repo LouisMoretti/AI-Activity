@@ -1,5 +1,4 @@
 <script lang="ts">
-  import AccountMenu from "./components/AccountMenu.svelte";
   import AdminOverview from "./components/AdminOverview.svelte";
   import AuthPanel from "./components/AuthPanel.svelte";
   import ActivityChart from "./components/ActivityChart.svelte";
@@ -8,12 +7,11 @@
   import Conversations from "./components/Conversations.svelte";
   import DevicesPanel from "./components/DevicesPanel.svelte";
   import Leaderboard from "./components/Leaderboard.svelte";
-  import Logo from "./components/Logo.svelte";
   import NewAccountForm from "./components/NewAccountForm.svelte";
   import OpenCodeCard from "./components/OpenCodeCard.svelte";
   import ProfileHeader from "./components/ProfileHeader.svelte";
   import ProfilePanel from "./components/ProfilePanel.svelte";
-  import ProfileSwitcher from "./components/ProfileSwitcher.svelte";
+  import SiteHeader from "./components/SiteHeader.svelte";
   import Section from "./components/Section.svelte";
   import StatsRow from "./components/StatsRow.svelte";
   import UsersPanel from "./components/UsersPanel.svelte";
@@ -29,133 +27,106 @@
       : page === "profile" && dash.shown ? `${dash.shown.display_name} · AI Activity${dash.vm?.demo ? " · Demo" : ""}`
         : "AI Activity";
   });
-
-  /** Back to the sign-in screen, then here. */
-  const signInHere = () => dash.go(`/?next=${encodeURIComponent(location.pathname)}`);
 </script>
 
-<main>
-  <header class="top">
-    <a class="brand" href="/" onclick={(e) => { e.preventDefault(); dash.go("/"); }}><Logo /><h1>AI Activity</h1></a>
-    <div class="top-right">
-      <!-- Fictional data is always labeled; live data needs no badge. -->
-      {#if dash.vm?.demo}<span class="badge demo">Demonstration data</span>{/if}
-      {#if dash.account}
-        <!-- Profile pages carry nothing but the account menu. -->
-        {#if dash.route.page !== "profile"}
-          <a class="nav" href="/leaderboard" aria-current={dash.route.page === "leaderboard" ? "page" : undefined}
-            onclick={(e) => { e.preventDefault(); dash.go("/leaderboard"); }}>Leaderboard</a>
-          {#if dash.profiles.length > 1}
-            <ProfileSwitcher profiles={dash.profiles} current={dash.account.username}
-              self={dash.account.username} onchange={(u) => dash.openProfile(u)} />
-          {/if}
-        {/if}
-        <AccountMenu account={dash.account} onnavigate={(p) => dash.go(p)} onlogout={() => dash.logout()} />
-      {:else if dash.route.page === "profile" || dash.route.page === "leaderboard"}
-        <button type="button" class="signin" onclick={signInHere}>Sign in</button>
-      {/if}
-    </div>
-  </header>
+<!-- Site chrome (header, and a footer if one is ever added) lives here,
+     outside the page branches, so every page gets exactly the same. -->
+<div class="shell">
+  <SiteHeader account={dash.account} demo={!!dash.vm?.demo}
+    signIn={dash.status !== "loading" && dash.status !== "signed-out" && dash.status !== "setup"}
+    onnavigate={(p) => dash.go(p)} onlogout={() => dash.logout()} />
 
-  {#if dash.status === "signed-out"}
-    <AuthPanel onlogin={(u, p) => dash.login(u, p)} oncreate={(a, c) => dash.createAccount(a, c)} />
-  {:else if dash.status === "setup"}
-    <NewAccountForm withSetupCode title="Create the first account"
-      intro="No account exists yet. The setup code is printed in the server log. This account becomes the admin and keeps the data collected so far."
-      submitLabel="Create admin account" oncreate={(a, c) => dash.createAccount(a, c)} />
-  {/if}
-
-  {#if dash.status === "missing"}
-    <p class="gate">
-      No profile named <span class="mono">@{dash.route.page === "profile" ? dash.route.username : ""}</span>.
-      {#if dash.account}<button type="button" onclick={() => dash.go("/")}>Go to your profile</button>{/if}
-    </p>
-  {/if}
-
-  {#if dash.status === "error"}
-    <p class="notice" role="alert">Could not reach the server. Retrying every 15 seconds.</p>
-  {/if}
-
-  {#if dash.route.page === "settings" && dash.account && dash.status === "ready"}
-    <div class="settings-head">
-      <h2>Settings</h2>
-      <button type="button" onclick={() => dash.go("/")}>Back to your profile</button>
-    </div>
-
-    <Section title="Account" subtitle="Your profile and password">
-      {#key dash.account.id}
-        <ProfilePanel account={dash.account} onchange={() => dash.load()} />
-      {/key}
-    </Section>
-
-    <Section title="Devices" subtitle="One ingestion key per machine">
-      <DevicesPanel />
-    </Section>
-
-  {/if}
-
-  {#if dash.route.page === "admin" && dash.account && dash.status === "ready"}
-    <div class="settings-head">
-      <h2>Admin</h2>
-      <button type="button" onclick={() => dash.go("/")}>Back to your profile</button>
-    </div>
-    {#if dash.account.is_admin}
-      <Section title="Overview" subtitle="The whole server, every account">
-        <AdminOverview />
-      </Section>
-      <Section title="Users" subtitle="Profile pages are public; devices and settings stay private">
-        <UsersPanel selfId={dash.account.id} />
-      </Section>
-    {:else}
-      <p class="gate">This page is for admins.</p>
+  <main>
+    {#if dash.status === "signed-out"}
+      <AuthPanel onlogin={(u, p) => dash.login(u, p)} oncreate={(a, c) => dash.createAccount(a, c)} />
+    {:else if dash.status === "setup"}
+      <NewAccountForm withSetupCode title="Create the first account"
+        intro="No account exists yet. The setup code is printed in the server log. This account becomes the admin and keeps the data collected so far."
+        submitLabel="Create admin account" oncreate={(a, c) => dash.createAccount(a, c)} />
     {/if}
-  {/if}
 
-  {#if dash.route.page === "leaderboard" && dash.status === "ready"}
-    <Leaderboard self={dash.account?.username ?? null} onopen={(u) => dash.openProfile(u)} />
-  {/if}
+    {#if dash.status === "missing"}
+      <p class="gate">
+        No profile named <span class="mono">@{dash.route.page === "profile" ? dash.route.username : ""}</span>.
+        {#if dash.account}<button type="button" onclick={() => dash.go("/")}>Go to your profile</button>{/if}
+      </p>
+    {/if}
 
-  {#if dash.vm && dash.shown}
-    {@const vm = dash.vm}
-    <ProfileHeader profile={dash.shown} own={dash.own} />
+    {#if dash.status === "error"}
+      <p class="notice" role="alert">Could not reach the server. Retrying every 15 seconds.</p>
+    {/if}
 
-
-    <ActivityChart series={vm.series} today={vm.today} demo={vm.demo} hasActivity={vm.hasActivity} />
-    <StatsRow stats={vm.stats} />
-
-    <Section title="Tools" subtitle="Limits are per account, latest snapshot">
-      <div class="tools">
-        {#if vm.tools.includes("claude-code")}<ClaudeCodeCard vm={vm.claude} />{/if}
-        {#if vm.tools.includes("codex")}<CodexCard vm={vm.codex} />{/if}
-        {#if vm.tools.includes("opencode")}<OpenCodeCard />{/if}
+    {#if dash.route.page === "settings" && dash.account && dash.status === "ready"}
+      <div class="settings-head">
+        <h2>Settings</h2>
+        <button type="button" onclick={() => dash.go("/")}>Back to your profile</button>
       </div>
-    </Section>
 
-    <Section title="Conversations" subtitle="Most recent first">
-      <Conversations sessions={vm.sessions} total={vm.sessionsTotal} onmore={() => dash.showMoreSessions()} />
-    </Section>
-  {/if}
-</main>
+      <Section title="Account" subtitle="Your profile and password">
+        {#key dash.account.id}
+          <ProfilePanel account={dash.account} onchange={() => dash.load()} />
+        {/key}
+      </Section>
+
+      <Section title="Devices" subtitle="One ingestion key per machine">
+        <DevicesPanel />
+      </Section>
+
+    {/if}
+
+    {#if dash.route.page === "admin" && dash.account && dash.status === "ready"}
+      <div class="settings-head">
+        <h2>Admin</h2>
+        <button type="button" onclick={() => dash.go("/")}>Back to your profile</button>
+      </div>
+      {#if dash.account.is_admin}
+        <Section title="Overview" subtitle="The whole server, every account">
+          <AdminOverview />
+        </Section>
+        <Section title="Users" subtitle="Profile pages are public; devices and settings stay private">
+          <UsersPanel selfId={dash.account.id} />
+        </Section>
+      {:else}
+        <p class="gate">This page is for admins.</p>
+      {/if}
+    {/if}
+
+    {#if dash.route.page === "leaderboard" && dash.status === "ready"}
+      <Leaderboard self={dash.account?.username ?? null} onopen={(u) => dash.openProfile(u)} />
+    {/if}
+
+    {#if dash.vm && dash.shown}
+      {@const vm = dash.vm}
+      <ProfileHeader profile={dash.shown} own={dash.own} />
+
+
+      <ActivityChart series={vm.series} today={vm.today} demo={vm.demo} hasActivity={vm.hasActivity} />
+      <StatsRow stats={vm.stats} />
+
+      <Section title="Tools" subtitle="Limits are per account, latest snapshot">
+        <div class="tools">
+          {#if vm.tools.includes("claude-code")}<ClaudeCodeCard vm={vm.claude} />{/if}
+          {#if vm.tools.includes("codex")}<CodexCard vm={vm.codex} />{/if}
+          {#if vm.tools.includes("opencode")}<OpenCodeCard />{/if}
+        </div>
+      </Section>
+
+      <Section title="Conversations" subtitle="Most recent first">
+        <Conversations sessions={vm.sessions} total={vm.sessionsTotal} onmore={() => dash.showMoreSessions()} />
+      </Section>
+    {/if}
+  </main>
+</div>
 
 <style>
-  main { max-width: 1080px; margin: 0 auto; padding: 44px 42px 56px; }
-  .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 28px; }
-  .brand { display: flex; align-items: center; gap: 11px; color: inherit; text-decoration: none; }
-  h1 { font-size: 19px; font-weight: 600; letter-spacing: -0.4px; }
-  .top-right { display: flex; align-items: center; gap: 12px; min-width: 0; flex-wrap: wrap; justify-content: flex-end; }
+  .shell { max-width: 1080px; margin: 0 auto; padding: 44px 42px 56px; }
   .gate { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 20px; color: var(--muted); font-size: 13px; line-height: 1.6; }
-  .gate button, .settings-head button, .signin { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 4px 10px; font-size: 12px; color: var(--text); }
+  .gate button, .settings-head button { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 4px 10px; font-size: 12px; color: var(--text); }
   .settings-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
   .settings-head h2 { font-size: 17px; font-weight: 600; }
-  .nav { font-size: 13px; color: var(--muted); text-decoration: none; padding: 5px 8px; border-radius: var(--radius-sm); }
-  .nav:hover, .nav[aria-current="page"] { color: var(--text); background: var(--surface-2); }
-  .badge { border: 1px solid var(--line); color: var(--muted); font-size: 12px; padding: 5px 10px; border-radius: var(--radius-sm); }
-  .badge.demo { border-color: var(--demo-line); background: var(--demo-bg); color: var(--demo-text); }
   .notice { color: var(--warn); margin: 12px 0; text-align: center; }
   .tools { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr)); gap: 16px; }
   @media (max-width: 720px) {
-    main { padding: 24px 16px 40px; }
-    .top { gap: 12px; align-items: flex-start; }
-    h1 { white-space: nowrap; }
+    .shell { padding: 24px 16px 40px; }
   }
 </style>
