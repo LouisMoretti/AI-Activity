@@ -14,7 +14,7 @@ const bootstrapped = await bootstrapAccounts(db, config);
 const setupCode = accountsExist(db) ? null : newSetupCode();
 
 const server = serve({ fetch: createApp(db, config, setupCode).fetch, port: config.port }, () => {
-  console.log(`AI Activity Dashboard listening on http://localhost:${config.port}`);
+  console.log(`AI Activity listening on http://localhost:${config.port}`);
   console.log(`DB: ${config.dbPath}`);
   if (bootstrapped) console.log(`Created account "${bootstrapped}" from DASHBOARD_PASSWORD`);
   if (setupCode) {

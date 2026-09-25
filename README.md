@@ -1,1 +1,1 @@
-# AI Activity Dashboard
+# AI Activity
