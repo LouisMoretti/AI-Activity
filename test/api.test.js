@@ -5,6 +5,9 @@ import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { startServer, req, newDevice, event, userCli, login, genKey, register, userId, TEST_ADMIN } from "./helpers.js";
 
+/** A plausible reset time for a current quota window (a far-future one is dropped). */
+const soon = () => Math.floor(Date.now() / 1000) + 3600;
+
 describe("basics (signed in as the test admin)", () => {
   let srv, key;
   const stats = async () => (await req(srv.base, "GET", "/api/u/admin/stats?days=730")).json;
@@ -98,7 +101,7 @@ describe("basics (signed in as the test admin)", () => {
     const msg = (id, out) => ({ message_id: id, session_id: "batch-s", model: "claude-opus-5-5", occurred_at: Math.floor(Date.now() / 1000), usage: { input_tokens: 10, output_tokens: out } });
     const body = {
       messages: [msg("msg_b1", 5), msg("msg_b1", 40), msg("msg_b2", 7), { session_id: "batch-s", usage: { input_tokens: 99 } }],
-      rate_limits: { five_hour: { used_percentage: 33, resets_at: 1999999999 } },
+      rate_limits: { five_hour: { used_percentage: 33, resets_at: soon() } },
       account_ref: "batch-acct",
       context: { session_id: "batch-s", used_pct: 61, window_size: 200000 },
     };
@@ -166,8 +169,17 @@ describe("basics (signed in as the test admin)", () => {
       key, body: { account_ref: "stale", occurred_at: at, rate_limits: { five_hour: { used_percentage: pct, resets_at: resets } } },
     });
     const shown = async () => (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas.find((q) => q.account_ref === "stale");
-    // A day-old bogus far-future window must not win once fresh values exist.
-    await post(23.5, 1999999999, now - 2 * 86400);
+    // A far-future reset is dropped at ingest: it would pin the window.
+    await post(23.5, 1999999999, now - 30);
+    assert.equal(await shown(), undefined);
+    // A day-old bogus row stored before that check must not win either.
+    const db = new Database(srv.dbPath);
+    const { id: deviceId, user_id: uid } = db.prepare("SELECT id, user_id FROM devices ORDER BY id LIMIT 1").get();
+    db.prepare(
+      `INSERT INTO quota_snapshots (device_id, user_id, account_ref, tool, limit_type, used_pct, resets_at, measured_at)
+       VALUES (?, ?, 'stale', 'claude-code', 'five_hour', 23.5, 1999999999, ?)`
+    ).run(deviceId, uid, now - 2 * 86400);
+    db.close();
     await post(35, now + 3600, now - 60);
     // A second terminal posts the same window's older, lower value later.
     await post(20, now + 3600, now - 10);
@@ -176,8 +188,8 @@ describe("basics (signed in as the test admin)", () => {
     await post(90, now - 100, now - 5);
     assert.equal((await shown()).used_pct, 35);
     // The next window replaces it, even with a lower value.
-    await post(4, now + 3600 + 18000, now);
-    assert.deepEqual([(await shown()).used_pct, (await shown()).resets_at], [4, now + 3600 + 18000]);
+    await post(4, now + 18000, now);
+    assert.deepEqual([(await shown()).used_pct, (await shown()).resets_at], [4, now + 18000]);
   });
 
   test("usage without an Anthropic message id is not stored", async () => {
@@ -207,7 +219,7 @@ describe("basics (signed in as the test admin)", () => {
     const before = await stats();
     const r = await req(srv.base, "POST", "/api/ingest/claude-code", {
       key,
-      body: event({ usage: {}, account_ref: "empty-acct", rate_limits: { five_hour: { used_percentage: 12, resets_at: 1999999999 } } }),
+      body: event({ usage: {}, account_ref: "empty-acct", rate_limits: { five_hour: { used_percentage: 12, resets_at: soon() } } }),
     });
     assert.equal(r.json.stored, false);
     assert.equal((await stats()).events, before.events);
@@ -223,7 +235,7 @@ describe("basics (signed in as the test admin)", () => {
         session_id: "raw-sess", prompt_id: "raw-p",
         model: { id: "claude-sonnet-5", display_name: "Sonnet" },
         context_window: { current_usage: { input_tokens: 1000, output_tokens: 1 } },
-        rate_limits: { seven_day: { used_percentage: 44, resets_at: 1999999999 } },
+        rate_limits: { seven_day: { used_percentage: 44, resets_at: soon() } },
         account_ref: "raw-acct",
         cost: { total_cost_usd: 99 },
       },
@@ -238,7 +250,8 @@ describe("basics (signed in as the test admin)", () => {
 
   test("two devices on the same account: latest quota snapshot wins, never summed", async () => {
     const other = (await newDevice(srv.base, "second")).key;
-    const rl = (pct) => ({ five_hour: { used_percentage: pct, resets_at: 1999999999 } });
+    const resets = soon();
+    const rl = (pct) => ({ five_hour: { used_percentage: pct, resets_at: resets } });
     await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ account_ref: "shared", rate_limits: rl(30) }) });
     await new Promise((r) => setTimeout(r, 1100)); // measured_at has 1 s resolution
     await req(srv.base, "POST", "/api/ingest/claude-code", { key: other, body: event({ account_ref: "shared", rate_limits: rl(45) }) });
@@ -482,7 +495,7 @@ describe("accounts", () => {
       const bobDev = await newDevice(srv.base, "bob-laptop", bob);
       await req(srv.base, "POST", "/api/ingest/claude-code", { key: bobDev.key, body: event({
         session_id: "bob-s",
-        rate_limits: { five_hour: { used_percentage: 42, resets_at: 1999999999 } },
+        rate_limits: { five_hour: { used_percentage: 42, resets_at: soon() } },
       }) });
 
       const get = async (p, cookie) => (await req(srv.base, "GET", p, { cookie })).json;
@@ -791,7 +804,7 @@ describe("public profile pages", () => {
       const dev = await newDevice(srv.base, "admin-laptop", admin);
       await req(srv.base, "POST", "/api/ingest/claude-code", { key: dev.key, body: event({
         session_id: "admin-s",
-        rate_limits: { five_hour: { used_percentage: 12, resets_at: 1999999999 } },
+        rate_limits: { five_hour: { used_percentage: 12, resets_at: soon() } },
       }) });
 
       // Signed out, and signed in as someone else: same public view.

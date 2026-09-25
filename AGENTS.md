@@ -265,10 +265,12 @@ Notes:
 - Quotas: every window with a numeric `used_percentage` (or `used_pct`) is
   recorded, dated by the payload's `occurred_at` (capped at now). A device
   can post stale values (a terminal that has not called the API yet), so
-  per `(account_ref, limit_type)` the dashboard shows, among the rows
-  measured in the day before the latest one, the window that resets last
-  and its highest `used_pct` (usage only rises within a window). Cost
-  fields are ignored.
+  per `(account_ref, tool, limit_type)` the dashboard shows, among the
+  rows measured in the day before the latest one, the window that resets
+  last and its highest `used_pct` (usage only rises within a window). A
+  window whose `resets_at` is further away than its length (5 h, 7 days,
+  31 days for unknown types; plus 10 min) is dropped at ingest, since it
+  would pin the display. Cost fields are ignored.
 
 ### Claude Code sources → payload mapping
 
@@ -347,7 +349,7 @@ account exists):
 - Usage, public, under `/api/u/:username/`:
   - `stats?days=30&tool=claude-code`
   - `activity?days=364&tool=...` (daily buckets for the heatmap)
-  - `quotas` (latest snapshot per account + limit type)
+  - `quotas` (current window per account, tool + limit type; see §5)
   - `summary?tool=...` (all-time and current-UTC-day tokens, sessions,
     events, each split `by_model` and `by_tool`)
   - `sessions?limit=10&offset=0&tool=...` (grouped by unique session id,

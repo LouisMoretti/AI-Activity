@@ -96,7 +96,7 @@ describe("collector one-liner from README.md", () => {
   test("first refresh sends every message once, even when its process group is killed mid-upload", async () => {
     const input = JSON.stringify({
       session_id: "sess-1", transcript_path: transcript,
-      rate_limits: { five_hour: { used_percentage: 21, resets_at: 1999999999 } },
+      rate_limits: { five_hour: { used_percentage: 21, resets_at: Math.floor(Date.now() / 1000) + 3600 } },
       context_window: { used_percentage: 37, context_window_size: 200000 },
     });
     // Claude Code cancels the command on the next refresh. The proxy holds the

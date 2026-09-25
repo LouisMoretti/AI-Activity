@@ -298,12 +298,14 @@ export function upsertUsageEvent(db: DB, ev: UsageEventInput): UpsertResult {
   })();
 }
 
+const SNAPSHOT_SLACK_SEC = 120;
+
 /**
  * Drop a session's old statusLine snapshot rows from sinceSec on, once its
  * messages from that time arrive: the messages are exact, the snapshots
  * counted most calls twice, and the two must never add up. Older snapshot
- * rows stay until messages cover them too (the live collector only resends
- * the transcript tail; the README import covers whole sessions).
+ * rows stay until messages cover them too (the collector's first run sends
+ * whole transcripts, so every session still on disk is fully replaced).
  */
 export function dropSnapshotRows(db: DB, userId: number, sessionId: string, sinceSec: number): number {
   // A snapshot is stamped when the statusLine fired, which can be up to about
@@ -312,8 +314,6 @@ export function dropSnapshotRows(db: DB, userId: number, sessionId: string, sinc
     .prepare("DELETE FROM usage_events WHERE user_id = ? AND session_id = ? AND source = 'snapshot' AND occurred_at >= ?")
     .run(userId, sessionId, sinceSec - SNAPSHOT_SLACK_SEC).changes;
 }
-
-const SNAPSHOT_SLACK_SEC = 120;
 
 /** Put the session's latest context fill on its newest row (a gauge, never summed). */
 export function setSessionContext(
@@ -339,10 +339,10 @@ export function insertQuotaSnapshot(db: DB, q: QuotaSnapshotInput): void {
   const latest = db
     .prepare(
       `SELECT id, used_pct, resets_at FROM quota_snapshots
-       WHERE user_id = ? AND account_ref = ? AND limit_type = ?
+       WHERE user_id = ? AND account_ref = ? AND tool = ? AND limit_type = ?
        ORDER BY measured_at DESC, id DESC LIMIT 1`
     )
-    .get(q.user_id, q.account_ref, q.limit_type) as
+    .get(q.user_id, q.account_ref, q.tool, q.limit_type) as
     { id: number; used_pct: number; resets_at: number | null } | undefined;
   if (latest && latest.used_pct === q.used_pct && latest.resets_at === q.resets_at) {
     db.prepare("UPDATE quota_snapshots SET measured_at = MAX(measured_at, ?) WHERE id = ?")
@@ -357,30 +357,30 @@ export function insertQuotaSnapshot(db: DB, q: QuotaSnapshotInput): void {
 }
 
 /**
- * Current value per (account_ref, limit_type). Never summed across devices.
+ * Current value per (account_ref, tool, limit_type). Never summed across devices.
  *
  * A device can post stale rate_limits (a second terminal that has not made
  * an API call yet), so "last posted" is not "current". Among the rows
  * measured in the day before the latest one, the window that resets last is
  * the current one, and within a window the usage only goes up: show its
- * highest percentage. The one-day bound keeps an old bogus far-future
- * resets_at from pinning a window forever.
+ * highest percentage. Ingest drops a resets_at further away than the window
+ * is long; the one-day bound also retires rows stored before that check.
  */
 export function latestQuotas(db: DB, userId: number): Quota[] {
   return db
     .prepare(
       `WITH recent AS (
-         SELECT q.*, MAX(measured_at) OVER (PARTITION BY account_ref, limit_type) AS last
+         SELECT q.*, MAX(measured_at) OVER (PARTITION BY account_ref, tool, limit_type) AS last
          FROM quota_snapshots q WHERE user_id = ?
        ), live AS (
-         SELECT *, MAX(COALESCE(resets_at, -1)) OVER (PARTITION BY account_ref, limit_type) AS win
+         SELECT *, MAX(COALESCE(resets_at, -1)) OVER (PARTITION BY account_ref, tool, limit_type) AS win
          FROM recent WHERE measured_at >= last - 86400
        )
-       SELECT account_ref, MAX(tool) AS tool, limit_type, MAX(used_pct) AS used_pct,
+       SELECT account_ref, tool, limit_type, MAX(used_pct) AS used_pct,
               resets_at, MAX(measured_at) AS measured_at
        FROM live WHERE COALESCE(resets_at, -1) = win
-       GROUP BY account_ref, limit_type
-       ORDER BY account_ref, limit_type`
+       GROUP BY account_ref, tool, limit_type
+       ORDER BY account_ref, tool, limit_type`
     )
     .all(userId) as Quota[];
 }
