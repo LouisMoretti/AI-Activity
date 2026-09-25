@@ -1,6 +1,8 @@
 import { Hono } from "hono";
-import type { IngestResult } from "../../shared/types.ts";
-import { findDeviceByKey, insertQuotaSnapshot, insertUsageEvent } from "../db/queries.ts";
+import type { IngestBatchResult, IngestResult } from "../../shared/types.ts";
+import {
+  dropSnapshotRows, findDeviceByKey, insertQuotaSnapshot, setSessionContext, upsertUsageEvent, type UpsertResult,
+} from "../db/queries.ts";
 import { nowSec, type DB } from "../db/schema.ts";
 import { readJson } from "../lib/http.ts";
 import { hasConsumption, normalizerFor } from "../lib/ingest.ts";
@@ -31,50 +33,52 @@ export function ingestRoutes(db: DB) {
       return c.json({ error: `payload tool "${String(body.tool)}" does not match /api/ingest/${tool}` }, 400);
     }
 
-    const ev = normalize(body);
+    const batch = normalize(body);
     const received = nowSec();
-    // Empty snapshots skip the usage row so event counts stay honest;
-    // their quota snapshots below are still recorded.
-    const result = hasConsumption(ev)
-      ? insertUsageEvent(db, {
-        event_id: ev.event_id,
-        device_id: device.id,
-        user_id: device.user_id,
-        tool: ev.tool,
-        session_id: ev.session_id,
-        prompt_id: ev.prompt_id,
-        model: ev.model,
-        input_tokens: ev.input_tokens,
-        output_tokens: ev.output_tokens,
-        cache_read_tokens: ev.cache_read_tokens,
-        cache_write_tokens: ev.cache_write_tokens,
-        context_window_size: ev.context_window_size,
-        context_used_pct: ev.context_used_pct,
-        occurred_at: ev.occurred_at,
-        received_at: received,
-      })
-      : { inserted: false, deduped: false };
+    const counts = { stored: 0, updated: 0, deduped: 0 };
+    let single: UpsertResult | null = null;
 
-    // Quotas are snapshots: latest value wins, never summed. They are dated
-    // by the event time (already capped at now), so a replayed offline spool
-    // cannot overwrite a newer snapshot with its stale rate_limits.
-    for (const q of ev.quotas) {
-      insertQuotaSnapshot(db, {
-        device_id: device.id,
-        user_id: device.user_id,
-        account_ref: ev.account_ref,
-        tool: ev.tool,
-        limit_type: q.limit_type,
-        used_pct: q.used_pct,
-        resets_at: q.resets_at,
-        measured_at: ev.occurred_at,
-      });
-    }
+    db.transaction(() => {
+      const sessions = new Set<string>();
+      for (const m of batch.messages) {
+        if (m.session_id) sessions.add(m.session_id);
+        // Empty messages skip the usage row so event counts stay honest.
+        if (!hasConsumption(m)) continue;
+        single = upsertUsageEvent(db, {
+          ...m, device_id: device.id, user_id: device.user_id, tool: batch.tool, received_at: received,
+        });
+        counts[single] += 1;
+      }
+      for (const s of sessions) dropSnapshotRows(db, device.user_id, s);
+      if (batch.context) {
+        const { session_id, used_pct, window_size } = batch.context;
+        setSessionContext(db, device.user_id, session_id, used_pct, window_size);
+      }
+      // Quotas are snapshots: latest value wins, never summed. They are dated
+      // by the observation time (already capped at now), so a replayed
+      // payload cannot overwrite a newer snapshot with stale rate_limits.
+      for (const q of batch.quotas) {
+        insertQuotaSnapshot(db, {
+          device_id: device.id,
+          user_id: device.user_id,
+          account_ref: batch.account_ref,
+          tool: batch.tool,
+          limit_type: q.limit_type,
+          used_pct: q.used_pct,
+          resets_at: q.resets_at,
+          measured_at: batch.measured_at,
+        });
+      }
+    })();
+
+    if (!batch.single) return c.json<IngestBatchResult>({ ok: true, messages: batch.messages.length, ...counts });
+    const result = single as UpsertResult | null;
     return c.json<IngestResult>({
       ok: true,
-      deduped: !result.inserted,
-      stored: result.inserted,
-      event_id: ev.event_id,
+      stored: result === "stored",
+      updated: result === "updated",
+      deduped: result === "deduped",
+      event_id: batch.messages[0]?.event_id ?? null,
     });
   })
     // Collectors have no viewer session: without this, a bare /api/ingest

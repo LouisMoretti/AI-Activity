@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { nowSec } from "../db/schema.ts";
 
 export interface NormalizedQuota {
@@ -7,9 +6,10 @@ export interface NormalizedQuota {
   resets_at: number | null;
 }
 
-export interface NormalizedEvent {
+/** One API response's consumption, keyed by its provider message id. */
+export interface NormalizedMessage {
+  /** Anthropic message id (msg_…): the dedup key, stored as event_id. */
   event_id: string;
-  tool: string;
   session_id: string | null;
   prompt_id: string | null;
   model: string | null;
@@ -20,8 +20,25 @@ export interface NormalizedEvent {
   context_window_size: number | null;
   context_used_pct: number | null;
   occurred_at: number;
-  account_ref: string;
+}
+
+/** Context fill of a session at measurement time (a gauge, never summed). */
+export interface NormalizedContext {
+  session_id: string;
+  used_pct: number | null;
+  window_size: number | null;
+}
+
+export interface NormalizedBatch {
+  tool: string;
+  messages: NormalizedMessage[];
   quotas: NormalizedQuota[];
+  account_ref: string;
+  /** When the quotas and context were observed (capped at now). */
+  measured_at: number;
+  context: NormalizedContext | null;
+  /** The payload was one flat event rather than a { messages: [] } batch. */
+  single: boolean;
 }
 
 type Obj = Record<string, unknown>;
@@ -52,29 +69,67 @@ function optNum(v: unknown): number | null {
 const str = (v: unknown): string | null =>
   v === undefined || v === null ? null : String(v);
 
+/** A skewed device clock must not put usage in the future (heatmap, streaks, "today"). */
+const eventTime = (v: unknown, now: number) => (v !== undefined ? Math.min(toSec(v, now), now) : now);
+
+function modelOf(v: unknown): string | null {
+  if (typeof v === "string") return v;
+  return isObj(v) ? str(v.id || v.display_name || null) : null;
+}
+
+/**
+ * One message, or null without a message id: a usage snapshot that cannot
+ * be tied to one API response would be counted again on every re-fire.
+ */
+function toMessage(m: Obj, now: number): NormalizedMessage | null {
+  const id = [m.message_id, m.event_id, m.eventId].find((v) => typeof v === "string" && v);
+  if (typeof id !== "string") return null;
+  const u: Obj = isObj(m.usage) ? m.usage : {};
+  const size = optNum(m.context_window_size);
+  return {
+    event_id: id,
+    session_id: str(m.session_id ?? m.sessionId),
+    prompt_id: str(m.prompt_id ?? m.promptId),
+    model: modelOf(m.model),
+    input_tokens: toInt(u.input_tokens),
+    output_tokens: toInt(u.output_tokens),
+    cache_read_tokens: toInt(u.cache_read_input_tokens ?? u.cache_read_tokens),
+    cache_write_tokens: toInt(u.cache_creation_input_tokens ?? u.cache_write_tokens),
+    context_window_size: size !== null && size > 0 ? Math.floor(size) : null,
+    context_used_pct: optNum(m.context_used_pct),
+    occurred_at: eventTime(m.occurred_at, now),
+  };
+}
+
 /**
  * Normalize a Claude Code payload (POST /api/ingest/claude-code).
  *
- * Accepts the documented flat contract AND a near-raw Claude Code
- * statusLine shape ({ model: {id}, cost: {...}, context_window:
- * { current_usage: {...} }, rate_limits: {...} }).
- *
- * Only incremental token counts (context_window.current_usage / usage)
- * are stored. Cumulative totals (total_input_tokens, total_cost_usd)
- * are deliberately ignored for summation.
+ * Usage comes from transcript messages, one per Anthropic message id, sent
+ * as { messages: [...] } (or one flat event whose event_id is that id). The
+ * statusLine re-fires several times per API call with a partial then a final
+ * snapshot, so its raw context_window.current_usage is never stored as usage:
+ * a raw statusLine payload only contributes quotas and the context gauge.
+ * Cost fields and cumulative totals are ignored.
  */
-function normalizeClaudeCode(body: unknown): NormalizedEvent {
+function normalizeClaudeCode(body: unknown): NormalizedBatch {
   const src: Obj = isObj(body) ? body : {};
   const now = nowSec();
-
   const cw = isObj(src.context_window) ? src.context_window : {};
-  const u: Obj = (isObj(src.usage) && src.usage) ||
-    (isObj(cw.current_usage) && cw.current_usage) || {};
+  const single = !Array.isArray(src.messages);
 
-  let model: string | null = null;
-  if (typeof src.model === "string") model = src.model;
-  else if (isObj(src.model)) {
-    model = str(src.model.id || src.model.display_name || null);
+  const messages: NormalizedMessage[] = [];
+  if (!single) {
+    for (const m of src.messages as unknown[]) {
+      const msg = isObj(m) ? toMessage(m, now) : null;
+      if (msg) messages.push(msg);
+    }
+  } else if (isObj(src.usage)) {
+    const msg = toMessage({
+      ...src,
+      context_window_size: cw.context_window_size ?? src.context_window_size,
+      context_used_pct: cw.used_percentage ?? src.context_used_pct,
+    }, now);
+    if (msg) messages.push(msg);
   }
 
   const limits: Obj = isObj(src.rate_limits) ? src.rate_limits : {};
@@ -87,39 +142,27 @@ function normalizeClaudeCode(body: unknown): NormalizedEvent {
     quotas.push({
       limit_type: key,
       used_pct: pct,
-      resets_at: w.resets_at !== undefined && w.resets_at !== null
-        ? toSec(w.resets_at, null)
-        : null,
+      resets_at: w.resets_at !== undefined && w.resets_at !== null ? toSec(w.resets_at, null) : null,
     });
   }
 
-  // Context fill of the conversation at this call (a gauge, not summed).
-  const ctxSize = optNum(cw.context_window_size ?? src.context_window_size);
-  const ctxPct = optNum(cw.used_percentage ?? src.context_used_pct);
-
-  const providedId =
-    (typeof src.event_id === "string" && src.event_id) ||
-    (typeof src.eventId === "string" && src.eventId) || null;
+  // Context gauge: explicit in a batch, or read from a raw statusLine payload.
+  const ctx: Obj = isObj(src.context) ? src.context : {};
+  const ctxSession = str(ctx.session_id ?? src.session_id ?? src.sessionId);
+  const ctxPct = optNum(ctx.used_pct ?? cw.used_percentage);
+  const ctxSize = optNum(ctx.window_size ?? cw.context_window_size);
+  const context = ctxSession && (ctxPct !== null || ctxSize !== null)
+    ? { session_id: ctxSession, used_pct: ctxPct, window_size: ctxSize !== null && ctxSize > 0 ? Math.floor(ctxSize) : null }
+    : null;
 
   return {
-    event_id: providedId || randomUUID(),
     tool: "claude-code",
-    session_id: str(src.session_id ?? src.sessionId),
-    prompt_id: str(src.prompt_id ?? src.promptId),
-    model,
-    input_tokens: toInt(u.input_tokens),
-    output_tokens: toInt(u.output_tokens),
-    cache_read_tokens: toInt(u.cache_read_input_tokens ?? u.cache_read_tokens),
-    cache_write_tokens: toInt(u.cache_creation_input_tokens ?? u.cache_write_tokens),
-    context_window_size: ctxSize !== null && ctxSize > 0 ? Math.floor(ctxSize) : null,
-    context_used_pct: ctxPct,
-    // A skewed device clock must not put usage in the future (heatmap,
-    // streaks, "today"); spooled events keep their older time.
-    occurred_at: src.occurred_at !== undefined ? Math.min(toSec(src.occurred_at, now), now) : now,
-    account_ref: typeof src.account_ref === "string" && src.account_ref
-      ? src.account_ref
-      : "default",
+    messages,
     quotas,
+    account_ref: typeof src.account_ref === "string" && src.account_ref ? src.account_ref : "default",
+    measured_at: eventTime(src.occurred_at, now),
+    context,
+    single,
   };
 }
 
@@ -127,16 +170,16 @@ function normalizeClaudeCode(body: unknown): NormalizedEvent {
  * One normalizer per tool slug, picked by the ingest URL
  * (/api/ingest/<slug>). A tool is ingestable once it has an entry here.
  */
-const normalizers = new Map<string, (body: unknown) => NormalizedEvent>([
+const normalizers = new Map<string, (body: unknown) => NormalizedBatch>([
   ["claude-code", normalizeClaudeCode],
 ]);
 
-export function normalizerFor(tool: string): ((body: unknown) => NormalizedEvent) | null {
+export function normalizerFor(tool: string): ((body: unknown) => NormalizedBatch) | null {
   return normalizers.get(tool) ?? null;
 }
 
-/** Empty snapshots (session start, zero tokens) carry no consumption. */
-export function hasConsumption(ev: NormalizedEvent): boolean {
-  return ev.input_tokens > 0 || ev.output_tokens > 0 ||
-    ev.cache_read_tokens > 0 || ev.cache_write_tokens > 0;
+/** Empty messages (zero tokens) carry no consumption. */
+export function hasConsumption(m: NormalizedMessage): boolean {
+  return m.input_tokens > 0 || m.output_tokens > 0 ||
+    m.cache_read_tokens > 0 || m.cache_write_tokens > 0;
 }

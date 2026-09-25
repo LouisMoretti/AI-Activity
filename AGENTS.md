@@ -104,7 +104,7 @@ extension.
 ## 3. Architecture
 
 ```
-Claude Code statusLine (bash POST, on the user's device, NOT this repo)
+Claude Code statusLine one-liner (python3 via setsid, on the user's device; README.md)
    │  HTTPS  Authorization: Bearer <device key> (never in the URL)
    ▼
 Node server (Hono + TypeScript, server/) + SQLite (better-sqlite3)
@@ -156,8 +156,10 @@ Components never branch on live vs demo: both sources map into the same
 - The first account is created with the setup code or `npm run user --
   add`: both need access to the server, so whoever reaches the public
   tunnel first cannot take it.
-- The local collector is just a bash `POST` from the Claude Code statusLine.
-  This repo only provides the endpoint plus the documented contract below.
+- The collector is a one-liner in the Claude Code statusLine (README.md,
+  exercised by `test/collector.test.js`): it reads the tail of the local
+  transcript and posts one entry per Anthropic message id, detached with
+  `setsid -f` so Claude Code cancelling the status line does not kill it.
 - Never transmit prompts, transcripts, or provider keys — metrics only.
 
 ## 4. Data model (SQLite, `data/dashboard.db`)
@@ -168,8 +170,11 @@ Components never branch on live vs demo: both sources map into the same
 - `settings` — server-wide key/value settings set from the admin panel
   (`signup_open`: `0` closes account creation; absent means open).
 
-- `usage_events` — one row per **incremental** consumption event: tokens
-  consumed since the last event, model, session/task id, device, date.
+- `usage_events` — one row per **Anthropic message id** (`event_id`,
+  `source = 'message'`): that API response's tokens, model, session,
+  device, date. Rows from the old statusLine snapshot collector have
+  `source = 'snapshot'` and counted most API calls about twice; a session's
+  snapshot rows are deleted as soon as messages of that session arrive.
 - `quota_snapshots` — one row per observed quota window
   (`five_hour`, `seven_day`): account, limit type, % used, window length,
   reset time, measurement date. Latest snapshot wins; never summed.
@@ -183,8 +188,10 @@ Counting rules:
   separate from assistant replies and tool calls (the statusLine JSON alone
   does not provide this count; it can be enriched from local session files —
   otherwise the UI shows "Unavailable").
-- Only sum **incremental** token counts (`context_window.current_usage`).
-  Never sum cumulative counters (`total_input_tokens`, `total_cost_usd`) or
+- Count each message id once, with its final counts (the transcript may
+  write a partial entry first). Never store the statusLine's
+  `context_window.current_usage`: it re-fires with a partial then a final
+  snapshot per API call. Never sum cumulative counters (`total_input_tokens`, `total_cost_usd`) or
   observed quotas across devices of the same account.
 - Missing data is displayed as "Unavailable", never interpolated.
 
@@ -198,93 +205,75 @@ Unknown or revoked keys → `401`. Small JSON bodies only (256 KB max).
 The payload's `tool` is optional; when present it must equal the slug
 (`400` otherwise).
 
+A batch of transcript messages (what the README collector sends):
+
 ```json
 {
-  "event_id": "uuid generated once, replayed identically on retry",
-  "tool": "claude-code",
-  "session_id": "abc123",
-  "prompt_id": "550e8400-... (dedup key when present)",
-  "model": "claude-opus-5-5",
-  "usage": {
-    "input_tokens": 8500,
-    "output_tokens": 1200,
-    "cache_creation_input_tokens": 5000,
-    "cache_read_input_tokens": 2000
-  },
+  "messages": [
+    {
+      "message_id": "msg_011CfQ1q3CGJXyE6UmWhehGs",
+      "session_id": "7d891161-…",
+      "model": "claude-opus-5-5",
+      "occurred_at": 1790334657,
+      "usage": {
+        "input_tokens": 2,
+        "output_tokens": 281,
+        "cache_creation_input_tokens": 19373,
+        "cache_read_input_tokens": 20882
+      }
+    }
+  ],
   "rate_limits": {
     "five_hour": { "used_percentage": 23.5, "resets_at": 1738425600 },
     "seven_day": { "used_percentage": 41.2, "resets_at": 1738857600 }
   },
-  "occurred_at": 1738425600,
+  "context": { "session_id": "7d891161-…", "used_pct": 42, "window_size": 200000 },
+  "occurred_at": 1790334657,
   "account_ref": "default"
 }
 ```
 
+→ `{ok, messages, stored, updated, deduped}`. One flat event is also
+accepted: its `event_id` is the message id (`usage`, `session_id`, `model`,
+`occurred_at` at the top level) → `{ok, stored, updated, deduped, event_id}`.
+
 Notes:
 
-- The server also accepts the near-raw statusLine shape (`model: {id}`,
-  `context_window: {current_usage: {...}}`, `rate_limits`). Cost fields
-  (`cost`, `cost_estimated_usd_delta`) are ignored: the dashboard does not
-  track cost.
-- Dedup: `event_id` primary key (`INSERT OR IGNORE`) plus an identical-snapshot
-  guard per `(device_id, prompt_id, token tuple, model)`. The statusLine fires
-  several times per prompt (one snapshot per API call in the agentic loop, plus
-  unchanged re-fires); each distinct snapshot is one call's consumption and is
-  kept, only byte-identical re-fires are dropped. Dropping everything after the
-  first snapshot per prompt undercounts ~3x (measured against session files).
-  Replays return `{"ok":true,"deduped":true}`.
-- Empty snapshots (zero tokens, e.g. session-start triggers)
-  store no usage row (`stored: false`) but their quota snapshots are still
-  recorded.
-- Offline recovery: the collector spools unsent payloads with their original
-  `occurred_at` and replays them in order; the server orders by `occurred_at`.
+- Dedup: `event_id` = Anthropic message id, stored once. Claude Code writes
+  a response in several transcript entries, sometimes a partial one (a few
+  output tokens) before the final one: a message seen again with more
+  output tokens replaces the stored counts (`updated`), anything else is a
+  replay (`deduped`). A message id stored by another account is never
+  touched. The collector resends the recent messages on every refresh;
+  that is safe by design.
+- Entries without a message id store no usage, and neither does a raw
+  statusLine payload (`context_window.current_usage`): it re-fires with a
+  partial then a final snapshot per API call, which counted about twice.
+  Such a payload still records its quotas and context gauge.
+- When messages of a session arrive, that session's old `snapshot` rows
+  are deleted, so the two never add up (README: import past sessions).
+- Context gauge: `context` (or a raw statusLine `context_window`) is put on
+  the session's newest row; `recentSessions` shows the latest one.
+- Empty messages (zero tokens) store no row.
 - Quotas: every window with a numeric `used_percentage` becomes a snapshot
-  row dated by the event's `occurred_at` (so spool replays never overwrite a
-  newer value). The dashboard reads the latest row per
-  `(account_ref, limit_type)`.
+  row dated by the payload's `occurred_at` (capped at now), so a replayed
+  payload never overwrites a newer value. The dashboard reads the latest row
+  per `(account_ref, limit_type)`. Cost fields are ignored.
 
-### Claude Code statusLine → payload mapping
+### Claude Code sources → payload mapping
 
-Official contract: https://code.claude.com/docs/en/statusline
-
-| statusLine field | Payload field |
+| Source | Payload field |
 | --- | --- |
-| `session_id` | `session_id` |
-| `prompt_id` | `prompt_id` |
-| `model.id` | `model` |
-| `context_window.current_usage` | `usage` (incremental, summed) |
-| `context_window.used_percentage` | `context_used_pct` (gauge, latest per session, never summed) |
-| `context_window.context_window_size` | `context_window_size` |
-| `rate_limits.*.used_percentage` / `resets_at` | `rate_limits` snapshots |
-| absent `rate_limits` | show "Unavailable" |
+| transcript `message.id` | `messages[].message_id` (dedup key) |
+| transcript `sessionId` (also on subagent files) | `messages[].session_id` |
+| transcript `message.model`, `timestamp` | `model`, `occurred_at` |
+| transcript `message.usage` (4 counters) | `messages[].usage` |
+| statusLine `rate_limits.*` | `rate_limits` snapshots (absent → "Unavailable") |
+| statusLine `context_window.used_percentage` / `context_window_size` | `context` gauge, never summed |
 
-### Minimal collector example (reference only, runs on the device)
-
-```bash
-#!/bin/bash
-# ~/.claude/statusline-post.sh — reads statusLine JSON on stdin,
-# POSTs metrics, never changes the visible status line output.
-input=$(cat)
-ENDPOINT="https://<tunnel-url>/api/ingest/claude-code"
-KEY="<device key from npm run gen-key>"
-SPOOL=~/.ai-usage/spool
-mkdir -p "$SPOOL"
-event_id=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen)
-payload=$(echo "$input" | jq -c --arg eid "$event_id" '{
-  event_id: $eid, tool: "claude-code",
-  session_id: .session_id, prompt_id: .prompt_id,
-  model: (.model.id // .model.display_name),
-  usage: (.context_window.current_usage // {}),
-  rate_limits: (.rate_limits // {}),
-  occurred_at: now | floor
-}')
-echo "$payload" > "$SPOOL/$event_id.json"
-for f in "$SPOOL"/*.json; do
-  curl -sf -X POST "$ENDPOINT" -H "Authorization: Bearer $KEY" \
-    -H 'content-type: application/json' --data @"$f" && rm -f "$f" || break
-done
-echo "[$?] claude"   # visible status line stays minimal
-```
+Transcripts: `~/.claude/projects/<project>/<session>.jsonl`, subagents in
+`<session>/subagents/agent-*.jsonl` (same `sessionId`, never in the main
+file). Only ids, model, time and counts leave the device, never content.
 
 ## 6. Viewer + device APIs
 
@@ -360,11 +349,13 @@ account exists):
 ## 7. Testing checklist (acceptance criteria)
 
 1. Real Claude Code activity → new tokens and sessions appear, no duplicates.
-2. Replay the same `event_id` (or same device + `prompt_id`) → `deduped: true`,
-   totals unchanged.
+2. Resend the same message ids (every status line refresh does) →
+   `deduped`, totals unchanged; a partial then final entry counts once.
 3. Two devices, same account → quota cards show the latest snapshot, not a sum.
-4. Collector spool replayed after a network outage with old `occurred_at` →
-   ordered correctly by event time.
+4. Server unreachable for a while → the next refreshes resend the last 300
+   transcript lines with their original times; older gaps are filled by
+   the README import command. Killing the status line command (its whole
+   process group) does not stop the detached upload.
 5. Payload without `rate_limits` → quota card shows "Unavailable".
 6. Payload after `resets_at` passed → new snapshot replaces the old window.
 7. `?demo=1` still shows labeled fictional data (after sign-in); normal view
@@ -383,8 +374,8 @@ account exists):
 KEY=<device key>
 curl -s localhost:3000/api/ingest/claude-code -H "Authorization: Bearer $KEY" \
   -H 'content-type: application/json' -d '{
-  "event_id":"test-1","tool":"claude-code","session_id":"s1",
-  "prompt_id":"p1","model":"claude-opus-5-5",
+  "event_id":"msg_test_1","tool":"claude-code","session_id":"s1",
+  "model":"claude-opus-5-5",
   "usage":{"input_tokens":100,"output_tokens":50,
     "cache_creation_input_tokens":10,"cache_read_input_tokens":20},
   "rate_limits":{"five_hour":{"used_percentage":23.5,"resets_at":1999999999}},
