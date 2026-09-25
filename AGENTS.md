@@ -165,7 +165,7 @@ Components never branch on live vs demo: both sources map into the same
 ## 4. Data model (SQLite, `data/dashboard.db`)
 
 - `users` — viewer accounts (`username` unique, case-insensitive;
-  `password_hash`, `is_admin`, `disabled`, `avatar_url`). Every other table carries
+  `password_hash`, `is_admin`, `disabled`, `avatar_url`). Device, usage, quota and session tables carry
   `user_id`. `viewer_sessions` holds hashed session tokens with expiry.
 - `settings` — server-wide key/value settings set from the admin panel
   (`signup_open`: `0` closes account creation; absent means open).
