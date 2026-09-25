@@ -1,9 +1,6 @@
 import { Hono, type Context } from "hono";
 import type { AuthStatus } from "../../shared/types.ts";
-import {
-  accountsExist, createAccount, createFirstAccount, findUsableInvite, findUserByUsername, hashKey, redeemInvite,
-  signupOpen,
-} from "../db/queries.ts";
+import { accountsExist, createAccount, createFirstAccount, findUserByUsername } from "../db/queries.ts";
 import type { DB } from "../db/schema.ts";
 import { readJson } from "../lib/http.ts";
 import {
@@ -51,16 +48,14 @@ export function authRoutes(db: DB, auth: ViewerAuth, setupCode: string | null) {
         authenticated: Boolean(who),
         user: who?.account ?? null,
         setup_required: !accountsExist(db),
-        signup_open: signupOpen(db),
       });
     })
-    // Open sign-up from the sign-in page, while an admin allows it.
+    // Sign-up is open to anyone once the first (admin) account exists.
     .post("/register", async (c) => {
       const body = await readJson(c);
       const limited = throttle(c);
       if (limited) return limited;
       if (!accountsExist(db)) return c.json({ error: "create the first account with the setup code" }, 409);
-      if (!signupOpen(db)) return c.json({ error: "sign-up is closed: ask an admin for an invite link" }, 403);
       if (Date.now() - signupWindow > SIGNUP_WINDOW_MS) {
         signups = new Map();
         signupWindow = Date.now();
@@ -122,34 +117,6 @@ export function authRoutes(db: DB, auth: ViewerAuth, setupCode: string | null) {
         password_hash: await hashPassword(fields.password), is_admin: true,
       });
       if (id === null) return c.json({ error: "an account already exists: sign in" }, 409);
-      auth.login(c, id);
-      return c.json({ ok: true });
-    })
-    .get("/invite/:token", (c) => {
-      const invite = findUsableInvite(db, hashKey(c.req.param("token")));
-      return c.json({ valid: Boolean(invite), expires_at: invite?.expires_at ?? null });
-    })
-    // Account from an admin's invite link (single use, expires).
-    .post("/signup", async (c) => {
-      const body = await readJson(c);
-      const limited = throttle(c);
-      if (limited) return limited;
-      const tokenHash = hashKey(text(body.invite));
-      if (!findUsableInvite(db, tokenHash)) {
-        auth.record(c, false);
-        return c.json({ error: "this invite link is invalid, used or expired" }, 404);
-      }
-      const fields = newAccountFields(body);
-      if (typeof fields === "string") return c.json({ error: fields }, 400);
-      const password_hash = await hashPassword(fields.password);
-      let id: number | null;
-      try {
-        id = redeemInvite(db, tokenHash, { username: fields.username, display_name: fields.display_name, password_hash });
-      } catch (err) {
-        if (isTaken(err)) return c.json({ error: "that username is taken" }, 409);
-        throw err;
-      }
-      if (id === null) return c.json({ error: "this invite link is invalid, used or expired" }, 404);
       auth.login(c, id);
       return c.json({ ok: true });
     })

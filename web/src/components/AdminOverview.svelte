@@ -2,40 +2,25 @@
   import { onMount } from "svelte";
   import type { AdminOverview } from "../../../shared/types.ts";
   import { api } from "../lib/api.ts";
-  import { fmtAgo, fmtCompact } from "../lib/format.ts";
   import { clock } from "../lib/clock.svelte.ts";
+  import { fmtAgo, fmtCompact } from "../lib/format.ts";
 
   let o = $state<AdminOverview | null>(null);
-  let signupOpen = $state<boolean | null>(null);
   let error = $state("");
-  let saving = $state(false);
 
   onMount(async () => {
     try {
-      [o, signupOpen] = await Promise.all([api.adminOverview(), api.adminSettings().then((s) => s.signup_open)]);
+      o = await api.adminOverview();
     } catch (e) {
       error = (e as Error).message;
     }
   });
 
-  async function toggle() {
-    if (signupOpen === null) return;
-    saving = true;
-    error = "";
-    try {
-      signupOpen = (await api.setSignupOpen(!signupOpen)).signup_open;
-    } catch (e) {
-      error = (e as Error).message;
-    } finally {
-      saving = false;
-    }
-  }
-
   const tiles = $derived(o ? [
     { label: "Accounts", value: String(o.accounts), note: o.disabled_accounts ? `${o.disabled_accounts} disabled` : "all enabled" },
     { label: "Devices", value: String(o.devices), note: "live ingestion keys" },
     { label: "Conversations", value: fmtCompact(o.sessions), note: `${fmtCompact(o.events)} API calls` },
-    { label: "Last usage received", value: o.last_event_at ? fmtAgo(o.last_event_at, clock.now) : "Never", note: `${o.pending_invites} pending invite${o.pending_invites === 1 ? "" : "s"}` },
+    { label: "Last usage received", value: o.last_event_at ? fmtAgo(o.last_event_at, clock.now) : "Never", note: "any account" },
   ] : []);
 </script>
 
@@ -46,20 +31,6 @@
     {/each}
   </div>
 {/if}
-
-{#if signupOpen !== null}
-  <div class="setting">
-    <div>
-      <strong>Open sign-up</strong>
-      <small>{signupOpen
-        ? "Anyone can create an account from the sign-in page."
-        : "Closed: new accounts need an invite link or an admin."}</small>
-    </div>
-    <button type="button" role="switch" aria-checked={signupOpen} aria-label="Open sign-up" disabled={saving} onclick={toggle}>
-      <span class="knob"></span>
-    </button>
-  </div>
-{/if}
 {#if error}<p class="error" role="alert">{error}</p>{/if}
 
 <style>
@@ -68,12 +39,5 @@
   .tile small { font-size: 12px; color: var(--muted); }
   .tile strong { font-size: 20px; font-weight: 600; }
   .tile span { font-size: 12px; color: var(--faint); }
-  .setting { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-top: 16px; border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 20px; }
-  .setting strong { display: block; font-weight: 500; }
-  .setting small { font-size: 12px; color: var(--muted); }
-  [role="switch"] { flex: none; width: 40px; height: 22px; border-radius: 999px; background: var(--track); border: 1px solid var(--line); position: relative; padding: 0; }
-  [role="switch"][aria-checked="true"] { background: var(--accent); }
-  .knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--text); transition: left .15s; }
-  [aria-checked="true"] .knob { left: 20px; background: var(--bg); }
   .error { color: var(--warn); margin-top: 8px; font-size: 13px; }
 </style>

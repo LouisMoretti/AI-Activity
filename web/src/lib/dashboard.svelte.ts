@@ -1,5 +1,5 @@
 // App state: sign-in, the current page (sign-in at /, a public profile at
-// /u/<username>, /settings, /invite/<token>), data source (live or
+// /u/<username>, /settings, /admin), data source (live or
 // ?demo=1), provider filter, session paging, and the 15 s auto-refresh
 // (skipped while hidden or already in flight).
 import { api, NotFoundError, UnauthorizedError, type NewAccount } from "./api.ts";
@@ -12,8 +12,7 @@ export type Route =
   | { page: "home" }
   | { page: "profile"; username: string }
   | { page: "settings" }
-  | { page: "admin" }
-  | { page: "invite"; token: string };
+  | { page: "admin" };
 
 /**
  * "signed-out": sign-in screen; "setup": no account exists yet;
@@ -42,8 +41,6 @@ function routeFromPath(): Route {
   const path = location.pathname;
   const profile = path.match(/^\/u\/([^/]+)\/?$/);
   if (profile) return { page: "profile", username: decodeURIComponent(profile[1]) };
-  const invite = path.match(/^\/invite\/([^/]+)\/?$/);
-  if (invite) return { page: "invite", token: decodeURIComponent(invite[1]) };
   if (/^\/settings\/?$/.test(path)) return { page: "settings" };
   if (/^\/admin\/?$/.test(path)) return { page: "admin" };
   return { page: "home" };
@@ -69,8 +66,6 @@ export class Dashboard {
   sessionsLimit = $state(SESSIONS_PAGE);
   /** The signed-in account; null when signed out. */
   account = $state<Account | null>(null);
-  /** Anyone may create an account from the sign-in page. */
-  signupOpen = $state(false);
   /** Every profile, for the switcher (signed in only). */
   profiles = $state<Profile[]>([]);
   /** The profile on screen. */
@@ -101,7 +96,6 @@ export class Dashboard {
     try {
       const auth = await api.authStatus();
       this.account = auth.user;
-      this.signupOpen = auth.signup_open;
       if (!auth.user) {
         this.profiles = [];
         if (route.page === "profile") await this.loadProfile(route.username);
@@ -193,14 +187,10 @@ export class Dashboard {
     return null;
   }
 
-  /**
-   * Create an account and sign in: the first one (setup code), one from an
-   * invite link, or an open sign-up from the sign-in page.
-   */
+  /** Create an account and sign in: the first one (setup code), or a sign-up. */
   async createAccount(a: NewAccount, setupCode: string | null): Promise<string | null> {
     try {
       if (setupCode !== null) await api.setup(setupCode, a);
-      else if (this.route.page === "invite") await api.signup(this.route.token, a);
       else await api.register(a);
     } catch (e) {
       // The only 401 here is a wrong setup code.

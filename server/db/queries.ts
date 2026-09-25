@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
-  Account, ActivityDay, AdminOverview, AdminUser, Invite, Profile, Breakdown, BreakdownRow, Device, Quota, Session,
+  Account, ActivityDay, AdminOverview, AdminUser, Profile, Breakdown, BreakdownRow, Device, Quota, Session,
 } from "../../shared/types.ts";
 import { nowSec, type DB } from "./schema.ts";
 
@@ -144,18 +144,6 @@ export function createAccount(
   })();
 }
 
-/** Anyone may create an account from the sign-in page (default: yes). */
-export function signupOpen(db: DB): boolean {
-  const row = db.prepare("SELECT value FROM app_settings WHERE key = 'signup_open'").get() as { value: string } | undefined;
-  return row ? row.value === "1" : true;
-}
-
-export function setSignupOpen(db: DB, open: boolean): void {
-  db.prepare(
-    "INSERT INTO app_settings (key, value) VALUES ('signup_open', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-  ).run(open ? "1" : "0");
-}
-
 /** Counts for the admin overview. */
 export function adminOverview(db: DB): AdminOverview {
   const n = (sql: string) => (db.prepare(sql).get() as { n: number | null }).n ?? 0;
@@ -166,60 +154,12 @@ export function adminOverview(db: DB): AdminOverview {
     events: n("SELECT COUNT(*) AS n FROM usage_events"),
     sessions: n("SELECT COUNT(DISTINCT session_id) AS n FROM usage_events"),
     last_event_at: (db.prepare("SELECT MAX(received_at) AS n FROM usage_events").get() as { n: number | null }).n,
-    pending_invites: listPendingInvites(db).length,
   };
 }
 
 /** Create the first account only; null when one already exists (lost race). */
 export function createFirstAccount(db: DB, a: Parameters<typeof createAccount>[1]): number | null {
   return db.transaction(() => (accountsExist(db) ? null : createAccount(db, a)))();
-}
-
-export function createInvite(db: DB, tokenHash: string, createdBy: number, expiresAt: number): number {
-  return Number(db
-    .prepare("INSERT INTO invites (token_hash, created_by, created_at, expires_at) VALUES (?, ?, ?, ?)")
-    .run(tokenHash, createdBy, nowSec(), expiresAt).lastInsertRowid);
-}
-
-const USABLE_INVITE = "used_by IS NULL AND revoked = 0 AND expires_at > ?";
-
-/** Invites that can still be used, newest first. */
-export function listPendingInvites(db: DB): Invite[] {
-  return db
-    .prepare(
-      `SELECT i.id, i.created_at, i.expires_at, COALESCE(u.username, '') AS created_by
-       FROM invites i LEFT JOIN users u ON u.id = i.created_by
-       WHERE ${USABLE_INVITE}
-       ORDER BY i.id DESC`
-    )
-    .all(nowSec()) as Invite[];
-}
-
-export function revokeInvite(db: DB, id: number): boolean {
-  return db.prepare(`UPDATE invites SET revoked = 1 WHERE id = ? AND ${USABLE_INVITE}`).run(id, nowSec()).changes > 0;
-}
-
-export function findUsableInvite(db: DB, tokenHash: string): { id: number; expires_at: number } | null {
-  return (db
-    .prepare(`SELECT id, expires_at FROM invites WHERE token_hash = ? AND ${USABLE_INVITE}`)
-    .get(tokenHash, nowSec()) as { id: number; expires_at: number } | undefined) ?? null;
-}
-
-/**
- * Create an account from an invite and use the invite up, atomically.
- * Null when the invite is no longer usable. Throws SQLITE_CONSTRAINT_UNIQUE
- * when the username is taken.
- */
-export function redeemInvite(
-  db: DB, tokenHash: string, a: Omit<Parameters<typeof createAccount>[1], "is_admin">
-): number | null {
-  return db.transaction(() => {
-    const invite = findUsableInvite(db, tokenHash);
-    if (!invite) return null;
-    const id = createAccount(db, { ...a, is_admin: false });
-    db.prepare("UPDATE invites SET used_by = ?, used_at = ? WHERE id = ?").run(id, nowSec(), invite.id);
-    return id;
-  })();
 }
 
 export function setPasswordHash(db: DB, userId: number, hash: string): void {

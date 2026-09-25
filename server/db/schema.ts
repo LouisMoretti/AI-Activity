@@ -69,9 +69,9 @@ function migrate(db: DB): void {
       ON quota_snapshots(user_id, account_ref, limit_type, measured_at);
   `);
 
-  // Databases from before the cost feature was removed may still hold
-  // usage_events.cost_estimated_usd and the billing_records / subscriptions
-  // tables: they are left as is and never read or written.
+  // Older databases may still hold usage_events.cost_estimated_usd and the
+  // billing_records / subscriptions / invites / app_settings tables from
+  // removed features: they are left as is and never read or written.
 
   // Additive column migrations (SQLite has no ADD COLUMN IF NOT EXISTS).
   const cols = new Set(
@@ -108,20 +108,6 @@ function migrate(db: DB): void {
       created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_viewer_sessions_user ON viewer_sessions(user_id);
-    CREATE TABLE IF NOT EXISTS app_settings (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS invites (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      token_hash TEXT NOT NULL UNIQUE,
-      created_by INTEGER NOT NULL REFERENCES users(id),
-      created_at INTEGER NOT NULL,
-      expires_at INTEGER NOT NULL,
-      used_by INTEGER REFERENCES users(id),
-      used_at INTEGER,
-      revoked INTEGER NOT NULL DEFAULT 0
-    );
   `);
 
   // Ensure at least one user exists: before any account is set up, every

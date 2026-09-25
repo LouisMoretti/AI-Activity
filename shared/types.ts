@@ -113,8 +113,6 @@ export interface AuthStatus {
   user: Account | null;
   /** No account exists yet: the first one needs the setup code (or the CLI). */
   setup_required: boolean;
-  /** Anyone may create an account from the sign-in page (admin setting). */
-  signup_open: boolean;
 }
 
 /** Admin panel overview (whole server, all accounts). */
@@ -127,20 +125,6 @@ export interface AdminOverview {
   sessions: number;
   /** When the server last received usage, or null. */
   last_event_at: number | null;
-  pending_invites: number;
-}
-
-export interface AdminSettings {
-  signup_open: boolean;
-}
-
-/** A pending invite link, as listed for admins (the token is never listed). */
-export interface Invite {
-  id: number;
-  created_at: number;
-  expires_at: number;
-  /** Username of the admin who created it. */
-  created_by: string;
 }
 
 /** A profile page anyone signed in can open (read-only usage). */

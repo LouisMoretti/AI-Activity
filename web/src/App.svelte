@@ -7,7 +7,6 @@
   import CodexCard from "./components/CodexCard.svelte";
   import Conversations from "./components/Conversations.svelte";
   import DevicesPanel from "./components/DevicesPanel.svelte";
-  import InviteSignup from "./components/InviteSignup.svelte";
   import Logo from "./components/Logo.svelte";
   import NewAccountForm from "./components/NewAccountForm.svelte";
   import OpenCodeCard from "./components/OpenCodeCard.svelte";
@@ -62,17 +61,8 @@
     </div>
   </header>
 
-  {#if dash.route.page === "invite"}
-    {#if dash.status === "signed-out"}
-      <InviteSignup token={dash.route.token} oncreate={(a, c) => dash.createAccount(a, c)} onsignin={() => dash.go("/")} />
-    {:else if dash.account}
-      <p class="gate">
-        This is an invite link for someone else: open it signed out, e.g. in a private window.
-        <button type="button" onclick={() => dash.go("/")}>Go to your profile</button>
-      </p>
-    {/if}
-  {:else if dash.status === "signed-out"}
-    <AuthPanel signupOpen={dash.signupOpen} onlogin={(u, p) => dash.login(u, p)} oncreate={(a, c) => dash.createAccount(a, c)} />
+  {#if dash.status === "signed-out"}
+    <AuthPanel onlogin={(u, p) => dash.login(u, p)} oncreate={(a, c) => dash.createAccount(a, c)} />
   {:else if dash.status === "setup"}
     <NewAccountForm withSetupCode title="Create the first account"
       intro="No account exists yet. The setup code is printed in the server log. This account becomes the admin and keeps the data collected so far."

@@ -3,9 +3,7 @@
   import NewAccountForm from "./NewAccountForm.svelte";
   import Segmented from "./Segmented.svelte";
 
-  let { signupOpen, onlogin, oncreate }: {
-    /** An admin allows creating accounts from here. */
-    signupOpen: boolean;
+  let { onlogin, oncreate }: {
     onlogin: (username: string, password: string) => Promise<string | null>;
     oncreate: (a: NewAccount, setupCode: string | null) => Promise<string | null>;
   } = $props();
@@ -43,11 +41,9 @@
       <button type="submit" disabled={busy}>Sign in</button>
       {#if error}<p class="error" role="alert">{error}</p>{/if}
     </form>
-  {:else if signupOpen}
+  {:else}
     <NewAccountForm framed={false} submitLabel="Create account" {oncreate}
       intro="Your profile page is public: anyone with its link sees your usage, never your devices or settings." />
-  {:else}
-    <p class="muted">Sign-up is closed. Ask an admin for an invite link.</p>
   {/if}
 </div>
 
