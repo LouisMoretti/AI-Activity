@@ -157,9 +157,11 @@ Components never branch on live vs demo: both sources map into the same
   add`: both need access to the server, so whoever reaches the public
   tunnel first cannot take it.
 - The collector is a one-liner in the Claude Code statusLine (README.md,
-  exercised by `test/collector.test.js`): it reads the tail of the local
-  transcript and posts one entry per Anthropic message id, detached with
-  `setsid -f` so Claude Code cancelling the status line does not kill it.
+  exercised by `test/collector.test.js`): it reads what was added to every
+  local transcript since the last accepted upload (byte offsets in
+  `~/.cache/ai-activity/offsets.json`; the first run imports all history)
+  and posts one entry per Anthropic message id, detached with `setsid -f`
+  so Claude Code cancelling the status line does not kill it.
 - Never transmit prompts, transcripts, or provider keys — metrics only.
 
 ## 4. Data model (SQLite, `data/dashboard.db`)
@@ -174,10 +176,12 @@ Components never branch on live vs demo: both sources map into the same
   `source = 'message'`): that API response's tokens, model, session,
   device, date. Rows from the old statusLine snapshot collector have
   `source = 'snapshot'` and counted most API calls about twice; a session's
-  snapshot rows are deleted from the time of its oldest message received.
+  snapshot rows are deleted from the time of its oldest message received
+  (minus 2 minutes: a snapshot is stamped when the statusLine fired).
 - `quota_snapshots` — one row per observed quota window
-  (`five_hour`, `seven_day`): account, limit type, % used, window length,
-  reset time, measurement date. Latest snapshot wins; never summed.
+  (`five_hour`, `seven_day`): account, limit type, % used, reset time,
+  measurement date (an unchanged value only moves the latest row's
+  measurement date forward). Never summed; see §5 for which row is shown.
 - Migrations are additive (`ADD COLUMN` when missing) and also drop the
   leftovers of removed features: `usage_events.cost_estimated_usd` and the
   `billing_records`, `subscriptions`, `invites`, `app_settings` tables.
@@ -252,16 +256,19 @@ Notes:
   partial then a final snapshot per API call, which counted about twice.
   Such a payload still records its quotas and context gauge.
 - When messages of a session arrive, that session's old `snapshot` rows
-  from the oldest of those messages on are deleted, so the two never add
-  up. The live collector only resends the transcript tail, so earlier
-  snapshot rows stay until the README import covers the whole session.
+  from 2 minutes before the oldest of those messages on are deleted, so the
+  two never add up. The collector's first run sends whole transcripts, so
+  every session still on disk is fully replaced.
 - Context gauge: `context` (or a raw statusLine `context_window`) is put on
   the session's newest row; `recentSessions` shows the latest one.
 - Empty messages (zero tokens) store no row.
-- Quotas: every window with a numeric `used_percentage` becomes a snapshot
-  row dated by the payload's `occurred_at` (capped at now), so a replayed
-  payload never overwrites a newer value. The dashboard reads the latest row
-  per `(account_ref, limit_type)`. Cost fields are ignored.
+- Quotas: every window with a numeric `used_percentage` (or `used_pct`) is
+  recorded, dated by the payload's `occurred_at` (capped at now). A device
+  can post stale values (a terminal that has not called the API yet), so
+  per `(account_ref, limit_type)` the dashboard shows, among the rows
+  measured in the day before the latest one, the window that resets last
+  and its highest `used_pct` (usage only rises within a window). Cost
+  fields are ignored.
 
 ### Claude Code sources → payload mapping
 
@@ -354,11 +361,11 @@ account exists):
 1. Real Claude Code activity → new tokens and sessions appear, no duplicates.
 2. Resend the same message ids (every status line refresh does) →
    `deduped`, totals unchanged; a partial then final entry counts once.
-3. Two devices, same account → quota cards show the latest snapshot, not a sum.
-4. Server unreachable for a while → the next refreshes resend the last 300
-   transcript lines with their original times; older gaps are filled by
-   the README import command. Killing the status line command (its whole
-   process group) does not stop the detached upload.
+3. Two devices, same account → quota cards show the current window's value,
+   not a sum, and a stale post from the other device does not lower it.
+4. Server unreachable for a while → offsets do not move, the next refresh
+   sends the whole backlog with original times. Killing the status line
+   command (its whole process group) does not stop the detached upload.
 5. Payload without `rate_limits` → quota card shows "Unavailable".
 6. Payload after `resets_at` passed → new snapshot replaces the old window.
 7. `?demo=1` still shows labeled fictional data (after sign-in); normal view

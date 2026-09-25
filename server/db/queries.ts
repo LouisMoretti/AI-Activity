@@ -306,10 +306,14 @@ export function upsertUsageEvent(db: DB, ev: UsageEventInput): UpsertResult {
  * the transcript tail; the README import covers whole sessions).
  */
 export function dropSnapshotRows(db: DB, userId: number, sessionId: string, sinceSec: number): number {
+  // A snapshot is stamped when the statusLine fired, which can be up to about
+  // a minute before the transcript's timestamp for the same API call.
   return db
     .prepare("DELETE FROM usage_events WHERE user_id = ? AND session_id = ? AND source = 'snapshot' AND occurred_at >= ?")
-    .run(userId, sessionId, sinceSec).changes;
+    .run(userId, sessionId, sinceSec - SNAPSHOT_SLACK_SEC).changes;
 }
+
+const SNAPSHOT_SLACK_SEC = 120;
 
 /** Put the session's latest context fill on its newest row (a gauge, never summed). */
 export function setSessionContext(
@@ -353,20 +357,29 @@ export function insertQuotaSnapshot(db: DB, q: QuotaSnapshotInput): void {
 }
 
 /**
- * Latest snapshot per (account_ref, limit_type). Never summed across devices.
- * measured_at has 1 s resolution and the statusLine fires in bursts, so ties
- * are broken by insertion order (id) to always return exactly one row.
+ * Current value per (account_ref, limit_type). Never summed across devices.
+ *
+ * A device can post stale rate_limits (a second terminal that has not made
+ * an API call yet), so "last posted" is not "current". Among the rows
+ * measured in the day before the latest one, the window that resets last is
+ * the current one, and within a window the usage only goes up: show its
+ * highest percentage. The one-day bound keeps an old bogus far-future
+ * resets_at from pinning a window forever.
  */
 export function latestQuotas(db: DB, userId: number): Quota[] {
   return db
     .prepare(
-      `SELECT account_ref, tool, limit_type, used_pct, resets_at, measured_at FROM (
-         SELECT q.*, ROW_NUMBER() OVER (
-           PARTITION BY account_ref, limit_type
-           ORDER BY measured_at DESC, id DESC
-         ) AS rn
+      `WITH recent AS (
+         SELECT q.*, MAX(measured_at) OVER (PARTITION BY account_ref, limit_type) AS last
          FROM quota_snapshots q WHERE user_id = ?
-       ) WHERE rn = 1
+       ), live AS (
+         SELECT *, MAX(COALESCE(resets_at, -1)) OVER (PARTITION BY account_ref, limit_type) AS win
+         FROM recent WHERE measured_at >= last - 86400
+       )
+       SELECT account_ref, MAX(tool) AS tool, limit_type, MAX(used_pct) AS used_pct,
+              resets_at, MAX(measured_at) AS measured_at
+       FROM live WHERE COALESCE(resets_at, -1) = win
+       GROUP BY account_ref, limit_type
        ORDER BY account_ref, limit_type`
     )
     .all(userId) as Quota[];

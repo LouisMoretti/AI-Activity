@@ -145,6 +145,41 @@ describe("basics (signed in as the test admin)", () => {
     assert.equal((await stats()).total_tokens - mid.total_tokens, 505 + 1 + 505);
   });
 
+  test("a snapshot stamped just before its message is replaced too", async () => {
+    const mid = await stats();
+    const db = new Database(srv.dbPath);
+    const { id: deviceId, user_id: uid } = db.prepare("SELECT id, user_id FROM devices ORDER BY id LIMIT 1").get();
+    const t = Math.floor(Date.now() / 1000);
+    db.prepare(
+      `INSERT INTO usage_events (event_id, device_id, user_id, tool, session_id, input_tokens, occurred_at, received_at, source)
+       VALUES ('early-snap', ?, ?, 'claude-code', 'slack-s', 700, ?, ?, 'snapshot')`
+    ).run(deviceId, uid, t - 38, t - 38);
+    db.close();
+    const body = { messages: [{ message_id: "msg_slack_1", session_id: "slack-s", occurred_at: t, usage: { input_tokens: 700 } }] };
+    await req(srv.base, "POST", "/api/ingest/claude-code", { body, key });
+    assert.equal((await stats()).total_tokens - mid.total_tokens, 700);
+  });
+
+  test("quota shows the current window's highest value, not the last post", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const post = (pct, resets, at) => req(srv.base, "POST", "/api/ingest/claude-code", {
+      key, body: { account_ref: "stale", occurred_at: at, rate_limits: { five_hour: { used_percentage: pct, resets_at: resets } } },
+    });
+    const shown = async () => (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas.find((q) => q.account_ref === "stale");
+    // A day-old bogus far-future window must not win once fresh values exist.
+    await post(23.5, 1999999999, now - 2 * 86400);
+    await post(35, now + 3600, now - 60);
+    // A second terminal posts the same window's older, lower value later.
+    await post(20, now + 3600, now - 10);
+    assert.deepEqual([(await shown()).used_pct, (await shown()).resets_at], [35, now + 3600]);
+    // …or the previous, already reset window.
+    await post(90, now - 100, now - 5);
+    assert.equal((await shown()).used_pct, 35);
+    // The next window replaces it, even with a lower value.
+    await post(4, now + 3600 + 18000, now);
+    assert.deepEqual([(await shown()).used_pct, (await shown()).resets_at], [4, now + 3600 + 18000]);
+  });
+
   test("usage without an Anthropic message id is not stored", async () => {
     const before = await stats();
     // The old reference collector sent a fresh random UUID on every fire.
