@@ -68,7 +68,7 @@
   .opt { color: var(--faint); }
   input { background: var(--bg); border: 1px solid var(--line); color: var(--text); border-radius: var(--radius-sm); padding: 7px 10px; font: inherit; font-size: 14px; }
   input.mono { font-family: var(--mono); letter-spacing: .05em; }
-  button { justify-self: start; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 7px 14px; color: var(--text); background: var(--surface-2); }
+  button { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 7px 14px; color: var(--text); background: var(--surface-2); }
   button:disabled { opacity: .5; cursor: default; }
   .error { color: var(--warn); font-size: 13px; }
 </style>
