@@ -87,6 +87,11 @@ function migrate(db: DB): void {
   if (!cols.has("context_used_pct")) {
     db.exec("ALTER TABLE usage_events ADD COLUMN context_used_pct REAL");
   }
+  // 'message': one row per Anthropic message id (transcript). 'snapshot':
+  // older statusLine snapshots, which counted each API call about twice.
+  if (!cols.has("source")) {
+    db.exec("ALTER TABLE usage_events ADD COLUMN source TEXT NOT NULL DEFAULT 'snapshot'");
+  }
   if (cols.has("cost_estimated_usd")) {
     db.exec("ALTER TABLE usage_events DROP COLUMN cost_estimated_usd");
   }

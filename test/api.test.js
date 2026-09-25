@@ -78,17 +78,94 @@ describe("basics (signed in as the test admin)", () => {
     assert.deepEqual(await stats(), mid);
   });
 
-  test("identical snapshot for same prompt is deduped; distinct snapshots are kept", async () => {
-    const base = event({ prompt_id: "prompt-multi" });
-    await req(srv.base, "POST", "/api/ingest/claude-code", { body: base, key });
+  test("same message id: partial then final keeps the final counts, never both", async () => {
     const mid = await stats();
-    const dup = await req(srv.base, "POST", "/api/ingest/claude-code", { body: { ...base, event_id: "other-id-1" }, key });
-    assert.equal(dup.json.deduped, true);
-    const next = await req(srv.base, "POST", "/api/ingest/claude-code", {
-      body: { ...base, event_id: "other-id-2", usage: { input_tokens: 7, output_tokens: 3 } }, key,
-    });
-    assert.equal(next.json.stored, true);
-    assert.equal((await stats()).total_tokens - mid.total_tokens, 10);
+    const partial = event({ event_id: "msg_partial_final", usage: { input_tokens: 2, cache_creation_input_tokens: 8000, output_tokens: 3 } });
+    assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { body: partial, key })).json.stored, true);
+    const final = { ...partial, usage: { ...partial.usage, output_tokens: 983 } };
+    const up = await req(srv.base, "POST", "/api/ingest/claude-code", { body: final, key });
+    assert.equal(up.json.updated, true);
+    // A late partial (fewer output tokens) or an exact replay changes nothing.
+    assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { body: partial, key })).json.deduped, true);
+    assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { body: final, key })).json.deduped, true);
+    const after = await stats();
+    assert.equal(after.total_tokens - mid.total_tokens, 2 + 8000 + 983);
+    assert.equal(after.events - mid.events, 1);
+  });
+
+  test("batch of transcript messages: one row per message id", async () => {
+    const mid = await stats();
+    const msg = (id, out) => ({ message_id: id, session_id: "batch-s", model: "claude-opus-5-5", occurred_at: Math.floor(Date.now() / 1000), usage: { input_tokens: 10, output_tokens: out } });
+    const body = {
+      messages: [msg("msg_b1", 5), msg("msg_b1", 40), msg("msg_b2", 7), { session_id: "batch-s", usage: { input_tokens: 99 } }],
+      rate_limits: { five_hour: { used_percentage: 33, resets_at: 1999999999 } },
+      account_ref: "batch-acct",
+      context: { session_id: "batch-s", used_pct: 61, window_size: 200000 },
+    };
+    const r = (await req(srv.base, "POST", "/api/ingest/claude-code", { body, key })).json;
+    // The entry without a message id is ignored: it cannot be deduplicated.
+    assert.deepEqual(r, { ok: true, messages: 3, stored: 2, updated: 1, deduped: 0 });
+    const again = (await req(srv.base, "POST", "/api/ingest/claude-code", { body, key })).json;
+    assert.deepEqual(again, { ok: true, messages: 3, stored: 0, updated: 0, deduped: 3 });
+    const after = await stats();
+    assert.equal(after.total_tokens - mid.total_tokens, 50 + 17);
+    assert.equal(after.events - mid.events, 2);
+    const q = (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas;
+    assert.ok(q.some((x) => x.account_ref === "batch-acct" && x.used_pct === 33));
+    const s = (await req(srv.base, "GET", "/api/u/admin/sessions?limit=50")).json.sessions.find((x) => x.session_id === "batch-s");
+    assert.equal(s.context_used_pct, 61);
+    assert.equal(s.context_window_size, 200000);
+  });
+
+  test("messages replace a session's old statusLine snapshot rows", async () => {
+    const mid = await stats();
+    // Rows written by the old snapshot collector (the migration marks them 'snapshot').
+    const db = new Database(srv.dbPath);
+    const { id: deviceId, user_id: uid } = db.prepare("SELECT id, user_id FROM devices ORDER BY id LIMIT 1").get();
+    const legacy = db.prepare(
+      `INSERT INTO usage_events (event_id, device_id, user_id, tool, session_id, input_tokens, output_tokens, occurred_at, received_at, source)
+       VALUES (?, ?, ?, 'claude-code', ?, 500, 5, ?, ?, 'snapshot')`
+    );
+    const t = Math.floor(Date.now() / 1000);
+    legacy.run("old-1", deviceId, uid, "legacy-s", t, t);
+    legacy.run("old-2", deviceId, uid, "legacy-s", t, t);
+    legacy.run("old-3", deviceId, uid, "other-s", t, t);
+    legacy.run("old-early", deviceId, uid, "legacy-s", t - 3600, t - 3600);
+    db.close();
+    assert.equal((await stats()).total_tokens - mid.total_tokens, 4 * 505);
+
+    const body = { messages: [{ message_id: "msg_legacy_1", session_id: "legacy-s", occurred_at: t, usage: { input_tokens: 500, output_tokens: 5 } }] };
+    assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { body, key })).json.stored, 1);
+    // From the message's time on, legacy-s counts its one real message.
+    // other-s and legacy-s's earlier snapshot (not covered yet) are kept.
+    assert.equal((await stats()).total_tokens - mid.total_tokens, 505 + 505 + 505);
+    // Once messages reach back that far (the README import), it goes too.
+    const early = { messages: [{ message_id: "msg_legacy_0", session_id: "legacy-s", occurred_at: t - 3600, usage: { input_tokens: 1 } }] };
+    await req(srv.base, "POST", "/api/ingest/claude-code", { body: early, key });
+    assert.equal((await stats()).total_tokens - mid.total_tokens, 505 + 1 + 505);
+  });
+
+  test("usage without an Anthropic message id is not stored", async () => {
+    const before = await stats();
+    // The old reference collector sent a fresh random UUID on every fire.
+    for (const id of ["0b9f1c2e-5d6a-4f7b-8c9d-0e1f2a3b4c5d", "e-123", "msg_", "msg_bad id"]) {
+      const r = await req(srv.base, "POST", "/api/ingest/claude-code", { body: event({ event_id: id }), key });
+      assert.deepEqual(r.json, { ok: true, stored: false, updated: false, deduped: false, event_id: null });
+    }
+    const batch = { messages: [{ message_id: "not-a-message-id", usage: { input_tokens: 5 } }] };
+    assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { body: batch, key })).json.messages, 0);
+    assert.equal((await stats()).total_tokens, before.total_tokens);
+  });
+
+  test("a message id stored by another account is never overwritten", async () => {
+    const bob = await register(srv.base, { username: "msgbob", password: "bob-password-1" });
+    const bobKey = (await newDevice(srv.base, "bob-dev", bob.cookie)).key;
+    const mine = event({ event_id: "msg_shared_id", usage: { input_tokens: 1, output_tokens: 1 } });
+    assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { body: mine, key })).json.stored, true);
+    const theirs = { ...mine, usage: { input_tokens: 1, output_tokens: 999999 } };
+    assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { body: theirs, key: bobKey })).json.deduped, true);
+    const bobStats = (await req(srv.base, "GET", "/api/u/msgbob/stats?days=730")).json;
+    assert.equal(bobStats.total_tokens, 0);
   });
 
   test("empty snapshot stores no usage row but records quotas", async () => {
@@ -103,7 +180,7 @@ describe("basics (signed in as the test admin)", () => {
     assert.ok(q.some((x) => x.account_ref === "empty-acct" && x.used_pct === 12));
   });
 
-  test("raw statusLine shape accepted; cost fields ignored", async () => {
+  test("raw statusLine snapshot stores no usage (it re-fires per API call) but keeps quotas", async () => {
     const before = await stats();
     const r = await req(srv.base, "POST", "/api/ingest/claude-code", {
       key,
@@ -111,16 +188,17 @@ describe("basics (signed in as the test admin)", () => {
         session_id: "raw-sess", prompt_id: "raw-p",
         model: { id: "claude-sonnet-5", display_name: "Sonnet" },
         context_window: { current_usage: { input_tokens: 1000, output_tokens: 1 } },
+        rate_limits: { seven_day: { used_percentage: 44, resets_at: 1999999999 } },
+        account_ref: "raw-acct",
         cost: { total_cost_usd: 99 },
       },
     });
-    assert.equal(r.json.stored, true);
+    assert.deepEqual(r.json, { ok: true, stored: false, updated: false, deduped: false, event_id: null });
     const after = await stats();
-    assert.equal(after.total_tokens - before.total_tokens, 1001);
+    assert.equal(after.total_tokens, before.total_tokens);
     assert.equal(after.estimated_usd, undefined);
-    // A cost-only snapshot is not usage.
-    const costOnly = await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: { session_id: "raw-sess", cost_estimated_usd_delta: 0.5 } });
-    assert.equal(costOnly.json.stored, false);
+    const q = (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas;
+    assert.ok(q.some((x) => x.account_ref === "raw-acct" && x.used_pct === 44));
   });
 
   test("two devices on the same account: latest quota snapshot wins, never summed", async () => {
@@ -793,15 +871,16 @@ describe("summary, sessions and context (redesign APIs)", () => {
 
   test("sessions report the latest context fill and a total for paging", async () => {
     const at = Math.floor(Date.now() / 1000);
+    const m = (id, t) => ({ message_id: id, session_id: "ctx", occurred_at: t, usage: { input_tokens: 5 } });
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: { messages: [m("msg_c1", at - 10), m("msg_c2", at)] } });
+    // A raw statusLine payload puts its gauge on the session's newest row.
     await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: {
-      session_id: "ctx", prompt_id: "c1", occurred_at: at - 10,
-      context_window: { context_window_size: 200000, used_percentage: 20, current_usage: { input_tokens: 5 } },
+      session_id: "ctx", context_window: { context_window_size: 200000, used_percentage: 20, current_usage: { input_tokens: 5 } },
     } });
     await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: {
-      session_id: "ctx", prompt_id: "c2", occurred_at: at,
-      context_window: { context_window_size: 200000, used_percentage: 35, current_usage: { input_tokens: 6 } },
+      session_id: "ctx", context_window: { context_window_size: 200000, used_percentage: 35 },
     } });
-    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: { session_id: "ctx", prompt_id: "c3", occurred_at: at - 5, usage: { input_tokens: 7 } } });
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: { messages: [m("msg_c3", at - 5)] } });
     const r = (await req(srv.base, "GET", "/api/u/admin/sessions?limit=1")).json;
     assert.equal(r.sessions.length, 1);
     assert.ok(r.total >= 3);

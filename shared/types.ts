@@ -147,11 +147,27 @@ export interface ProfilesResponse {
   profiles: Profile[];
 }
 
+/** POST /api/ingest/<tool> with one flat event. */
 export interface IngestResult {
   ok: true;
-  deduped: boolean;
+  /** A new message row was created. */
   stored: boolean;
-  event_id: string;
+  /** An already stored message got its final (larger) counts. */
+  updated: boolean;
+  /** Replay of a message already stored with these counts (or more). */
+  deduped: boolean;
+  /** The message id, or null when the payload carried no usage. */
+  event_id: string | null;
+}
+
+/** POST /api/ingest/<tool> with { messages: [...] }. */
+export interface IngestBatchResult {
+  ok: true;
+  /** Messages with a message id in the payload. */
+  messages: number;
+  stored: number;
+  updated: number;
+  deduped: number;
 }
 
 /** One account on the leaderboard (every enabled account, idle ones with zeros). */

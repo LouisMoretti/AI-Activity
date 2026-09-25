@@ -256,54 +256,73 @@ export function listDevices(db: DB, userId: number): Device[] {
     .all(userId) as Device[];
 }
 
+export type UpsertResult = "stored" | "updated" | "deduped";
+
 /**
- * Insert an incremental usage event.
- *
- * Dedup strategy: the statusLine fires several times per user prompt (one
- * snapshot per API call in the agentic loop, plus unchanged re-fires on
- * compact / permission / vim events). Each DISTINCT usage snapshot is one
- * API call's consumption and must be kept; only an IDENTICAL snapshot for
- * the same device+prompt is a duplicate trigger and is dropped. Dropping
- * every snapshot after the first per prompt would undercount ~3x.
+ * Store one message's consumption, keyed by its Anthropic message id
+ * (event_id). Claude Code writes a response in several transcript entries,
+ * sometimes a partial one (a few output tokens) before the final one, so a
+ * message seen again with more output tokens replaces the stored counts;
+ * anything else is a replay. A message id already owned by another account
+ * is never touched.
  */
-export function insertUsageEvent(db: DB, ev: UsageEventInput): { inserted: boolean; deduped: boolean } {
-  // Natural dedup: identical snapshot already stored for this device+prompt.
-  if (ev.prompt_id) {
+export function upsertUsageEvent(db: DB, ev: UsageEventInput): UpsertResult {
+  return db.transaction((): UpsertResult => {
     const existing = db
-      .prepare(
-        `SELECT event_id FROM usage_events
-         WHERE device_id = ? AND prompt_id = ?
-           AND input_tokens = ? AND output_tokens = ?
-           AND cache_read_tokens = ? AND cache_write_tokens = ?
-           AND COALESCE(model, '') = COALESCE(?, '')
-         LIMIT 1`
-      )
-      .get(
-        ev.device_id, ev.prompt_id,
+      .prepare("SELECT user_id, output_tokens FROM usage_events WHERE event_id = ?")
+      .get(ev.event_id) as { user_id: number; output_tokens: number } | undefined;
+    if (!existing) {
+      db.prepare(
+        `INSERT INTO usage_events
+          (event_id, device_id, user_id, tool, session_id, prompt_id, model,
+           input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+           context_window_size, context_used_pct, occurred_at, received_at, source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'message')`
+      ).run(
+        ev.event_id, ev.device_id, ev.user_id, ev.tool, ev.session_id, ev.prompt_id, ev.model,
         ev.input_tokens, ev.output_tokens, ev.cache_read_tokens, ev.cache_write_tokens,
-        ev.model
+        ev.context_window_size, ev.context_used_pct, ev.occurred_at, ev.received_at
       );
-    if (existing) return { inserted: false, deduped: true };
-  }
-  try {
-    db.prepare(
-      `INSERT INTO usage_events
-        (event_id, device_id, user_id, tool, session_id, prompt_id, model,
-         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-         context_window_size, context_used_pct, occurred_at, received_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      ev.event_id, ev.device_id, ev.user_id, ev.tool, ev.session_id, ev.prompt_id, ev.model,
-      ev.input_tokens, ev.output_tokens, ev.cache_read_tokens, ev.cache_write_tokens,
-      ev.context_window_size, ev.context_used_pct, ev.occurred_at, ev.received_at
-    );
-    return { inserted: true, deduped: false };
-  } catch (err) {
-    if (String((err as { code?: string })?.code) === "SQLITE_CONSTRAINT_PRIMARYKEY") {
-      return { inserted: false, deduped: true };
+      return "stored";
     }
-    throw err;
-  }
+    if (existing.user_id !== ev.user_id || ev.output_tokens <= existing.output_tokens) return "deduped";
+    db.prepare(
+      `UPDATE usage_events SET input_tokens = ?, output_tokens = ?, cache_read_tokens = ?,
+         cache_write_tokens = ?, model = COALESCE(?, model), received_at = ?
+       WHERE event_id = ?`
+    ).run(
+      ev.input_tokens, ev.output_tokens, ev.cache_read_tokens, ev.cache_write_tokens,
+      ev.model, ev.received_at, ev.event_id
+    );
+    return "updated";
+  })();
+}
+
+/**
+ * Drop a session's old statusLine snapshot rows from sinceSec on, once its
+ * messages from that time arrive: the messages are exact, the snapshots
+ * counted most calls twice, and the two must never add up. Older snapshot
+ * rows stay until messages cover them too (the live collector only resends
+ * the transcript tail; the README import covers whole sessions).
+ */
+export function dropSnapshotRows(db: DB, userId: number, sessionId: string, sinceSec: number): number {
+  return db
+    .prepare("DELETE FROM usage_events WHERE user_id = ? AND session_id = ? AND source = 'snapshot' AND occurred_at >= ?")
+    .run(userId, sessionId, sinceSec).changes;
+}
+
+/** Put the session's latest context fill on its newest row (a gauge, never summed). */
+export function setSessionContext(
+  db: DB, userId: number, sessionId: string, usedPct: number | null, windowSize: number | null
+): void {
+  db.prepare(
+    `UPDATE usage_events SET context_used_pct = COALESCE(?, context_used_pct),
+       context_window_size = COALESCE(?, context_window_size)
+     WHERE event_id = (
+       SELECT event_id FROM usage_events WHERE user_id = ? AND session_id = ?
+       ORDER BY occurred_at DESC, received_at DESC LIMIT 1
+     )`
+  ).run(usedPct, windowSize, userId, sessionId);
 }
 
 /**
