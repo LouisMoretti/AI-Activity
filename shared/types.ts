@@ -19,7 +19,7 @@ export interface StatsResponse {
 }
 
 export interface ActivityDay {
-  day: string; // YYYY-MM-DD (UTC)
+  day: string; // YYYY-MM-DD, the local day where each event happened (UTC without an offset)
   tokens: number;
   sessions: number;
 }
@@ -78,7 +78,7 @@ export interface Breakdown {
 
 export interface SummaryResponse {
   tool: string | null;
-  day: string; // current UTC day, YYYY-MM-DD
+  day: string; // the owner's today (at the UTC offset of their latest event; UTC if none), YYYY-MM-DD
   total: Breakdown; // all time
   today: Breakdown;
   provenance: string;
@@ -180,13 +180,13 @@ export interface LeaderboardEntry {
   tokens: number;
   sessions: number;
   events: number;
-  /** UTC days with at least one event in the period. */
+  /** Local days with at least one event in the period. */
   active_days: number;
   /** Model with the most tokens in the period; null if never reported. */
   top_model: string | null;
   /** Latest event in the period; null when idle. */
   last_active: number | null;
-  /** Consecutive UTC days with usage ending today (same rule as a profile's streak). */
+  /** Consecutive local days with usage ending on the account's today (same rule as a profile's streak). */
   current_streak: number;
 }
 
@@ -200,7 +200,9 @@ export interface LeaderboardResponse {
   /** Ranked by tokens, most first. */
   entries: LeaderboardEntry[];
   by_model: BreakdownRow[];
-  /** Everyone's daily buckets over the last 364 UTC days, whatever the period. */
+  /** Last day of the activity calendar: the latest account's today (UTC if none), YYYY-MM-DD. */
+  day: string;
+  /** Everyone's daily buckets over the 364 local days ending on `day`, whatever the period. */
   activity: ActivityDay[];
   provenance: string;
 }

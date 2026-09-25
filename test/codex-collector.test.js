@@ -7,6 +7,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
+import Database from "better-sqlite3";
 import { startServer, req, newDevice } from "./helpers.js";
 
 const README = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8");
@@ -46,6 +47,7 @@ function run(cmd, env) {
     const p = spawn("sh", ["-c", cmd], { env, detached: true, stdio: ["pipe", "pipe", "ignore"] });
     let out = "";
     p.stdout.on("data", (d) => { out += d; });
+    p.stdin.on("error", () => {}); // the hook may exit before reading its input (EPIPE)
     p.stdin.end(JSON.stringify({ session_id: "s", hook_event_name: "Stop", turn_id: "t" }));
     p.on("exit", () => resolve(out));
   });
@@ -73,7 +75,7 @@ describe("Codex collector (Stop hook from README.md)", () => {
     srv = await startServer();
     key = (await newDevice(srv.base, "codex-collector")).key;
     home = fs.mkdtempSync(path.join(os.tmpdir(), "ai-activity-codex-"));
-    env = { ...process.env, HOME: home, CODEX_HOME: "" };
+    env = { ...process.env, HOME: home, CODEX_HOME: "", TZ: "IST-5:30" }; // POSIX TZ: UTC+5:30, no tz database needed
     const day = path.join(home, ".codex", "sessions", "2026", "09", "20");
     fs.mkdirSync(day, { recursive: true });
     fs.mkdirSync(path.join(home, ".codex", "archived_sessions"), { recursive: true });
@@ -116,6 +118,11 @@ describe("Codex collector (Stop hook from README.md)", () => {
     const s = (await req(srv.base, "GET", "/api/u/admin/sessions?tool=codex")).json.sessions.find((x) => x.session_id === S1);
     assert.equal(s.context_used_pct, 1.1); // the last request: 2100 of 200000 tokens
     assert.equal(s.model, "gpt-6-astra");
+    // Each entry carries the device's UTC offset at that time, in minutes.
+    const db = new Database(srv.dbPath, { readonly: true });
+    const utcOffsets = db.prepare("SELECT DISTINCT utc_offset_min AS o FROM usage_events").all().map((r) => r.o);
+    db.close();
+    assert.deepEqual(utcOffsets, [330]);
     // The offset stops before the half-written line.
     assert.equal(state()[current][0], fs.readFileSync(current).lastIndexOf(10) + 1);
   });

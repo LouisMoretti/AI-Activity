@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  calendarWeeks, cumulative, denseSeries, lastUtcDays, level, monthLabels, streaks, weeklyTotals,
+  calendarWeeks, cumulative, daysEndingOn, denseSeries, lastUtcDays, level, monthLabels, streaks, weeklyTotals,
 } from "../web/src/lib/series.ts";
 
 const pts = (...tokens) => tokens.map((t, i) => ({ day: `2026-01-${String(i + 1).padStart(2, "0")}`, tokens: t }));
@@ -11,9 +11,19 @@ test("lastUtcDays ends today (UTC) and is contiguous", () => {
   assert.deepEqual(days, ["2026-09-23", "2026-09-24", "2026-09-25"]);
 });
 
+test("daysEndingOn is contiguous across month and year ends", () => {
+  assert.deepEqual(daysEndingOn("2027-01-01", 3), ["2026-12-30", "2026-12-31", "2027-01-01"]);
+});
+
 test("denseSeries fills missing days with zero, never interpolates", () => {
-  const s = denseSeries([{ day: lastUtcDays(1)[0], tokens: 5, sessions: 1 }], 4);
+  const s = denseSeries([{ day: "2026-09-25", tokens: 5, sessions: 1 }], 4, "2026-09-25");
   assert.deepEqual(s.map((d) => d.tokens), [0, 0, 0, 5]);
+});
+
+test("denseSeries ends on the given day, not the viewer's clock", () => {
+  // The owner is already on the 26th (UTC+14) while it is the 25th in UTC.
+  const s = denseSeries([{ day: "2026-09-26", tokens: 7, sessions: 1 }], 2, "2026-09-26");
+  assert.deepEqual(s, [{ day: "2026-09-25", tokens: 0 }, { day: "2026-09-26", tokens: 7 }]);
 });
 
 test("streaks: current counts back from today, longest over the range", () => {

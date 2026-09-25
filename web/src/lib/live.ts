@@ -47,7 +47,7 @@ const asTool = (t: string): ToolKey =>
   t === "codex" || t === "opencode" ? t : "claude-code";
 
 export function liveDashboard(d: LiveData, provider: Provider): DashboardVM {
-  const series = denseSeries(d.activity.days, ACTIVITY_DAYS);
+  const series = denseSeries(d.activity.days, ACTIVITY_DAYS, d.summary.day);
   const hasActivity = d.summary.total.events > 0;
   const sessions: SessionVM[] = d.sessions.sessions.map((s) => ({
     tool: asTool(s.tool),

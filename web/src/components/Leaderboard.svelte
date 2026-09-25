@@ -49,8 +49,8 @@
   const same = (a: string, b: string | null) => b !== null && a.toLowerCase() === b.toLowerCase();
   const periodText = $derived(period === "all" ? "all time" : `last ${period} days`);
   const top = $derived(data?.entries[0]?.tokens || 1);
-  const series = $derived(data ? denseSeries(data.activity, ACTIVITY_DAYS) : []);
-  const today = $derived(series.at(-1)?.day ?? "");
+  const series = $derived(data ? denseSeries(data.activity, ACTIVITY_DAYS, data.day) : []);
+  const today = $derived(data?.day ?? "");
   const tiles = $derived(data ? [
     { label: "Tokens", value: fmtCompact(data.totals.tokens), note: `${fmtCompact(data.totals.events)} API calls` },
     { label: "Conversations", value: fmtCompact(data.totals.sessions), note: "every account" },

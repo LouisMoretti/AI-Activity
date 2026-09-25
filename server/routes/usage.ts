@@ -5,8 +5,8 @@ import type {
   SummaryResponse,
 } from "../../shared/types.ts";
 import {
-  breakdown, countSessions, dailyBuckets, findUserByUsername, latestQuotas, leaderboard, listProfiles, recentSessions,
-  toProfile, usageTotals,
+  addDays, breakdown, countSessions, dailyBuckets, dayAt, earliestOfDay, findUserByUsername, latestOffset, latestQuotas,
+  leaderboard, listProfiles, recentSessions, toProfile, usageTotals,
 } from "../db/queries.ts";
 import { nowSec, type DB } from "../db/schema.ts";
 import { intParam } from "../lib/http.ts";
@@ -36,8 +36,11 @@ function usage(db: DB, owner: Owner) {
     .get("/activity", (c) => {
       const days = intParam(c, "days", 364, 1, 730);
       const tool = c.req.query("tool") || null;
+      const uid = owner(c);
+      // The last `days` local days, ending on the owner's today (see /summary).
+      const first = addDays(dayAt(latestOffset(db, uid)), -(days - 1));
       return c.json<ActivityResponse>({
-        days: dailyBuckets(db, owner(c), nowSec() - days * 86400, tool),
+        days: dailyBuckets(db, uid, earliestOfDay(first), tool).filter((d) => d.day >= first),
         provenance: "measured messages",
       });
     })
@@ -49,14 +52,15 @@ function usage(db: DB, owner: Owner) {
     .get("/summary", (c) => {
       const uid = owner(c);
       const tool = c.req.query("tool") || null;
-      const now = new Date();
-      // "Today" is the current UTC day, matching the activity buckets.
-      const dayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) / 1000;
+      // "Today" is the owner's local day, at the offset of their latest
+      // event: the same page for every visitor, like the activity buckets.
+      const now = nowSec();
+      const day = dayAt(latestOffset(db, uid), now);
       return c.json<SummaryResponse>({
         tool,
-        day: new Date(dayStart * 1000).toISOString().slice(0, 10),
+        day,
         total: breakdown(db, uid, 0, tool),
-        today: breakdown(db, uid, dayStart, tool),
+        today: breakdown(db, uid, earliestOfDay(day), tool, day),
         provenance: "measured messages (one row per Anthropic message id)",
       });
     })
@@ -79,14 +83,9 @@ export function leaderboardRoutes(db: DB) {
     .get("/", (c) => {
       const all = c.req.query("days") === "all";
       const days = intParam(c, "days", 30, 1, 730);
-      const now = new Date();
-      const dayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) / 1000;
       return c.json<LeaderboardResponse>({
         range_days: all ? null : days,
-        ...leaderboard(
-          db, all ? 0 : nowSec() - days * 86400, dayStart - (LEADERBOARD_ACTIVITY_DAYS - 1) * 86400,
-          new Date(dayStart * 1000).toISOString().slice(0, 10),
-        ),
+        ...leaderboard(db, all ? 0 : nowSec() - days * 86400, LEADERBOARD_ACTIVITY_DAYS),
         provenance: "measured messages of every enabled account (one row per Anthropic message id)",
       });
     });
