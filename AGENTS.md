@@ -13,7 +13,9 @@ ones never swap places), else the last one, on the right; today's tokens, conver
 calls, models and providers on the left.
 
 Layout, top to bottom: token activity (centered year calendar, readout shows
-today unless a day is hovered), four stats (all-time tokens, today, sessions,
+today unless a day is hovered; the Weekly and Cumulative tabs likewise show
+the last 7 days or the running total unless a week is hovered, focused or
+tapped), four stats (all-time tokens, today, sessions,
 current streak; hover shows the split by tool and model, or the longest
 streak), one card per tool (Claude Code, Codex, OpenCode are separate
 components; OpenCode takes 2/3 of its row, next to "Today by tool": today's

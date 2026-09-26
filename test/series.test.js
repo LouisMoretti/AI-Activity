@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  calendarWeeks, cumulative, daysEndingOn, denseSeries, lastUtcDays, level, monthLabels, streaks, weeklyTotals,
+  calendarWeeks, cumulative, daysEndingOn, denseSeries, lastUtcDays, level, monthLabels, streaks, weekBuckets,
 } from "../web/src/lib/series.ts";
+import { fmtDayRange } from "../web/src/lib/format.ts";
 
 const pts = (...tokens) => tokens.map((t, i) => ({ day: `2026-01-${String(i + 1).padStart(2, "0")}`, tokens: t }));
 
@@ -39,10 +40,21 @@ test("calendarWeeks pads the first week so cells land on their weekday", () => {
   assert.equal(weeks[1][0].day, "2026-01-04"); // Sunday starts the next column
 });
 
-test("weekly and cumulative totals", () => {
-  const w = weeklyTotals(pts(1, 1, 1, 1, 1, 1, 1, 5));
-  assert.deepEqual(w, [7, 5]);
-  assert.deepEqual(cumulative(w), [7, 12]);
+test("week buckets end on the last day, the first one may be short", () => {
+  const w = weekBuckets(pts(5, 1, 1, 1, 1, 1, 1, 1));
+  assert.deepEqual(w, [
+    { start: "2026-01-01", end: "2026-01-01", tokens: 5 },
+    { start: "2026-01-02", end: "2026-01-08", tokens: 7 },
+  ]);
+  assert.deepEqual(cumulative(w.map((b) => b.tokens)), [5, 12]);
+  assert.deepEqual(weekBuckets([]), []);
+});
+
+test("day ranges name the month and year once when shared", () => {
+  assert.equal(fmtDayRange("2026-09-18", "2026-09-24"), "18 – 24 September 2026");
+  assert.equal(fmtDayRange("2026-09-28", "2026-10-04"), "28 September – 4 October 2026");
+  assert.equal(fmtDayRange("2025-12-29", "2026-01-04"), "29 December 2025 – 4 January 2026");
+  assert.equal(fmtDayRange("2026-09-24", "2026-09-24"), "24 September 2026");
 });
 
 test("heat level is 0 only without activity", () => {

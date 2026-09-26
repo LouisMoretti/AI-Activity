@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { fmtDay, fmtNum } from "../lib/format.ts";
-  import { cumulative, weeklyTotals, type DayPoint } from "../lib/series.ts";
+  import { fmtDay, fmtDayRange, fmtNum } from "../lib/format.ts";
+  import { cumulative, weekBuckets, type DayPoint } from "../lib/series.ts";
   import Heatmap from "./Heatmap.svelte";
   import Section from "./Section.svelte";
   import Segmented from "./Segmented.svelte";
@@ -13,25 +13,36 @@
 
   let view = $state<View>("daily");
   let hovered = $state<DayPoint | null>(null);
+  /** Index of the hovered week (weekly and cumulative share the buckets). */
+  let hoveredWeek = $state<number | null>(null);
   let scroller = $state<HTMLDivElement>();
-  const weekly = $derived(weeklyTotals(series));
+  const weeks = $derived(weekBuckets(series));
+  const weekly = $derived(weeks.map((w) => w.tokens));
+  const totals = $derived(cumulative(weekly));
   const todayPoint = $derived(series.find((d) => d.day === today) ?? { day: today, tokens: 0 });
 
   const describe = (d: DayPoint) =>
     `${fmtDay(d.day)}: ${d.tokens ? `${fmtNum(d.tokens)} tokens` : "no activity"}${demo ? " (fictional)" : ""}`;
+  const describeWeek = (i: number) =>
+    `${fmtDayRange(weeks[i].start, weeks[i].end)}: ${weekly[i] ? `${fmtNum(weekly[i])} tokens` : "no activity"}${demo ? " (fictional)" : ""}`;
+  const describeTotal = (i: number) =>
+    `${fmtDay(weeks[i].end)}: ${fmtNum(totals[i])} tokens since ${fmtDay(weeks[0].start)}${demo ? " (fictional)" : ""}`;
+  const trendLabels = $derived(weeks.map((_, i) => (view === "weekly" ? describeWeek(i) : describeTotal(i))));
 
   // The hovered day as of the latest refresh (the series is rebuilt every 15 s).
   const hoveredNow = $derived(hovered ? series.find((d) => d.day === hovered!.day) ?? hovered : null);
   const hasSeries = $derived(series.length > 0);
 
-  // Without a hovered cell, the readout shows today.
+  // Without a hovered cell or week, the readout shows today, the last 7
+  // days (weekly) or the total so far (cumulative).
   const readout = $derived.by(() => {
-    if (view === "daily") {
-      if (!hasActivity && !hoveredNow) return "No measured activity yet. Connect a device to see real tokens here.";
-      return describe(hoveredNow ?? todayPoint);
+    const week = hoveredWeek !== null && hoveredWeek < weeks.length ? hoveredWeek : null;
+    if (!hasActivity && (view === "daily" ? !hoveredNow : week === null)) {
+      return "No measured activity yet. Connect a device to see real tokens here.";
     }
-    const src = demo ? "fictional data" : "measured data";
-    return view === "weekly" ? `Tokens per week · ${src}` : `Total tokens over time · ${src}`;
+    if (view === "daily") return describe(hoveredNow ?? todayPoint);
+    if (!weeks.length) return "";
+    return trendLabels[week ?? weeks.length - 1];
   });
 
   // Narrow screens scroll the calendar: start on the most recent weeks.
@@ -51,7 +62,7 @@
 <Section title="Token activity">
   {#snippet actions()}
     <Segmented variant="tabs" label="Activity view" value={view}
-      onchange={(v) => { view = v; hovered = null; }}
+      onchange={(v) => { view = v; hovered = null; hoveredWeek = null; }}
       options={[{ value: "daily", label: "Daily" }, { value: "weekly", label: "Weekly" }, { value: "cumulative", label: "Cumulative" }]} />
   {/snippet}
   <div class="area">
@@ -64,7 +75,8 @@
         </div>
         {#if view !== "daily"}
           <div class="trend">
-            <TrendChart values={view === "weekly" ? weekly : cumulative(weekly)} kind={view} {demo} />
+            <TrendChart values={view === "weekly" ? weekly : totals} labels={trendLabels} kind={view} {demo}
+              onhover={(i) => (hoveredWeek = i)} />
           </div>
         {/if}
       </div>

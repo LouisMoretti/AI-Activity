@@ -13,6 +13,14 @@ export const fmtDay = (iso: string) =>
     day: "numeric", month: "long", year: "numeric", timeZone: "UTC",
   });
 
+/** Two calendar days → "18 – 24 September 2026", "28 September – 4 October 2026". */
+export function fmtDayRange(start: string, end: string): string {
+  if (start === end) return fmtDay(end);
+  const [a, b] = [fmtDay(start).split(" "), fmtDay(end).split(" ")];
+  const head = a[2] !== b[2] ? a.join(" ") : a[1] !== b[1] ? `${a[0]} ${a[1]}` : a[0];
+  return `${head} – ${b.join(" ")}`;
+}
+
 export const monthShort = (iso: string) =>
   new Date(iso + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", timeZone: "UTC" });
 
