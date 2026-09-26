@@ -115,13 +115,19 @@ What it does at the end of every turn:
    and `AI_ACTIVITY_KEY` in the environment Antigravity runs in. Python 3
    with the standard-library SQLite module is required.
 3. Merge this named hook into `~/.gemini/config/hooks.json` (keep existing
-   hooks). Use an **absolute path** to Python and the collector if they are
-   not on the app's PATH. This example is for Linux/macOS; on Windows use
-   `python` and a quoted absolute Windows path with JSON-escaped backslashes.
+   hooks). For Linux/macOS:
 
 ```json
 {
   "ai-activity": {
+    "enabled": true,
+    "PostInvocation": [
+      {
+        "type": "command",
+        "command": "python3 ~/.gemini/ai-activity-antigravity.py --post-invocation",
+        "timeout": 10
+      }
+    ],
     "Stop": [
       {
         "type": "command",
@@ -133,11 +139,68 @@ What it does at the end of every turn:
 }
 ```
 
+For Windows, use this instead, replacing `<user>` with your Windows user
+directory name. Backslashes and quotes below are already JSON-escaped:
+
+```json
+{
+  "ai-activity": {
+    "enabled": true,
+    "PostInvocation": [
+      {
+        "type": "command",
+        "command": "python \"C:\\Users\\<user>\\.gemini\\ai-activity-antigravity.py\" --post-invocation",
+        "timeout": 10
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python \"C:\\Users\\<user>\\.gemini\\ai-activity-antigravity.py\" --hook",
+        "timeout": 10
+      }
+    ]
+  }
+}
+```
+
+Use **absolute paths to both Python and the collector** if Python is not
+on Antigravity's PATH (desktop apps can inherit a different PATH from your
+terminal). Find the interpreter with `python3 -c 'import sys; print(sys.executable)'`
+on Linux/macOS, or `python -c "import sys; print(sys.executable)"` on Windows.
+Quote paths containing spaces; on Windows JSON-escape the interpreter path
+in the same way as the collector path. Configure the URL/key in the copied
+script if Antigravity does not inherit your terminal's environment; use a
+stable server URL for ongoing collection. Keep the device key out of the
+hook command and never commit the configured copy.
+
 The [Antigravity hook configuration](https://antigravity.google/docs/hooks/)
-is shared by Antigravity 2.0, CLI, and IDE. The hook returns immediately
-and launches a detached collector. Run the script without `--hook` once
-after installation to import history and see diagnostics; it can also run
-periodically with your scheduler to refresh during long turns.
+is shared by Antigravity 2.0, CLI, and IDE. `PostInvocation` refreshes after
+each model invocation during a turn; `Stop` refreshes when the execution
+loop ends. Both return immediately and launch a detached collector, which
+waits two seconds for metadata to flush before reading. Overlapping workers
+use the same lock, so only one uploads at a time. Updates need no manual
+command after setup, while Antigravity is running and these hooks are enabled.
+
+4. Restart Antigravity, then confirm **ai-activity is enabled**: `/hooks`
+   in CLI, **Settings → Customizations → Hooks** in Antigravity 2.0, or
+   **… → Customizations → Hooks** in the IDE agent side panel.
+5. Run the copied script **without either hook flag** once to import history
+   and see diagnostics. Exit code 0 means supported entries were processed;
+   warnings can still indicate skipped unsupported rows. Exit code 1 means
+   a database, upload, or resource-budget failure; fix it and run again.
+6. Complete a new Antigravity turn and leave the dashboard open. Its existing
+   15-second refresh should show supported persisted usage after collection.
+   If it does not, check the hook is loaded, Python and script paths resolve
+   in Antigravity, the configured URL/key are correct, and a manual run works.
+   Unsupported database formats may still produce no usage; see below.
+
+For retries while Antigravity is idle, or a version that persists metadata
+later than its hooks run, you can additionally schedule the script without
+hook flags every minute (cron on Linux/macOS or Task Scheduler on Windows).
+Use the same user, configured script, and absolute interpreter/script paths;
+on Windows set the task not to start another instance if already running.
+Hooks and scheduled runs share checkpoints and safely deduplicate uploads.
 
 What it does:
 
