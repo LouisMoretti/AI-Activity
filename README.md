@@ -55,7 +55,7 @@ count as UTC days; delete `~/.cache/ai-activity/offsets.json` (and
 twice, the server only adds the missing offsets.
 
 The tool is part of the URL (`/api/ingest/claude-code`, `/api/ingest/codex`,
-`/api/ingest/opencode`);
+`/api/ingest/opencode`, `/api/ingest/antigravity`);
 a bare `/api/ingest` answers `404`. See `AGENTS.md` §5 for the payload contract.
 
 ## Send Codex usage from a device
@@ -106,6 +106,74 @@ What it does at the end of every turn:
   the (empty) JSON answer Codex expects from a hook. Runs wait for each
   other and give up after 15 minutes. The script is idempotent: it can
   also run by hand or from cron.
+
+## Send Antigravity usage from a device
+
+1. Create a device key as above (the same key serves every tool).
+2. Copy `collectors/antigravity.py` to `~/.gemini/ai-activity-antigravity.py`.
+   Replace `<server>` and `<device key>` at its top, or set `AI_ACTIVITY_URL`
+   and `AI_ACTIVITY_KEY` in the environment Antigravity runs in. Python 3
+   with the standard-library SQLite module is required.
+3. Merge this named hook into `~/.gemini/config/hooks.json` (keep existing
+   hooks). Use an **absolute path** to Python and the collector if they are
+   not on the app's PATH. This example is for Linux/macOS; on Windows use
+   `python` and a quoted absolute Windows path with JSON-escaped backslashes.
+
+```json
+{
+  "ai-activity": {
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python3 ~/.gemini/ai-activity-antigravity.py --hook",
+        "timeout": 10
+      }
+    ]
+  }
+}
+```
+
+The [Antigravity hook configuration](https://antigravity.google/docs/hooks/)
+is shared by Antigravity 2.0, CLI, and IDE. The hook returns immediately
+and launches a detached collector. Run the script without `--hook` once
+after installation to import history and see diagnostics; it can also run
+periodically with your scheduler to refresh during long turns.
+
+What it does:
+
+- Reads existing SQLite databases directly under
+  `~/.gemini/{antigravity,antigravity-cli,antigravity-ide}` and their
+  `conversations/` directories. `GEMINI_CLI_HOME` can replace `~/.gemini`.
+  Support depends on a database containing the recognized `gen_metadata`
+  table; encrypted/legacy conversation files and transcript-only versions
+  are not supported.
+- Selects generation metadata and, when needed, step metadata from a
+  read-only snapshot. Never selects conversation text, prompts, responses,
+  tool output, workspace paths, or authentication data.
+- Sends ids, recorded model (unknown stays unknown), token counts, the
+  original generation timestamp, and this machine's UTC offset at that
+  time. Input includes recorded system and new input; cached input is
+  separate; text and thinking output are added once. Subagent databases
+  count as separate conversations because parent attribution is unavailable.
+- Imports all supported history on the first run, then uploads only new
+  or changed entries. Checkpoints in `~/.cache/ai-activity/antigravity.json`
+  advance after each accepted batch. Failed batches retry on the next run;
+  repeated uploads and copied databases do not add duplicate usage. Remove
+  the checkpoint file to replay history. Switching server or device key
+  automatically starts a new import.
+- Does not collect quotas or context fill; the card shows these as
+  unavailable, with today's usage and recent conversations.
+
+**Format limitations:** Antigravity's persisted protobuf layout is
+undocumented. The parser follows [independently observed field evidence](https://github.com/junhoyeo/tokscale/blob/62ca1eb1677556972ba963fdfa3a41ab23c1eb4b/crates/tokscale-core/src/sessions/antigravity_cli.rs).
+It accepts standard protobuf generation timestamps, or a unique matching
+step UUID and bot id with a standard step timestamp. Unknown timestamp
+layouts, missing response ids, corrupt records, and ambiguous step matches
+are skipped with a diagnostic and retried later. They are never assigned
+the database modification time or import time, so totals may be incomplete
+on unsupported versions. Automated tests use synthetic SQLite/protobuf fixtures. Read-only parsing
+was also checked against local Antigravity history; triggering the installed
+hook from a live Antigravity turn still needs verification.
 
 ## Send OpenCode usage from a device
 
