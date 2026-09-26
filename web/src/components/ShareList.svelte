@@ -26,7 +26,11 @@
 
 {#snippet num(value: number, share = true)}
   <span class="num">{fmtCompact(value)}</span>
-  <span class="pct">{share && total ? pct(value) : ""}</span>
+  {#if share && total}
+    <span class="pct">{pct(value)}</span>
+  {:else}
+    <span class="pct" title={share ? undefined : "Shares don't apply here"}>—</span>
+  {/if}
 {/snippet}
 
 <div class="block">
