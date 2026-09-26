@@ -30,9 +30,9 @@ function generation(id, { output = 20, model = "gemini-test", when = WHEN, step 
   return Buffer.concat([bytes(1, Buffer.concat([bytes(4, usage), ...(model ? [bytes(19, model)] : []),
     ...(when ? [bytes(9, bytes(4, stamp(when)))] : [])])), bytes(4, step)]);
 }
-const run = (env, args = [], input = "") => new Promise((resolve, reject) => {
-  const p = spawn(process.env.PYTHON || (process.platform === "win32" ? "python" : "python3"), [SCRIPT, ...args],
-    { env: { ...process.env, ...env }, stdio: ["pipe", "pipe", "pipe"] });
+const run = (env, args = [], input = "", command = null) => new Promise((resolve, reject) => {
+  const p = spawn(command || process.env.PYTHON || (process.platform === "win32" ? "python" : "python3"), command ? [] : [SCRIPT, ...args],
+    { env: { ...process.env, ...env }, shell: !!command, stdio: ["pipe", "pipe", "pipe"] });
   let out = "", err = "";
   p.stdout.on("data", (b) => out += b); p.stderr.on("data", (b) => err += b);
   p.on("error", reject); p.on("close", (code) => resolve({ code, out, err })); p.stdin.end(input);
@@ -71,6 +71,8 @@ describe("Antigravity collector", () => {
     assert.ok(!saved.includes(key)); assert.ok(!saved.includes("PRIVATE PROMPT"));
     assert.equal((await run(env)).code, 0); assert.equal((await summary()).tokens, t.tokens);
     fs.unlinkSync(statePath()); assert.equal((await run(env)).code, 0); assert.equal((await summary()).events, 2);
+    // Windows requires a byte-range lock; repeated runs must not append bytes.
+    assert.ok(fs.statSync(path.join(home, ".cache", "ai-activity", "antigravity.lock")).size <= 1);
   });
 
   test("partial generations get final counts, and replay cannot double count", async () => {
@@ -91,10 +93,24 @@ describe("Antigravity collector", () => {
   test("unknown timestamp and corrupt protobuf are skipped, never assigned import time", async () => {
     put(4, generation("response4", { when: null, step: "missing", bot: "missing" }));
     put(5, Buffer.from([10, 255]));
-    const r = await run(env); assert.equal(r.code, 1); assert.match(r.err, /unavailable/);
+    const r = await run(env); assert.equal(r.code, 0); assert.match(r.err, /unavailable/);
     assert.equal((await summary()).events, 3);
+    const prior = fs.readFileSync(statePath(), "utf8");
+    assert.equal((await run(env)).code, 0);
+    assert.equal(fs.readFileSync(statePath(), "utf8"), prior);
     put(4, generation("response4")); db.prepare("DELETE FROM gen_metadata WHERE idx=5").run();
     assert.equal((await run(env)).code, 0); assert.equal((await summary()).events, 4);
+  });
+
+  test("unreadable databases still report failure without discarding accepted checkpoints", async () => {
+    const broken = path.join(home, ".gemini", "antigravity-cli", "conversations", "broken.db");
+    const prior = fs.readFileSync(statePath(), "utf8");
+    fs.writeFileSync(broken, "not a SQLite database");
+    try {
+      const r = await run(env); assert.equal(r.code, 1); assert.match(r.err, /collection\/upload failed/);
+      assert.equal(fs.readFileSync(statePath(), "utf8"), prior);
+    } finally { fs.unlinkSync(broken); }
+    assert.equal((await run(env)).code, 0);
   });
 
   test("API separates Antigravity ids from other tools and rejects unsupported identities", async () => {
@@ -106,7 +122,7 @@ describe("Antigravity collector", () => {
 
   test("ambiguous step matches stay unavailable instead of moving usage to the wrong date", async () => {
     put(6, generation("ambiguous1", { when: null, step: "step2", bot: "bot2" }));
-    const r = await run(env); assert.equal(r.code, 1);
+    const r = await run(env); assert.equal(r.code, 0); assert.match(r.err, /unavailable/);
     assert.equal((await summary()).events, 4);
     db.prepare("DELETE FROM gen_metadata WHERE idx=6").run();
   });
@@ -133,9 +149,39 @@ describe("Antigravity collector", () => {
     } finally { await new Promise(resolve => proxy.close(resolve)); }
   });
 
-  test("Stop hook returns promptly and never echoes private payload", async () => {
-    const r = await run(env, ["--hook"], '{"transcriptPath":"secret/path","conversationId":"conversation1"}');
-    assert.equal(r.code, 0); assert.deepEqual(JSON.parse(r.out), { decision: "stop" });
-    assert.ok(!r.out.includes("secret"));
+  test("documented hooks return promptly and automatically import persisted updates", async () => {
+    const readme = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+    const section = readme.split("## Send Antigravity usage from a device")[1].split("## Send OpenCode")[0];
+    const configs = [...section.matchAll(/```json\n([\s\S]*?)\n```/g)].map(m => JSON.parse(m[1])["ai-activity"]);
+    assert.equal(configs.length, 2);
+    for (const config of configs) {
+      assert.equal(config.enabled, true);
+      assert.ok(config.PostInvocation[0].command.endsWith(" --post-invocation"));
+      assert.ok(config.Stop[0].command.endsWith(" --hook"));
+    }
+    const windows = process.platform === "win32";
+    const config = configs[windows ? 1 : 0];
+    const copy = path.join(home, "collector with spaces.py"); fs.copyFileSync(SCRIPT, copy);
+    const python = process.env.PYTHON || (windows ? "python" : "python3");
+    const quote = s => windows ? `"${s}"` : `'${s.replaceAll("'", "'\\''")}'`;
+    const prefix = windows ? 'python "C:\\Users\\<user>\\.gemini\\ai-activity-antigravity.py"' : "python3 ~/.gemini/ai-activity-antigravity.py";
+    for (const [event, output] of [["PostInvocation", 60], ["Stop", 80]]) {
+      const documented = config[event][0].command;
+      assert.ok(documented.startsWith(prefix));
+      const command = documented.replace(prefix, `${quote(python)} ${quote(copy)}`);
+      const start = Date.now();
+      const r = await run(env, [], '{"transcriptPath":"secret/path","conversationId":"conversation1"}', command);
+      assert.equal(r.code, 0); assert.deepEqual(JSON.parse(r.out), event === "Stop" ? { decision: "stop" } : {});
+      assert.ok(!r.out.includes("secret")); assert.ok(Date.now() - start < 2000, "hook must return before worker delay");
+      // Simulate the app persisting final metadata just after the hook returns.
+      put(1, generation("response1", { output }));
+      let tokens = 0;
+      for (let i = 0; i < 30; i++) {
+        tokens = (await summary()).tokens;
+        if (tokens === 2620 + output) break;
+        await new Promise(resolve => setTimeout(resolve, 250));
+      }
+      assert.equal(tokens, 2620 + output); assert.equal((await summary()).events, 4);
+    }
   });
 });
