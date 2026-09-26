@@ -81,6 +81,33 @@ describe("Antigravity collector", () => {
     assert.equal((await summary()).events, 2);
   });
 
+  test("duplicate partial/final response rows upload once and settle across batch boundaries", async () => {
+    const batches = [];
+    const proxy = http.createServer(async (request, response) => {
+      let body = ""; for await (const b of request) body += b;
+      const payload = JSON.parse(body); batches.push(payload.messages);
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ ok: true, messages: payload.messages.length }));
+    });
+    await new Promise(resolve => proxy.listen(0, "127.0.0.1", resolve));
+    // The final record precedes these older partial duplicates in row order.
+    for (let idx = 20; idx < 221; idx++) put(idx, generation("response1", { output: 20 }));
+    const destination = { ...env, AI_ACTIVITY_URL: `http://127.0.0.1:${proxy.address().port}` };
+    try {
+      assert.equal((await run(destination)).code, 0);
+      assert.equal(batches.length, 1); assert.equal(batches[0].length, 2);
+      assert.equal(batches[0].find(e => e.response_id === "response1").usage.output_tokens, 70);
+      const checkpoint = fs.readFileSync(statePath(), "utf8");
+      assert.equal((await run(destination)).code, 0);
+      assert.equal(batches.length, 1, "settled duplicates must not create replay traffic");
+      assert.equal(fs.readFileSync(statePath(), "utf8"), checkpoint);
+    } finally {
+      db.prepare("DELETE FROM gen_metadata WHERE idx>=20").run();
+      await new Promise(resolve => proxy.close(resolve));
+    }
+    assert.equal((await run(env)).code, 0); assert.equal((await summary()).tokens, 1340);
+  });
+
   test("failed uploads retain checkpoints; next run sends backlog", async () => {
     put(3, generation("response3"));
     const prior = fs.readFileSync(statePath(), "utf8");
