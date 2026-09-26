@@ -618,7 +618,9 @@ Same batch shape (`messages`, `rate_limits`, `context`, `occurred_at`,
 
 `collectors/antigravity.py` scans recognized local SQLite `gen_metadata`
 usage blobs; only metadata tables are read. The collector uses a shared
-Stop hook (`~/.gemini/config/hooks.json`) or can run periodically by hand.
+PostInvocation and Stop hooks (`~/.gemini/config/hooks.json`) or can run
+periodically by hand. Detached workers wait for the lock, with a 15-minute
+timeout, rather than dropping overlapping final-turn runs.
 Each entry carries `response_id`, `session_id`, `model`, `occurred_at`,
 `utc_offset_min`, and disjoint `usage.input_tokens`, `output_tokens`
 (including thinking), `cache_read_tokens`. Cache writes, quotas and context
@@ -630,8 +632,12 @@ Server keys are `antigravity:<session>:<response>`; session keys also have
 an `antigravity:` prefix to avoid collisions with other tools. The usual
 partial/final upsert and replay rules apply. Subagents count separately
 because the local format does not establish parent sessions. Checkpoints
-store hashes of accepted metadata, scoped to server/device key, and never
-contain credentials. See README.md for setup, field evidence and limits.
+store accepted metadata hashes/count ranks, scoped to server/device key,
+and never contain credentials. Rotating source cursors (hashed paths) and
+generation page positions allow bounded passes to resume after successful
+uploads. Completed generation scans restart to discover edits to old rows.
+Timestamp matching streams full metadata scans and cannot resolve a date
+from a truncated ambiguity check. See README.md for setup, evidence and limits.
 `test/antigravity-collector.test.js` uses synthetic wire fixtures against
 real SQLite/WAL and the ingestion API. Local live history reads were also
 checked; installed-hook triggering from a real turn remains to be verified.
