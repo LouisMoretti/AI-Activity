@@ -55,7 +55,7 @@ count as UTC days; delete `~/.cache/ai-activity/offsets.json` (and
 twice, the server only adds the missing offsets.
 
 The tool is part of the URL (`/api/ingest/claude-code`, `/api/ingest/codex`,
-`/api/ingest/opencode`);
+`/api/ingest/opencode`, `/api/ingest/antigravity`);
 a bare `/api/ingest` answers `404`. See `AGENTS.md` §5 for the payload contract.
 
 ## Send Codex usage from a device
@@ -116,6 +116,156 @@ What it does at the end of every turn:
   the (empty) JSON answer Codex expects from a hook. Runs wait for each
   other and give up after 15 minutes. The script is idempotent: it can
   also run by hand or from cron.
+
+## Send Antigravity usage from a device
+
+1. Create a device key as above (the same key serves every tool).
+2. Copy `collectors/antigravity.py` to `~/.gemini/ai-activity-antigravity.py`.
+   Replace `<server>` and `<device key>` at its top, or set `AI_ACTIVITY_URL`
+   and `AI_ACTIVITY_KEY` in the environment Antigravity runs in. Python 3
+   with the standard-library SQLite module is required.
+3. Merge this named hook into `~/.gemini/config/hooks.json` (keep existing
+   hooks). For Linux/macOS:
+
+```json
+{
+  "ai-activity": {
+    "enabled": true,
+    "PostInvocation": [
+      {
+        "type": "command",
+        "command": "python3 ~/.gemini/ai-activity-antigravity.py --post-invocation",
+        "timeout": 10
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python3 ~/.gemini/ai-activity-antigravity.py --hook",
+        "timeout": 10
+      }
+    ]
+  }
+}
+```
+
+For Windows, use this instead, replacing `<user>` with your Windows user
+directory name. Backslashes and quotes below are already JSON-escaped:
+
+```json
+{
+  "ai-activity": {
+    "enabled": true,
+    "PostInvocation": [
+      {
+        "type": "command",
+        "command": "python \"C:\\Users\\<user>\\.gemini\\ai-activity-antigravity.py\" --post-invocation",
+        "timeout": 10
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python \"C:\\Users\\<user>\\.gemini\\ai-activity-antigravity.py\" --hook",
+        "timeout": 10
+      }
+    ]
+  }
+}
+```
+
+Use **absolute paths to both Python and the collector** if Python is not
+on Antigravity's PATH (desktop apps can inherit a different PATH from your
+terminal). Find the interpreter with `python3 -c 'import sys; print(sys.executable)'`
+on Linux/macOS, or `python -c "import sys; print(sys.executable)"` on Windows.
+Quote paths containing spaces; on Windows JSON-escape the interpreter path
+in the same way as the collector path. Configure the URL/key in the copied
+script if Antigravity does not inherit your terminal's environment; use a
+stable server URL for ongoing collection. Keep the device key out of the
+hook command and never commit the configured copy.
+
+The [Antigravity hook configuration](https://antigravity.google/docs/hooks/)
+is shared by Antigravity 2.0, CLI, and IDE. `PostInvocation` refreshes after
+each model invocation during a turn; `Stop` refreshes when the execution
+loop ends. Both return immediately and launch a detached collector, which
+waits two seconds for metadata to flush before reading. Overlapping workers
+wait for the same lock (up to 15 minutes), then read a fresh snapshot; a Stop
+run is not discarded while another upload is in flight. Only one uploads
+at a time. Updates need no manual
+command after setup, while Antigravity is running and these hooks are enabled.
+
+4. Restart Antigravity, then confirm **ai-activity is enabled**: `/hooks`
+   in CLI, **Settings → Customizations → Hooks** in Antigravity 2.0, or
+   **… → Customizations → Hooks** in the IDE agent side panel.
+5. Run the copied script **without either hook flag** once to import history
+   and see diagnostics. Exit code 0 means supported entries were processed;
+   warnings can still indicate skipped unsupported rows. Exit code 1 means
+   a database, upload, or lock-wait failure; fix it and run again. A scan-budget
+   notice is a successful partial pass with saved progress: run again to
+   continue the import, or let subsequent hooks/scheduled runs continue it.
+6. Complete a new Antigravity turn and leave the dashboard open. Its existing
+   15-second refresh should show supported persisted usage after collection.
+   If it does not, check the hook is loaded, Python and script paths resolve
+   in Antigravity, the configured URL/key are correct, and a manual run works.
+   Unsupported database formats may still produce no usage; see below.
+
+For retries while Antigravity is idle, or a version that persists metadata
+later than its hooks run, you can additionally schedule the script without
+hook flags every minute (cron on Linux/macOS or Task Scheduler on Windows).
+Use the same user, configured script, and absolute interpreter/script paths;
+on Windows set the task not to start another instance if already running.
+Hooks and scheduled runs share checkpoints and safely deduplicate uploads.
+
+What it does:
+
+- Reads existing SQLite databases directly under
+  `~/.gemini/{antigravity,antigravity-cli,antigravity-ide}` and their
+  `conversations/` directories. `GEMINI_CLI_HOME` can replace `~/.gemini`.
+  Support depends on a database containing the recognized `gen_metadata`
+  table; encrypted/legacy conversation files and transcript-only versions
+  are not supported.
+- Selects generation metadata and, when needed, step metadata from a
+  read-only snapshot. Never selects conversation text, prompts, responses,
+  tool output, workspace paths, or authentication data.
+- Sends ids, recorded model (unknown stays unknown), token counts, the
+  original generation timestamp, and this machine's UTC offset at that
+  time. Input includes recorded system and new input; cached input is
+  separate; text and thinking output are added once. Subagent databases
+  count as separate conversations because parent attribution is unavailable.
+- Imports supported history (over multiple passes for large archives),
+  then uploads only new or changed entries. Checkpoints in
+  `~/.cache/ai-activity/antigravity.json`
+  advance after each accepted batch. Failed batches retry on the next run;
+  repeated uploads and copied databases do not add duplicate usage. Remove
+  the checkpoint file to replay history. Switching server or device key
+  automatically starts a new import.
+- Large imports use resumable passes: at most 2,000 databases or 15 minutes
+  per pass. The next pass starts after the last attempted database instead
+  of restarting at the beginning. Large conversations are read in pages
+  of at most 100,000 generation rows / 64 MiB of generation metadata (each
+  blob is limited to 1 MiB). Page positions advance only after uploads
+  succeed; accepted entries are not resent on a retry. A completed scan
+  starts over later so edits to older partial generations are discovered.
+- Step timestamp recovery streams the full metadata snapshot with bounded
+  memory; step bytes do not consume the generation page budget. It checks
+  ambiguity against all generation rows, including those on other pages.
+  If the complete timestamp scan cannot finish within its 30-second
+  deadline, unresolved entries stay uncollected with a warning;
+  entries with their own valid generation timestamp can still upload.
+  Resource limits never manufacture dates or discard an accepted page.
+- Does not collect quotas or context fill; the card shows these as
+  unavailable, with today's usage and recent conversations.
+
+**Format limitations:** Antigravity's persisted protobuf layout is
+undocumented. The parser follows [independently observed field evidence](https://github.com/junhoyeo/tokscale/blob/62ca1eb1677556972ba963fdfa3a41ab23c1eb4b/crates/tokscale-core/src/sessions/antigravity_cli.rs).
+It accepts standard protobuf generation timestamps, or a unique matching
+step UUID and bot id with a standard step timestamp. Unknown timestamp
+layouts, missing response ids, corrupt records, and ambiguous step matches
+are skipped with a diagnostic and retried later. They are never assigned
+the database modification time or import time, so totals may be incomplete
+on unsupported versions. Automated tests use synthetic SQLite/protobuf fixtures. Read-only parsing
+was also checked against local Antigravity history; triggering the installed
+hook from a live Antigravity turn still needs verification.
 
 ## Send OpenCode usage from a device
 

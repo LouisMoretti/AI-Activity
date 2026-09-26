@@ -73,6 +73,7 @@ export function demoDashboard(provider: Provider): DashboardVM {
     },
     // The fictional dataset has no OpenCode usage.
     opencode: { recent: [], today: { tokens: 0, sessions: 0, calls: 0, models: 0, providers: 0 } },
+    antigravity: { recent: [], today: { tokens: 0, sessions: 0, calls: 0, models: 0, providers: 0 } },
     sessions,
     sessionsTotal: sessions.length,
   };

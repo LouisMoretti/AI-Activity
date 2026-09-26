@@ -6,7 +6,7 @@ import type {
 import { denseSeries, streaks } from "./series.ts";
 import {
   toolsFor, WINDOW_SPANS, type DashboardVM, type FigureVM, type Provider,
-  type OpenCodeVM, type QuotaToolVM, type SessionVM, type ToolKey,
+  type ActivityToolVM, type QuotaToolVM, type SessionVM, type ToolKey,
 } from "./view-model.ts";
 
 export interface LiveData {
@@ -16,6 +16,7 @@ export interface LiveData {
   sessions: SessionsResponse;
   /** OpenCode's card: its summary (today) and its latest sessions. */
   opencode: { summary: SummaryResponse; latest: SessionsResponse };
+  antigravity: { summary: SummaryResponse; latest: SessionsResponse };
 }
 
 export const ACTIVITY_DAYS = 364;
@@ -46,7 +47,7 @@ function toolQuotas(q: QuotasResponse, tool: QuotaToolVM["tool"]): QuotaToolVM {
 }
 
 const asTool = (t: string): ToolKey =>
-  t === "codex" || t === "opencode" ? t : "claude-code";
+  t === "codex" || t === "opencode" || t === "antigravity" ? t : "claude-code";
 
 const toSession = (s: Session): SessionVM => ({
   tool: asTool(s.tool),
@@ -58,7 +59,7 @@ const toSession = (s: Session): SessionVM => ({
   context: s.context_used_pct === null ? null : { pct: s.context_used_pct, size: s.context_window_size },
 });
 
-function openCode(d: LiveData["opencode"]): OpenCodeVM {
+function activityTool(d: LiveData["opencode"]): ActivityToolVM {
   const t = d.summary.today;
   return {
     recent: d.latest.sessions.map(toSession),
@@ -88,7 +89,8 @@ export function liveDashboard(d: LiveData, provider: Provider): DashboardVM {
     tools: toolsFor(provider),
     claude: toolQuotas(d.quotas, "claude-code"),
     codex: toolQuotas(d.quotas, "codex"),
-    opencode: openCode(d.opencode),
+    opencode: activityTool(d.opencode),
+    antigravity: activityTool(d.antigravity),
     sessions,
     sessionsTotal: d.sessions.total,
   };

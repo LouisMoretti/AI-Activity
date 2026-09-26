@@ -1,11 +1,11 @@
 <script lang="ts">
   import { clock } from "../lib/clock.svelte.ts";
   import { fmtAgo, fmtCompact, plural, RECENT_SEC } from "../lib/format.ts";
-  import type { OpenCodeVM, SessionVM } from "../lib/view-model.ts";
+  import type { ActivityToolVM, SessionVM } from "../lib/view-model.ts";
   import ToolHeader from "./ToolHeader.svelte";
 
   const SHOWN = 3;
-  let { vm }: { vm: OpenCodeVM } = $props();
+  let { vm, tool = "opencode" }: { vm: ActivityToolVM; tool?: "opencode" | "antigravity" } = $props();
 
   // Active: a reply in the last few minutes (the green dot's rule). Listed by
   // session id (creation order), not by latest reply, so parallel
@@ -29,17 +29,17 @@
   }
 </script>
 
-<!-- OpenCode has no 5-hour / weekly quota of its own: its card shows what is
-     going on now (active conversations, today) instead of quota windows. -->
+<!-- Activity cards show measured usage when quota data is not collected. -->
 <article class="card">
   <section class="today">
-    <ToolHeader tool="opencode" note={last ? "" : "No usage yet"} />
+    <ToolHeader {tool} note={last ? "" : "No usage yet"} />
+    {#if tool === "antigravity"}<div class="meta">Quota and context unavailable</div>{/if}
     {#if last}
       <div class="label">Today</div>
       <div class="value">{fmtCompact(vm.today.tokens)}<small> tokens</small></div>
       <div class="meta">{plural(vm.today.sessions, "conversation")} · {plural(vm.today.calls, "call")}</div>
       {#if vm.today.models}
-        <div class="meta">{plural(vm.today.models, "model")} · {plural(vm.today.providers, "provider")}</div>
+        <div class="meta">{plural(vm.today.models, "model")}{#if tool === "opencode"} · {plural(vm.today.providers, "provider")}{/if}</div>
       {/if}
     {/if}
   </section>

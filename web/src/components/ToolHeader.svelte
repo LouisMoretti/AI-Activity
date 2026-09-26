@@ -23,6 +23,7 @@
   .icon.claude-code { background: color-mix(in srgb, var(--claude) 16%, var(--surface)); color: var(--claude); }
   .icon.codex { background: color-mix(in srgb, var(--codex) 14%, var(--surface)); color: var(--codex); }
   .icon.opencode { background: color-mix(in srgb, var(--opencode) 14%, var(--surface)); color: var(--opencode); }
+  .icon.antigravity { background: color-mix(in srgb, var(--antigravity) 14%, var(--surface)); color: var(--antigravity); }
   h3 { font-size: 16px; font-weight: 550; }
   .status { margin-left: auto; display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; white-space: nowrap; }
   .badge { border: 1px solid var(--line); border-radius: 5px; padding: 2px 7px; }
