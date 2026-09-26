@@ -179,7 +179,9 @@ is shared by Antigravity 2.0, CLI, and IDE. `PostInvocation` refreshes after
 each model invocation during a turn; `Stop` refreshes when the execution
 loop ends. Both return immediately and launch a detached collector, which
 waits two seconds for metadata to flush before reading. Overlapping workers
-use the same lock, so only one uploads at a time. Updates need no manual
+wait for the same lock (up to 15 minutes), then read a fresh snapshot; a Stop
+run is not discarded while another upload is in flight. Only one uploads
+at a time. Updates need no manual
 command after setup, while Antigravity is running and these hooks are enabled.
 
 4. Restart Antigravity, then confirm **ai-activity is enabled**: `/hooks`
@@ -188,7 +190,9 @@ command after setup, while Antigravity is running and these hooks are enabled.
 5. Run the copied script **without either hook flag** once to import history
    and see diagnostics. Exit code 0 means supported entries were processed;
    warnings can still indicate skipped unsupported rows. Exit code 1 means
-   a database, upload, or resource-budget failure; fix it and run again.
+   a database, upload, or lock-wait failure; fix it and run again. A scan-budget
+   notice is a successful partial pass with saved progress: run again to
+   continue the import, or let subsequent hooks/scheduled runs continue it.
 6. Complete a new Antigravity turn and leave the dashboard open. Its existing
    15-second refresh should show supported persisted usage after collection.
    If it does not, check the hook is loaded, Python and script paths resolve
@@ -218,12 +222,27 @@ What it does:
   time. Input includes recorded system and new input; cached input is
   separate; text and thinking output are added once. Subagent databases
   count as separate conversations because parent attribution is unavailable.
-- Imports all supported history on the first run, then uploads only new
-  or changed entries. Checkpoints in `~/.cache/ai-activity/antigravity.json`
+- Imports supported history (over multiple passes for large archives),
+  then uploads only new or changed entries. Checkpoints in
+  `~/.cache/ai-activity/antigravity.json`
   advance after each accepted batch. Failed batches retry on the next run;
   repeated uploads and copied databases do not add duplicate usage. Remove
   the checkpoint file to replay history. Switching server or device key
   automatically starts a new import.
+- Large imports use resumable passes: at most 2,000 databases or 15 minutes
+  per pass. The next pass starts after the last attempted database instead
+  of restarting at the beginning. Large conversations are read in pages
+  of at most 100,000 generation rows / 64 MiB of generation metadata (each
+  blob is limited to 1 MiB). Page positions advance only after uploads
+  succeed; accepted entries are not resent on a retry. A completed scan
+  starts over later so edits to older partial generations are discovered.
+- Step timestamp recovery streams the full metadata snapshot with bounded
+  memory; step bytes do not consume the generation page budget. It checks
+  ambiguity against all generation rows, including those on other pages.
+  If the complete timestamp scan cannot finish within its 30-second
+  deadline, unresolved entries stay uncollected with a warning;
+  entries with their own valid generation timestamp can still upload.
+  Resource limits never manufacture dates or discard an accepted page.
 - Does not collect quotas or context fill; the card shows these as
   unavailable, with today's usage and recent conversations.
 
