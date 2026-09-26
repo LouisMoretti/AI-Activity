@@ -8,7 +8,7 @@
   import DevicesPanel from "./components/DevicesPanel.svelte";
   import Leaderboard from "./components/Leaderboard.svelte";
   import NewAccountForm from "./components/NewAccountForm.svelte";
-  import OpenCodeCard from "./components/OpenCodeCard.svelte";
+  import ActivityToolCard from "./components/ActivityToolCard.svelte";
   import ProfilePanel from "./components/ProfilePanel.svelte";
   import SiteHeader from "./components/SiteHeader.svelte";
   import Section from "./components/Section.svelte";
@@ -106,9 +106,12 @@
         <div class="tools">
           {#if vm.tools.includes("claude-code")}<ClaudeCodeCard vm={vm.claude} />{/if}
           {#if vm.tools.includes("codex")}<CodexCard vm={vm.codex} />{/if}
+          {#if vm.tools.includes("antigravity")}
+            <div class="full"><ActivityToolCard vm={vm.antigravity} tool="antigravity" /></div>
+          {/if}
           {#if vm.tools.includes("opencode")}
             <div class="wide">
-              <OpenCodeCard vm={vm.opencode} />
+              <ActivityToolCard vm={vm.opencode} />
               <TodayByTool today={vm.stats.today} />
             </div>
           {/if}
@@ -128,6 +131,7 @@
   .gate button { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 4px 10px; font-size: 12px; color: var(--text); }
   .notice { color: var(--warn); margin: 12px 0; text-align: center; }
   /* OpenCode (2/3) and today's split by tool (1/3) share the last row. */
+  .full { grid-column: 1 / -1; }
   .wide { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; }
   @media (max-width: 720px) { .wide { grid-template-columns: 1fr; } }
   .tools { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr)); gap: 16px; }
