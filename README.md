@@ -73,6 +73,9 @@ a bare `/api/ingest` answers `404`. See `AGENTS.md` §5 for the payload contract
   "hooks": {
     "Stop": [
       { "hooks": [{ "type": "command", "command": "setsid -f python3 ~/.codex/ai-activity-codex.py >/dev/null 2>&1 </dev/null; echo '{}'", "timeout": 10 }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "setsid -f python3 ~/.codex/ai-activity-codex.py >/dev/null 2>&1 </dev/null; echo '{}'", "timeout": 10 }] }
     ]
   }
 }
@@ -96,7 +99,14 @@ What it does at the end of every turn:
 - The first run sends every rollout still on disk: that is the import of
   past sessions.
 - Also sends the 5-hour and weekly rate limits and the context fill Codex
-  recorded with each response, dated when Codex measured them.
+  recorded with each response, dated when Codex measured them. A limit
+  snapshot written without token counts (e.g. when a turn failed) is sent
+  too, so an exhausted quota still records its final value.
+- The `Stop` hook does not fire when Codex stops on a rate limit (upstream
+  Codex bug), which would leave that final snapshot unsent: the
+  `UserPromptSubmit` hook runs the same script on your next prompt and picks
+  it up. If Codex is driven without prompts (`codex exec`), run the script
+  by hand or from cron after hitting a limit instead.
 - How far each file was sent is kept in `~/.cache/ai-activity/codex.json`
   and only moves forward once the server accepted everything, so nothing
   is lost while the server is down (no separate spool needed): the next

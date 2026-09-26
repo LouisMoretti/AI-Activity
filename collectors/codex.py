@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """AI Activity collector for Codex (see README.md, "Send Codex usage").
 
-Run by a Codex Stop hook at the end of every turn (or by hand, or from cron:
-it is idempotent). It reads what was added to every rollout under
+Run by a Codex Stop hook at the end of every turn, and again on every
+prompt submit (the Stop hook does not fire on rate-limit stops, so without
+the second trigger the final snapshot of an exhausted quota would never be
+posted), or by hand, or from cron: it is idempotent. It reads what was added to every rollout under
 ~/.codex/sessions and ~/.codex/archived_sessions since the last accepted
 upload and posts one entry per model response with its token counts, plus
 the latest rate limits and context fill of each session. Prompts, replies
@@ -67,6 +69,18 @@ def usage_of(u):
     return {k: u.get(k) or 0 for k in keys if isinstance(u.get(k) or 0, (int, float))}
 
 
+def limits_of(p):
+    """The quota snapshot of a token_count or standalone rate_limits payload,
+    or None. Same object shape either way; the caller dates it with the
+    line's own time, never re-dated."""
+    rl = p.get("rate_limits")
+    if not isinstance(rl, dict):
+        return None
+    w = {k: {f: rl[k].get(f) for f in ("used_percent", "window_minutes", "resets_at")}
+         for k in ("primary", "secondary") if isinstance(rl.get(k), dict)}
+    return w or None
+
+
 def read(path, state):
     """New messages, rate limits and context of one rollout since its saved offset."""
     size = os.path.getsize(path)
@@ -107,12 +121,9 @@ def read(path, state):
             if last and session:
                 context = {"session_id": session, "used_tokens": last.get("total_tokens"),
                            "window_size": info.get("model_context_window")}
-            rl = p.get("rate_limits")
-            if isinstance(rl, dict):
-                w = {k: {f: rl[k].get(f) for f in ("used_percent", "window_minutes", "resets_at")}
-                     for k in ("primary", "secondary") if isinstance(rl.get(k), dict)}
-                if w:
-                    limits = (w, ts)
+            rl = limits_of(p)
+            if rl:
+                limits = (rl, ts)
             # Rollouts older than token_usage_record: one token_count per response,
             # sometimes repeated. Keyed by the thread's running total, so a replay
             # or a repeat is the same id.
@@ -126,6 +137,14 @@ def read(path, state):
                     "usage": usage_of(last),
                 })
             last_total = total
+        elif p.get("type") == "rate_limits" and ts:
+            # A limit snapshot without token counts (e.g. recorded when a turn
+            # failed on a quota): same object as on token_count lines, dated by
+            # this line. Without it the final 100% would never be posted: the
+            # Stop hook does not fire on rate-limit stops.
+            rl = limits_of(p)
+            if rl:
+                limits = (rl, ts)
     return messages, limits, context, [offset + end, session, model, records]
 
 
