@@ -271,10 +271,19 @@ def collect():
             try:
                 entries, skipped = read_database(path)
                 if skipped:
-                    print("ai-activity antigravity: %d metadata rows unavailable; retained for retry" % skipped, file=sys.stderr)
-                pending = []
+                    print("ai-activity antigravity: %d metadata rows unavailable; skipped (unsupported or incomplete)" % skipped, file=sys.stderr)
+                # A database can retain partial and final rows for the same
+                # response. Select one stable version before comparing the
+                # checkpoint, so older rows cannot cause endless replays.
+                best = {}
                 for entry in entries:
                     ident = entry["session_id"] + ":" + entry["response_id"]
+                    rank = (entry["usage"]["output_tokens"], sum(entry["usage"].values()),
+                            entry["occurred_at"], json.dumps(entry, sort_keys=True))
+                    if ident not in best or rank > best[ident][0]:
+                        best[ident] = (rank, entry)
+                pending = []
+                for ident, (_, entry) in best.items():
                     digest = hashlib.sha256(json.dumps(entry, sort_keys=True).encode()).hexdigest()
                     if sent.get(ident) != digest:
                         pending.append((ident, digest, entry))
@@ -307,6 +316,9 @@ if __name__ == "__main__":
         subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--hook-worker"], stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **options)
         # PostInvocation must not inject steps or change execution flow.
+        # Antigravity's Stop contract requires a decision; only "continue"
+        # re-enters the loop, and every other value permits the normal stop:
+        # https://antigravity.google/docs/hooks/#stop
         print('{}' if "--post-invocation" in sys.argv else '{"decision":"stop"}')
     else:
         try:
