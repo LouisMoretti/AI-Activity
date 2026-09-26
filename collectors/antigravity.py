@@ -8,6 +8,7 @@ are skipped with a diagnostic, never dated using file mtime or import time.
 """
 import contextlib
 import datetime
+import errno
 import hashlib
 import json
 import os
@@ -23,6 +24,11 @@ KEY = os.environ.get("AI_ACTIVITY_KEY", "<device key>")
 ID = re.compile(r"^[A-Za-z0-9_-]{1,200}$")
 MAX_BLOB = 1024 * 1024
 MAX_ROWS = 100000
+MAX_PAGE_BYTES = 64 * MAX_BLOB
+MAX_DATABASES = 2000
+MAX_RUN_SECONDS = 900
+MAX_SCAN_SECONDS = 30
+MAX_LOCK_SECONDS = 900
 
 
 def fields(blob):
@@ -124,23 +130,84 @@ def schema(db, table, columns):
     return True
 
 
-def read_database(path):
-    """Use one read-only snapshot; select only usage blobs and step metadata."""
+def matched_times(db, rows, deadline):
+    """Stream full metadata scans; retain only the current page's keys.
+
+    A truncated scan cannot prove uniqueness, so it resolves no timestamps.
+    Native generation timestamps remain usable even if this scan times out.
+    """
+    wanted = {(r["step"], r["bot"]) for r in rows if r["occurred_at"] is None and r["step"] and r["bot"]}
+    if not wanted or not schema(db, "steps", ("idx", "metadata")):
+        return {}
+    uses = {key: set() for key in wanted}
+    times = {key: set() for key in wanted}
+    try:
+        # The generation page alone cannot detect another response with the
+        # same step/bot key on a different page. Check the entire snapshot.
+        for (blob,) in db.execute("SELECT CASE WHEN length(data) <= ? THEN data END FROM gen_metadata", (MAX_BLOB,)):
+            if time.monotonic() > deadline:
+                return {}
+            try:
+                root = fields(blob)
+                usage = message(message(root, 1), 4)
+                key = (text(root, 4), text(usage, 7))
+                response = text(usage, 11)
+                if key in uses and response and ID.fullmatch(response) and len(uses[key]) < 2:
+                    uses[key].add(response)
+            except (ValueError, UnicodeError):
+                pass
+        # Each blob is bounded, but aggregate bytes do not accumulate in
+        # memory. Even very large step tables can be streamed safely.
+        for (blob,) in db.execute("SELECT CASE WHEN length(metadata) <= ? THEN metadata END FROM steps", (MAX_BLOB,)):
+            if time.monotonic() > deadline:
+                return {}
+            try:
+                meta = fields(blob)
+                key = (text(meta, 12), text(message(meta, 9), 7))
+                if key in times and len(times[key]) < 2:
+                    when = stamp(message(meta, 1))
+                    if when:
+                        times[key].add(when)
+            except (ValueError, UnicodeError):
+                pass
+    except sqlite3.OperationalError:
+        if time.monotonic() <= deadline:
+            raise
+        return {}
+    return {key: next(iter(times[key])) for key in wanted if len(uses[key]) == 1 and len(times[key]) == 1}
+
+
+def read_database(path, after=None):
+    """Read one bounded generation page from a consistent metadata snapshot."""
     db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + MAX_SCAN_SECONDS
     db.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
     skipped = 0
     try:
         db.execute("PRAGMA query_only = ON")
         db.execute("BEGIN")
         if not schema(db, "gen_metadata", ("idx", "data")):
-            return [], 0
+            return [], 0, None, False
         rows = []
         total_bytes = 0
-        for n, (idx, blob) in enumerate(db.execute("SELECT idx, CASE WHEN length(data) <= ? THEN data END FROM gen_metadata ORDER BY idx LIMIT ?", (MAX_BLOB, MAX_ROWS + 1))):
-            total_bytes += len(blob) if isinstance(blob, bytes) else 0
-            if n >= MAX_ROWS or total_bytes > 64 * MAX_BLOB:
-                raise ValueError("metadata row budget exceeded")
+        last = after
+        more = False
+        sql = "SELECT idx, CASE WHEN length(data) <= ? THEN data END FROM gen_metadata"
+        args = [MAX_BLOB]
+        if after is not None:
+            sql += " WHERE idx > ?"
+            args.append(after)
+        sql += " ORDER BY idx LIMIT ?"
+        args.append(MAX_ROWS + 1)
+        for n, (idx, blob) in enumerate(db.execute(sql, args)):
+            size = len(blob) if isinstance(blob, bytes) else 0
+            if n >= MAX_ROWS or (n and (total_bytes + size > MAX_PAGE_BYTES or time.monotonic() > deadline)):
+                more = True
+                break
+            if not isinstance(idx, int):
+                raise ValueError("unsupported generation index")
+            total_bytes += size
+            last = idx
             try:
                 row = parse(blob)
                 if not any(row["usage"].values()):
@@ -152,32 +219,12 @@ def read_database(path):
             except (ValueError, UnicodeError):
                 skipped += 1
 
-        # Newer versions omit the generation timestamp. Match a unique
-        # (step UUID, bot id) against steps.metadata, never positional guesses.
-        times = {}
-        uses = {}
-        for row in rows:
-            uses.setdefault((row["step"], row["bot"]), set()).add(row["response_id"])
-        if any(r["occurred_at"] is None for r in rows) and schema(db, "steps", ("idx", "metadata")):
-            for n, (_, blob) in enumerate(db.execute("SELECT idx, CASE WHEN length(metadata) <= ? THEN metadata END FROM steps LIMIT ?", (MAX_BLOB, MAX_ROWS + 1))):
-                total_bytes += len(blob) if isinstance(blob, bytes) else 0
-                if n >= MAX_ROWS or total_bytes > 64 * MAX_BLOB:
-                    raise ValueError("step row budget exceeded")
-                try:
-                    meta = fields(blob)
-                    step = text(meta, 12)
-                    bot = text(message(meta, 9), 7)
-                    when = stamp(message(meta, 1))
-                    if step and bot and when:
-                        times.setdefault((step, bot), set()).add(when)
-                except (ValueError, UnicodeError):
-                    skipped += 1
+        times = matched_times(db, rows, deadline)
         out = []
         for row in rows:
             when = row["occurred_at"]
-            matches = times.get((row["step"], row["bot"]), set())
-            if when is None and len(matches) == 1 and len(uses[(row["step"], row["bot"])]) == 1:
-                when = next(iter(matches))
+            if when is None:
+                when = times.get((row["step"], row["bot"]))
             if when is None:
                 skipped += 1
                 continue
@@ -189,7 +236,7 @@ def read_database(path):
             out.append({"response_id": row["response_id"], "session_id": path.stem,
                         "model": model, "occurred_at": when,
                         "utc_offset_min": int(offset.total_seconds() // 60), "usage": row["usage"]})
-        return out, skipped
+        return out, skipped, last if more else None, more
     finally:
         db.close()
 
@@ -211,43 +258,53 @@ def databases():
 @contextlib.contextmanager
 def locked(path):
     # Append mode ignores seek() for writes on Windows. Never truncate a
-    # lock file another worker may hold; concurrent initializers overwrite
-    # the same byte rather than extending the file on every hook.
+    # lock file another worker may hold. Waiting happens in the detached
+    # worker, so an overlapping final-turn hook is not silently discarded.
     with os.fdopen(os.open(path, os.O_RDWR | os.O_CREAT, 0o600), "r+b") as lock:
         if os.name == "nt":
             import msvcrt
-            if lock.seek(0, os.SEEK_END) == 0:
+        else:
+            import fcntl
+        deadline = time.monotonic() + MAX_LOCK_SECONDS
+        while True:
+            try:
+                if os.name == "nt":
+                    lock.seek(0)
+                    msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as error:
+                if error.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("collector lock wait timed out") from None
+                time.sleep(0.1)
+        try:
+            # Windows permits locking beyond EOF; initialize only while
+            # holding the lock, avoiding a racing write to a locked byte.
+            if os.name == "nt" and lock.seek(0, os.SEEK_END) == 0:
                 lock.seek(0)
                 lock.write(b"0")
                 lock.flush()
-            lock.seek(0)
-            try:
-                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
-            except OSError:
-                yield False
-                return
-        else:
-            import fcntl
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                yield False
-                return
-        try:
-            yield True
+            yield
         finally:
             if os.name == "nt":
                 lock.seek(0)
                 msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
 
 
+def save_state(path, state):
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(state))
+    os.replace(temp, path)
+
+
 def collect():
     import urllib.request
     cache = Path.home() / ".cache" / "ai-activity"
     cache.mkdir(parents=True, exist_ok=True)
-    with locked(cache / "antigravity.lock") as acquired:
-        if not acquired:
-            return
+    with locked(cache / "antigravity.lock"):
         state_path = cache / "antigravity.json"
         try:
             state = json.loads(state_path.read_text())
@@ -258,18 +315,37 @@ def collect():
         # Scope checkpoints to destination + device key; switching servers
         # or accounts must import history again. Credentials are never saved.
         scope = hashlib.sha256((SERVER.rstrip("/") + "\n" + KEY).encode()).hexdigest()
+        can_save = state.get("scope") == scope
         if state.get("scope") != scope:
             state = {"scope": scope, "sent": {}}
         sent = state.setdefault("sent", {})
         if not isinstance(sent, dict):
             raise ValueError("invalid collector state; remove antigravity.json to replay")
+        positions = state.setdefault("positions", {})
+        if not isinstance(positions, dict):
+            raise ValueError("invalid collector positions; remove antigravity.json to replay")
+        # Rotate after the last attempted source. Even a failing source must
+        # not starve every database that follows it. Never persist raw paths.
+        paths = list(databases())
+        names = [hashlib.sha256(str(p.resolve()).encode()).hexdigest() for p in paths]
+        cursor = state.get("cursor")
+        start = names.index(cursor) + 1 if cursor in names else 0
+        sources = list(zip(names, paths))
+        sources = sources[start:] + sources[:start]
         failed = False
+        deferred = False
         started = time.monotonic()
-        for number, path in enumerate(databases()):
-            if number >= 2000 or time.monotonic() - started > 900:
-                raise RuntimeError("collection budget exceeded; resume next run")
+        for number, (name, path) in enumerate(sources):
+            if number >= MAX_DATABASES or (number and time.monotonic() - started > MAX_RUN_SECONDS):
+                deferred = True
+                break
+            state["cursor"] = name
             try:
-                entries, skipped = read_database(path)
+                after = positions.get(name)
+                if after is not None and not isinstance(after, int):
+                    raise ValueError("invalid generation position")
+                entries, skipped, next_after, more = read_database(path, after)
+                deferred |= more
                 if skipped:
                     print("ai-activity antigravity: %d metadata rows unavailable; skipped (unsupported or incomplete)" % skipped, file=sys.stderr)
                 # A database can retain partial and final rows for the same
@@ -278,16 +354,29 @@ def collect():
                 best = {}
                 for entry in entries:
                     ident = entry["session_id"] + ":" + entry["response_id"]
-                    rank = (entry["usage"]["output_tokens"], sum(entry["usage"].values()),
-                            entry["occurred_at"], json.dumps(entry, sort_keys=True))
+                    digest = hashlib.sha256(json.dumps(entry, sort_keys=True).encode()).hexdigest()
+                    rank = (entry["usage"]["output_tokens"], sum(entry["usage"].values()), entry["occurred_at"], digest)
                     if ident not in best or rank > best[ident][0]:
                         best[ident] = (rank, entry)
                 pending = []
-                for ident, (_, entry) in best.items():
-                    digest = hashlib.sha256(json.dumps(entry, sort_keys=True).encode()).hexdigest()
-                    if sent.get(ident) != digest:
-                        pending.append((ident, digest, entry))
+                for ident, (rank, entry) in best.items():
+                    prior = sent.get(ident)
+                    # Old checkpoints stored only the digest. Migrate them
+                    # without replaying entries already accepted by the server.
+                    if prior == rank[-1]:
+                        sent[ident] = {"rank": rank}
+                    elif not isinstance(prior, dict) or tuple(prior.get("rank", ())) < rank:
+                        pending.append((ident, rank, entry))
+                page_complete = True
                 for i in range(0, len(pending), 200):
+                    # Permit one first batch so a slow first snapshot still
+                    # makes forward progress; check the budget between batches.
+                    if (number or i) and time.monotonic() - started > MAX_RUN_SECONDS:
+                        deferred = True
+                        page_complete = False
+                        if can_save:
+                            save_state(state_path, state)
+                        break
                     chunk = pending[i:i + 200]
                     request = urllib.request.Request(SERVER.rstrip("/") + "/api/ingest/antigravity",
                         data=json.dumps({"messages": [e for _, _, e in chunk]}).encode(),
@@ -296,14 +385,27 @@ def collect():
                         result = json.load(response)
                     if result.get("ok") is not True or result.get("messages") != len(chunk):
                         raise ValueError("server did not accept every metadata entry")
-                    sent.update({ident: digest for ident, digest, _ in chunk})
-                    temp = state_path.with_suffix(".tmp")
-                    temp.write_text(json.dumps(state))
-                    os.replace(temp, state_path)
+                    sent.update({ident: {"rank": rank} for ident, rank, _ in chunk})
+                    can_save = True
+                    save_state(state_path, state)
+                if not page_complete:
+                    break
+                # A page only advances once all its uploads succeeded. Finishing
+                # the scan resets it so later edits to old rows are revisited.
+                if next_after is None:
+                    positions.pop(name, None)
+                else:
+                    positions[name] = next_after
+                can_save = True
+                save_state(state_path, state)
             except Exception:
                 # Do not print paths, response bodies, credentials or raw DB data.
                 print("ai-activity antigravity: collection/upload failed; retry on next run", file=sys.stderr)
                 failed = True
+                if can_save:
+                    save_state(state_path, state)
+        if deferred:
+            print("ai-activity antigravity: scan budget reached; saved progress for next run", file=sys.stderr)
         if failed:
             raise RuntimeError("collection/upload failed")
 
@@ -328,4 +430,5 @@ if __name__ == "__main__":
                 time.sleep(2)
             collect()
         except Exception:
+            print("ai-activity antigravity: collector did not complete; retry on next run", file=sys.stderr)
             sys.exit(1)
