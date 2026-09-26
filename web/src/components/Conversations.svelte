@@ -49,6 +49,7 @@
   .icon.claude-code { color: var(--claude); }
   .icon.codex { color: var(--codex); }
   .icon.opencode { color: var(--opencode); }
+  .icon.antigravity { color: var(--antigravity); }
   strong { font-size: 14px; font-weight: 500; display: block; }
   small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
   .model { font-family: var(--mono); font-size: 11px; }
