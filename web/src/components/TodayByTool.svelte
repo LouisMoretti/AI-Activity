@@ -4,7 +4,7 @@
 
   // Today's tokens split by tool, one bar each in the tool's colour.
   let { today }: { today: FigureVM } = $props();
-  const COLOR: Record<string, string> = { "claude-code": "var(--claude)", codex: "var(--codex)", opencode: "var(--opencode)" };
+  const COLOR: Record<string, string> = { "claude-code": "var(--claude)", codex: "var(--codex)", opencode: "var(--opencode)", antigravity: "var(--antigravity)" };
   const total = $derived(today.value ?? 0);
   const share = (v: number) => (total ? (v / total) * 100 : 0);
 </script>
