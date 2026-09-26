@@ -42,10 +42,18 @@ export function streaks(series: DayPoint[]) {
 
 export const peak = (series: DayPoint[]) => Math.max(0, ...series.map((d) => d.tokens));
 
-export function weeklyTotals(series: DayPoint[]): number[] {
-  const out: number[] = [];
-  for (let i = 0; i < series.length; i += 7) {
-    out.push(series.slice(i, i + 7).reduce((a, d) => a + d.tokens, 0));
+export type WeekBucket = { start: string; end: string; tokens: number };
+
+/**
+ * 7-day buckets counted back from the last day, so the last bucket is the
+ * 7 days ending today; the first one is shorter when the series is not a
+ * whole number of weeks.
+ */
+export function weekBuckets(series: DayPoint[]): WeekBucket[] {
+  const out: WeekBucket[] = [];
+  for (let end = series.length; end > 0; end -= 7) {
+    const days = series.slice(Math.max(0, end - 7), end);
+    out.unshift({ start: days[0].day, end: days.at(-1)!.day, tokens: days.reduce((a, d) => a + d.tokens, 0) });
   }
   return out;
 }
