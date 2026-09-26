@@ -2,7 +2,7 @@
 // Every numeric field is a measured value; missing data is null/absent,
 // never interpolated.
 
-export type Tool = "claude-code" | "codex" | "opencode";
+export type Tool = "claude-code" | "codex" | "opencode" | "antigravity";
 
 export interface StatsResponse {
   range_days: number;
