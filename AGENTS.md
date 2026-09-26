@@ -314,10 +314,14 @@ Components never branch on live vs demo: both sources map into the same
   and posts one entry per Anthropic message id, detached with `setsid -f`
   so Claude Code cancelling the status line does not kill it.
 - The Codex collector (`collectors/codex.py`, copied to
-  `~/.codex/ai-activity-codex.py`, run detached by a `Stop` hook in
-  `~/.codex/hooks.json`) works the same way on the rollouts under
-  `~/.codex/sessions` and `archived_sessions` (offsets in
-  `~/.cache/ai-activity/codex.json`). Every Codex front end writes those
+  `~/.codex/ai-activity-codex.py`, run detached by `Stop` and
+  `UserPromptSubmit` hooks in `~/.codex/hooks.json`) works the same way on
+  the rollouts under `~/.codex/sessions` and `archived_sessions` (offsets in
+  `~/.cache/ai-activity/codex.json`). `Stop` does not fire on rate-limit
+  stops (upstream Codex bug), so `UserPromptSubmit` is the backstop that
+  posts the exhausted quota's final snapshot on the next prompt; standalone
+  `rate_limits` lines (a limit snapshot without token counts, e.g. from a
+  failed turn) are recorded too. Every Codex front end writes those
   files (CLI, `codex exec`, IDE extension, desktop app), so desktop tasks
   are counted without subscribing to its App Server: a separate App Server
   only streams the threads it runs itself. Codex runs a new user hook only

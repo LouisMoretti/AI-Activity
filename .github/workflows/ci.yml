@@ -15,7 +15,8 @@ concurrency:
 jobs:
   check:
     # arm64 too: better-sqlite3 is native, and the server may run on ARM.
-    # The x64 job keeps the name "check": the main branch ruleset requires it.
+    # The x64 job keeps the name "check": the main branch ruleset requires
+    # all four check names (check, check (arm64), docker, docker (arm64)).
     name: ${{ matrix.name }}
     strategy:
       fail-fast: false
