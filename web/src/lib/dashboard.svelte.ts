@@ -152,7 +152,7 @@ export class Dashboard {
   }
 
   private async loadProfile(username: string): Promise<void> {
-    const [profile, summary, activity, quotas, sessions, ocSummary, ocLatest] = await Promise.all([
+    const [profile, summary, activity, quotas, sessions, ocSummary, ocLatest, agSummary, agLatest] = await Promise.all([
       api.profile(username),
       // Every tool, always: there is no tool filter.
       api.summary(username, null),
@@ -162,11 +162,14 @@ export class Dashboard {
       api.summary(username, "opencode"),
       // Enough to count the conversations active right now.
       api.sessions(username, 10, "opencode", 0),
+      api.summary(username, "antigravity"),
+      api.sessions(username, 10, "antigravity", 0),
     ]);
     // Navigated elsewhere while this was in flight: its queued reload wins.
     if (this.route.page !== "profile" || this.route.username !== username) return;
     this.shown = profile;
-    this.live = { summary, activity, quotas, sessions, opencode: { summary: ocSummary, latest: ocLatest } };
+    this.live = { summary, activity, quotas, sessions, opencode: { summary: ocSummary, latest: ocLatest },
+      antigravity: { summary: agSummary, latest: agLatest } };
     this.status = "ready";
   }
 
