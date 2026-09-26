@@ -4,7 +4,7 @@
 // timestamps here plus the shared clock.
 import type { DayPoint } from "./series.ts";
 
-export type ToolKey = "claude-code" | "codex" | "opencode";
+export type ToolKey = "claude-code" | "codex" | "opencode" | "antigravity";
 export type Provider = "all" | ToolKey;
 
 export interface ShareRow { name: string; value: number }
@@ -36,8 +36,8 @@ export interface QuotaToolVM {
   windows: QuotaWindowVM[];
 }
 
-/** OpenCode has no quota of its own: its card shows what is going on now. */
-export interface OpenCodeVM {
+/** Usage and recent sessions for tools without collected quota data. */
+export interface ActivityToolVM {
   recent: SessionVM[]; // the latest OpenCode conversations, newest first; empty → no usage yet
   today: { tokens: number; sessions: number; calls: number; models: number; providers: number };
 }
@@ -62,7 +62,8 @@ export interface DashboardVM {
   tools: ToolKey[]; // cards to show for the current filter
   claude: QuotaToolVM;
   codex: QuotaToolVM;
-  opencode: OpenCodeVM;
+  opencode: ActivityToolVM;
+  antigravity: ActivityToolVM;
   sessions: SessionVM[];
   sessionsTotal: number;
 }
@@ -71,12 +72,13 @@ export const TOOL_META: Record<ToolKey, { name: string; icon: string }> = {
   "claude-code": { name: "Claude Code", icon: "✳" },
   codex: { name: "Codex", icon: "⌘" },
   opencode: { name: "OpenCode", icon: "◇" },
+  antigravity: { name: "Antigravity", icon: "△" },
 };
 
 export const toolName = (key: string) =>
   key in TOOL_META ? TOOL_META[key as ToolKey].name : key;
 
 export const toolsFor = (p: Provider): ToolKey[] =>
-  p === "all" ? ["claude-code", "codex", "opencode"] : [p];
+  p === "all" ? ["claude-code", "codex", "opencode", "antigravity"] : [p];
 
 export const WINDOW_SPANS = { five_hour: 5 * 3600, seven_day: 7 * 86400 } as const;
