@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { fmtCompact } from "../lib/format.ts";
+  import { fmtCompact, fmtShare } from "../lib/format.ts";
   import { toolName, type FigureVM } from "../lib/view-model.ts";
 
   // Today's tokens split by tool, one bar each in the tool's colour.
@@ -14,7 +14,7 @@
   <div class="rows">
     {#each today.byTool as t (t.name)}
       <div>
-        <div class="line"><span>{toolName(t.name)}</span><span class="meta">{fmtCompact(t.value)} · {Math.round(share(t.value))} %</span></div>
+        <div class="line"><span>{toolName(t.name)}</span><span class="meta">{fmtCompact(t.value)} · {fmtShare(t.value, total)}</span></div>
         <div class="track"><i style:width="{share(t.value)}%" style:background={COLOR[t.name] ?? "var(--accent)"}></i></div>
       </div>
     {:else}
