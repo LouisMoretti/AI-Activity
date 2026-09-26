@@ -210,12 +210,16 @@ def databases():
 
 @contextlib.contextmanager
 def locked(path):
-    with open(path, "a+b") as lock:
+    # Append mode ignores seek() for writes on Windows. Never truncate a
+    # lock file another worker may hold; concurrent initializers overwrite
+    # the same byte rather than extending the file on every hook.
+    with os.fdopen(os.open(path, os.O_RDWR | os.O_CREAT, 0o600), "r+b") as lock:
         if os.name == "nt":
             import msvcrt
-            lock.seek(0)
-            lock.write(b"0")
-            lock.flush()
+            if lock.seek(0, os.SEEK_END) == 0:
+                lock.seek(0)
+                lock.write(b"0")
+                lock.flush()
             lock.seek(0)
             try:
                 msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
@@ -268,7 +272,6 @@ def collect():
                 entries, skipped = read_database(path)
                 if skipped:
                     print("ai-activity antigravity: %d metadata rows unavailable; retained for retry" % skipped, file=sys.stderr)
-                    failed = True
                 pending = []
                 for entry in entries:
                     ident = entry["session_id"] + ":" + entry["response_id"]
@@ -293,19 +296,24 @@ def collect():
                 print("ai-activity antigravity: collection/upload failed; retry on next run", file=sys.stderr)
                 failed = True
         if failed:
-            raise RuntimeError("some metadata unavailable")
+            raise RuntimeError("collection/upload failed")
 
 
 if __name__ == "__main__":
-    if "--hook" in sys.argv:
+    if "--hook" in sys.argv or "--post-invocation" in sys.argv:
         # Consume the hook payload locally, never forward transcript/workspace paths.
         sys.stdin.read()
         options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
-        subprocess.Popen([sys.executable, str(Path(__file__).resolve())], stdin=subprocess.DEVNULL,
+        subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--hook-worker"], stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **options)
-        print('{"decision":"stop"}')
+        # PostInvocation must not inject steps or change execution flow.
+        print('{}' if "--post-invocation" in sys.argv else '{"decision":"stop"}')
     else:
         try:
+            if "--hook-worker" in sys.argv:
+                # Allow the app to persist final generation metadata before
+                # taking the read-only snapshot. The hook itself never waits.
+                time.sleep(2)
             collect()
         except Exception:
             sys.exit(1)
