@@ -351,10 +351,34 @@ function normalizeOpenCode(body: unknown): NormalizedBatch {
  * One normalizer per tool slug, picked by the ingest URL
  * (/api/ingest/<slug>). A tool is ingestable once it has an entry here.
  */
+/** Antigravity collector sends disjoint input, output (including thinking), and cache counts. */
+function normalizeAntigravity(body: unknown): NormalizedBatch {
+  const src: Obj = isObj(body) ? body : {};
+  const now = nowSec();
+  const single = !Array.isArray(src.messages);
+  const messages: NormalizedMessage[] = [];
+  for (const m of single ? [src] : src.messages as unknown[]) {
+    if (!isObj(m) || !isObj(m.usage) || typeof m.response_id !== "string" ||
+        !/^[A-Za-z0-9_-]{1,200}$/.test(m.response_id) ||
+        typeof m.session_id !== "string" || !/^[A-Za-z0-9_-]{1,200}$/.test(m.session_id)) continue;
+    messages.push({
+      event_id: `antigravity:${m.session_id}:${m.response_id}`,
+      session_id: `antigravity:${m.session_id}`, prompt_id: null, model: modelOf(m.model),
+      input_tokens: toInt(m.usage.input_tokens), output_tokens: toInt(m.usage.output_tokens),
+      cache_read_tokens: toInt(m.usage.cache_read_tokens), cache_write_tokens: 0,
+      context_window_size: null, context_used_pct: null,
+      occurred_at: eventTime(m.occurred_at, now), utc_offset_min: utcOffset(m.utc_offset_min),
+    });
+  }
+  return { tool: "antigravity", messages, quotas: [], account_ref: accountRef(src),
+    measured_at: eventTime(src.occurred_at, now), context: null, single };
+}
+
 const normalizers = new Map<string, (body: unknown) => NormalizedBatch>([
   ["claude-code", normalizeClaudeCode],
   ["codex", normalizeCodex],
   ["opencode", normalizeOpenCode],
+  ["antigravity", normalizeAntigravity],
 ]);
 
 export function normalizerFor(tool: string): ((body: unknown) => NormalizedBatch) | null {
