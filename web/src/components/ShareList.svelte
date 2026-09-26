@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { fmtCompact } from "../lib/format.ts";
+  import { fmtCompact, fmtShare } from "../lib/format.ts";
   import { toolName, type ShareRow } from "../lib/view-model.ts";
 
   let { title, rows, kind, of = null, max = 8 }: {
@@ -15,7 +15,7 @@
   const shown = $derived(sorted.length > max ? sorted.slice(0, max - 1) : sorted);
   const rest = $derived(sorted.slice(shown.length));
   const restValue = $derived(rest.reduce((a, r) => a + r.value, 0));
-  const pct = (value: number) => `${Math.round((value / total) * 100)}%`;
+  const pct = (value: number) => fmtShare(value, total);
   const label = (name: string) => (kind === "tool" ? toolName(name) : name);
   // provider/model (OpenCode): the provider is dimmed so the model reads first.
   const split = (name: string) => {

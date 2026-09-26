@@ -3,7 +3,7 @@
   import { api } from "../lib/api.ts";
   import { clock } from "../lib/clock.svelte.ts";
   import { profilePath } from "../lib/dashboard.svelte.ts";
-  import { fmtAgo, fmtCompact, fmtNum, plural, RECENT_SEC } from "../lib/format.ts";
+  import { fmtAgo, fmtCompact, fmtNum, fmtShare, plural, RECENT_SEC } from "../lib/format.ts";
   import { ACTIVITY_DAYS } from "../lib/live.ts";
   import { denseSeries } from "../lib/series.ts";
   import ActivityChart from "./ActivityChart.svelte";
@@ -92,7 +92,7 @@
           <div class="bar-cell">
             <div class="line">
               <span class="num tokens">{fmtCompact(e.tokens)} tokens</span>
-              <span class="share">{Math.round((e.tokens / (data.totals.tokens || 1)) * 100)} %</span>
+              <span class="share">{fmtShare(e.tokens, data.totals.tokens)}</span>
             </div>
             <div class="track" title="{fmtNum(e.tokens)} tokens"><i style:width="{(e.tokens / top) * 100}%"></i></div>
             <div class="meta">
@@ -125,7 +125,7 @@
             <span class="mono name">{m.name}</span>
             <div class="track"><i style:width="{(m.tokens / modelTotal) * 100}%"></i></div>
             <span class="num">{fmtCompact(m.tokens)}</span>
-            <span class="pct">{Math.round((m.tokens / modelTotal) * 100)} %</span>
+            <span class="pct">{fmtShare(m.tokens, modelTotal)}</span>
           </div>
         {/each}
       </div>
