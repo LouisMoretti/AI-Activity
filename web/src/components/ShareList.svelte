@@ -29,7 +29,7 @@
   {#if share && total}
     <span class="pct">{pct(value)}</span>
   {:else}
-    <span class="pct" title={share ? undefined : "Rows overlap"}>—</span>
+    <span class="pct" title={share ? undefined : "No share: rows overlap"}>—</span>
   {/if}
 {/snippet}
 
