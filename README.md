@@ -427,6 +427,9 @@ Each tool has one Python script in `collectors/`. They share the same design:
   model, time, the machine's UTC offset and token counts (plus quotas and
   context fill where the tool has them). Prompts, replies, tool output,
   titles, paths and provider keys never leave the device.
+- **The key only goes to your server.** Uploads never follow an HTTP
+  redirect: a redirect fails the run (progress unchanged) instead of
+  sending the device key somewhere else.
 - **Progress only moves on success.** How far each source was sent is kept
   in a JSON file under `~/.cache/ai-activity/`, saved once the server
   accepted it. While the server is down nothing moves: the next run sends

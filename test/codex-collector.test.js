@@ -2,6 +2,7 @@
 // command printed in README.md (the Windows one on Windows), against a real
 // server, with fake rollouts in a temporary HOME.
 import fs from "node:fs";
+import http from "node:http";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { test, describe, before, beforeEach, after } from "node:test";
@@ -199,6 +200,39 @@ describe("Codex collector (Stop hook from README.md)", () => {
     // The events show up before the detached uploads saved their offsets.
     await collectorsDone();
     assert.equal((await summary()).tokens - before.tokens, 105);
+  });
+
+  test("a redirect cannot forward the device bearer key", async () => {
+    const before = await summary();
+    const saved = state();
+    fs.appendFileSync(current, response("resp_redirect", S1, usage(20, 0, 2), 6287));
+    let received = 0;
+    const destination = http.createServer((request, response) => {
+      if (request.url === "/api/ingest/codex" && request.headers.authorization === `Bearer ${key}`) received++;
+      response.end("{}");
+    });
+    await new Promise((resolve) => destination.listen(0, "127.0.0.1", resolve));
+    let redirectStatus = 302;
+    const source = http.createServer((request, response) => {
+      response.writeHead(redirectStatus, { Location: `http://127.0.0.1:${destination.address().port}/api/ingest/codex` });
+      response.end();
+    });
+    await new Promise((resolve) => source.listen(0, "127.0.0.1", resolve));
+    try {
+      install(`http://127.0.0.1:${source.address().port}`);
+      for (redirectStatus of [301, 302, 303, 307, 308]) {
+        await run(hookCommand, env);
+        await collectorsDone();
+        assert.equal(received, 0, `${redirectStatus} must not forward the key`);
+        assert.deepEqual(state(), saved, `${redirectStatus} must not advance offsets`);
+      }
+    } finally {
+      install(srv.base);
+      await new Promise((resolve) => source.close(resolve));
+      await new Promise((resolve) => destination.close(resolve));
+    }
+    await run(hookCommand, env);
+    assert.ok(await waitFor(async () => (await summary()).events === before.events + 1));
   });
 
   test("a line with an unreadable timestamp is skipped, not retried forever", async () => {
