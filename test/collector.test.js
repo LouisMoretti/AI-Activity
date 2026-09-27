@@ -1,7 +1,6 @@
-// Runs the Claude Code collector exactly as printed in README.md against a
-// real server, with fake transcripts in a temporary HOME: the statusLine
-// one-liner (not on Windows: it needs setsid), and collectors/claude-code.py
-// through the Windows statusLine command.
+// Runs the Claude Code collector (collectors/claude-code.py) through the
+// statusLine command printed in README.md (the Windows one on Windows),
+// against a real server, with fake transcripts in a temporary HOME.
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -14,11 +13,14 @@ import { startServer, req, newDevice, asNewClient, running, PYTHON, tempHome } f
 const WINDOWS = process.platform === "win32";
 const README = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8").replaceAll("\r\n", "\n");
 const section = README.split("## Send Claude Code usage from a device")[1].split("## Send Codex")[0];
-const [statusLine, windowsStatusLine] = [...section.matchAll(/```json\n([\s\S]*?)\n```/g)]
+const [posixStatusLine, windowsStatusLine] = [...section.matchAll(/```json\n([\s\S]*?)\n```/g)]
   .map((m) => JSON.parse(`{${m[1]}}`).statusLine.command);
 const SCRIPT = fs.readFileSync(new URL("../collectors/claude-code.py", import.meta.url), "utf8");
-// The README's Windows command names C:\Users\<user>: run it on this test's copy instead.
-const WINDOWS_PREFIX = 'python "C:\\Users\\<user>\\.claude\\ai-activity-claude-code.py"';
+// The README's commands name the interpreter and ~ or C:\Users\<user>: run
+// them with this test's interpreter on this test's copy instead.
+const [statusLine, PREFIX] = WINDOWS
+  ? [windowsStatusLine, 'python "C:\\Users\\<user>\\.claude\\ai-activity-claude-code.py"']
+  : [posixStatusLine, "python3 ~/.claude/ai-activity-claude-code.py"];
 
 let line = 0;
 const entry = (id, output, { session = "sess-1", agent = null } = {}) =>
@@ -70,8 +72,7 @@ async function waitFor(fn, ms = 15000) {
  * Collectors run detached, so a refresh's command returns before its upload
  * ends. Wait until none is left: one still queued on the lock would
  * otherwise read what the next test appends and move its offsets (issue
- * #123). `marker` is on its command line: the device key for the one-liner,
- * the script path for the script.
+ * #123). The script's path (in this test's HOME) is on its command line.
  */
 async function collectorsDone(marker) {
   assert.ok(await waitFor(() => !running(marker), 30000), "a detached collector from an earlier refresh is still running");
@@ -94,24 +95,17 @@ function slowProxy(target, delayMs) {
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server)));
 }
 
-const VARIANTS = [
-  ...(WINDOWS ? [] : [{ name: "statusLine one-liner", script: false }]),
-  { name: "statusLine script (collectors/claude-code.py)", script: true },
-];
-
-for (const variant of VARIANTS) describe(`Claude Code collector: ${variant.name} from README.md`, () => {
+describe("Claude Code collector (statusLine from README.md)", () => {
   let srv, key, home, env, proxy, project, transcript, marker, installed;
   const stats = async () => (await req(srv.base, "GET", "/api/u/admin/stats?days=730", { headers: asNewClient() })).json;
   const scriptPath = () => path.join(home, ".claude", "ai-activity-claude-code.py");
-  /** The statusLine command posting to `base`; the script variant installs its copy for that. */
+  /** The statusLine command, with the installed copy posting to `base`. */
   const cmd = (base) => {
-    if (!variant.script) return statusLine.replaceAll("<server>", base).replaceAll("<device key>", key);
     // Rewritten only when the server changes: never under a run starting.
     if (installed !== base) fs.writeFileSync(scriptPath(), SCRIPT.replace("<server>", base).replace("<device key>", key));
     installed = base;
-    if (!WINDOWS) return `'${PYTHON}' '${scriptPath()}'`;
-    assert.ok(windowsStatusLine.startsWith(WINDOWS_PREFIX));
-    return windowsStatusLine.replace(WINDOWS_PREFIX, `"${PYTHON}" "${scriptPath()}"`);
+    assert.ok(statusLine.startsWith(PREFIX));
+    return statusLine.replace(PREFIX, `"${PYTHON}" "${scriptPath()}"`);
   };
   const viaProxy = () => cmd(`http://127.0.0.1:${proxy.address().port}`);
   const offsets = () => JSON.parse(fs.readFileSync(path.join(home, ".cache", "ai-activity", "offsets.json"), "utf8"));
@@ -121,7 +115,7 @@ for (const variant of VARIANTS) describe(`Claude Code collector: ${variant.name}
     key = (await newDevice(srv.base, "collector")).key;
     proxy = await slowProxy(srv.base, 1500);
     home = tempHome("ai-activity-home-");
-    marker = variant.script ? scriptPath() : key;
+    marker = scriptPath();
     const { AI_ACTIVITY_URL, AI_ACTIVITY_KEY, ...inherited } = process.env; // the command says where
     // POSIX TZ (Windows reads it too): UTC+5:30, no tz database needed.
     env = { ...inherited, HOME: home, USERPROFILE: home, TZ: "IST-5:30" };

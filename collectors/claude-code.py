@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """AI Activity collector for Claude Code (see README.md, "Send Claude Code usage").
 
-The README's statusLine one-liner as a script, for Windows (no setsid or
-fcntl there); it runs anywhere. Run as the statusLine command: it reads the
-status line's JSON, answers at once (it prints nothing) and runs itself
-again, detached, with --worker to do the upload, so Claude Code cancelling
-the status line command does not stop it.
+Run as the statusLine command (Linux, macOS, Windows): it reads the status
+line's JSON, answers at once (it prints nothing) and runs itself again,
+detached, with --worker to do the upload, so Claude Code cancelling the
+status line command does not stop it. --worker alone collects in the
+foreground (errors on stderr).
 
 The worker reads what was added to every transcript under
 ~/.claude/projects since the last accepted upload and posts one entry per
@@ -14,10 +14,10 @@ and context fill. Prompts and replies never leave the device: only ids,
 model, time and counts.
 
 How far each file was sent is kept in ~/.cache/ai-activity/offsets.json (the
-one-liner's file and lock: both can run on one machine) and only moves
-forward once the server accepted everything, so nothing is lost while the
-server is down. Delete that file to send everything again (the server stores
-each message id once).
+file and lock of the former statusLine one-liner, so replacing it sends
+nothing twice) and only moves forward once the server accepted everything,
+so nothing is lost while the server is down. Delete that file to send
+everything again (the server stores each message id once).
 """
 import _thread
 import datetime

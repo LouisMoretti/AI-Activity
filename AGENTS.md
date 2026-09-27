@@ -238,8 +238,8 @@ restores; `test/client.test.js` covers client addresses behind proxies;
 client; `test/dashboard.test.js` runs the client's state class
 (`dashboard.svelte.ts`, compiled with `svelte/compiler`) against a fake
 browser and fetch; `test/live.test.js` covers the API → view-model mapping;
-`test/collector.test.js` runs the README collector (the one-liner, and
-`collectors/claude-code.py` through its statusLine command) and
+`test/collector.test.js` runs `collectors/claude-code.py` through the
+README's statusLine command and
 `test/codex-collector.test.js` runs `collectors/codex.py` through the
 README's Codex Stop hook; `test/opencode-collector.test.js` runs
 `collectors/opencode.py` through its plugin on a fake OpenCode database;
@@ -293,7 +293,7 @@ git worktree prune
 ## 3. Architecture
 
 ```
-Claude Code statusLine one-liner (or collectors/claude-code.py)
+Claude Code statusLine → collectors/claude-code.py
 Codex Stop hook → collectors/codex.py
 OpenCode plugin → collectors/opencode.py
 Antigravity hooks → collectors/antigravity.py
@@ -361,22 +361,25 @@ Components never branch on live vs demo: both sources map into the same
 - The first account is created with the setup code or `npm run user --
   add`: both need access to the server, so whoever reaches the public
   tunnel first cannot take it.
-- The collector is a one-liner in the Claude Code statusLine (README.md,
-  exercised by `test/collector.test.js`): it reads what was added to every
+- The Claude Code collector (`collectors/claude-code.py`, copied to
+  `~/.claude/ai-activity-claude-code.py`, run as the statusLine command;
+  exercised by `test/collector.test.js`) reads what was added to every
   local transcript since the last accepted upload (byte offsets in
   `~/.cache/ai-activity/offsets.json`; the first run imports all history)
-  and posts one entry per Anthropic message id, detached with `setsid -f`
-  so Claude Code cancelling the status line does not kill it.
-  `collectors/claude-code.py` is the same collector as a script (same
-  offsets and lock), for Windows, where there is no `setsid` or `fcntl`: it
-  runs itself again detached (`--worker`) and hands it the status line's
-  JSON.
+  and posts one entry per Anthropic message id. It answers at once and
+  runs itself again detached (`--worker`, handed the status line's JSON),
+  so Claude Code cancelling the status line does not kill the upload. It
+  replaced a `setsid -f python3 -c` one-liner and kept its offsets file
+  and lock, so a device switching over sends nothing twice.
+- README.md ends with "How the collector scripts work": what the four
+  scripts share and, per script, where it is copied, what runs it, what it
+  reads, its progress and lock files, and its flags. Keep it in step.
 - The collectors run on Windows too: locks are `msvcrt.locking` on the
   lock file's first byte there (`fcntl.flock` elsewhere), the 15-minute
   limit a timer instead of `SIGALRM`, and detached runs leave the console,
   the process group and, when allowed, the parent job. Hook commands on
   Windows are `python "<script>" --hook` (Codex, Antigravity) or the
-  script alone (Claude Code): they work in any shell.
+  script alone (Claude Code, everywhere): they work in any shell.
 - The Codex collector (`collectors/codex.py`, copied to
   `~/.codex/ai-activity-codex.py`, run detached by `PostToolUse`, `Stop`
   and `UserPromptSubmit` hooks in `~/.codex/hooks.json`) works the same way on
