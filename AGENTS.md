@@ -459,7 +459,9 @@ Counting rules:
   included). "Today", the end of a profile's calendar and its current
   streak use the offset of the owner's latest event that has one (UTC if
   none); the leaderboard's streaks too, per account, and its calendar ends
-  on the latest of those days. Time ranges (`stats?days`, leaderboard
+  on the latest of those days. A streak counts back from today, or from
+  yesterday while today has no usage yet (it only breaks once a whole
+  local day passes without any). Time ranges (`stats?days`, leaderboard
   periods) stay rolling windows of 24 h days.
 
 ## 5. Ingestion API

@@ -35,8 +35,11 @@ export function streaks(series: DayPoint[]) {
     run = d.tokens > 0 ? run + 1 : 0;
     longest = Math.max(longest, run);
   }
+  // A today without usage yet does not break the streak: it ends yesterday.
   let current = 0;
-  for (let i = series.length - 1; i >= 0 && series[i].tokens > 0; i--) current++;
+  let i = series.length - 1;
+  if (i >= 0 && series[i].tokens === 0) i--;
+  for (; i >= 0 && series[i].tokens > 0; i--) current++;
   return { current, longest };
 }
 

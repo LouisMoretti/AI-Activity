@@ -188,7 +188,7 @@ export interface LeaderboardEntry {
   top_model: string | null;
   /** Latest event in the period; null when idle. */
   last_active: number | null;
-  /** Consecutive local days with usage ending on the account's today (same rule as a profile's streak). */
+  /** Consecutive local days with usage ending on the account's today, or yesterday while today has none yet (same rule as a profile's streak). */
   current_streak: number;
 }
 
