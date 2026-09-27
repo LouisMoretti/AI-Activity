@@ -261,6 +261,9 @@ extension.
   labeled issue of this repo, and copies its type and area labels onto the PR.
   A small fix (typo, flaky test, dependency bump) can skip the issue with the
   `no issue` label instead; label the PR yourself then.
+- Every pull request has an assignee: the "Assignee" check assigns the
+  author when there is none, and fails if that is not possible (an
+  author who is not a collaborator): a maintainer assigns it then.
 
 ## 3. Architecture
 

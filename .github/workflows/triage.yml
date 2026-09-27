@@ -6,6 +6,7 @@ name: Triage
 # Pull requests: each one must close an issue of this repo that has labels;
 # the issue's type and area labels are copied onto the PR. A small fix
 # (typo, flaky test, dependency bump) can skip that with the "no issue" label.
+# Each PR must also have an assignee: its author is assigned when it has none.
 #
 # pull_request_target (not pull_request) so PRs from forks can be labeled too.
 # Safe because this workflow never checks out or runs the PR's code.
@@ -14,7 +15,7 @@ on:
   issues:
     types: [opened, edited]
   pull_request_target:
-    types: [opened, edited, reopened, synchronize, labeled, unlabeled]
+    types: [opened, edited, reopened, synchronize, labeled, unlabeled, assigned, unassigned]
 
 permissions:
   contents: read
@@ -99,3 +100,30 @@ jobs:
               await github.rest.issues.addLabels({ ...context.repo, issue_number: pr.number, labels: missing });
             }
             core.info(`Linked: ${refs.map((n) => "#" + n).join(", ")}; labels: ${[...labels].join(", ")}`);
+
+  assignee:
+    name: Assignee
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (pr.assignees.length > 0) {
+              core.info(`Assigned: ${pr.assignees.map((a) => a.login).join(", ")}`);
+              return;
+            }
+            // GitHub silently ignores assignees who cannot be assigned
+            // (not a collaborator, bots): check what it kept.
+            const { data } = await github.rest.issues.addAssignees({
+              ...context.repo, issue_number: pr.number, assignees: [pr.user.login],
+            });
+            if (data.assignees.length === 0) {
+              core.setFailed(`Assign this PR to a collaborator (@${pr.user.login} cannot be assigned).`);
+              return;
+            }
+            core.info(`Assigned the author, @${pr.user.login}.`);
