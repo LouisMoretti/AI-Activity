@@ -32,7 +32,7 @@
 
 <!-- The card of a tool without quota windows: what is going on now (today on
      the left, active conversations, else the last one, on the right). -->
-<article class="card">
+<article class="card" class:empty={!last}>
   <section class="today">
     <ToolHeader {tool} note={last ? "" : "No usage yet"} />
     {#if last}
@@ -67,6 +67,8 @@
 
 <style>
   .card { border: 1px solid var(--line); background: var(--surface); border-radius: var(--radius); padding: 22px; display: grid; grid-template-columns: minmax(170px, .8fr) minmax(0, 2fr); }
+  .card.empty { grid-template-columns: 1fr; }
+  .card.empty .today { padding-right: 0; }
   section { min-width: 0; }
   .today { padding-right: 24px; }
   .today .label { margin: 22px 0 8px; }

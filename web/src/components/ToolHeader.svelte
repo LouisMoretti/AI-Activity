@@ -13,14 +13,14 @@
   {#if updatedAt}
     <span class="status"><i class="dot" class:recent={clock.now - updatedAt < RECENT_SEC}></i>Updated {fmtAgo(updatedAt, clock.now)}</span>
   {:else if note}
-    <span class="status badge">{note}</span>
+    <span class="status badge" title={note}>{note}</span>
   {/if}
 </div>
 
 <style>
   .head { display: flex; align-items: center; gap: 11px; }
-  .icon { width: 31px; height: 31px; display: grid; place-items: center; border-radius: 8px; font-size: 19px; background: color-mix(in srgb, var(--tool) 14%, var(--surface)); color: var(--tool); }
+  .icon { width: 31px; height: 31px; flex: 0 0 31px; display: grid; place-items: center; border-radius: 8px; font-size: 19px; background: color-mix(in srgb, var(--tool) 14%, var(--surface)); color: var(--tool); }
   h3 { font-size: 16px; font-weight: 550; }
   .status { margin-left: auto; display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; white-space: nowrap; }
-  .badge { border: 1px solid var(--line); border-radius: 5px; padding: 2px 7px; }
+  .badge { min-width: 0; display: block; overflow: hidden; text-overflow: ellipsis; border: 1px solid var(--line); border-radius: 5px; padding: 2px 7px; }
 </style>
