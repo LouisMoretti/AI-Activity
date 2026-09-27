@@ -658,6 +658,9 @@ each conversation database under
 - Only new responses, or ones with more output tokens than accepted, are
   sent (partial then final counts, like the other tools); unchanged
   databases are not read. Cache writes and context are not recorded.
+- Quotas are opt-in (`AI_ACTIVITY_ANTIGRAVITY_QUOTAS=1`): the probe runs the
+  signed-in `agy`, which reaches Google's backend, and Antigravity's terms
+  restrict third-party tools. Off, nothing but local metadata is read.
 - Quota pools and windows mirror `QUOTA_POOLS` / `QUOTA_WINDOW_SEC`
   (`shared/quota-pools.ts`, `POOLS` / `WINDOWS` in the collector): the two
   pools are never summed. Only `agy` 1.1.11 or later receives `/usage`

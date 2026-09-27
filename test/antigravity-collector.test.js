@@ -34,9 +34,11 @@ function generation(id, { output = 20, model = "gemini-test", when = WHEN, step 
   return Buffer.concat([bytes(1, Buffer.concat([bytes(4, usage), ...(model ? [bytes(19, model)] : []),
     ...(when ? [bytes(9, bytes(4, stamp(when)))] : [])])), bytes(4, step)]);
 }
+// Quota probing is opt-in; the developer's own environment never enables it here.
+const withoutQuotaOptIn = ({ AI_ACTIVITY_ANTIGRAVITY_QUOTAS, ...rest }) => rest;
 const run = (env, args = [], input = "", command = null, script = SCRIPT) => new Promise((resolve, reject) => {
   const p = spawn(command || PYTHON, command ? [] : [script, ...args],
-    { env: { ...process.env, AI_ACTIVITY_ANTIGRAVITY_QUOTAS: "0", ...env }, shell: !!command, stdio: ["pipe", "pipe", "pipe"] });
+    { env: { ...withoutQuotaOptIn(process.env), ...env }, shell: !!command, stdio: ["pipe", "pipe", "pipe"] });
   let out = "", err = "";
   p.stdout.on("data", (b) => out += b); p.stderr.on("data", (b) => err += b);
   p.on("error", reject); p.on("close", (code) => resolve({ code, out, err })); p.stdin.end(input);
@@ -391,6 +393,17 @@ describe("Antigravity quota reports", () => {
       [PATH_KEY]: bin + path.delimiter + process.env[PATH_KEY] };
   });
   after(() => { srv.stop(); fs.rmSync(home, { recursive: true, force: true }); });
+
+  test("quota probing is off unless AI_ACTIVITY_ANTIGRAVITY_QUOTAS=1", async () => {
+    for (const value of [undefined, "0", "true", ""]) {
+      clearThrottle(); fs.rmSync(callsPath(), { force: true });
+      const extra = { AI_ACTIVITY_ANTIGRAVITY_QUOTAS: value };
+      if (value === undefined) delete extra.AI_ACTIVITY_ANTIGRAVITY_QUOTAS;
+      const r = await run({ ...env, AI_ACTIVITY_KEY: key, ...extra }); assert.equal(r.code, 0, r.err);
+      assert.deepEqual(calls(), [], `${value}: agy must not run`);
+    }
+    assert.deepEqual((await quotas()).filter(q => q.tool === "antigravity"), []);
+  });
 
   test("CLI report uploads both pools without usage or private fields, then throttles successful probes", async () => {
     const r = await collect(); assert.equal(r.code, 0, r.err);
