@@ -243,7 +243,8 @@ export async function userId(base, username, cookie) {
  * Whether a process holds an exclusive flock on that file (missing means
  * free). Reads /proc/locks rather than trying the lock: a probe holding it
  * even briefly makes a collector's non-blocking attempt give up. Without
- * /proc (macOS), falls back to that probe.
+ * /proc (macOS), falls back to that probe; on Windows, to one on byte 0
+ * (msvcrt.locking, like the Antigravity collector).
  */
 export function isLocked(file) {
   if (!fs.existsSync(file)) return false;
@@ -252,6 +253,11 @@ export function isLocked(file) {
     // "1: FLOCK  ADVISORY  WRITE 1234 fd:01:5678 0 EOF"; "1: -> FLOCK …" lines are waiters.
     return fs.readFileSync("/proc/locks", "utf8").split("\n")
       .some((l) => /^\d+:\s+FLOCK\s+\S+\s+WRITE\s/.test(l) && l.split(/\s+/)[5]?.split(":")[2] === ino);
+  }
+  if (process.platform === "win32") {
+    return spawnSync(process.env.PYTHON || "python", ["-c",
+      "import msvcrt, sys\nf = open(sys.argv[1], 'r+b')\ntry: msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)\nexcept OSError: sys.exit(1)\nmsvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)",
+      file]).status === 1;
   }
   return spawnSync("python3", ["-c",
     "import fcntl, sys\ntry: fcntl.flock(open(sys.argv[1], 'a'), fcntl.LOCK_EX | fcntl.LOCK_NB)\nexcept BlockingIOError: sys.exit(1)",

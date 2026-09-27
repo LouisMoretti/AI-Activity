@@ -37,6 +37,28 @@ jobs:
       - run: npm run build
       - run: npm test
 
+  windows:
+    # Collector code that only runs on Windows (msvcrt locks, detached
+    # workers, agy.cmd, the documented hook commands). The other collectors
+    # are POSIX-only (sh, setsid) and stay on the Linux jobs.
+    name: collectors (windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - run: npm ci
+      - run: npm run build
+      - run: node --test test/antigravity-collector.test.js
+        env:
+          PYTHON: python
+
   docker:
     # The image builds and runs on both platforms (nothing is pushed).
     name: ${{ matrix.name }}
