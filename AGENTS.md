@@ -54,7 +54,8 @@ makers of the tools it measures (their names are trademarks, used only to
 identify them): keep both, and name any newly supported tool's owner in
 them.
 Clicking the avatar opens Your profile / Leaderboard / Settings / Admin
-panel (admins) / Sign out. `/settings` (signed in) holds Account and Devices; `/admin`
+panel (admins) / Sign out. `/settings` (signed in) holds Account, Devices and a Danger zone
+(delete your own activity, or your whole account); `/admin`
 (admins) holds the server overview, the account-creation switch and the
 users (make or remove admin, reset password, disable).
 
@@ -246,6 +247,9 @@ API black-box (`test/api.test.js`), so they must stay green across refactors;
 migrations; `test/rate-limit.test.js` covers the token buckets;
 `test/backup.test.js` backs up during writes, prunes and
 restores; `test/client.test.js` covers client addresses behind proxies;
+`test/confirm-delete.test.js` runs the Settings danger zone's flows
+(`confirm-delete.svelte.ts`, delete activity and delete account: confirm,
+cancel, success, failure);
 `test/series.test.js` covers pure helpers of the web
 client; `test/dashboard.test.js` runs the client's state class
 (`dashboard.svelte.ts`, compiled with `svelte/compiler`) against a fake
@@ -349,6 +353,7 @@ web/
   src/lib/series.ts       pure helpers: dense day series, streaks, calendar grid
   src/lib/format.ts       number, day, duration and "ago" formatting
   src/lib/dashboard.svelte.ts  state: provider, auth status, 15 s refresh
+  src/lib/confirm-delete.svelte.ts  danger zone flows (password + typed phrase)
   src/App.svelte          routes the pages; renders the site chrome once
   src/components/         StatsRow (StatCard), ActivityChart (Heatmap,
                           TrendChart), QuotaCard (Claude Code, Codex,
@@ -357,7 +362,8 @@ web/
                           (wraps ActivityToolCard, the card of a tool
                           without quota windows),
                           TodayByTool,
-                          Conversations, DevicesPanel, AccountMenu,
+                          Conversations, DevicesPanel,
+                          DangerZone (DangerAction), AccountMenu,
                           SiteHeader, ProfilePanel, UsersPanel,
                           NewAccountForm, AuthPanel, Leaderboard,
                           AdminOverview, …
@@ -446,7 +452,10 @@ Components never branch on live vs demo: both sources map into the same
 ## 4. Data model (SQLite, `data/dashboard.db`)
 
 - `users` — viewer accounts (`username` unique, case-insensitive;
-  `password_hash`, `is_admin`, `disabled`, `avatar_url`). Device, usage, quota and session tables carry
+  `password_hash`, `is_admin`, `disabled`, `avatar_url`,
+  `activity_cleared_at`: when the user last deleted their activity, §6).
+  `deleted_events` — ids of the messages a user deleted (ids only), so a
+  resend is refused (§5). Device, usage, quota and session tables carry
   `user_id`. `viewer_sessions` holds hashed session tokens with expiry.
 - `settings` — server-wide key/value settings set from the admin panel
   (`signup_open`: `0` closes account creation; absent means open).
@@ -493,6 +502,8 @@ Components never branch on live vs demo: both sources map into the same
   the session's oldest stored message on (the ingest rule, applied to
   databases whose collectors had already advanced their offsets before
   the 2-minute slack existed).
+
+- Migration 3 adds `users.activity_cleared_at` and `deleted_events`.
 
 ### Backups
 
@@ -641,6 +652,16 @@ Notes:
 - Context gauge: `context` (or a raw statusLine `context_window`) is put on
   the session's newest row; `recentSessions` shows the latest one.
 - Empty messages (zero tokens) store no row.
+- After a user deleted their activity (§6), a message they deleted (its
+  id is in `deleted_events`, whatever time a skewed clock gives it) or
+  dated up to then (`occurred_at <= users.activity_cleared_at`) stores
+  nothing and counts as `deduped` (the collector moves on); quotas and the
+  context gauge measured up to then are dropped. Resending local history
+  never brings deleted messages back. The cutoff only moves forward: a device
+  whose clock runs behind loses what it measured in the gap, even once
+  its clock is right again. Quotas and context have no id: a device whose
+  clock runs ahead (its times are capped at now) can replay one measured
+  before the deletion; it is replaced within its window.
 - `utc_offset_min` (minutes east of UTC, −720..840, quarter hours; else
   dropped → UTC) dates the event's local day (§4). A replay that carries
   one fills it on a row stored without (resending the history fixes old
@@ -825,6 +846,31 @@ account exists):
   client loads them with `referrerpolicy="no-referrer"`.
   `POST /api/account/password {current_password, new_password}` (throttled
   like a login; signs out the user's other sessions).
+  `POST /api/account/delete-activity {password, confirm}` (`confirm` must
+  be `DELETE_ACTIVITY_PHRASE`, `"delete my activity"`, else `400`, checked
+  before hashing; the password is throttled like a login, wrong → `400`)
+  deletes the signed-in user's `usage_events` and `quota_snapshots` in one
+  transaction, keeps the deleted message ids and sets
+  `activity_cleared_at` (§5) → `{ok, deleted: {events, quotas}}`. The
+  account, profile, devices, keys and sessions stay.
+  `POST /api/account/delete {password, confirm}` (`DELETE_ACCOUNT_PHRASE`,
+  `"delete my account"`; same checks) deletes the account and everything
+  tied to it in one transaction: usage, quotas, deleted ids, devices and
+  their keys, every session, the user row (its username becomes free) →
+  `{ok, deleted: {events, quotas, devices}}`. The last enabled admin gets
+  `409` (checked inside the transaction): make another account admin
+  first. The client then signs out.
+  Both erase for real: `secure_delete` zeroes the freed pages and the WAL
+  is truncated after (`erasing` in `queries.ts`; best effort: a reader
+  holding an old snapshot keeps the WAL until the next checkpoint
+  overwrites it); backups made before
+  keep the data until pruned (`-pre-v<N>` ones until an admin deletes
+  them), and the panel says so. Nobody can delete another user's activity
+  or account (admins included). Both run synchronously and hold up every
+  other request while they work (seconds for hundreds of thousands of
+  events), and `deleted_events` keeps one id per deleted message until
+  the account goes: fine for a personal instance, to bound if it ever
+  serves many accounts.
 - Admin only (`403` otherwise): `GET /api/users`, `POST /api/users/:id/password
   {password}` (signs that user out; not for the admin's own account, which
   goes through `/api/account/password` so a stolen session cannot take it

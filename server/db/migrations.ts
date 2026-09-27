@@ -12,7 +12,26 @@ import type { DB } from "./schema.ts";
 export const MIGRATIONS: ((db: DB) => void)[] = [
   baseline,
   cleanupCoveredSnapshots,
+  activityClearedAt,
 ];
+
+/**
+ * 3: deleting your own activity. `users.activity_cleared_at` is when the
+ * user last did (unix seconds, NULL if never): ingest drops usage, quotas
+ * and context dated up to then. `deleted_events` keeps the ids of the
+ * deleted messages (ids only, no counts), so a resend is refused whatever
+ * time a skewed device clock puts on it.
+ */
+function activityClearedAt(db: DB): void {
+  db.exec(`
+    ALTER TABLE users ADD COLUMN activity_cleared_at INTEGER;
+    CREATE TABLE deleted_events (
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      event_id TEXT NOT NULL,
+      PRIMARY KEY (user_id, event_id)
+    ) WITHOUT ROWID;
+  `);
+}
 
 /**
  * 2: Apply the message-ingestion snapshot cleanup retroactively. The first

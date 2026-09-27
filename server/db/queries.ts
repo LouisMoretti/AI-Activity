@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
-  Account, ActivityDay, AdminOverview, AdminUser, Profile, Breakdown, BreakdownRow, Device, LeaderboardEntry,
+  Account, ActivityDay, AdminOverview, AdminUser, Profile, Breakdown, BreakdownRow, DeletedAccount, DeletedActivity, Device, LeaderboardEntry,
   LeaderboardResponse, Quota, Session,
 } from "../../shared/types.ts";
 import { BREAKDOWN_DISPLAY_ROWS } from "../../shared/types.ts";
@@ -191,6 +191,82 @@ export function adminOverview(db: DB): AdminOverview {
 /** Create the first account only; null when one already exists (lost race). */
 export function createFirstAccount(db: DB, a: Parameters<typeof createAccount>[1]): number | null {
   return db.transaction(() => (accountsExist(db) ? null : createAccount(db, a)))();
+}
+
+/**
+ * Runs `fn` with SQLite's secure_delete on, then truncates the WAL: deleted
+ * rows are overwritten with zeros in the database file instead of lingering
+ * in free pages or old WAL frames. Backups taken before keep them.
+ */
+function erasing<T>(db: DB, fn: () => T): T {
+  const was = db.pragma("secure_delete", { simple: true });
+  db.pragma("secure_delete = ON");
+  try {
+    return db.transaction(fn)();
+  } finally {
+    db.pragma(`secure_delete = ${Number(was)}`);
+    // Best effort: a reader holding an old snapshot keeps the WAL until the
+    // next checkpoint, which overwrites those frames anyway.
+    db.pragma("wal_checkpoint(TRUNCATE)");
+  }
+}
+
+/**
+ * Delete every usage event and quota snapshot of one user, in one
+ * transaction, and remember when and which messages: ingest refuses them
+ * afterwards (activityClearedAt, isDeletedEvent). The account, devices and
+ * sessions stay.
+ */
+export function deleteUserActivity(db: DB, userId: number): DeletedActivity {
+  return erasing(db, () => {
+    db.prepare(
+      `INSERT OR IGNORE INTO deleted_events (user_id, event_id)
+       SELECT user_id, event_id FROM usage_events WHERE user_id = ? AND source = 'message'`
+    ).run(userId);
+    const events = db.prepare("DELETE FROM usage_events WHERE user_id = ?").run(userId).changes;
+    const quotas = db.prepare("DELETE FROM quota_snapshots WHERE user_id = ?").run(userId).changes;
+    db.prepare("UPDATE users SET activity_cleared_at = ? WHERE id = ?").run(nowSec(), userId);
+    return { events, quotas };
+  });
+}
+
+/** When the user last deleted their activity, or null if never. */
+export function activityClearedAt(db: DB, userId: number): number | null {
+  const row = db.prepare("SELECT activity_cleared_at AS at FROM users WHERE id = ?").get(userId) as { at: number | null } | undefined;
+  return row?.at ?? null;
+}
+
+/** Whether the user deleted a message before (deleteUserActivity); prepared once per batch. */
+export function deletedEventCheck(db: DB, userId: number): (eventId: string) => boolean {
+  const stmt = db.prepare("SELECT 1 FROM deleted_events WHERE user_id = ? AND event_id = ?");
+  return (eventId) => stmt.get(userId, eventId) !== undefined;
+}
+
+export type DeleteAccountResult = { ok: true; deleted: DeletedAccount } | { ok: false; reason: "last_admin" };
+
+/**
+ * Delete an account and everything tied to it, in one transaction: usage,
+ * quotas, deleted-message ids, devices and their keys, sessions, the user.
+ * The last enabled admin cannot go (checked inside the transaction): an
+ * enabled admin always remains. Children first: the foreign keys have no
+ * ON DELETE CASCADE.
+ */
+export function deleteAccount(db: DB, userId: number): DeleteAccountResult {
+  return erasing(db, (): DeleteAccountResult => {
+    const others = db
+      .prepare("SELECT COUNT(*) AS n FROM users WHERE is_admin = 1 AND disabled = 0 AND username IS NOT NULL AND id != ?")
+      .get(userId) as { n: number };
+    const user = db.prepare("SELECT is_admin FROM users WHERE id = ?").get(userId) as { is_admin: number } | undefined;
+    if (user?.is_admin && others.n === 0) return { ok: false, reason: "last_admin" };
+    const run = (sql: string) => db.prepare(sql).run(userId).changes;
+    const events = run("DELETE FROM usage_events WHERE user_id = ?");
+    const quotas = run("DELETE FROM quota_snapshots WHERE user_id = ?");
+    run("DELETE FROM deleted_events WHERE user_id = ?");
+    const devices = run("DELETE FROM devices WHERE user_id = ?");
+    run("DELETE FROM viewer_sessions WHERE user_id = ?");
+    run("DELETE FROM users WHERE id = ?");
+    return { ok: true, deleted: { events, quotas, devices } };
+  });
 }
 
 export function setPasswordHash(db: DB, userId: number, hash: string): void {
