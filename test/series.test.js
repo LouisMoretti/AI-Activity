@@ -29,7 +29,9 @@ test("denseSeries ends on the given day, not the viewer's clock", () => {
 
 test("streaks: current counts back from today, longest over the range", () => {
   assert.deepEqual(streaks(pts(1, 1, 1, 0, 1, 1)), { current: 2, longest: 3 });
-  assert.deepEqual(streaks(pts(1, 0)), { current: 0, longest: 1 });
+  // Today without usage yet keeps yesterday's streak; a missed day breaks it.
+  assert.deepEqual(streaks(pts(1, 1, 0)), { current: 2, longest: 2 });
+  assert.deepEqual(streaks(pts(1, 0, 0)), { current: 0, longest: 1 });
 });
 
 test("calendarWeeks pads the first week so cells land on their weekday", () => {

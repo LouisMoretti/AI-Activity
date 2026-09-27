@@ -651,10 +651,13 @@ export function leaderboard(
     add(byModel.get(name)!, g.tokens, g.events, g.session_id);
   }
 
-  // Consecutive active days counted back from that account's today.
+  // Consecutive active days counted back from that account's today, or from
+  // yesterday while today has no usage yet (same rule as a profile's streak).
   const streak = (days: Set<string>, todayIso: string) => {
     let n = 0;
-    for (let t = Date.parse(todayIso + "T00:00:00Z"); days.has(new Date(t).toISOString().slice(0, 10)); t -= 86400000) n++;
+    let t = Date.parse(todayIso + "T00:00:00Z");
+    if (!days.has(todayIso)) t -= 86400000;
+    for (; days.has(new Date(t).toISOString().slice(0, 10)); t -= 86400000) n++;
     return n;
   };
   // Most tokens, then the model name, like ORDER BY SUM(tokens) DESC, model.

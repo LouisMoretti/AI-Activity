@@ -1028,6 +1028,25 @@ describe("leaderboard", () => {
       await srv.stop();
     }
   });
+
+  test("a streak survives a today without usage yet, not a missed day", async () => {
+    const srv = await startServer();
+    try {
+      const admin = await login(srv.base, TEST_ADMIN.username, TEST_ADMIN.password);
+      const key = (await newDevice(srv.base, "a", admin)).key;
+      const now = Math.floor(Date.now() / 1000);
+      const streak = async () => (await req(srv.base, "GET", "/api/leaderboard?days=30", { anon: true })).json.entries[0].current_streak;
+      // Yesterday and the day before, nothing today yet.
+      for (const d of [1, 2]) {
+        await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ session_id: `s${d}`, occurred_at: now - d * 86400 }) });
+      }
+      assert.equal(await streak(), 2);
+      await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ session_id: "s0", occurred_at: now }) });
+      assert.equal(await streak(), 3);
+    } finally {
+      await srv.stop();
+    }
+  });
 });
 
 describe("local days (like GitHub's contribution calendar)", () => {
