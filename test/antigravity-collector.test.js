@@ -246,6 +246,60 @@ describe("Antigravity collector", () => {
       await new Promise(resolve => proxy.close(resolve));
     }
   });
+
+  test("hook bursts leave one waiter and still collect the final generation", async () => {
+    let release, arrived;
+    const gate = new Promise(resolve => release = resolve);
+    const firstRequest = new Promise(resolve => arrived = resolve);
+    const batches = [];
+    const proxy = http.createServer(async (request, response) => {
+      let body = ""; for await (const b of request) body += b;
+      const payload = JSON.parse(body); batches.push(payload.messages);
+      if (batches.length === 1) { arrived(); await gate; }
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ ok: true, messages: payload.messages.length }));
+    });
+    await new Promise(resolve => proxy.listen(0, "127.0.0.1", resolve));
+    const destination = { ...env, AI_ACTIVITY_URL: `http://127.0.0.1:${proxy.address().port}` };
+    const script = path.join(home, "coalesced-worker.py"), scans = path.join(home, "scans.txt");
+    fs.writeFileSync(script, `import importlib.util, pathlib\n` +
+      `spec = importlib.util.spec_from_file_location('collector', ${JSON.stringify(SCRIPT)})\nm = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(m)\n` +
+      `original = m.read_database\ndef scan(*args):\n with pathlib.Path(${JSON.stringify(scans)}).open('a') as log: log.write('scan\\n')\n return original(*args)\nm.read_database = scan\nm.hook_worker()\n`);
+    put(1, generation("response1", { output: 180 }));
+    const first = run(destination), results = [], workers = [];
+    try {
+      await firstRequest;
+      for (let i = 0; i < 12; i++) workers.push(run(destination, [], "", null, script).then(r => { results.push(r); return r; }));
+      for (let i = 0; i < 50 && results.length < 11; i++) await new Promise(resolve => setTimeout(resolve, 100));
+      assert.equal(results.length, 11, "all but one waiter exit without scanning");
+      assert.ok(results.every(r => r.code === 0)); assert.ok(!fs.existsSync(scans));
+      put(1, generation("response1", { output: 220 }));
+      release(); assert.equal((await first).code, 0);
+      assert.ok((await Promise.all(workers)).every(r => r.code === 0));
+      assert.equal(fs.readFileSync(scans, "utf8").replaceAll("\r\n", "\n"), "scan\n");
+      assert.equal(batches.length, 2);
+      assert.equal(batches[1].find(e => e.response_id === "response1").usage.output_tokens, 250);
+      // Released queue locks remain reusable on the next hook.
+      assert.equal((await run(destination, [], "", null, script)).code, 0);
+      assert.equal(fs.readFileSync(scans, "utf8").replaceAll("\r\n", "\n"), "scan\nscan\n");
+    } finally {
+      release(); await first; await Promise.all(workers);
+      await new Promise(resolve => proxy.close(resolve));
+    }
+  });
+
+  test("a worker launch failure preserves both hook response contracts", async () => {
+    const script = path.join(home, "launch-failure.py");
+    for (const flag of ["--hook", "--post-invocation"]) {
+      fs.writeFileSync(script, `import runpy, subprocess, sys\n` +
+        `def fail(*args, **kwargs):\n raise OSError('synthetic process limit')\nsubprocess.Popen = fail\n` +
+        `sys.argv = [${JSON.stringify(SCRIPT)}, ${JSON.stringify(flag)}]\nrunpy.run_path(${JSON.stringify(SCRIPT)}, run_name='__main__')\n`);
+      const result = await run(env, [], "{}", null, script);
+      assert.equal(result.code, 0);
+      assert.deepEqual(JSON.parse(result.out), flag === "--hook" ? { decision: "stop" } : {});
+      assert.match(result.err, /worker launch failed/);
+    }
+  });
 });
 
 // Exercise real scan/upload/checkpoint logic with smaller resource budgets.
@@ -256,7 +310,8 @@ describe("Antigravity quota reports", () => {
   const clearThrottle = () => {
     if (!fs.existsSync(statePath())) return;
     const state = JSON.parse(fs.readFileSync(statePath(), "utf8"));
-    delete state.quota_at; fs.writeFileSync(statePath(), JSON.stringify(state));
+    delete state.quota_at; delete state.quota_tried_at; delete state.quota_failed;
+    fs.writeFileSync(statePath(), JSON.stringify(state));
   };
   const sample = () => {
     const now = Math.floor(Date.now() / 1000);
@@ -271,7 +326,7 @@ describe("Antigravity quota reports", () => {
       ] },
     ] } }, credential: "PRIVATE_CREDENTIAL" };
   };
-  const collect = (report, { version = "1.1.11", timeout = false, key: uploadKey = key } = {}) => {
+  const collect = (report, { version = "1.1.11", timeout = false, checkUsage = false, key: uploadKey = key } = {}) => {
     const script = path.join(home, "quota-test.py");
     fs.writeFileSync(script, `import importlib.util, json, os, pathlib, subprocess, types\n` +
       `spec = importlib.util.spec_from_file_location('collector', ${JSON.stringify(SCRIPT)})\nm = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(m)\n` +
@@ -282,6 +337,7 @@ describe("Antigravity quota reports", () => {
       ` assert list(pathlib.Path(options['cwd']).iterdir()) == []\n` +
       ` assert options['stdin'] == subprocess.DEVNULL and options['stderr'] == subprocess.DEVNULL\n` +
       ` calls.append(args[1:])\n pathlib.Path(${JSON.stringify(path.join(home, "calls.json"))}).write_text(json.dumps(calls))\n` +
+      (checkUsage ? ` import urllib.request\n assert json.load(urllib.request.urlopen(m.SERVER + '/api/u/admin/summary?tool=antigravity'))['total']['events'] == 1\n` : "") +
       ` if args[1:] == ['--version']:\n  options['stdout'].write(${JSON.stringify(version)}.encode())\n` +
       ` else:\n  assert args[1:] == ['-p', '/usage', '--output-format', 'json', '--print-timeout', '90s']\n` +
       (timeout ? `  raise subprocess.TimeoutExpired(args, options['timeout'])\n` : `  options['stdout'].write(json.dumps(report).encode())\n`) +
@@ -316,10 +372,19 @@ describe("Antigravity quota reports", () => {
   test("old/unknown versions cannot invoke /usage; failed probes and uploads remain retryable", async () => {
     clearThrottle();
     for (const version of ["1.1.10", "unknown", "1.2.0-beta"]) {
+      clearThrottle();
       const r = await collect(sample(), { version }); assert.equal(r.code, 0); assert.match(r.err, /quota report unavailable/);
       assert.deepEqual(calls(), [["--version"]]);
     }
+    clearThrottle();
     assert.equal((await collect(sample(), { timeout: true })).code, 0);
+    fs.unlinkSync(path.join(home, "calls.json"));
+    assert.equal((await collect(sample(), { timeout: true })).code, 0);
+    assert.ok(!fs.existsSync(path.join(home, "calls.json")), "failed probes back off across processes");
+    const saved = JSON.parse(fs.readFileSync(statePath(), "utf8"));
+    assert.equal(saved.quota_failed, true);
+    saved.quota_tried_at -= 301; fs.writeFileSync(statePath(), JSON.stringify(saved));
+    assert.equal((await collect(sample())).code, 0, "retry succeeds after five-minute backoff");
     assert.equal((await collect(sample(), { key: "invalid-device-key" })).code, 1);
     assert.ok(!JSON.parse(fs.readFileSync(statePath(), "utf8")).quota_at);
     assert.equal((await collect(sample())).code, 0);
@@ -341,6 +406,7 @@ describe("Antigravity quota reports", () => {
     assert.match((await collect(invalid)).err, /quota report unavailable/);
     assert.deepEqual(await quotas(), before);
     invalid.status = "FAILED";
+    clearThrottle();
     assert.match((await collect(invalid)).err, /quota report unavailable/);
     assert.deepEqual(await quotas(), before);
     // The real API also rejects percentages outside the measured range and
@@ -359,6 +425,20 @@ describe("Antigravity quota reports", () => {
     }
     await new Promise(resolve => setTimeout(resolve, 2300));
     assert.equal(fs.readFileSync(statePath(), "utf8"), prior);
+  });
+
+  test("token uploads finish before a failing quota probe starts", async () => {
+    const dir = path.join(home, ".gemini", "antigravity-cli", "conversations");
+    fs.mkdirSync(dir, { recursive: true });
+    const db = new Database(path.join(dir, "quota-timeout.db"));
+    db.exec("CREATE TABLE gen_metadata(idx INTEGER PRIMARY KEY, data BLOB)");
+    db.prepare("INSERT INTO gen_metadata VALUES (1, ?)").run(generation("before-probe")); db.close();
+    clearThrottle();
+    assert.equal((await collect(sample(), { timeout: true, checkUsage: true })).code, 0);
+    assert.equal((await req(srv.base, "GET", "/api/u/admin/summary?tool=antigravity")).json.total.events, 1);
+    fs.unlinkSync(path.join(home, "calls.json"));
+    assert.equal((await collect(sample(), { checkUsage: true })).code, 0);
+    assert.ok(!fs.existsSync(path.join(home, "calls.json")));
   });
 });
 
@@ -389,12 +469,12 @@ async function scanFixture() {
     db.close();
   };
   const state = () => JSON.parse(fs.readFileSync(path.join(home, ".cache", "ai-activity", "antigravity.json"), "utf8"));
-  const collect = async (limits, slow = false) => {
+  const collect = async (limits, slow = false, setup = "") => {
     const script = path.join(home, "bounded-test.py");
     fs.writeFileSync(script, `import importlib.util, time\nspec = importlib.util.spec_from_file_location('collector', ${JSON.stringify(SCRIPT)})\nm = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(m)\n` +
       Object.entries(limits).map(([key, value]) => `m.${key} = ${value}\n`).join("") +
       (slow ? "original = m.read_database\ndef slow(*args):\n time.sleep(0.03)\n return original(*args)\nm.read_database = slow\n" : "") +
-      "try:\n m.collect()\nexcept Exception:\n raise SystemExit(1)\n");
+      setup + "try:\n m.collect()\nexcept Exception:\n import traceback\n traceback.print_exc()\n raise SystemExit(1)\n");
     return run(env, [], "", null, script);
   };
   return { add, state, collect, accepted, batches, dir, refuse: value => refuse = value,
@@ -405,7 +485,9 @@ test("source-count budgets resume past the previous cursor instead of starving l
   const f = await scanFixture();
   try {
     for (let i = 0; i < 7; i++) f.add(`conversation${i}`, [generation(`response${i}`)]);
-    for (let i = 0; i < 3; i++) assert.equal((await f.collect({ MAX_DATABASES: 3 })).code, 0);
+    for (let i = 0; i < 3; i++) {
+      const result = await f.collect({ MAX_DATABASES: 3 }); assert.equal(result.code, 0, result.err);
+    }
     assert.equal(f.accepted.size, 7);
     const calls = f.batches.length;
     assert.equal((await f.collect({ MAX_DATABASES: 3 })).code, 0); assert.equal(f.batches.length, calls);
@@ -481,5 +563,34 @@ test("an incomplete timestamp scan preserves native dates and retries unresolved
     assert.equal(f.accepted.size, 1); assert.equal(f.accepted.get("limited:native").occurred_at, WHEN);
     assert.equal((await f.collect({})).code, 0); assert.equal(f.accepted.size, 2);
     assert.equal(f.accepted.get("limited:matched").occurred_at, WHEN + 60);
+  } finally { await f.close(); }
+});
+
+test("timestamp matching gets its own deadline after generation page reading exhausts its budget", async () => {
+  const f = await scanFixture();
+  try {
+    f.add("deadline", [generation("matched", { when: null, step: "unique", bot: "unique" }), generation("native")],
+      [Buffer.concat([bytes(1, stamp(WHEN + 60)), bytes(12, "unique"), bytes(9, bytes(7, "unique"))])]);
+    const setup = "original_parse = m.parse\ndef delayed(blob):\n time.sleep(0.06)\n return original_parse(blob)\nm.parse = delayed\n";
+    assert.equal((await f.collect({ MAX_SCAN_SECONDS: 0.03 }, false, setup)).code, 0);
+    assert.equal(f.accepted.get("deadline:matched").occurred_at, WHEN + 60);
+    assert.equal(Object.values(f.state().positions)[0], 1);
+    assert.equal((await f.collect({})).code, 0); assert.equal(f.accepted.size, 2);
+  } finally { await f.close(); }
+});
+
+test("an interrupted match on a middle page cannot advance past unresolved generations", async () => {
+  const f = await scanFixture();
+  try {
+    f.add("retry", [generation("first"), generation("matched", { when: null, step: "unique", bot: "unique" }), generation("last")],
+      [Buffer.concat([bytes(1, stamp(WHEN + 60)), bytes(12, "unique"), bytes(9, bytes(7, "unique"))])]);
+    assert.equal((await f.collect({ MAX_ROWS: 1 })).code, 0);
+    const originalPosition = f.state().positions;
+    const setup = "m.matched_times = lambda *args: None\n";
+    for (let i = 0; i < 2; i++) assert.equal((await f.collect({ MAX_ROWS: 1 }, false, setup)).code, 0);
+    assert.deepEqual(f.state().positions, originalPosition);
+    assert.equal(f.accepted.size, 1);
+    for (let i = 0; i < 2; i++) assert.equal((await f.collect({ MAX_ROWS: 1 })).code, 0);
+    assert.equal(f.accepted.size, 3);
   } finally { await f.close(); }
 });
