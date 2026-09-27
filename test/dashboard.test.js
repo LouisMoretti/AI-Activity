@@ -135,11 +135,82 @@ describe("dashboard state", () => {
     stop();
   });
 
+  test("opening a protected page signed out preserves its query for sign-in", async () => {
+    const { stop } = await open("/settings?demo=1", { "/api/auth/status": signedOut });
+    assert.equal(loc.pathname + loc.search, `/?next=${encodeURIComponent("/settings?demo=1")}`);
+    stop();
+  });
+
+  test("a lost session preserves the query through sign-in", async () => {
+    const { dash, stop } = await open("/u/me?demo=1", profileRoutes("me"));
+    routes["/api/devices"] = 401;
+    routes["/api/auth/status"] = signedOut;
+    await assert.rejects(api.devices());
+    await settle();
+    assert.equal(loc.pathname + loc.search, `/?next=${encodeURIComponent("/u/me?demo=1")}`);
+
+    routes["/api/auth/status"] = signedIn;
+    routes["/api/auth/login"] = {};
+    assert.equal(await dash.login("me", "secret"), null);
+    await settle();
+    assert.equal(loc.pathname + loc.search, "/u/me?demo=1");
+    assert.equal(dash.vm.demo, true);
+    stop();
+  });
+
   test("a wrong password is not a lost session", async () => {
     const { dash, stop } = await open("/", { "/api/auth/status": signedOut, "/api/auth/login": 401 });
     assert.equal(await dash.login("me", "nope"), "Wrong username or password.");
     assert.equal(dash.status, "signed-out");
     stop();
+  });
+
+  test("signing in at /?demo=1 preserves demo through the profile redirect", async () => {
+    const { dash, stop } = await open("/?demo=1", {
+      ...profileRoutes("me"),
+      "/api/auth/status": signedOut,
+      "/api/auth/login": {},
+    });
+    routes["/api/auth/status"] = signedIn;
+    assert.equal(await dash.login("me", "secret"), null);
+    await settle();
+    assert.equal(loc.pathname + loc.search, "/u/me?demo=1");
+    assert.equal(dash.vm.demo, true);
+    stop();
+  });
+
+  test("creating an account preserves the current query and a safe return destination", async () => {
+    const account = { username: "me", display_name: "Me", password: "long-enough-password" };
+    for (const [start, expected] of [
+      ["/?demo=1", "/u/me?demo=1"],
+      [`/?next=${encodeURIComponent("/settings?demo=1")}`, "/settings?demo=1"],
+    ]) {
+      const { dash, stop } = await open(start, {
+        ...profileRoutes("me"),
+        "/api/auth/status": signedOut,
+        "/api/auth/register": {},
+      });
+      routes["/api/auth/status"] = signedIn;
+      assert.equal(await dash.createAccount(account, null), null);
+      await settle();
+      assert.equal(loc.pathname + loc.search, expected);
+      stop();
+    }
+  });
+
+  test("sign-in rejects external and protocol-relative return destinations", async () => {
+    for (const next of ["https://example.com/away", "//example.com/away"]) {
+      const { dash, stop } = await open(`/?next=${encodeURIComponent(next)}`, {
+        ...profileRoutes("me"),
+        "/api/auth/status": signedOut,
+        "/api/auth/login": {},
+      });
+      routes["/api/auth/status"] = signedIn;
+      assert.equal(await dash.login("me", "secret"), null);
+      await settle();
+      assert.equal(loc.pathname + loc.search, "/u/me");
+      stop();
+    }
   });
 
   test("the home link goes straight to your profile when signed in", async () => {
