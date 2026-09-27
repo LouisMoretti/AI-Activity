@@ -37,7 +37,8 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
   const json = (...p) => JSON.parse(read(...p));
   const filled = (f, k = key) => source(f).replace('"<server>"', JSON.stringify(srv.base)).replace('"<device key>"', JSON.stringify(k));
   // On Windows, the absolute interpreter, then the script, both quoted.
-  const windowsCommand = (p, ...args) => new RegExp(`^"[^"]+" ${JSON.stringify(p).replaceAll("\\", "\\\\")}${args.map((a) => " " + a).join("")}$`);
+  const escape = (t) => t.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+  const windowsCommand = (p, ...args) => new RegExp(`^"[^"]+" "${escape(p)}"${args.map((a) => " " + a).join("")}$`);
 
   function install(extra = {}) {
     return new Promise((resolve) => {
