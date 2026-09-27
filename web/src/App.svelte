@@ -3,7 +3,7 @@
   import AuthPanel from "./components/AuthPanel.svelte";
   import ActivityChart from "./components/ActivityChart.svelte";
   import Conversations from "./components/Conversations.svelte";
-  import DeleteActivityPanel from "./components/DeleteActivityPanel.svelte";
+  import DangerZone from "./components/DangerZone.svelte";
   import DevicesPanel from "./components/DevicesPanel.svelte";
   import Leaderboard from "./components/Leaderboard.svelte";
   import NewAccountForm from "./components/NewAccountForm.svelte";
@@ -83,7 +83,9 @@
       </Section>
 
       <Section title="Danger zone" subtitle="Cannot be undone">
-        <DeleteActivityPanel username={dash.account.username} ondeleted={() => dash.load()} />
+        {#key dash.account.id}
+          <DangerZone username={dash.account.username} ondeletedactivity={() => dash.load()} ondeletedaccount={() => dash.logout()} />
+        {/key}
       </Section>
 
     {/if}

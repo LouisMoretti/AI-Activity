@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { IngestBatchResult, IngestResult } from "../../shared/types.ts";
 import {
-  activityClearedAt, dropSnapshotRows, findDeviceByKey, insertQuotaSnapshot, setSessionContext, upsertUsageEvent, type UpsertResult,
+  activityClearedAt, dropSnapshotRows, isDeletedEvent, findDeviceByKey, insertQuotaSnapshot, setSessionContext, upsertUsageEvent, type UpsertResult,
 } from "../db/queries.ts";
 import { nowSec, type DB } from "../db/schema.ts";
 import { readJson } from "../lib/http.ts";
@@ -48,9 +48,13 @@ export function ingestRoutes(db: DB) {
     const batch = normalize(body);
     const received = nowSec();
     const counts = { stored: 0, updated: 0, deduped: 0 };
-    // Activity the user deleted stays deleted: whatever is dated up to then
-    // is dropped (answered as a replay, so collectors move their offsets on).
-    const clearedAt = activityClearedAt(db, device.user_id) ?? -Infinity;
+    // Activity the user deleted stays deleted: messages they deleted (by id,
+    // whatever time a skewed clock gives them) and anything dated up to the
+    // deletion are dropped, answered as replays so collectors move on.
+    // Read outside the write transaction below: safe only because nothing
+    // awaits in between (better-sqlite3 is synchronous).
+    const clearedAt = activityClearedAt(db, device.user_id);
+    const deleted = (at: number) => clearedAt !== null && at <= clearedAt;
     let single: UpsertResult | null = null;
 
     const overBudget = new Error("over the row budget");
@@ -59,7 +63,7 @@ export function ingestRoutes(db: DB) {
       db.transaction(() => {
         const sessions = new Map<string, number>(); // session → oldest message time
         for (const m of batch.messages) {
-          if (m.occurred_at <= clearedAt) {
+          if (deleted(m.occurred_at) || (clearedAt !== null && isDeletedEvent(db, device.user_id, m.event_id))) {
             counts.deduped += 1;
             single = "deduped";
             continue;
@@ -93,14 +97,14 @@ export function ingestRoutes(db: DB) {
     // Quotas and the context gauge are kept even when the rows were refused:
     // they are what the dashboard shows right now.
     db.transaction(() => {
-      if (batch.context) {
+      if (batch.context && !deleted(batch.measured_at)) {
         const { session_id, used_pct, window_size } = batch.context;
         setSessionContext(db, device.user_id, session_id, used_pct, window_size);
       }
       // Quotas are snapshots: latest value wins, never summed. They are dated
       // by the observation time (already capped at now), so a replayed
       // payload cannot overwrite a newer snapshot with stale rate_limits.
-      for (const q of batch.measured_at > clearedAt ? batch.quotas : []) {
+      for (const q of deleted(batch.measured_at) ? [] : batch.quotas) {
         insertQuotaSnapshot(db, {
           device_id: device.id,
           user_id: device.user_id,

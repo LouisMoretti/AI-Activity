@@ -1,10 +1,10 @@
-import { Hono, type MiddlewareHandler } from "hono";
+import { Hono, type Context, type MiddlewareHandler } from "hono";
 import {
-  DELETE_ACTIVITY_PHRASE, type Account, type AdminOverview, type AdminSettings, type AdminUser, type DeletedActivity,
+  DELETE_ACCOUNT_PHRASE, DELETE_ACTIVITY_PHRASE, type Account, type AdminOverview, type AdminSettings, type AdminUser, type DeletedAccount, type DeletedActivity,
 } from "../../shared/types.ts";
 import {
-  adminOverview, deleteUserActivity, deleteUserSessions, getUser, listAdminUsers, setAvatarUrl, setDisplayName, setPasswordHash, setUserAdmin,
-  setSignupOpen, setUserDisabled, signupOpen, toAccount,
+  adminOverview, deleteAccount, deleteUserActivity, deleteUserSessions, getUser, listAdminUsers, setAvatarUrl, setDisplayName, setPasswordHash, setUserAdmin,
+  setSignupOpen, setUserDisabled, signupOpen, toAccount, type UserRow,
 } from "../db/queries.ts";
 import type { DB } from "../db/schema.ts";
 import { parseAvatarUrl } from "../lib/avatar.ts";
@@ -25,6 +25,26 @@ const requireAdmin: MiddlewareHandler<ViewerEnv> = async (c, next) => {
 
 /** The signed-in user's own profile. */
 export function accountRoutes(db: DB, auth: ViewerAuth) {
+  /**
+   * A destructive action on the signed-in user's own data: the typed phrase
+   * (checked first, before any hashing), then the password, throttled like a
+   * login so a stolen session cannot guess it. The user, or the error answer.
+   */
+  async function confirmed(c: Context<ViewerEnv>, phrase: string): Promise<UserRow | Response> {
+    const body = await readJson(c);
+    if (body.confirm !== phrase) return c.json({ error: `type "${phrase}" to confirm` }, 400);
+    const wait = auth.attempt(c);
+    if (wait) {
+      c.header("retry-after", String(wait));
+      return c.json({ error: "too many failed attempts, try again later" }, 429);
+    }
+    const user = getUser(db, c.get("userId"))!;
+    const password = typeof body.password === "string" ? body.password : "";
+    if (!(await verifyPassword(password, user.password_hash))) return c.json({ error: "password is wrong" }, 400);
+    auth.succeeded(c);
+    return user;
+  }
+
   return new Hono<ViewerEnv>()
     .post("/", async (c) => {
       const body = await readJson(c);
@@ -57,24 +77,21 @@ export function accountRoutes(db: DB, auth: ViewerAuth) {
       deleteUserSessions(db, user.id, auth.sessionHash(c));
       return c.json({ ok: true });
     })
-    // Permanently deletes the signed-in user's own usage and quotas; the
-    // account, profile, devices and sessions stay. Needs the password (a
-    // stolen session cannot wipe it) and the typed phrase.
+    // Deletes the signed-in user's own usage and quotas; the account,
+    // profile, devices and sessions stay.
     .post("/delete-activity", async (c) => {
-      const body = await readJson(c);
-      if (body.confirm !== DELETE_ACTIVITY_PHRASE) {
-        return c.json({ error: `type "${DELETE_ACTIVITY_PHRASE}" to confirm` }, 400);
-      }
-      const wait = auth.attempt(c);
-      if (wait) {
-        c.header("retry-after", String(wait));
-        return c.json({ error: "too many failed attempts, try again later" }, 429);
-      }
-      const user = getUser(db, c.get("userId"))!;
-      const password = typeof body.password === "string" ? body.password : "";
-      if (!(await verifyPassword(password, user.password_hash))) return c.json({ error: "password is wrong" }, 400);
-      auth.succeeded(c);
+      const user = await confirmed(c, DELETE_ACTIVITY_PHRASE);
+      if (user instanceof Response) return user;
       return c.json<{ ok: true; deleted: DeletedActivity }>({ ok: true, deleted: deleteUserActivity(db, user.id) });
+    })
+    // Deletes the signed-in user's account and everything tied to it. The
+    // session goes with it: the client signs out.
+    .post("/delete", async (c) => {
+      const user = await confirmed(c, DELETE_ACCOUNT_PHRASE);
+      if (user instanceof Response) return user;
+      const result = deleteAccount(db, user.id);
+      if (!result.ok) return c.json({ error: "you are the last admin: make another account admin first" }, 409);
+      return c.json<{ ok: true; deleted: DeletedAccount }>({ ok: true, deleted: result.deleted });
     });
 }
 

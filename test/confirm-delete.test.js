@@ -1,5 +1,6 @@
-// Runs the Settings "Delete activity" flow (web/src/lib/delete-activity.svelte.ts,
-// Svelte 5 runes) in node, compiled with svelte/compiler, against a fake fetch.
+// Runs the Settings danger zone's flows (web/src/lib/confirm-delete.svelte.ts,
+// Svelte 5 runes: "Delete activity" and "Delete my account") in node,
+// compiled with svelte/compiler, against a fake fetch.
 import fs from "node:fs";
 import path from "node:path";
 import { test, describe, before, after, beforeEach } from "node:test";
@@ -8,7 +9,7 @@ import { stripTypeScriptTypes } from "node:module";
 import { compileModule } from "svelte/compiler";
 
 const LIB = new URL("../web/src/lib/", import.meta.url).pathname;
-const BUILT = path.join(LIB, ".delete-activity.test-build.js");
+const BUILT = path.join(LIB, ".confirm-delete.test-build.js");
 
 /** The next answer of the fake server: [status, body], or an Error to throw. */
 let answer;
@@ -20,12 +21,12 @@ globalThis.fetch = async (url, init) => {
   return { status, ok: status < 400, json: async () => body };
 };
 
-let DeleteActivity;
+let DeleteActivity, DeleteAccount;
 before(async () => {
-  const ts = fs.readFileSync(path.join(LIB, "delete-activity.svelte.ts"), "utf8");
-  const { js } = compileModule(stripTypeScriptTypes(ts), { filename: "delete-activity.svelte.js", generate: "client" });
+  const ts = fs.readFileSync(path.join(LIB, "confirm-delete.svelte.ts"), "utf8");
+  const { js } = compileModule(stripTypeScriptTypes(ts), { filename: "confirm-delete.svelte.js", generate: "client" });
   fs.writeFileSync(BUILT, js.code);
-  ({ DeleteActivity } = await import(BUILT));
+  ({ DeleteActivity, DeleteAccount } = await import(BUILT));
 });
 after(() => fs.rmSync(BUILT, { force: true }));
 beforeEach(() => { posts.length = 0; answer = [200, { ok: true, deleted: { events: 3, quotas: 1 } }]; });
@@ -98,5 +99,56 @@ describe("delete activity flow", () => {
     flow.password = "secret-pass";
     await flow.confirm();
     assert.deepEqual([flow.step, flow.error, reloads.n], ["done", null, 1]);
+  });
+});
+
+describe("delete account flow", () => {
+  /** A flow with its confirmation form open, and how many times it signed out. */
+  function openedAccount() {
+    const signOuts = { n: 0 };
+    const flow = new DeleteAccount(() => { signOuts.n += 1; });
+    flow.open();
+    return { flow, signOuts };
+  }
+
+  test("confirming needs the password and its own phrase", async () => {
+    const { flow } = openedAccount();
+    flow.password = "secret-pass";
+    flow.phrase = "delete my activity";
+    assert.equal(flow.ready, false);
+    await flow.confirm();
+    assert.equal(posts.length, 0);
+    flow.phrase = "Delete my account";
+    assert.equal(flow.ready, true);
+  });
+
+  test("cancelling sends nothing and forgets what was typed", async () => {
+    const { flow, signOuts } = openedAccount();
+    flow.password = "secret-pass";
+    flow.phrase = "delete my account";
+    flow.cancel();
+    assert.deepEqual([flow.step, flow.password, flow.phrase], ["closed", "", ""]);
+    await flow.confirm();
+    assert.deepEqual([posts.length, signOuts.n], [0, 0]);
+  });
+
+  test("success signs out", async () => {
+    const { flow, signOuts } = openedAccount();
+    answer = [200, { ok: true, deleted: { events: 3, quotas: 1, devices: 2 } }];
+    flow.password = "secret-pass";
+    flow.phrase = "delete my account";
+    await flow.confirm();
+    assert.deepEqual(posts, [{ url: "/api/account/delete", body: { password: "secret-pass", confirm: "delete my account" } }]);
+    assert.deepEqual([flow.step, flow.result, signOuts.n], ["done", { events: 3, quotas: 1, devices: 2 }, 1]);
+  });
+
+  test("the last admin's refusal is shown and nothing signs out", async () => {
+    const { flow, signOuts } = openedAccount();
+    answer = [409, { error: "you are the last admin: make another account admin first" }];
+    flow.password = "secret-pass";
+    flow.phrase = "delete my account";
+    await flow.confirm();
+    assert.deepEqual([flow.step, flow.error, flow.password, signOuts.n],
+      ["confirming", "you are the last admin: make another account admin first", "", 0]);
   });
 });

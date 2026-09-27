@@ -962,6 +962,43 @@ describe("deleting your own activity", () => {
     assert.equal((await quotas("ann")).length, 1);
   });
 
+  test("a clock running ahead or a missing time cannot bring deleted messages back", async () => {
+    const cid = await register(srv.base, { username: "cid", password: "cid-password-1" });
+    const dev = await newDevice(srv.base, "cid-laptop", cid.cookie);
+    const now = Math.floor(Date.now() / 1000);
+    // Stored at the receive time (clamped): after the deletion, a resend is
+    // clamped to a newer now, past the cutoff, and only its id stops it.
+    const ahead = event({ session_id: "cid-ahead", occurred_at: now + 3600 });
+    const { occurred_at, ...timeless } = event({ session_id: "cid-timeless" });
+    assert.equal((await ingest(dev.key, ahead)).json.stored, true);
+    assert.equal((await ingest(dev.key, timeless)).json.stored, true);
+    const del = await req(srv.base, "POST", "/api/account/delete-activity", { body: { password: "cid-password-1", confirm: CONFIRM }, cookie: cid.cookie });
+    assert.deepEqual(del.json.deleted, { events: 2, quotas: 0 });
+    await new Promise((r) => setTimeout(r, 1100));
+    assert.equal((await ingest(dev.key, { ...ahead, occurred_at: Math.floor(Date.now() / 1000) + 3600 })).json.deduped, true);
+    assert.equal((await ingest(dev.key, timeless)).json.deduped, true);
+    assert.equal((await summary("cid")).events, 0);
+    // A context gauge measured before the deletion does not land on a new row.
+    assert.equal((await ingest(dev.key, event({ session_id: "cid-ahead" }))).json.stored, true);
+    const ctx = { messages: [], context: { session_id: "cid-ahead", used_pct: 77, window_size: 200000 }, occurred_at: now - 60 };
+    assert.equal((await ingest(dev.key, ctx)).status, 200);
+    const s = (await req(srv.base, "GET", "/api/u/cid/sessions", { anon: true })).json.sessions[0];
+    assert.deepEqual([s.session_id, s.context_used_pct], ["cid-ahead", null]);
+  });
+
+  test("deleted rows are erased from the database file, not left in free pages or the WAL", async () => {
+    const dee = await register(srv.base, { username: "dee", password: "dee-password-1" });
+    const dev = await newDevice(srv.base, "dee-laptop", dee.cookie);
+    const marker = `dee-secret-session-${Date.now()}`;
+    for (let i = 0; i < 20; i++) await ingest(dev.key, event({ session_id: marker }));
+    const found = () => [srv.dbPath, `${srv.dbPath}-wal`]
+      .filter((f) => fs.existsSync(f) && fs.readFileSync(f).includes(marker));
+    assert.notDeepEqual(found(), []);
+    const del = await req(srv.base, "POST", "/api/account/delete-activity", { body: { password: "dee-password-1", confirm: CONFIRM }, cookie: dee.cookie });
+    assert.equal(del.json.deleted.events, 20);
+    assert.deepEqual(found(), []);
+  });
+
   test("password guesses are throttled like a login", async () => {
     const own = await startServer();
     try {
@@ -972,6 +1009,85 @@ describe("deleting your own activity", () => {
       own.stop();
     }
   });
+});
+
+describe("deleting your own account", () => {
+  let srv;
+  before(async () => { srv = await startServer(); });
+  after(() => srv.stop());
+
+  const CONFIRM = "delete my account";
+  const del = (body, cookie) => req(srv.base, "POST", "/api/account/delete", { body, cookie });
+  const ingest = (key, body) => req(srv.base, "POST", "/api/ingest/claude-code", { key, body, anon: true });
+
+  test("needs the password and the phrase, then removes the account and everything tied to it", async () => {
+    const eli = await register(srv.base, { username: "eli", password: "eli-password-1" });
+    const fay = await register(srv.base, { username: "fay", password: "fay-password-1" });
+    const other = await login(srv.base, "eli", "eli-password-1");
+    const dev = await newDevice(srv.base, "eli-laptop", eli.cookie);
+    const eliId = await userId(srv.base, "eli");
+    const fayDev = await newDevice(srv.base, "fay-laptop", fay.cookie);
+    const quota = { five_hour: { used_percentage: 12, resets_at: soon() } };
+    assert.equal((await ingest(dev.key, event({ session_id: "eli-s", rate_limits: quota }))).json.stored, true);
+    assert.equal((await ingest(fayDev.key, event({ session_id: "fay-s", rate_limits: quota }))).json.stored, true);
+
+    assert.equal((await req(srv.base, "POST", "/api/account/delete", { body: { password: "eli-password-1", confirm: CONFIRM }, anon: true })).status, 401);
+    assert.equal((await del({ password: "eli-password-1", confirm: "delete my activity" }, eli.cookie)).status, 400);
+    const wrong = await del({ password: "nope", confirm: CONFIRM }, eli.cookie);
+    assert.deepEqual([wrong.status, wrong.json], [400, { error: "password is wrong" }]);
+    assert.equal((await req(srv.base, "GET", "/api/u/eli", { anon: true })).status, 200);
+
+    const ok = await del({ password: "eli-password-1", confirm: CONFIRM }, eli.cookie);
+    assert.deepEqual([ok.status, ok.json], [200, { ok: true, deleted: { events: 1, quotas: 1, devices: 1 } }]);
+    // Every session, the profile, the sign-in and the device key are gone.
+    for (const cookie of [eli.cookie, other]) {
+      assert.equal((await req(srv.base, "GET", "/api/auth/status", { cookie })).json.authenticated, false);
+      assert.equal((await req(srv.base, "GET", "/api/devices", { cookie })).status, 401);
+    }
+    assert.equal((await req(srv.base, "GET", "/api/u/eli", { anon: true })).status, 404);
+    assert.equal((await req(srv.base, "GET", "/api/u/eli/summary", { anon: true })).status, 404);
+    assert.equal((await post("/api/auth/login", { username: "eli", password: "eli-password-1" })).status, 401);
+    assert.equal((await ingest(dev.key, event({ session_id: "eli-s" }))).status, 401);
+    const db = new Database(srv.dbPath, { readonly: true });
+    try {
+      for (const table of ["usage_events", "quota_snapshots", "devices", "viewer_sessions", "deleted_events"]) {
+        assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE user_id = ?`).get(eliId).n, 0, table);
+      }
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM users WHERE id = ?").get(eliId).n, 0);
+    } finally {
+      db.close();
+    }
+    // Another account is untouched.
+    assert.equal((await req(srv.base, "GET", "/api/u/fay/summary", { anon: true })).json.total.events, 1);
+    assert.equal((await req(srv.base, "GET", "/api/u/fay/quotas", { anon: true })).json.quotas.length, 1);
+    assert.equal((await req(srv.base, "GET", "/api/devices", { cookie: fay.cookie })).json.devices.length, 1);
+  });
+
+  test("the last admin cannot delete their account until another admin exists", async () => {
+    const gus = await register(srv.base, { username: "gus", password: "gus-password-1" });
+    const self = { password: TEST_ADMIN.password, confirm: CONFIRM };
+    const last = await req(srv.base, "POST", "/api/account/delete", { body: self });
+    assert.equal(last.status, 409);
+    assert.equal((await req(srv.base, "GET", "/api/auth/status")).json.user.username, "admin");
+    assert.equal((await req(srv.base, "POST", `/api/users/${await userId(srv.base, "gus")}/admin`, { body: { is_admin: true } })).status, 200);
+    assert.equal((await req(srv.base, "POST", "/api/account/delete", { body: self })).status, 200);
+    assert.equal((await req(srv.base, "GET", "/api/users", { cookie: gus.cookie })).json.users.some((u) => u.username === "admin"), false);
+  });
+
+  test("password guesses are throttled like a login", async () => {
+    const own = await startServer();
+    try {
+      const guess = (password) => req(own.base, "POST", "/api/account/delete", { body: { password, confirm: CONFIRM } });
+      for (let i = 0; i < 10; i++) assert.equal((await guess("nope")).status, 400);
+      assert.equal((await guess(TEST_ADMIN.password)).status, 429);
+    } finally {
+      own.stop();
+    }
+  });
+
+  function post(p, body) {
+    return req(srv.base, "POST", p, { body, anon: true });
+  }
 });
 
 describe("public profile pages", () => {

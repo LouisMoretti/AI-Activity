@@ -18,6 +18,14 @@ export interface DeletedActivity {
   quotas: number;
 }
 
+/** Typed by the user to confirm deleting their account (POST /api/account/delete). */
+export const DELETE_ACCOUNT_PHRASE = "delete my account";
+
+/** Rows removed by POST /api/account/delete, besides the account itself. */
+export interface DeletedAccount extends DeletedActivity {
+  devices: number;
+}
+
 export interface StatsResponse {
   range_days: number;
   tool: string | null;

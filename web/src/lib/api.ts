@@ -1,6 +1,6 @@
 // Typed client for the dashboard JSON API (same origin, cookie session).
 import type {
-  Account, ActivityResponse, AdminOverview, AdminSettings, AdminUser, AuthStatus, DeletedActivity, LeaderboardResponse, Profile, Device, QuotasResponse,
+  Account, ActivityResponse, AdminOverview, AdminSettings, AdminUser, AuthStatus, DeletedAccount, DeletedActivity, LeaderboardResponse, Profile, Device, QuotasResponse,
   SessionsResponse, SummaryResponse,
 } from "../../../shared/types.ts";
 
@@ -83,6 +83,9 @@ export const api = {
   /** Permanently deletes the signed-in user's usage and quotas. */
   deleteActivity: (password: string, confirm: string) =>
     post<{ ok: true; deleted: DeletedActivity }>("/api/account/delete-activity", { password, confirm }),
+  /** Permanently deletes the signed-in user's account; its session goes too. */
+  deleteAccount: (password: string, confirm: string) =>
+    post<{ ok: true; deleted: DeletedAccount }>("/api/account/delete", { password, confirm }),
   users: () => get<{ users: AdminUser[] }>("/api/users"),
   setUserDisabled: (id: number, disabled: boolean) =>
     post<{ ok: true }>(`/api/users/${id}/${disabled ? "disable" : "enable"}`),
