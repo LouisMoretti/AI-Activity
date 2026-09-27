@@ -413,8 +413,10 @@ Components never branch on live vs demo: both sources map into the same
   lock file's first byte there (`fcntl.flock` elsewhere), the 15-minute
   limit a timer instead of `SIGALRM`, and detached runs leave the console,
   the process group and, when allowed, the parent job. Hook commands on
-  Windows are `python "<script>" --hook` (Codex, Antigravity) or the
-  script alone (Claude Code, everywhere): they work in any shell.
+  Windows are `& python "<script>" --hook` for Codex in PowerShell
+  (`&` is required before a quoted executable path),
+  `python "<script>" --hook` for Antigravity, or the script alone for
+  Claude Code through Git Bash; use the syntax of the hook runner's shell.
 - The Codex collector (`collectors/codex.py`, copied to
   `~/.codex/ai-activity-codex.py`, run detached by `PostToolUse`, `Stop`
   and `UserPromptSubmit` hooks in `~/.codex/hooks.json`) works the same way on
