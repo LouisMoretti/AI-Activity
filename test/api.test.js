@@ -3,7 +3,7 @@ import Database from "better-sqlite3";
 import os from "node:os";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { startServer, req, newDevice, event, codexResponse, opencodeMessage, userCli, login, genKey, register, userId, TEST_ADMIN } from "./helpers.js";
+import { startServer, req, newDevice, event, codexResponse, opencodeMessage, userCli, login, genKey, register, userId, TEST_ADMIN, awayFromMidnight } from "./helpers.js";
 
 /** A plausible reset time for a current quota window (a far-future one is dropped). */
 const soon = () => Math.floor(Date.now() / 1000) + 3600;
@@ -201,9 +201,12 @@ describe("basics (signed in as the test admin)", () => {
     // A second terminal posts the same window's older, lower value later.
     await post(20, now + 3600, now - 10);
     assert.deepEqual([(await shown()).used_pct, (await shown()).resets_at], [35, now + 3600]);
+    // Codex jitters a window's resets_at by a few seconds: still that window.
+    await post(40, now + 3599, now - 8);
+    assert.deepEqual([(await shown()).used_pct, (await shown()).resets_at], [40, now + 3600]);
     // …or the previous, already reset window.
     await post(90, now - 100, now - 5);
-    assert.equal((await shown()).used_pct, 35);
+    assert.equal((await shown()).used_pct, 40);
     // The next window replaces it, even with a lower value.
     await post(4, now + 18000, now);
     assert.deepEqual([(await shown()).used_pct, (await shown()).resets_at], [4, now + 18000]);
@@ -269,9 +272,10 @@ describe("basics (signed in as the test admin)", () => {
     const other = (await newDevice(srv.base, "second")).key;
     const resets = soon();
     const rl = (pct) => ({ five_hour: { used_percentage: pct, resets_at: resets } });
-    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ account_ref: "shared", rate_limits: rl(30) }) });
-    await new Promise((r) => setTimeout(r, 1100)); // measured_at has 1 s resolution
-    await req(srv.base, "POST", "/api/ingest/claude-code", { key: other, body: event({ account_ref: "shared", rate_limits: rl(45) }) });
+    // measured_at has 1 s resolution: separate the posts by two seconds.
+    const at = Math.floor(Date.now() / 1000);
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ account_ref: "shared", rate_limits: rl(30), occurred_at: at - 2 }) });
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key: other, body: event({ account_ref: "shared", rate_limits: rl(45), occurred_at: at }) });
     const rows = (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas
       .filter((q) => q.account_ref === "shared" && q.limit_type === "five_hour");
     assert.equal(rows.length, 1);
@@ -982,14 +986,17 @@ describe("leaderboard", () => {
       const bob = (await register(srv.base, { username: "bob", password: "bob-password", display_name: "Bob" })).cookie;
       await register(srv.base, { username: "idle", password: "idle-password" });
       const gone = (await register(srv.base, { username: "gone", password: "gone-password" })).cookie;
+      // The server decides "today" when it reads: keep the posts and the
+      // reads on one UTC day.
+      await awayFromMidnight();
       const now = Math.floor(Date.now() / 1000);
       const post = (key, over) => req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event(over) });
       const adminKey = (await newDevice(srv.base, "a", admin)).key;
       const bobKey = (await newDevice(srv.base, "b", bob)).key;
       const goneKey = (await newDevice(srv.base, "g", gone)).key;
       // admin: 180 tokens today; bob: 180 today + 180 yesterday + 1800 sixty days ago.
-      await post(adminKey, { session_id: "a1" });
-      await post(bobKey, { session_id: "b1", model: "claude-sonnet-5" });
+      await post(adminKey, { session_id: "a1", occurred_at: now });
+      await post(bobKey, { session_id: "b1", model: "claude-sonnet-5", occurred_at: now });
       await post(bobKey, { session_id: "b2", model: "claude-sonnet-5", occurred_at: now - 86400 });
       await post(bobKey, { session_id: "b3", occurred_at: now - 60 * 86400,
         usage: { input_tokens: 1000, output_tokens: 800 } });
@@ -1024,6 +1031,28 @@ describe("leaderboard", () => {
       assert.equal(all.activity.reduce((a, d) => a + d.tokens, 0), 2340);
       // Disabled accounts never appear.
       assert.ok(!all.entries.some((e) => e.username === "gone"));
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  test("a streak survives a today without usage yet, not a missed day", async () => {
+    const srv = await startServer();
+    try {
+      const admin = await login(srv.base, TEST_ADMIN.username, TEST_ADMIN.password);
+      const key = (await newDevice(srv.base, "a", admin)).key;
+      // The server decides "today" when it reads: keep the posts and the
+      // reads on one UTC day.
+      await awayFromMidnight();
+      const now = Math.floor(Date.now() / 1000);
+      const streak = async () => (await req(srv.base, "GET", "/api/leaderboard?days=30", { anon: true })).json.entries[0].current_streak;
+      // Yesterday and the day before, nothing today yet.
+      for (const d of [1, 2]) {
+        await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ session_id: `s${d}`, occurred_at: now - d * 86400 }) });
+      }
+      assert.equal(await streak(), 2);
+      await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ session_id: "s0", occurred_at: now }) });
+      assert.equal(await streak(), 3);
     } finally {
       await srv.stop();
     }
@@ -1088,6 +1117,9 @@ describe("summary, sessions and context (redesign APIs)", () => {
   after(() => srv.stop());
 
   test("summary splits all-time and today by model and tool", async () => {
+    // The server decides "today" when it reads: keep the posts and the
+    // read on one UTC day.
+    await awayFromMidnight();
     const now = Math.floor(Date.now() / 1000);
     await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ session_id: "a", model: "claude-opus-5-5", occurred_at: now }) });
     await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ session_id: "b", model: "claude-sonnet-5", occurred_at: now - 40 * 86400 }) });
@@ -1097,8 +1129,9 @@ describe("summary, sessions and context (redesign APIs)", () => {
     assert.equal(s.today.tokens, 180);
     assert.equal(s.today.sessions, 1);
     assert.deepEqual(s.total.by_model.map((r) => r.name).sort(), ["claude-opus-5-5", "claude-sonnet-5"]);
+    assert.equal(s.total.by_model_others_sessions, 0);
     assert.deepEqual(s.total.by_tool, [{ name: "claude-code", tokens: 360, sessions: 2, events: 2 }]);
-    assert.equal(s.day, new Date().toISOString().slice(0, 10));
+    assert.equal(s.day, new Date(now * 1000).toISOString().slice(0, 10));
     assert.equal((await req(srv.base, "GET", "/api/u/admin/summary?tool=codex")).json.total.tokens, 0);
   });
 
@@ -1123,6 +1156,38 @@ describe("summary, sessions and context (redesign APIs)", () => {
     const noCtx = (await req(srv.base, "GET", "/api/u/admin/sessions?limit=50")).json.sessions.find((s) => s.session_id === "a");
     assert.equal(noCtx.context_used_pct, null);
     assert.equal((await req(srv.base, "GET", "/api/u/admin/sessions?tool=codex")).json.total, 0);
+  });
+
+  test("summary counts distinct sessions across model rows folded into others", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const messages = [];
+    for (let model = 0; model < 7; model++) {
+      for (let session = 0; session < 3; session++) {
+        messages.push({
+          response_id: `resp_fold_top_${model}_${session}`,
+          session_id: `fold-top-${model}-${session}`,
+          model: `top-${model}`,
+          occurred_at: now,
+          usage: { input_tokens: 10 + model },
+        });
+      }
+    }
+    // Both folded models have two sessions, but one session used both:
+    // the exact folded count is three, not the row sum of four.
+    messages.push(
+      { response_id: "resp_fold_a_shared", session_id: "fold-shared", model: "tail-a", occurred_at: now, usage: { input_tokens: 1 } },
+      { response_id: "resp_fold_a_own", session_id: "fold-a", model: "tail-a", occurred_at: now, usage: { input_tokens: 1 } },
+      { response_id: "resp_fold_b_shared", session_id: "fold-shared", model: "tail-b", occurred_at: now, usage: { input_tokens: 1 } },
+      { response_id: "resp_fold_b_own", session_id: "fold-b", model: "tail-b", occurred_at: now, usage: { input_tokens: 1 } },
+    );
+    const ingested = await req(srv.base, "POST", "/api/ingest/codex", { key, body: { messages } });
+    assert.equal(ingested.json.stored, messages.length);
+
+    const total = (await req(srv.base, "GET", "/api/u/admin/summary?tool=codex")).json.total;
+    const folded = [...total.by_model].sort((a, b) => b.sessions - a.sessions).slice(7);
+    assert.deepEqual(folded.map((row) => row.name), ["tail-a", "tail-b"]);
+    assert.equal(folded.reduce((sum, row) => sum + row.sessions, 0), 4);
+    assert.equal(total.by_model_others_sessions, 3);
   });
 });
 
@@ -1158,7 +1223,7 @@ describe("limits, bounds and admin edge cases", () => {
       });
       assert.equal(r.status, 429);
     } finally {
-      srv.stop();
+      await srv.stop();
     }
   });
 
@@ -1428,6 +1493,54 @@ describe("opencode ingestion", () => {
     await post({ messages: [], rate_limits: { five_hour: { used_percentage: 10, resets_at: now + 3600 } } });
     const q = (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas.filter((x) => x.tool === "opencode");
     assert.deepEqual(q, []);
+  });
+});
+
+describe("antigravity ingestion", () => {
+  let srv, key;
+  const post = (body) => req(srv.base, "POST", "/api/ingest/antigravity", { body, key });
+  const summary = async () => (await req(srv.base, "GET", "/api/u/admin/summary?tool=antigravity")).json.total;
+  const response = (over = {}) => ({
+    response_id: "r1", session_id: "conv1", model: "gemini-3-pro",
+    occurred_at: Math.floor(Date.now() / 1000) - 60, utc_offset_min: 120,
+    usage: { input_tokens: 100, output_tokens: 20, cache_read_tokens: 300 }, ...over,
+  });
+
+  before(async () => {
+    srv = await startServer();
+    key = (await newDevice(srv.base, "antigravity")).key;
+  });
+  after(() => srv.stop());
+
+  test("a flat event is stored once, keyed by session and response", async () => {
+    const r = await post({ tool: "antigravity", ...response() });
+    assert.equal(r.json.stored, true);
+    assert.equal(r.json.event_id, "antigravity:conv1:r1");
+    assert.equal((await post(response())).json.deduped, true);
+    const t = await summary();
+    assert.equal(t.tokens, 420);
+    assert.equal(t.events, 1);
+    const s = (await req(srv.base, "GET", "/api/u/admin/sessions?tool=antigravity")).json.sessions[0];
+    assert.equal(s.session_id, "antigravity:conv1");
+  });
+
+  test("a partial response is replaced by its final counts, counted once", async () => {
+    const before = await summary();
+    const m = response({ response_id: "r-partial", usage: { input_tokens: 10, output_tokens: 5 } });
+    assert.equal((await post({ messages: [m] })).json.stored, 1);
+    const r = await post({ messages: [{ ...m, usage: { input_tokens: 10, output_tokens: 90 } }] });
+    assert.equal(r.json.updated, 1);
+    const after = await summary();
+    assert.equal(after.tokens - before.tokens, 100);
+    assert.equal(after.events - before.events, 1);
+  });
+
+  test("quotas are recorded for a known pool only", async () => {
+    const limits = { five_hour: { used_percentage: 40, resets_at: soon() } };
+    await post({ messages: [], account_ref: "unknown-pool", rate_limits: limits });
+    await post({ messages: [], account_ref: "gemini", rate_limits: limits });
+    const q = (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas.filter((x) => x.tool === "antigravity");
+    assert.deepEqual(q.map((x) => [x.account_ref, x.limit_type, x.used_pct]), [["gemini", "five_hour", 40]]);
   });
 });
 

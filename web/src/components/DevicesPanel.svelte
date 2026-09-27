@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import type { Device } from "../../../shared/types.ts";
   import { api } from "../lib/api.ts";
+  import { copyPending, installCommand, type Platform } from "../lib/clipboard.ts";
 
   let devices = $state<Device[] | null>(null);
   let name = $state("");
@@ -10,8 +11,8 @@
   // Shown right after creation (or when copying failed); the list never holds keys.
   let created = $state<{ name: string; key: string } | null>(null);
   let copied = $state(false);
-  // Row whose key was just copied, for the "Copied" feedback.
-  let copiedId = $state<number | null>(null);
+  // Row and button just copied, for the "Copied" feedback.
+  let copiedId = $state.raw<{ id: number; what: "key" | Platform } | null>(null);
 
   const fmtDate = (sec: number) =>
     new Date(sec * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
@@ -64,21 +65,17 @@
     }
   }
 
-  // The key is fetched on click, one at a time. The clipboard write starts
-  // in the click itself (ClipboardItem takes a promise): Safari refuses a
-  // write that only starts after the request returns.
-  async function copyKey(d: Device) {
+  // The key is fetched on click, one at a time: copied alone, or inside
+  // the device's install command for its platform.
+  async function copyKey(d: Device, what: "key" | Platform) {
     error = "";
     const key = api.deviceKey(d.id).then((r) => r.key);
+    const text = what === "key" ? key : key.then((k) => installCommand(k, what));
     try {
-      if (typeof ClipboardItem !== "undefined") {
-        const blob = key.then((k) => new Blob([k], { type: "text/plain" }));
-        await navigator.clipboard.write([new ClipboardItem({ "text/plain": blob })]);
-      } else {
-        await navigator.clipboard.writeText(await key);
-      }
-      copiedId = d.id;
-      setTimeout(() => { if (copiedId === d.id) copiedId = null; }, 2000);
+      await copyPending(text);
+      const mark = { id: d.id, what };
+      copiedId = mark;
+      setTimeout(() => { if (copiedId === mark) copiedId = null; }, 2000);
     } catch {
       // No clipboard access: show the key so it can be copied by hand.
       try {
@@ -103,6 +100,10 @@
         <button type="button" onclick={copy}>{copied ? "Copied" : "Copy"}</button>
         <button type="button" onclick={() => (created = null)}>Done</button>
       </div>
+      <p>Or run this on that machine to install the collectors of the tools it has. Linux or macOS:</p>
+      <div class="row"><code class="mono">{installCommand(created.key, "unix")}</code></div>
+      <p>Windows (PowerShell):</p>
+      <div class="row"><code class="mono">{installCommand(created.key, "windows")}</code></div>
     </div>
   {/if}
 
@@ -121,7 +122,9 @@
           {:else}
             <div class="actions">
               {#if d.has_key}
-                <button type="button" onclick={() => copyKey(d)}>{copiedId === d.id ? "Copied" : "Copy key"}</button>
+                <button type="button" onclick={() => copyKey(d, "unix")}>{copiedId?.id === d.id && copiedId.what === "unix" ? "Copied" : "Copy install (Linux/macOS)"}</button>
+                <button type="button" onclick={() => copyKey(d, "windows")}>{copiedId?.id === d.id && copiedId.what === "windows" ? "Copied" : "Copy install (Windows)"}</button>
+                <button type="button" onclick={() => copyKey(d, "key")}>{copiedId?.id === d.id && copiedId.what === "key" ? "Copied" : "Copy key"}</button>
               {/if}
               <button type="button" class="danger" onclick={() => revoke(d)}>Revoke</button>
             </div>
@@ -158,6 +161,7 @@
   .key { margin: 12px 0 6px; padding: 12px 14px; border: 1px solid var(--accent); background: var(--surface-2); border-radius: var(--radius-sm); }
   .key strong { display: inline; }
   .key p { font-size: 13px; color: var(--text); }
+  .key .row + p { margin-top: 12px; }
   .key .row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
   code { flex: 1; min-width: 0; overflow-wrap: anywhere; color: var(--text); }
   .error { color: var(--warn); margin-top: 8px; font-size: 13px; }

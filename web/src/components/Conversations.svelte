@@ -9,11 +9,11 @@
 
 <div class="list">
   {#each sessions as s (s.tool + s.id)}
-    <article class="session">
+    <article class="session" style:--tool={TOOL_META[s.tool].color}>
       <div class="name">
-        <span class="icon {s.tool}" aria-hidden="true">{TOOL_META[s.tool].icon}</span>
+        <span class="icon" aria-hidden="true">{TOOL_META[s.tool].icon}</span>
         <div>
-          <strong>{TOOL_META[s.tool].name} · <span class="mono">{s.id.slice(0, 8)}</span></strong>
+          <strong>{TOOL_META[s.tool].name} · <span class="mono" title={s.id}>{s.id.slice(0, 8)}</span></strong>
           <small><span class="model">{s.model ?? "model not reported"}</span> · {plural(s.calls, "API call")}</small>
         </div>
       </div>
@@ -23,7 +23,7 @@
           <span class="when"><i class="dot" class:recent={clock.now - s.lastActive < RECENT_SEC}></i>{fmtAgo(s.lastActive, clock.now)}</span>
         </div>
         {#if s.context}
-          <Meter pct={s.context.pct} label="Context used" tone={s.tool === "claude-code" ? "claude" : s.tool === "codex" ? "codex" : "accent"} />
+          <Meter pct={s.context.pct} label="Context used" />
           <div class="ctx">Context {fmtPct(s.context.pct)} %{s.context.size ? ` of ${fmtCompact(s.context.size)}` : ""}</div>
         {/if}
       </div>
@@ -45,10 +45,7 @@
   .session + .session { border-top: 1px solid var(--line); }
   .empty { flex-direction: column; align-items: flex-start; gap: 2px; }
   .name { display: flex; align-items: center; gap: 12px; min-width: 0; }
-  .icon { font-size: 18px; width: 20px; text-align: center; color: var(--muted); }
-  .icon.claude-code { color: var(--claude); }
-  .icon.codex { color: var(--codex); }
-  .icon.opencode { color: var(--opencode); }
+  .icon { font-size: 18px; width: 20px; text-align: center; color: var(--tool); }
   strong { font-size: 14px; font-weight: 500; display: block; }
   small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
   .model { font-family: var(--mono); font-size: 11px; }

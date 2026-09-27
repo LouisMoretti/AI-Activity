@@ -37,6 +37,29 @@ jobs:
       - run: npm run build
       - run: npm test
 
+  windows:
+    # Every collector through its documented Windows command: msvcrt locks,
+    # detached workers, agy.cmd, python instead of python3; and /install.ps1
+    # through PowerShell. The server and
+    # its other tests stay on the Linux jobs.
+    name: collectors (windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - run: npm ci
+      - run: npm run build
+      - run: node --test test/collector.test.js test/codex-collector.test.js test/opencode-collector.test.js test/antigravity-collector.test.js test/install.test.js
+        env:
+          PYTHON: python
+
   docker:
     # The image builds and runs on both platforms (nothing is pushed).
     name: ${{ matrix.name }}

@@ -4,8 +4,8 @@
 
 <footer>
   AI Activity is an independent project, not affiliated with, endorsed or
-  sponsored by Anthropic, OpenAI or the OpenCode project. Claude, Claude Code,
-  Codex, OpenCode and the other names shown are trademarks of their
+  sponsored by Anthropic, OpenAI, Google or the OpenCode project. Claude, Claude Code,
+  Codex, Antigravity, OpenCode and the other names shown are trademarks of their
   respective owners, used only to identify the tools whose usage is measured.
 </footer>
 
