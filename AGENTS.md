@@ -623,7 +623,7 @@ periodically by hand. Detached workers wait for the lock, with a 15-minute
 timeout, rather than dropping overlapping final-turn runs.
 Each entry carries `response_id`, `session_id`, `model`, `occurred_at`,
 `utc_offset_min`, and disjoint `usage.input_tokens`, `output_tokens`
-(including thinking), `cache_read_tokens`. Cache writes, quotas and context
+(including thinking), `cache_read_tokens`. Cache writes and context
 are not exposed by this collector. Model and timestamp are never inferred
 from the current hook, file mtime, or import time. Standard generation
 timestamps or unique step UUID/bot-id timestamp matches are supported;
@@ -638,6 +638,19 @@ generation page positions allow bounded passes to resume after successful
 uploads. Completed generation scans restart to discover edits to old rows.
 Timestamp matching streams full metadata scans and cannot resolve a date
 from a truncated ambiguity check. See README.md for setup, evidence and limits.
+Measured quotas use the signed-in `agy` CLI's JSON `/usage` report, gated
+on a plain version >= 1.1.11 to avoid older versions interpreting it as a
+model prompt. Quota-only batches carry `messages: []`, `occurred_at`,
+`account_ref` (`gemini` or `claude-gpt`, representing independent pools),
+and `rate_limits.five_hour` / `seven_day` with `used_percentage` and
+`resets_at`. Only recognized bucket ids, finite fractions and valid reset
+timestamps are used. Disabled, duplicate/ambiguous and unknown buckets stay
+unavailable. The subprocess runs in an empty directory without Activity
+credentials; its inherited probe marker prevents collector-hook recursion.
+Successful uploads throttle probes for 60 seconds via `quota_at`. Failed
+probes do not block usage; failed uploads remain retryable errors. The
+Antigravity card uses QuotaWindow for both pools, never sums percentages,
+and expires old snapshots at reset like Codex and Claude Code.
 `test/antigravity-collector.test.js` uses synthetic wire fixtures against
 real SQLite/WAL and the ingestion API. Local live history reads were also
 checked; installed-hook triggering from a real turn remains to be verified.
