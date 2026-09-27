@@ -14,10 +14,12 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
 import time
+import tempfile
 
 SERVER = os.environ.get("AI_ACTIVITY_URL", "<server>")
 KEY = os.environ.get("AI_ACTIVITY_KEY", "<device key>")
@@ -300,6 +302,106 @@ def save_state(path, state):
     os.replace(temp, path)
 
 
+def quota_reports(report, measured_at):
+    """Allowlist measured CLI quota buckets, keeping model pools separate.
+
+    JSON schema/print command evidence:
+    https://github.com/steipete/CodexBar/tree/main/Sources/CodexBarCore/Providers/Antigravity
+    No account identity, descriptions, model configuration or credentials leave
+    this function. Unknown/disabled buckets and out-of-range fractions are absent.
+    """
+    if not isinstance(report, dict) or report.get("status") != "SUCCESS":
+        return []
+    command = report.get("command", {})
+    if not isinstance(command, dict) or command.get("name") != "usage":
+        return []
+    data = command.get("data", {})
+    groups = data.get("groups", []) if isinstance(data, dict) else []
+    if not isinstance(groups, list):
+        return []
+    pools = {}
+    seen = set()
+    ambiguous = set()
+    for group in groups:
+        buckets = group.get("buckets", []) if isinstance(group, dict) else []
+        if not isinstance(buckets, list):
+            continue
+        for bucket in buckets:
+            if not isinstance(bucket, dict):
+                continue
+            ident = bucket.get("bucketId", bucket.get("bucket_id"))
+            if ident not in ("gemini-5h", "gemini-weekly", "3p-5h", "3p-weekly"):
+                continue
+            if ident in seen:
+                ambiguous.add(ident)
+            seen.add(ident)
+            if bucket.get("disabled", False) is not False:
+                continue
+            remaining = bucket.get("remaining", {})
+            fraction = bucket.get("remainingFraction", bucket.get("remaining_fraction"))
+            if fraction is None and isinstance(remaining, dict):
+                fraction = remaining.get("remainingFraction", remaining.get("remaining_fraction"))
+                if fraction is None and remaining.get("case") in ("remainingFraction", "remaining_fraction"):
+                    fraction = remaining.get("value")
+            if type(fraction) not in (int, float) or not 0 <= fraction <= 1:
+                continue
+            reset = bucket.get("resetTime", bucket.get("reset_time"))
+            if reset is not None:
+                try:
+                    parsed = datetime.datetime.fromisoformat(reset.replace("Z", "+00:00"))
+                    if parsed.tzinfo is None:
+                        continue
+                    reset = parsed.timestamp()
+                except (AttributeError, ValueError, OverflowError):
+                    continue
+            pool, cadence = ident.split("-", 1)
+            limit = "five_hour" if cadence == "5h" else "seven_day"
+            span = 18000 if cadence == "5h" else 604800
+            if reset is not None and not measured_at < reset <= measured_at + span + 600:
+                continue
+            pools.setdefault(pool, {})[limit] = {
+                "used_percentage": round((1 - fraction) * 100, 8), "resets_at": reset}
+    for ident in ambiguous:
+        pool, cadence = ident.split("-", 1)
+        pools.get(pool, {}).pop("five_hour" if cadence == "5h" else "seven_day", None)
+    return [{"messages": [], "account_ref": "gemini" if pool == "gemini" else "claude-gpt",
+             "occurred_at": measured_at, "rate_limits": limits}
+            for pool, limits in sorted(pools.items()) if limits]
+
+
+def read_quotas():
+    """Ask the signed-in CLI for /usage, never read provider credential files.
+
+    Older versions could interpret an unsupported slash command as a model
+    prompt. Require the first supported print-usage version before invoking it.
+    An empty working directory avoids project instructions/hooks. The marker
+    also prevents recursion through this collector's global hooks.
+    """
+    binary = shutil.which("agy")
+    if binary is None:
+        raise ValueError("quota CLI unavailable")
+    env = dict(os.environ)
+    env.pop("AI_ACTIVITY_KEY", None)
+    env.pop("AI_ACTIVITY_URL", None)
+    env["AI_ACTIVITY_ANTIGRAVITY_QUOTA_PROBE"] = "1"
+    with tempfile.TemporaryDirectory(prefix="ai-activity-agy-quota-") as directory:
+        def run(args, timeout):
+            # Keep raw stdout off the collector's logs and bound the parsed size.
+            with tempfile.TemporaryFile() as output:
+                result = subprocess.run([binary, *args], cwd=directory, env=env,
+                    stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.DEVNULL,
+                    timeout=timeout, **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
+                if result.returncode != 0 or output.tell() > MAX_BLOB:
+                    raise ValueError("quota command failed")
+                output.seek(0)
+                return output.read(MAX_BLOB).decode("utf-8")
+        version = run(["--version"], 3).strip()
+        if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) or tuple(map(int, version.split("."))) < (1, 1, 11):
+            raise ValueError("unsupported quota CLI version")
+        report = json.loads(run(["-p", "/usage", "--output-format", "json", "--print-timeout", "90s"], 95))
+        return quota_reports(report, int(time.time()))
+
+
 def collect():
     import urllib.request
     cache = Path.home() / ".cache" / "ai-activity"
@@ -334,6 +436,31 @@ def collect():
         sources = sources[start:] + sources[:start]
         failed = False
         deferred = False
+        # Refresh even when there are no new generations. Missing CLI/auth/schema
+        # never prevents token imports; a refused quota upload is retried next run.
+        if os.environ.get("AI_ACTIVITY_ANTIGRAVITY_QUOTAS") != "0" and time.time() - state.get("quota_at", 0) >= 60:
+            try:
+                reports = read_quotas()
+            except Exception:
+                reports = []
+            if not reports:
+                print("ai-activity antigravity: quota report unavailable; usage collection continues", file=sys.stderr)
+            else:
+                try:
+                    for report in reports:
+                        request = urllib.request.Request(SERVER.rstrip("/") + "/api/ingest/antigravity",
+                            data=json.dumps(report).encode(),
+                            headers={"Authorization": "Bearer " + KEY, "Content-Type": "application/json"})
+                        with urllib.request.urlopen(request, timeout=30) as response:
+                            result = json.load(response)
+                        if result.get("ok") is not True or result.get("messages") != 0:
+                            raise ValueError("quota upload refused")
+                    state["quota_at"] = reports[0]["occurred_at"]
+                    can_save = True
+                    save_state(state_path, state)
+                except Exception:
+                    print("ai-activity antigravity: quota upload failed; retry on next run", file=sys.stderr)
+                    failed = True
         started = time.monotonic()
         for number, (name, path) in enumerate(sources):
             if number >= MAX_DATABASES or (number and time.monotonic() - started > MAX_RUN_SECONDS):
@@ -415,8 +542,9 @@ if __name__ == "__main__":
         # Consume the hook payload locally, never forward transcript/workspace paths.
         sys.stdin.read()
         options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
-        subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--hook-worker"], stdin=subprocess.DEVNULL,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **options)
+        if os.environ.get("AI_ACTIVITY_ANTIGRAVITY_QUOTA_PROBE") != "1":
+            subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--hook-worker"], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **options)
         # PostInvocation must not inject steps or change execution flow.
         # Antigravity's Stop contract requires a decision; only "continue"
         # re-enters the loop, and every other value permits the normal stop:
