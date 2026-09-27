@@ -140,12 +140,20 @@ describe("dashboard state", () => {
   test("?demo=1 only lasts while it is in the address", async () => {
     const { dash, stop } = await open("/u/me?demo=1", profileRoutes("me"));
     assert.equal(dash.vm.demo, true);
+    assert.deepEqual(dash.vm.antigravity.windows.map(w => w.pct), [42, 68, 19, 32]);
+    assert.equal(dash.vm.sessions.filter(s => s.tool === "antigravity").length, 2);
+    assert.ok(dash.vm.stats.today.byTool.some(r => r.name === "antigravity" && r.value > 0));
+    for (const figure of [dash.vm.stats.today, dash.vm.stats.total, dash.vm.stats.sessions]) {
+      assert.equal(new Set(figure.byModel.map(r => r.name)).size, figure.byModel.length);
+    }
     dash.go("/leaderboard");
     await settle();
     dash.openProfile("me");
     await settle();
     assert.equal(dash.demo, false);
     assert.equal(dash.vm.demo, false);
+    assert.deepEqual(dash.vm.antigravity.windows.map(w => w.pct), [null, null, null, null]);
+    assert.ok(!dash.vm.sessions.some(s => s.id.startsWith("demo-antigravity-")));
     stop();
   });
 
