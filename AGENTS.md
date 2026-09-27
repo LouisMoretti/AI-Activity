@@ -259,6 +259,8 @@ extension.
   `Closes #<issue>` in the description (`.github/pull_request_template.md`).
   The "Linked issue" check (`.github/workflows/triage.yml`) fails without a
   labeled issue of this repo, and copies its type and area labels onto the PR.
+  A small fix (typo, flaky test, dependency bump) can skip the issue with the
+  `no issue` label instead; label the PR yourself then.
 
 ## 3. Architecture
 

@@ -4,7 +4,8 @@ name: Triage
 # the areas picked in the form, and asks for labels on an issue opened without
 # any (the API and `gh issue create` skip the forms).
 # Pull requests: each one must close an issue of this repo that has labels;
-# the issue's type and area labels are copied onto the PR.
+# the issue's type and area labels are copied onto the PR. A small fix
+# (typo, flaky test, dependency bump) can skip that with the "no issue" label.
 #
 # pull_request_target (not pull_request) so PRs from forks can be labeled too.
 # Safe because this workflow never checks out or runs the PR's code.
@@ -13,7 +14,7 @@ on:
   issues:
     types: [opened, edited]
   pull_request_target:
-    types: [opened, edited, reopened, synchronize]
+    types: [opened, edited, reopened, synchronize, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -63,10 +64,14 @@ jobs:
             // Labels worth carrying over; triage labels stay on the issue.
             const COPY = ["bug", "enhancement", "documentation", "accessibility", "ui", "server", "collectors", "infra", "security"];
             const pr = context.payload.pull_request;
+            if (pr.labels.some((l) => l.name === "no issue")) {
+              core.info("\"no issue\" label: no linked issue required.");
+              return;
+            }
             const refs = [...(pr.body ?? "").matchAll(/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#(\d+)\b/gi)]
               .map((m) => Number(m[1]));
             if (refs.length === 0) {
-              core.setFailed("Open an issue first, then reference it in the PR description: \"Closes #<issue>\".");
+              core.setFailed("Open an issue first, then reference it in the PR description: \"Closes #<issue>\" (or add the \"no issue\" label to a small fix).");
               return;
             }
             const labels = new Set();
