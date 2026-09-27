@@ -178,10 +178,11 @@ The [Antigravity hook configuration](https://antigravity.google/docs/hooks/)
 is shared by Antigravity 2.0, CLI, and IDE. `PostInvocation` refreshes after
 each model invocation during a turn; `Stop` refreshes when the execution
 loop ends. Both return immediately and launch a detached collector, which
-waits two seconds for metadata to flush before reading. Overlapping workers
-wait for the same lock (up to 15 minutes), then read a fresh snapshot; a Stop
-run is not discarded while another upload is in flight. Only one uploads
-at a time. Updates need no manual
+waits two seconds for metadata to flush after acquiring the collection lock.
+At most one hook worker collects and one waits (up to 20 minutes); additional
+hooks coalesce into that waiting pass, which reads a fresh snapshot. A hook
+during collection can queue the next pass, so the final Stop update is included.
+Only one uploads at a time. Updates need no manual
 command after setup, while Antigravity is running and these hooks are enabled.
 
 4. Restart Antigravity, then confirm **ai-activity is enabled**: `/hooks`
@@ -240,7 +241,8 @@ What it does:
   memory; step bytes do not consume the generation page budget. It checks
   ambiguity against all generation rows, including those on other pages.
   If the complete timestamp scan cannot finish within its 30-second
-  deadline, unresolved entries stay uncollected with a warning;
+  deadline (separate from page reading), unresolved entries stay uncollected
+  with a warning and the page position does not advance;
   entries with their own valid generation timestamp can still upload.
   Resource limits never manufacture dates or discard an accepted page.
 - Collects measured five-hour and weekly quota snapshots using the signed-in
@@ -254,6 +256,9 @@ What it does:
   reports leave quota windows **Unavailable**, with a diagnostic.
 - Quotas refresh on hooks/manual/scheduled runs, at most once per minute
   after a successful upload, including runs with no new token activity.
+  Failed probes or uploads back off for five minutes; attempts are saved
+  before probing so interruption cannot reset the throttle. Token collection
+  runs before quota probes, so a slow quota command cannot delay that pass's tokens.
   Use the optional one-minute schedule above for updates while idle. Gemini
   and Claude/GPT pools remain separate: the card uses the same percentage
   bars, elapsed-window marks, reset countdowns and expiry behavior as Codex
