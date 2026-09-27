@@ -3,7 +3,7 @@
 // never interpolated.
 
 /** Every ingestable tool, in display order. */
-export const TOOLS = ["claude-code", "codex", "opencode", "antigravity"] as const;
+export const TOOLS = ["claude-code", "codex", "antigravity", "opencode"] as const;
 export type Tool = (typeof TOOLS)[number];
 
 export interface StatsResponse {

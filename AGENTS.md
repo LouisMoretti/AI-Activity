@@ -18,9 +18,9 @@ today unless a day is hovered; the Weekly and Cumulative tabs likewise show
 the last 7 days or the running total unless a week is hovered, focused or
 tapped), four stats (all-time tokens, today, sessions,
 current streak; hover shows the split by tool and model, or the longest
-streak), one card per tool (Claude Code, Codex, OpenCode, Antigravity are
-separate components; OpenCode takes 2/3 of its row, next to "Today by tool": today's
-tokens split by tool), recent conversations (10 + "Show more"). No tool filter:
+streak), one card per tool in `TOOLS` order (Claude Code, Codex,
+Antigravity on a full row, then OpenCode, which takes 2/3 of the last row,
+next to "Today by tool": today's tokens split by tool), recent conversations (10 + "Show more"). No tool filter:
 every tool is always shown. No cost or subscription tracking (removed on
 purpose). Only demo data carries a badge ("Demonstration data"). Palette: the
 original dark theme; type: Geist, with Geist Mono only for ids and model
@@ -462,7 +462,7 @@ Counting rules:
 
 `POST /api/ingest/<tool>` with header `Authorization: Bearer <device key>`.
 The tool slug in the URL picks the payload normalizer
-(`server/lib/ingest.ts`, one entry per slug): `claude-code`, `codex`, `opencode` and `antigravity` (`TOOLS` in
+(`server/lib/ingest.ts`, one entry per slug): `claude-code`, `codex`, `antigravity` and `opencode` (`TOOLS` in
 `shared/types.ts`). There is no default: a bare `/api/ingest` and unknown slugs → `404`.
 Unknown or revoked keys → `401`. Small JSON bodies only (256 KB max).
 Rate limits per device key **and tool** (one key serves every tool on a
