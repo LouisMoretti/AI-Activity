@@ -610,11 +610,17 @@ describe("locked server (first account made from the CLI)", () => {
     assert.equal(d.name, "unnamed device");
   });
 
-  test("starting sign-ins is rate limited per client", async () => {
-    const start = () => req(srv.base, "POST", "/api/auth/github", { body: {}, anon: true, headers: { "cf-connecting-ip": "203.0.113.61" } });
+  test("starting sign-ins is rate limited per client; GitHub's callbacks are not", async () => {
+    const ip = "203.0.113.61";
+    const start = () => req(srv.base, "POST", "/api/auth/github", { body: {}, anon: true, headers: { "cf-connecting-ip": ip } });
+    // Callbacks (even forged ones) take nothing from that budget.
+    for (let i = 0; i < 70; i++) {
+      const back = await fetch(`${srv.base}/api/auth/github/callback?state=x`, { redirect: "manual", headers: { "cf-connecting-ip": ip } });
+      assert.equal(back.status, 302);
+    }
     const statuses = [];
-    for (let i = 0; i < 31; i++) statuses.push((await start()).status);
-    assert.deepEqual([statuses.slice(0, 30).every((s) => s === 200), statuses[30]], [true, 429]);
+    for (let i = 0; i < 61; i++) statuses.push((await start()).status);
+    assert.deepEqual([statuses.slice(0, 60).every((s) => s === 200), statuses[60]], [true, 429]);
     assert.equal((await req(srv.base, "POST", "/api/auth/github", { body: {}, anon: true, headers: { "cf-connecting-ip": "203.0.113.62" } })).status, 200);
   });
 });
@@ -793,6 +799,16 @@ describe("profiles from GitHub and user management", () => {
     githubUser("admin", { name: null, avatar_url: null });
     await login(srv.base, "admin");
     assert.equal((await req(srv.base, "GET", "/api/u/admin", anon)).json.display_name, "admin");
+  });
+
+  test("older GitHub logins (a trailing dash, \"--\") still sign in; odd ones never reach a URL", async () => {
+    for (const login of ["old-style-", "old--style"]) {
+      const r = await register(srv.base, login);
+      assert.equal(r.error, null, login);
+      assert.equal((await req(srv.base, "GET", `/api/u/${login}`, { anon: true })).json.username, login);
+    }
+    // GitHub never gives these: refused as an unusable answer.
+    for (const login of ["a/b", "x".repeat(40), "a b"]) assert.equal((await register(srv.base, login)).error, "github", login);
   });
 
   test("a GitHub login rename moves the profile page; the account and its data stay", async () => {

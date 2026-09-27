@@ -33,9 +33,10 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
       c.header("cache-control", "no-store");
     })
     .get("/health", (c) => c.json({ ok: true }))
-    // Starting a GitHub sign-in and coming back from it, per client (the
-    // pattern covers /auth/github itself too).
-    .use("/auth/github/*", oauth)
+    // Starting a GitHub sign-in, per client. Not GitHub's callback: a
+    // successful sign-in must not cost twice, and the callback only works
+    // with a state this server just handed out.
+    .on("POST", "/auth/github", oauth)
     .route("/auth", authRoutes(db, auth, client, config.github, config.publicUrl, setupCode))
     .route("/ingest", ingestRoutes(db))
     // Public, read-only: profile pages, the account list and the leaderboard.

@@ -16,8 +16,9 @@ import type { Context, MiddlewareHandler } from "hono";
  *   (28/min); 300 with 5/s leaves room for about ten tabs behind one
  *   address;
  * - signed-in routes (devices, account, users, admin), per user;
- * - GitHub sign-in (starting one, and GitHub's callback), per client: a
- *   sign-in takes two requests.
+ * - starting a GitHub sign-in, per client: 60, then one every 2 s, so
+ *   visitors sharing one address (IPv6 behind Caddy, issue #102) still
+ *   sign in.
  */
 export const LIMITS = {
   ingestRequests: { capacity: 300, perSec: 5 },
@@ -25,7 +26,7 @@ export const LIMITS = {
   ingestWrites: { capacity: 20_000, perSec: 10 },
   publicReads: { capacity: 300, perSec: 5 },
   sessionRequests: { capacity: 120, perSec: 1 },
-  oauth: { capacity: 30, perSec: 0.1 },
+  oauth: { capacity: 60, perSec: 0.5 },
   /** Live (not revoked) devices per account, from Settings; the CLI is not capped. */
   devicesPerAccount: 20,
 };

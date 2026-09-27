@@ -24,8 +24,13 @@ export interface GithubUser {
   avatar_url: string | null;
 }
 
-/** GitHub logins: letters, digits and single inner dashes, 39 characters at most. */
-export const GITHUB_LOGIN = /^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){0,38}$/i;
+/**
+ * GitHub logins: letters, digits and dashes, 39 characters at most. New
+ * logins have single inner dashes only, but older ones may end with a dash
+ * or hold "--": they must still sign in (the account is keyed by the id;
+ * the login only names the profile page, and this set is safe in a URL).
+ */
+export const GITHUB_LOGIN = /^[A-Za-z0-9-]{1,39}$/;
 const NAME_MAX = 60;
 const TIMEOUT_MS = 10_000;
 

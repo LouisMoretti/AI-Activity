@@ -30,8 +30,9 @@
   <h2>{setup ? "Create the first account" : "Sign in"}</h2>
   {#if setup}
     <p class="muted">
-      No account exists yet. The setup code is printed in the server log. This account becomes the admin and
-      keeps the data collected so far.
+      No account exists yet. The setup code is printed in the server log. This account becomes the admin.
+      There is no data yet: once signed in, make a device key in Settings and run its install command on each
+      machine; the collectors then send their local history.
     </p>
     <label>Setup code
       <input class="mono" placeholder="XXXX-XXXX-XXXX" autocomplete="off" autocapitalize="characters" spellcheck="false" required bind:value={setupCode} />

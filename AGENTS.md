@@ -185,7 +185,10 @@ Upgrades are normally deployed from GitHub (Continuous deployment below).
   in. Deploying it (migration 5) deletes every account and all measured
   data (kept in the `-pre-v5` backup): everyone signs in with GitHub again,
   makes a new device key in Settings and reinstalls the collectors, which
-  send their whole local history again.
+  send their whole local history again. To go back, in this order: deploy
+  the older commit (`ALLOW_OLDER=1 ai-activity-deploy <commit>`), stop the
+  app, restore the `-pre-v5` backup, start it. Restoring it under this
+  code would only run migration 5 again and empty it once more.
 - Before going live: revoke and reissue every device key used through
   quick tunnels, then point the collectors (statusLine, Codex hook,
   OpenCode plugin) at the new URL.
@@ -984,8 +987,10 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
     `/api/admin`): 120 per user, refill 1/s;
   - at most 20 live devices per account (`POST /api/devices` → `409`;
     revoking one frees a slot);
-  - GitHub sign-in (`/api/auth/github` and its callback): 30 per client,
-    refill one per 10 s (a sign-in takes two);
+  - starting a GitHub sign-in (`POST /api/auth/github`): 60 per client,
+    refill one per 2 s (visitors behind one address, #102, still sign
+    in). GitHub's callback is not limited: it only works with a state
+    this server handed out, once;
   - ingest: per device key (§5). Health and the rest of `/api/auth/*` are
     not rate limited (the setup code and sign-ups have their own limits
     above).
