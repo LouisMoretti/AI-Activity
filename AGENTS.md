@@ -11,7 +11,9 @@ OpenCode has no quota of its own: its card shows the conversations active
 now (a reply in the last 10 minutes; listed in creation order so parallel
 ones never swap places), else the last one, on the right; today's tokens, conversations,
 calls, models and providers on the left. Antigravity has two quota pools
-(Gemini, Claude/GPT), each shown with its own 5-hour and weekly windows.
+(Gemini, Claude/GPT), each shown with its own 5-hour and weekly windows;
+quotas are opt-in, and while no window is running its card shows the same
+activity view as OpenCode (`ActivityToolCard`).
 
 Layout, top to bottom: token activity (centered year calendar, readout shows
 today unless a day is hovered; the Weekly and Cumulative tabs likewise show
@@ -742,7 +744,7 @@ account exists):
   `Retry-After`:
   - public reads (`/api/u/…`, `/api/leaderboard`, `/api/profiles`): 300
     per client (the client address above), refill 5/s. A dashboard polls
-    7 of them every 15 s, so about ten tabs fit behind one address. A
+    9 of them every 15 s, so about eight tabs fit behind one address. A
     rate-limited refresh keeps the page as it was (the web client does
     not show it as "Could not reach the server");
   - signed-in routes (`/api/devices`, `/api/account`, `/api/users`,
