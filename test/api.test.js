@@ -1431,6 +1431,54 @@ describe("opencode ingestion", () => {
   });
 });
 
+describe("antigravity ingestion", () => {
+  let srv, key;
+  const post = (body) => req(srv.base, "POST", "/api/ingest/antigravity", { body, key });
+  const summary = async () => (await req(srv.base, "GET", "/api/u/admin/summary?tool=antigravity")).json.total;
+  const response = (over = {}) => ({
+    response_id: "r1", session_id: "conv1", model: "gemini-3-pro",
+    occurred_at: Math.floor(Date.now() / 1000) - 60, utc_offset_min: 120,
+    usage: { input_tokens: 100, output_tokens: 20, cache_read_tokens: 300 }, ...over,
+  });
+
+  before(async () => {
+    srv = await startServer();
+    key = (await newDevice(srv.base, "antigravity")).key;
+  });
+  after(() => srv.stop());
+
+  test("a flat event is stored once, keyed by session and response", async () => {
+    const r = await post({ tool: "antigravity", ...response() });
+    assert.equal(r.json.stored, true);
+    assert.equal(r.json.event_id, "antigravity:conv1:r1");
+    assert.equal((await post(response())).json.deduped, true);
+    const t = await summary();
+    assert.equal(t.tokens, 420);
+    assert.equal(t.events, 1);
+    const s = (await req(srv.base, "GET", "/api/u/admin/sessions?tool=antigravity")).json.sessions[0];
+    assert.equal(s.session_id, "antigravity:conv1");
+  });
+
+  test("a partial response is replaced by its final counts, counted once", async () => {
+    const before = await summary();
+    const m = response({ response_id: "r-partial", usage: { input_tokens: 10, output_tokens: 5 } });
+    assert.equal((await post({ messages: [m] })).json.stored, 1);
+    const r = await post({ messages: [{ ...m, usage: { input_tokens: 10, output_tokens: 90 } }] });
+    assert.equal(r.json.updated, 1);
+    const after = await summary();
+    assert.equal(after.tokens - before.tokens, 100);
+    assert.equal(after.events - before.events, 1);
+  });
+
+  test("quotas are recorded for a known pool only", async () => {
+    const limits = { five_hour: { used_percentage: 40, resets_at: soon() } };
+    await post({ messages: [], account_ref: "unknown-pool", rate_limits: limits });
+    await post({ messages: [], account_ref: "gemini", rate_limits: limits });
+    const q = (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas.filter((x) => x.tool === "antigravity");
+    assert.deepEqual(q.map((x) => [x.account_ref, x.limit_type, x.used_pct]), [["gemini", "five_hour", 40]]);
+  });
+});
+
 describe("rate limits", () => {
   const post = (base, key, body) => req(base, "POST", "/api/ingest/claude-code", { key, body });
   /**

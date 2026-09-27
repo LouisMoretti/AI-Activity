@@ -1,11 +1,13 @@
 // Maps measured API responses into the view model. Missing data stays
 // null ("—" / "Unavailable"); nothing is interpolated.
-import type {
-  ActivityResponse, Breakdown, QuotasResponse, Session, SessionsResponse, SummaryResponse,
+import { QUOTA_POOLS, QUOTA_WINDOW_SEC, type QuotaWindowType } from "../../../shared/quota-pools.ts";
+import {
+  TOOLS, type ActivityResponse, type Breakdown, type QuotasResponse, type Session,
+  type SessionsResponse, type SummaryResponse,
 } from "../../../shared/types.ts";
 import { denseSeries, streaks } from "./series.ts";
 import {
-  toolsFor, WINDOW_SPANS, type DashboardVM, type FigureVM, type Provider,
+  POOL_LABELS, toolsFor, WINDOW_LABELS, type DashboardVM, type FigureVM, type Provider,
   type ActivityToolVM, type QuotaToolVM, type SessionVM, type ToolKey,
 } from "./view-model.ts";
 
@@ -16,6 +18,8 @@ export interface LiveData {
   sessions: SessionsResponse;
   /** OpenCode's card: its summary (today) and its latest sessions. */
   opencode: { summary: SummaryResponse; latest: SessionsResponse };
+  /** Antigravity's card without quota windows: the same as OpenCode's. */
+  antigravity: { summary: SummaryResponse; latest: SessionsResponse };
 }
 
 export const ACTIVITY_DAYS = 364;
@@ -29,28 +33,44 @@ function figure(b: Breakdown, metric: "tokens" | "sessions"): FigureVM {
   };
 }
 
+const WINDOW_TYPES = Object.keys(WINDOW_LABELS) as QuotaWindowType[];
+
+// One pool per quota account_ref of the tool (shared/quota-pools.ts), or a
+// single unlabeled pool matching any ref. Rows of other refs or limit types
+// are not shown, so they never move the update time either.
 function toolQuotas(q: QuotasResponse, tool: QuotaToolVM["tool"]): QuotaToolVM {
-  const find = (type: keyof typeof WINDOW_SPANS) =>
-    q.quotas.find((x) => x.tool === tool && x.limit_type === type);
-  const five = find("five_hour");
-  const week = find("seven_day");
-  const updated = Math.max(five?.measured_at ?? 0, week?.measured_at ?? 0);
+  const refs: readonly (keyof typeof POOL_LABELS | null)[] =
+    tool in QUOTA_POOLS ? QUOTA_POOLS[tool as keyof typeof QUOTA_POOLS] : [null];
+  const rows = q.quotas.filter((x) => x.tool === tool);
+  const pools = refs.map((ref) => ({
+    label: ref === null ? null : POOL_LABELS[ref],
+    rows: WINDOW_TYPES.map((type) =>
+      [type, rows.find((x) => x.limit_type === type && (ref === null || x.account_ref === ref))] as const),
+  }));
+  const shown = pools.flatMap((p) => p.rows.flatMap(([, row]) => (row ? [row.measured_at] : [])));
   return {
     tool,
-    updatedAt: updated || null,
-    windows: [
-      { label: "5-hour window", pct: five?.used_pct ?? null, resetsAt: five?.resets_at ?? null, spanSec: WINDOW_SPANS.five_hour },
-      { label: "This week", pct: week?.used_pct ?? null, resetsAt: week?.resets_at ?? null, spanSec: WINDOW_SPANS.seven_day },
-    ],
+    updatedAt: shown.length ? Math.max(...shown) : null,
+    pools: pools.map((p) => ({
+      label: p.label,
+      windows: p.rows.map(([type, row]) => ({
+        label: WINDOW_LABELS[type], pct: row?.used_pct ?? null,
+        resetsAt: row?.resets_at ?? null, spanSec: QUOTA_WINDOW_SEC[type],
+      })),
+    })),
   };
 }
 
 const asTool = (t: string): ToolKey =>
-  t === "codex" || t === "opencode" ? t : "claude-code";
+  (TOOLS as readonly string[]).includes(t) ? (t as ToolKey) : "claude-code";
+
+// Antigravity ids are stored "antigravity:<id>" (never colliding with other
+// tools'); the list shows the id itself. The tool keeps rows apart.
+const displayId = (id: string) => id.replace(/^antigravity:/, "");
 
 const toSession = (s: Session): SessionVM => ({
   tool: asTool(s.tool),
-  id: s.session_id,
+  id: displayId(s.session_id),
   model: s.model,
   calls: s.events,
   tokens: s.tokens,
@@ -89,6 +109,8 @@ export function liveDashboard(d: LiveData, provider: Provider): DashboardVM {
     claude: toolQuotas(d.quotas, "claude-code"),
     codex: toolQuotas(d.quotas, "codex"),
     opencode: activityTool(d.opencode, true),
+    antigravity: toolQuotas(d.quotas, "antigravity"),
+    antigravityActivity: activityTool(d.antigravity, false),
     sessions,
     sessionsTotal: d.sessions.total,
   };

@@ -2,7 +2,9 @@
 // Every numeric field is a measured value; missing data is null/absent,
 // never interpolated.
 
-export type Tool = "claude-code" | "codex" | "opencode";
+/** Every ingestable tool, in display order. */
+export const TOOLS = ["claude-code", "codex", "antigravity", "opencode"] as const;
+export type Tool = (typeof TOOLS)[number];
 
 export interface StatsResponse {
   range_days: number;
