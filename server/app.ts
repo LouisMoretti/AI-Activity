@@ -6,7 +6,7 @@ import { HTTPException } from "hono/http-exception";
 import type { Config } from "./config.ts";
 import type { DB } from "./db/schema.ts";
 import { clientInfo } from "./lib/client.ts";
-import { buildInstaller } from "./lib/installer.ts";
+import { buildInstallers } from "./lib/installer.ts";
 import { jsonOnly, limitBody, readCache } from "./lib/http.ts";
 import { LIMITS, rateLimit, tokenBuckets } from "./lib/rate-limit.ts";
 import { createViewerAuth } from "./lib/viewer-auth.ts";
@@ -66,14 +66,18 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
   };
 
   // Built once: the collectors only change with a new server version.
-  const installer = buildInstaller();
+  const installers = buildInstallers();
 
   const app = new Hono()
     .route("/api", api)
     .all("/api/*", (c) => c.json({ error: "not found" }, 404))
     .get("/install.sh", (c) => {
       c.header("cache-control", "no-store");
-      return c.body(installer, 200, { "content-type": "text/plain; charset=utf-8" });
+      return c.body(installers.sh, 200, { "content-type": "text/plain; charset=utf-8" });
+    })
+    .get("/install.ps1", (c) => {
+      c.header("cache-control", "no-store");
+      return c.body(installers.ps1, 200, { "content-type": "text/plain; charset=utf-8" });
     })
     .use("*", serveStatic({ root: config.staticDir }))
     // SPA fallback for unknown non-API paths.

@@ -14,7 +14,15 @@ export async function copyPending(text: Promise<string>): Promise<void> {
   }
 }
 
-/** The one-command install of a device (README.md): the key is in the command, never in a URL. */
-export function installCommand(key: string, origin = location.origin): string {
-  return `curl -fsSL ${origin}/install.sh | AI_ACTIVITY_URL=${origin} AI_ACTIVITY_KEY=${key} sh`;
+export type Platform = "unix" | "windows";
+
+/**
+ * The one-command install of a device (README.md): the key is in the
+ * command, never in a URL. Linux/macOS pipe /install.sh to sh; Windows
+ * runs /install.ps1 in PowerShell.
+ */
+export function installCommand(key: string, platform: Platform, origin = location.origin): string {
+  return platform === "windows"
+    ? `$env:AI_ACTIVITY_URL="${origin}"; $env:AI_ACTIVITY_KEY="${key}"; irm ${origin}/install.ps1 | iex`
+    : `curl -fsSL ${origin}/install.sh | AI_ACTIVITY_URL=${origin} AI_ACTIVITY_KEY=${key} sh`;
 }

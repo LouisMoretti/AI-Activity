@@ -3,31 +3,49 @@
 ## One-command install
 
 Create a device key (**Settings → Devices**, or `npm run gen-key -- "my-laptop"`),
-then on that machine, as the user who runs the tools (no `sudo`):
+then on that machine, as the user who runs the tools (no `sudo`, no
+administrator shell):
 
 ```sh
+# Linux, macOS
 curl -fsSL <server>/install.sh | AI_ACTIVITY_URL=<server> AI_ACTIVITY_KEY=<device key> sh
 ```
 
-**Copy install command** in Settings → Devices (or "Add a tool" on your
-profile) copies it with the key filled in. The key is passed in the
-environment, never in a URL. The script needs `python3` and installs the
-collectors of the tools it finds (`claude` / `codex` / `opencode` on the
-`PATH`, or their config folders), as the sections below describe:
+```powershell
+# Windows (PowerShell)
+$env:AI_ACTIVITY_URL="<server>"; $env:AI_ACTIVITY_KEY="<device key>"; irm <server>/install.ps1 | iex
+```
 
-- Claude Code: the `statusLine` in `~/.claude/settings.json`. Another
-  status line already set is left alone (`AI_ACTIVITY_FORCE=1` replaces it:
-  Claude Code runs only one).
-- Codex: `~/.codex/ai-activity-codex.py` and its two hooks in
+**Copy install (Linux/macOS)** and **Copy install (Windows)** in Settings →
+Devices copy them with the key filled in (your profile links there, under
+the tools). The key is passed in the environment, never in a URL, and ends
+up only in the installed collectors (files readable by you alone on
+Linux/macOS). Both scripts need Python 3 (`python3`; on Windows `python`
+or the `py` launcher) and install the collectors of the tools they find
+(`claude` / `codex` / `agy` / `opencode` on the `PATH`, or their config
+folders), as the sections below describe:
+
+- Claude Code: `~/.claude/ai-activity-claude-code.py` and the `statusLine`
+  in `~/.claude/settings.json`. Another status line already set is left
+  alone (`AI_ACTIVITY_FORCE=1` replaces it: Claude Code runs only one).
+- Codex: `~/.codex/ai-activity-codex.py` and its three hooks in
   `~/.codex/hooks.json`, next to your other hooks. Review them once with
   `/hooks`.
+- Antigravity: `~/.gemini/ai-activity-antigravity.py` and the named
+  `ai-activity` hook in `~/.gemini/config/hooks.json`. Restart it and check
+  the hook is enabled. Quotas stay off (`AI_ACTIVITY_ANTIGRAVITY_QUOTAS`).
 - OpenCode: the collector and plugin in `~/.config/opencode`. Restart it.
 
+On Linux/macOS the commands are the ones below (`python3 ~/…`; on macOS,
+which has no `setsid`, Codex runs the script with `--hook`). On Windows they
+name the absolute path of the Python that ran the installer, so the tools
+find it whatever their `PATH` (OpenCode's plugin still runs `python`).
+
 Other entries of those files are kept. `AI_ACTIVITY_TOOLS=claude-code,codex`
-picks the tools instead. Running it again only updates what changed (a new
-key or server URL), never duplicates a hook. It checks that the server
-takes the key first, and refuses to run as root unless
-`AI_ACTIVITY_ALLOW_ROOT=1`.
+(`$env:AI_ACTIVITY_TOOLS=…` on Windows) picks the tools instead. Running it
+again only updates what changed (a new key or server URL, a newer
+collector), never duplicates a hook. It checks that the server takes the
+key first, and refuses to run as root unless `AI_ACTIVITY_ALLOW_ROOT=1`.
 
 ## Send Claude Code usage from a device
 

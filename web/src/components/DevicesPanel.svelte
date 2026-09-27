@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import type { Device } from "../../../shared/types.ts";
   import { api } from "../lib/api.ts";
-  import { copyPending, installCommand } from "../lib/clipboard.ts";
+  import { copyPending, installCommand, type Platform } from "../lib/clipboard.ts";
 
   let devices = $state<Device[] | null>(null);
   let name = $state("");
@@ -12,7 +12,7 @@
   let created = $state<{ name: string; key: string } | null>(null);
   let copied = $state(false);
   // Row and button just copied, for the "Copied" feedback.
-  let copiedId = $state.raw<{ id: number; what: "key" | "install" } | null>(null);
+  let copiedId = $state.raw<{ id: number; what: "key" | Platform } | null>(null);
 
   const fmtDate = (sec: number) =>
     new Date(sec * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
@@ -66,11 +66,11 @@
   }
 
   // The key is fetched on click, one at a time: copied alone, or inside
-  // the device's install command.
-  async function copyKey(d: Device, what: "key" | "install") {
+  // the device's install command for its platform.
+  async function copyKey(d: Device, what: "key" | Platform) {
     error = "";
     const key = api.deviceKey(d.id).then((r) => r.key);
-    const text = what === "key" ? key : key.then((k) => installCommand(k));
+    const text = what === "key" ? key : key.then((k) => installCommand(k, what));
     try {
       await copyPending(text);
       const mark = { id: d.id, what };
@@ -100,8 +100,10 @@
         <button type="button" onclick={copy}>{copied ? "Copied" : "Copy"}</button>
         <button type="button" onclick={() => (created = null)}>Done</button>
       </div>
-      <p>Or run this on that machine to install the collectors of the tools it has:</p>
-      <div class="row"><code class="mono">{installCommand(created.key)}</code></div>
+      <p>Or run this on that machine to install the collectors of the tools it has. Linux or macOS:</p>
+      <div class="row"><code class="mono">{installCommand(created.key, "unix")}</code></div>
+      <p>Windows (PowerShell):</p>
+      <div class="row"><code class="mono">{installCommand(created.key, "windows")}</code></div>
     </div>
   {/if}
 
@@ -120,7 +122,8 @@
           {:else}
             <div class="actions">
               {#if d.has_key}
-                <button type="button" onclick={() => copyKey(d, "install")}>{copiedId?.id === d.id && copiedId.what === "install" ? "Copied" : "Copy install command"}</button>
+                <button type="button" onclick={() => copyKey(d, "unix")}>{copiedId?.id === d.id && copiedId.what === "unix" ? "Copied" : "Copy install (Linux/macOS)"}</button>
+                <button type="button" onclick={() => copyKey(d, "windows")}>{copiedId?.id === d.id && copiedId.what === "windows" ? "Copied" : "Copy install (Windows)"}</button>
                 <button type="button" onclick={() => copyKey(d, "key")}>{copiedId?.id === d.id && copiedId.what === "key" ? "Copied" : "Copy key"}</button>
               {/if}
               <button type="button" class="danger" onclick={() => revoke(d)}>Revoke</button>
