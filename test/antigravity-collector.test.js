@@ -32,7 +32,7 @@ function generation(id, { output = 20, model = "gemini-test", when = WHEN, step 
 }
 const run = (env, args = [], input = "", command = null, script = SCRIPT) => new Promise((resolve, reject) => {
   const p = spawn(command || process.env.PYTHON || (process.platform === "win32" ? "python" : "python3"), command ? [] : [script, ...args],
-    { env: { ...process.env, ...env }, shell: !!command, stdio: ["pipe", "pipe", "pipe"] });
+    { env: { ...process.env, AI_ACTIVITY_ANTIGRAVITY_QUOTAS: "0", ...env }, shell: !!command, stdio: ["pipe", "pipe", "pipe"] });
   let out = "", err = "";
   p.stdout.on("data", (b) => out += b); p.stderr.on("data", (b) => err += b);
   p.on("error", reject); p.on("close", (code) => resolve({ code, out, err })); p.stdin.end(input);
@@ -245,6 +245,120 @@ describe("Antigravity collector", () => {
       release(); await first;
       await new Promise(resolve => proxy.close(resolve));
     }
+  });
+});
+
+// Exercise real scan/upload/checkpoint logic with smaller resource budgets.
+describe("Antigravity quota reports", () => {
+  let srv, home, env, key;
+  const calls = () => JSON.parse(fs.readFileSync(path.join(home, "calls.json"), "utf8"));
+  const statePath = () => path.join(home, ".cache", "ai-activity", "antigravity.json");
+  const clearThrottle = () => {
+    if (!fs.existsSync(statePath())) return;
+    const state = JSON.parse(fs.readFileSync(statePath(), "utf8"));
+    delete state.quota_at; fs.writeFileSync(statePath(), JSON.stringify(state));
+  };
+  const sample = () => {
+    const now = Math.floor(Date.now() / 1000);
+    return { status: "SUCCESS", command: { name: "usage", data: { email: "PRIVATE_EMAIL", groups: [
+      { display_name: "Gemini Models", buckets: [
+        { bucket_id: "gemini-5h", remaining: { remaining_fraction: 0.75 }, reset_time: new Date((now + 3600) * 1000).toISOString() },
+        { bucket_id: "gemini-weekly", remaining: { case: "remainingFraction", value: 0.5 }, reset_time: new Date((now + 86400) * 1000).toISOString() },
+      ] },
+      { displayName: "Claude and GPT models", buckets: [
+        { bucketId: "3p-5h", remainingFraction: 1, resetTime: new Date((now + 7200) * 1000).toISOString() },
+        { bucketId: "3p-weekly", remaining: { remainingFraction: 0.3 }, resetTime: new Date((now + 172800) * 1000).toISOString() },
+      ] },
+    ] } }, credential: "PRIVATE_CREDENTIAL" };
+  };
+  const collect = (report, { version = "1.1.11", timeout = false, key: uploadKey = key } = {}) => {
+    const script = path.join(home, "quota-test.py");
+    fs.writeFileSync(script, `import importlib.util, json, os, pathlib, subprocess, types\n` +
+      `spec = importlib.util.spec_from_file_location('collector', ${JSON.stringify(SCRIPT)})\nm = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(m)\n` +
+      `calls = []\nreport = json.loads(${JSON.stringify(JSON.stringify(report))})\nm.shutil.which = lambda name: '/fake/agy'\n` +
+      `def command(args, **options):\n` +
+      ` assert options['env']['AI_ACTIVITY_ANTIGRAVITY_QUOTA_PROBE'] == '1'\n` +
+      ` assert 'AI_ACTIVITY_KEY' not in options['env'] and 'AI_ACTIVITY_URL' not in options['env']\n` +
+      ` assert list(pathlib.Path(options['cwd']).iterdir()) == []\n` +
+      ` assert options['stdin'] == subprocess.DEVNULL and options['stderr'] == subprocess.DEVNULL\n` +
+      ` calls.append(args[1:])\n pathlib.Path(${JSON.stringify(path.join(home, "calls.json"))}).write_text(json.dumps(calls))\n` +
+      ` if args[1:] == ['--version']:\n  options['stdout'].write(${JSON.stringify(version)}.encode())\n` +
+      ` else:\n  assert args[1:] == ['-p', '/usage', '--output-format', 'json', '--print-timeout', '90s']\n` +
+      (timeout ? `  raise subprocess.TimeoutExpired(args, options['timeout'])\n` : `  options['stdout'].write(json.dumps(report).encode())\n`) +
+      ` return types.SimpleNamespace(returncode=0)\nm.subprocess.run = command\ntry:\n m.collect()\nexcept Exception:\n raise SystemExit(1)\n`);
+    return run({ ...env, AI_ACTIVITY_KEY: uploadKey, AI_ACTIVITY_ANTIGRAVITY_QUOTAS: "1" }, [], "", null, script);
+  };
+  const quotas = async () => (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas;
+  before(async () => {
+    srv = await startServer(); key = (await newDevice(srv.base)).key;
+    home = fs.mkdtempSync(path.join(os.tmpdir(), "ai-activity-antigravity-quotas-"));
+    env = { HOME: home, USERPROFILE: home, GEMINI_CLI_HOME: path.join(home, ".gemini"), AI_ACTIVITY_URL: srv.base };
+  });
+  after(() => { srv.stop(); fs.rmSync(home, { recursive: true, force: true }); });
+
+  test("CLI report uploads both pools without usage or private fields, then throttles successful probes", async () => {
+    assert.equal((await collect(sample())).code, 0);
+    assert.deepEqual(calls(), [["--version"], ["-p", "/usage", "--output-format", "json", "--print-timeout", "90s"]]);
+    const rows = await quotas();
+    assert.deepEqual(rows.map(q => [q.account_ref, q.limit_type, q.used_pct]),
+      [["claude-gpt", "five_hour", 0], ["claude-gpt", "seven_day", 70], ["gemini", "five_hour", 25], ["gemini", "seven_day", 50]]);
+    assert.equal((await req(srv.base, "GET", "/api/u/admin/summary?tool=antigravity")).json.total.events, 0);
+    assert.ok(rows.every(q => q.resets_at > q.measured_at));
+    const saved = fs.readFileSync(statePath(), "utf8");
+    for (const secret of [key, "PRIVATE_EMAIL", "PRIVATE_CREDENTIAL"]) {
+      assert.ok(!saved.includes(secret)); assert.ok(!JSON.stringify(rows).includes(secret));
+    }
+    fs.unlinkSync(path.join(home, "calls.json"));
+    assert.equal((await collect(sample())).code, 0);
+    assert.ok(!fs.existsSync(path.join(home, "calls.json")), "no probe within the successful one-minute interval");
+  });
+
+  test("old/unknown versions cannot invoke /usage; failed probes and uploads remain retryable", async () => {
+    clearThrottle();
+    for (const version of ["1.1.10", "unknown", "1.2.0-beta"]) {
+      const r = await collect(sample(), { version }); assert.equal(r.code, 0); assert.match(r.err, /quota report unavailable/);
+      assert.deepEqual(calls(), [["--version"]]);
+    }
+    assert.equal((await collect(sample(), { timeout: true })).code, 0);
+    assert.equal((await collect(sample(), { key: "invalid-device-key" })).code, 1);
+    assert.ok(!JSON.parse(fs.readFileSync(statePath(), "utf8")).quota_at);
+    assert.equal((await collect(sample())).code, 0);
+    assert.ok(JSON.parse(fs.readFileSync(statePath(), "utf8")).quota_at);
+  });
+
+  test("unknown, disabled, duplicate, invalid and expired buckets cannot produce quota measurements", async () => {
+    clearThrottle();
+    const invalid = sample();
+    invalid.command.data.groups = [{ buckets: [
+      { bucketId: "unknown-weekly", remainingFraction: 0.1 },
+      { bucketId: "gemini-5h", remainingFraction: 0.5, disabled: true },
+      { bucketId: "gemini-weekly", remainingFraction: 0.9 },
+      { bucketId: "gemini-weekly", remainingFraction: 0.1 },
+      { bucketId: "3p-5h", remainingFraction: 0.5, resetTime: "2020-01-01T00:00:00Z" },
+      { bucketId: "3p-weekly", remainingFraction: 1.1 },
+    ] }];
+    const before = await quotas();
+    assert.match((await collect(invalid)).err, /quota report unavailable/);
+    assert.deepEqual(await quotas(), before);
+    invalid.status = "FAILED";
+    assert.match((await collect(invalid)).err, /quota report unavailable/);
+    assert.deepEqual(await quotas(), before);
+    // The real API also rejects percentages outside the measured range and
+    // implausible resets even if a client bypasses the Python parser.
+    await req(srv.base, "POST", "/api/ingest/antigravity", { key, body: { messages: [], account_ref: "invalid", rate_limits: {
+      five_hour: { used_percentage: 101 }, seven_day: { used_percentage: -1 }, custom: { used_percentage: 10 },
+    } } });
+    assert.deepEqual(await quotas(), before);
+  });
+
+  test("quota subprocess hooks return normally without spawning recursive collectors", async () => {
+    const prior = fs.readFileSync(statePath(), "utf8");
+    for (const arg of ["--hook", "--post-invocation"]) {
+      const r = await run({ ...env, AI_ACTIVITY_KEY: key, AI_ACTIVITY_ANTIGRAVITY_QUOTA_PROBE: "1" }, [arg], "{}");
+      assert.equal(r.code, 0); assert.deepEqual(JSON.parse(r.out), arg === "--hook" ? { decision: "stop" } : {});
+    }
+    await new Promise(resolve => setTimeout(resolve, 2300));
+    assert.equal(fs.readFileSync(statePath(), "utf8"), prior);
   });
 });
 
