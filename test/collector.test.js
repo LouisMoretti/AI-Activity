@@ -184,24 +184,36 @@ describe("collector one-liner from README.md", () => {
   });
 
   test("a redirect cannot forward the device bearer key", async () => {
+    const before = await stats();
+    const saved = offsets();
+    fs.appendFileSync(transcript, entry("msg_redirect", 9) + "\n");
     let received = 0;
     const destination = http.createServer((request, response) => {
       if (request.url === "/api/ingest/claude-code" && request.headers.authorization === `Bearer ${key}`) received++;
       response.end("{}");
     });
     await new Promise((resolve) => destination.listen(0, "127.0.0.1", resolve));
+    let redirectStatus = 302;
     const source = http.createServer((request, response) => {
-      response.writeHead(302, { Location: `http://127.0.0.1:${destination.address().port}/api/ingest/claude-code` });
+      response.writeHead(redirectStatus, { Location: `http://127.0.0.1:${destination.address().port}/api/ingest/claude-code` });
       response.end();
     });
     await new Promise((resolve) => source.listen(0, "127.0.0.1", resolve));
     try {
-      await run(cmd(`http://127.0.0.1:${source.address().port}`), { env });
-      await collectorsDone(key);
-      assert.equal(received, 0);
+      for (redirectStatus of [301, 302, 303, 307, 308]) {
+        await run(cmd(`http://127.0.0.1:${source.address().port}`), { env });
+        await collectorsDone(key);
+        assert.equal(received, 0, `${redirectStatus} must not forward the key`);
+        assert.deepEqual(offsets(), saved, `${redirectStatus} must not advance offsets`);
+      }
     } finally {
       await new Promise((resolve) => source.close(resolve));
       await new Promise((resolve) => destination.close(resolve));
     }
+    await run(cmd(srv.base), { env });
+    assert.ok(await waitFor(async () => (await stats()).events === before.events + 1), "the rejected message is retried");
+    await collectorsDone(key);
+    assert.equal(offsets()[transcript], fs.statSync(transcript).size);
+    assert.equal((await stats()).total_tokens - before.total_tokens, PER_MESSAGE + 9);
   });
 });

@@ -200,17 +200,20 @@ describe("Codex collector (Stop hook from README.md)", () => {
       response.end("{}");
     });
     await new Promise((resolve) => destination.listen(0, "127.0.0.1", resolve));
+    let redirectStatus = 302;
     const source = http.createServer((request, response) => {
-      response.writeHead(302, { Location: `http://127.0.0.1:${destination.address().port}/api/ingest/codex` });
+      response.writeHead(redirectStatus, { Location: `http://127.0.0.1:${destination.address().port}/api/ingest/codex` });
       response.end();
     });
     await new Promise((resolve) => source.listen(0, "127.0.0.1", resolve));
     try {
       install(`http://127.0.0.1:${source.address().port}`);
-      await run(hookCommand, env);
-      await collectorsDone();
-      assert.equal(received, 0);
-      assert.deepEqual(state(), saved, "a rejected upload does not advance offsets");
+      for (redirectStatus of [301, 302, 303, 307, 308]) {
+        await run(hookCommand, env);
+        await collectorsDone();
+        assert.equal(received, 0, `${redirectStatus} must not forward the key`);
+        assert.deepEqual(state(), saved, `${redirectStatus} must not advance offsets`);
+      }
     } finally {
       install(srv.base);
       await new Promise((resolve) => source.close(resolve));
