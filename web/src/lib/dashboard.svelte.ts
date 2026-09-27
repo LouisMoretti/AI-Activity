@@ -64,6 +64,9 @@ function routeFromPath(): Route {
 
 export const profilePath = (username: string) => `/u/${encodeURIComponent(username)}`;
 
+/** The complete in-app address to return to after signing in. */
+const currentPath = () => location.pathname + location.search;
+
 /** Where to go after signing in: a same-site path from ?next=, if any. */
 function nextPath(): string | null {
   const next = new URLSearchParams(location.search).get("next");
@@ -120,7 +123,7 @@ export class Dashboard {
         // Public, like profile pages: the page loads its own data.
         else if (route.page === "leaderboard") this.status = "ready";
         else if (route.page === "settings" || route.page === "admin") {
-          this.go(`/?next=${encodeURIComponent(`/${route.page}`)}`, true);
+          this.go(`/?next=${encodeURIComponent(currentPath())}`, true);
         }
         else this.status = auth.setup_required ? "setup" : "signed-out";
         return;
@@ -211,7 +214,9 @@ export class Dashboard {
     } catch (e) {
       return e instanceof UnauthorizedError ? "Wrong username or password." : (e as Error).message;
     }
-    this.go(nextPath() ?? "/", true);
+    // Keep the current query while the authenticated home route resolves to
+    // the viewer's profile (notably /?demo=1 -> /u/<name>?demo=1).
+    this.go(nextPath() ?? currentPath(), true);
     return null;
   }
 
@@ -238,7 +243,7 @@ export class Dashboard {
   private sessionLost(): void {
     if (!this.account) return;
     this.signedOut();
-    this.go(`/?next=${encodeURIComponent(location.pathname)}`, true);
+    this.go(`/?next=${encodeURIComponent(currentPath())}`, true);
   }
 
   /** Drop everything the previous account could see. */

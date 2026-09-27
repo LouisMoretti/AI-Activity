@@ -30,7 +30,7 @@
       <AccountMenu {account} {onnavigate} {onlogout} />
     {:else if signIn}
       <button type="button" class="signin"
-        onclick={() => onnavigate(`/?next=${encodeURIComponent(location.pathname)}`)}>Sign in</button>
+        onclick={() => onnavigate(`/?next=${encodeURIComponent(location.pathname + location.search)}`)}>Sign in</button>
     {/if}
   </div>
 </header>
