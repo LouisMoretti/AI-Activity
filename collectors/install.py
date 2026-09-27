@@ -167,6 +167,10 @@ def install_codex(url, key):
     if WINDOWS or not shutil.which("setsid"):
         # --hook answers Codex and detaches the upload itself (macOS has no setsid).
         run = command(script, "~/.codex/ai-activity-codex.py", "--hook")
+        if WINDOWS:
+            # Codex runs Windows hooks through PowerShell; quoted executables
+            # need its call operator. Other tools use different shells.
+            run = "& " + run
     else:
         run = f"setsid -f {command(script, '~/.codex/ai-activity-codex.py')} >/dev/null 2>&1 </dev/null; echo '{{}}'"
     ours = {"hooks": [{"type": "command", "command": run, "timeout": 10}]}

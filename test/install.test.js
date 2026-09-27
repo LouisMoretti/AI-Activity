@@ -5,10 +5,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
+import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { startServer, newDevice, req, asNewClient, running, tempHome } from "./helpers.js";
+import { startServer, newDevice, req, asNewClient, running, tempHome, PYTHON } from "./helpers.js";
 
 const WINDOWS = process.platform === "win32";
 const README = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8").replaceAll("\r\n", "\n");
@@ -20,6 +21,52 @@ const CODEX_HOOKS = JSON.parse(jsonBlocks(between("## Send Codex usage", "## Sen
 const ANTIGRAVITY_HOOK = JSON.parse(jsonBlocks(between("## Send Antigravity usage", "## Send OpenCode"))[0])["ai-activity"];
 const source = (f) => fs.readFileSync(new URL(`../collectors/${f}`, import.meta.url), "utf8");
 const PLUGIN = source("opencode-plugin.js");
+
+test("installer generates and upgrades all Windows Codex hooks with quoted paths", async () => {
+  const home = tempHome("ai-activity install-");
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const program = `
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("installer", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+m.WINDOWS = True
+m.sys.executable = r"C:\\Program Files\\Python312\\python.exe"
+m.CODEX_HOME = os.path.join(sys.argv[2], ".codex")
+m.CONFIGS["codex"] = os.path.join(m.CODEX_HOME, "hooks.json")
+m.FILES["codex.py"] = 'SERVER = "<server>"; KEY = "<device key>"'
+script = os.path.join(m.CODEX_HOME, "ai-activity-codex.py")
+old = m.command(script, "~/.codex/ai-activity-codex.py", "--hook")
+other = {"hooks": [{"type": "command", "command": "echo preserved"}]}
+events = ("Stop", "UserPromptSubmit", "PostToolUse")
+m.write(m.CONFIGS["codex"], m.dump({"hooks": {event: [other, {"hooks": [{"type": "command", "command": old}]}] for event in events}}))
+m.install_codex("https://example.com", "test-key")
+first = open(m.CONFIGS["codex"], encoding="utf-8").read()
+config = json.loads(first)
+for event in events:
+    entries = config["hooks"][event]
+    assert len(entries) == 2 and entries[0] == other
+    assert entries[1]["hooks"][0]["command"] == r'& "C:\\Program Files\\Python312\\python.exe" "' + script + '" --hook'
+m.install_codex("https://example.com", "test-key")
+assert open(m.CONFIGS["codex"], encoding="utf-8").read() == first
+# Claude Code / other shells keep their original invocation.
+assert not m.command(script, "~/.codex/ai-activity-codex.py", "--hook").startswith("& ")
+`;
+      const child = spawn(PYTHON, ["-c", program,
+        fileURLToPath(new URL("../collectors/install.py", import.meta.url)), home],
+        { stdio: ["ignore", "pipe", "pipe"] });
+      let output = "";
+      child.stdout.on("data", (data) => { output += data; });
+      child.stderr.on("data", (data) => { output += data; });
+      child.on("error", reject);
+      child.on("close", (code) => resolve({ code, output }));
+    });
+    assert.equal(result.code, 0, result.output);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function waitFor(fn, ms = 20000) {
@@ -127,7 +174,7 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
     for (const event of ["Stop", "UserPromptSubmit", "PostToolUse"]) {
       const ours = hooks[event].filter((h) => JSON.stringify(h).includes("ai-activity-codex.py"));
       assert.equal(ours.length, 1);
-      if (WINDOWS) assert.match(ours[0].hooks[0].command, windowsCommand(file(".codex", "ai-activity-codex.py"), "--hook"));
+      if (WINDOWS) assert.match(ours[0].hooks[0].command, new RegExp("^& " + windowsCommand(file(".codex", "ai-activity-codex.py"), "--hook").source.slice(1)));
       else if (fs.existsSync(path.join(env.PATH, "setsid"))) assert.deepEqual(ours[0], CODEX_HOOKS[event][0]);
       else assert.equal(ours[0].hooks[0].command, "python3 ~/.codex/ai-activity-codex.py --hook");
     }

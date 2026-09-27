@@ -215,6 +215,8 @@ Codex asks you to review a new hook once (`/hooks`) before running it.
 Repeated `hook exited with code 1` errors can mean PowerShell rejected a
 quoted executable path before Python ran. Check the call operator and JSON
 escaping above; a successful `--hook` invocation returns exit code 0 and `{}`.
+Re-run the one-command installer to update all three AI Activity Codex hooks;
+it preserves your other hooks.
 
 If hooks succeed but console windows still flash, Codex CLI's shared
 background server can be responsible. The following workaround stopped the
