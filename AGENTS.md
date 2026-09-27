@@ -619,8 +619,11 @@ Same batch shape (`messages`, `rate_limits`, `context`, `occurred_at`,
 `collectors/antigravity.py` scans recognized local SQLite `gen_metadata`
 usage blobs; only metadata tables are read. The collector uses a shared
 PostInvocation and Stop hooks (`~/.gemini/config/hooks.json`) or can run
-periodically by hand. Detached workers wait for the lock, with a 15-minute
-timeout, rather than dropping overlapping final-turn runs.
+periodically by hand. One detached hook worker collects and at most one waits
+for the lock (20-minute timeout, allowing a 15-minute pass plus its final
+scan/upload and quota probe). Further hooks coalesce into that waiting pass.
+Its two-second flush delay starts after acquiring the collection lock; hooks
+during collection can queue a fresh pass, preserving overlapping final turns.
 Each entry carries `response_id`, `session_id`, `model`, `occurred_at`,
 `utc_offset_min`, and disjoint `usage.input_tokens`, `output_tokens`
 (including thinking), `cache_read_tokens`. Cache writes and context
@@ -636,8 +639,10 @@ store accepted metadata hashes/count ranks, scoped to server/device key,
 and never contain credentials. Rotating source cursors (hashed paths) and
 generation page positions allow bounded passes to resume after successful
 uploads. Completed generation scans restart to discover edits to old rows.
-Timestamp matching streams full metadata scans and cannot resolve a date
-from a truncated ambiguity check. See README.md for setup, evidence and limits.
+Timestamp matching has its own scan deadline, streams full metadata scans,
+and cannot resolve a date from a truncated ambiguity check. An interrupted
+match never advances the generation page; native timestamps can still upload.
+See README.md for setup, evidence and limits.
 Measured quotas use the signed-in `agy` CLI's JSON `/usage` report, gated
 on a plain version >= 1.1.11 to avoid older versions interpreting it as a
 model prompt. Quota-only batches carry `messages: []`, `occurred_at`,
@@ -647,8 +652,10 @@ and `rate_limits.five_hour` / `seven_day` with `used_percentage` and
 timestamps are used. Disabled, duplicate/ambiguous and unknown buckets stay
 unavailable. The subprocess runs in an empty directory without Activity
 credentials; its inherited probe marker prevents collector-hook recursion.
-Successful uploads throttle probes for 60 seconds via `quota_at`. Failed
-probes do not block usage; failed uploads remain retryable errors. The
+Successful uploads throttle probes for 60 seconds. `quota_tried_at` is saved
+before probing; failed probes/uploads back off for five minutes, including
+after interruption. Tokens are collected before probes; failed uploads remain
+retryable errors. The
 Antigravity card uses QuotaWindow for both pools, never sums percentages,
 and expires old snapshots at reset like Codex and Claude Code.
 `test/antigravity-collector.test.js` uses synthetic wire fixtures against
