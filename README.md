@@ -41,11 +41,16 @@ which has no `setsid`, Codex runs the script with `--hook`). On Windows they
 name the absolute path of the Python that ran the installer, so the tools
 find it whatever their `PATH` (OpenCode's plugin still runs `python`).
 
-Other entries of those files are kept. `AI_ACTIVITY_TOOLS=claude-code,codex`
+Other entries of those files are kept, and a file that is a symlink (a
+dotfiles repo) stays one: its target is updated. If one of them is not
+valid JSON, nothing is installed until it is fixed.
+`AI_ACTIVITY_TOOLS=claude-code,codex`
 (`$env:AI_ACTIVITY_TOOLS=…` on Windows) picks the tools instead. Running it
 again only updates what changed (a new key or server URL, a newer
 collector), never duplicates a hook. It checks that the server takes the
-key first, and refuses to run as root unless `AI_ACTIVITY_ALLOW_ROOT=1`.
+key first, refuses a `<server>` that redirects (use the address it
+redirects to, e.g. `https://`: the collectors do not follow redirects), and
+refuses to run as root unless `AI_ACTIVITY_ALLOW_ROOT=1`.
 
 ## Send Claude Code usage from a device
 

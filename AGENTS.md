@@ -94,7 +94,8 @@ Web client (Svelte 5 + Vite, in `web/`):
 ```bash
 npm run dev                 # API server on :3000 (watch mode; restart
                             # it after editing .env)
-npm run dev:web             # UI with HMR on :5173, proxies /api → :3000
+npm run dev:web             # UI with HMR on :5173, proxies /api and
+                            # /install.{sh,ps1} → :3000
 npm run build               # → web/dist (the default STATIC_DIR)
 ```
 
@@ -424,7 +425,9 @@ Components never branch on live vs demo: both sources map into the same
   commands (on Windows, the installing interpreter's absolute path), merges
   into `settings.json` / `hooks.json` without touching other entries or
   another statusLine (unless `AI_ACTIVITY_FORCE=1`), writes only what
-  changed, checks the key first (no redirects) and refuses root unless
+  changed (through symlinks, to their target), reads every config before
+  writing anything (an invalid one changes nothing), checks the key first
+  (a redirect is fatal: the collectors' POSTs never follow one) and refuses root unless
   `AI_ACTIVITY_ALLOW_ROOT=1` (`test/install.test.js`, on Linux and
   Windows). Settings → Devices copies both commands per device; the owner's
   profile links there in a one-line box under the tools.
@@ -928,7 +931,8 @@ reached through Caddy (§2, Deploy). After `npm start` works locally:
 
 Live review (edits show up instantly for the tester): keep the Node API on
 :3000 (collectors post there) and point the tunnel at the Vite dev server
-instead, which proxies `/api` to :3000 and pushes changes over HMR:
+instead, which proxies `/api` (and the install scripts, so the Devices
+panel's commands work there) to :3000 and pushes changes over HMR:
 
 ```bash
 npm run dev                         # API on :3000, restarts on server/ edits

@@ -4,6 +4,7 @@
 // existing configs, is idempotent, and the installed commands upload.
 import fs from "node:fs";
 import path from "node:path";
+import http from "node:http";
 import { spawn } from "node:child_process";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -211,4 +212,55 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
     assert.equal(read(".config", "opencode", "ai-activity-opencode.py"), filled("opencode.py"));
     assert.notEqual((await install({ AI_ACTIVITY_TOOLS: "cursor" })).code, 0);
   });
+
+  // Runs the install in a home of its own, removed afterwards.
+  async function inFreshHome(prefix, fn) {
+    const h = tempHome(prefix);
+    try {
+      await fn(h, (extra = {}) => install({ HOME: h, USERPROFILE: h, ...extra }));
+    } finally {
+      fs.rmSync(h, { recursive: true, force: true });
+    }
+  }
+
+  test("a broken config stops the install before anything is written", () =>
+    inFreshHome("ai-activity-install-broken-", async (h, run) => {
+      fs.mkdirSync(path.join(h, ".claude"));
+      fs.mkdirSync(path.join(h, ".codex"));
+      fs.writeFileSync(path.join(h, ".codex", "hooks.json"), "{ not json");
+      const r = await run();
+      assert.notEqual(r.code, 0);
+      assert.match(r.out, /hooks\.json is not valid JSON.*nothing was changed/);
+      // Claude Code comes first in TOOLS order: it is not installed either.
+      assert.deepEqual(fs.readdirSync(path.join(h, ".claude")), []);
+      assert.deepEqual(fs.readdirSync(path.join(h, ".codex")), ["hooks.json"]);
+    }));
+
+  test("a symlinked config stays a link, its target updated", { skip: WINDOWS && "symlinks need privileges" }, () =>
+    inFreshHome("ai-activity-install-link-", async (h, run) => {
+      fs.mkdirSync(path.join(h, "dotfiles"));
+      fs.mkdirSync(path.join(h, ".claude"));
+      fs.writeFileSync(path.join(h, "dotfiles", "settings.json"), JSON.stringify({ model: "opus" }));
+      fs.symlinkSync(path.join(h, "dotfiles", "settings.json"), path.join(h, ".claude", "settings.json"));
+      const r = await run({ AI_ACTIVITY_TOOLS: "claude-code" });
+      assert.equal(r.code, 0, r.out);
+      assert.ok(fs.lstatSync(path.join(h, ".claude", "settings.json")).isSymbolicLink());
+      const settings = JSON.parse(fs.readFileSync(path.join(h, "dotfiles", "settings.json"), "utf8"));
+      assert.equal(settings.model, "opus");
+      assert.deepEqual(settings.statusLine, STATUS_LINE);
+    }));
+
+  test("a URL that redirects is refused: the collectors' POSTs would not follow", () =>
+    inFreshHome("ai-activity-install-redirect-", async (h, run) => {
+      const redirect = http.createServer((q, res) => res.writeHead(308, { location: "https://ai.example.com" + q.url }).end());
+      await new Promise((resolve) => redirect.listen(0, "127.0.0.1", resolve));
+      try {
+        const r = await run({ AI_ACTIVITY_URL: `http://127.0.0.1:${redirect.address().port}`, AI_ACTIVITY_TOOLS: "codex" });
+        assert.notEqual(r.code, 0);
+        assert.match(r.out, /redirects to https:\/\/ai\.example\.com\/api\/health/);
+        assert.ok(!fs.existsSync(path.join(h, ".codex")), "nothing installed");
+      } finally {
+        redirect.close();
+      }
+    }));
 });

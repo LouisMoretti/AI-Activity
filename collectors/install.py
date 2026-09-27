@@ -38,6 +38,10 @@ CLAUDE_DIR = os.path.join(HOME, ".claude")
 CODEX_HOME = os.environ.get("CODEX_HOME") or os.path.join(HOME, ".codex")
 GEMINI_HOME = os.environ.get("GEMINI_CLI_HOME") or os.path.join(HOME, ".gemini")
 OPENCODE_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(HOME, ".config"), "opencode")
+# The JSON files the installs merge into (OpenCode has none).
+CONFIGS = {"claude-code": os.path.join(CLAUDE_DIR, "settings.json"),
+           "codex": os.path.join(CODEX_HOME, "hooks.json"),
+           "antigravity": os.path.join(GEMINI_HOME, "config", "hooks.json")}
 
 
 def fail(msg):
@@ -55,7 +59,9 @@ def fill(text, url, key):
 
 
 def write(path, content, mode=None):
-    """Write only if different (exact bytes, LF kept on Windows); True when the file changed."""
+    """Write only if different (exact bytes, LF kept on Windows); True when the file changed.
+    A symlink (dotfiles managers) stays one: its target is what gets written."""
+    path = os.path.realpath(path)
     try:
         with open(path, encoding="utf-8", newline="") as f:
             if f.read() == content:
@@ -123,8 +129,19 @@ def present(tool):
     return on_path("opencode") or os.path.isdir(OPENCODE_DIR)
 
 
+def preflight(tools):
+    """Read every config before writing anything, so a broken one stops the
+    install with nothing changed rather than halfway through."""
+    for tool, path in CONFIGS.items():
+        if tool not in tools:
+            continue
+        config = load_json(path)
+        if tool == "codex" and not isinstance(config.get("hooks", {}), dict):
+            fail(f"{path}: \"hooks\" is not an object: fix it, then run this again (nothing was changed)")
+
+
 def install_claude(url, key):
-    path = os.path.join(CLAUDE_DIR, "settings.json")
+    path = CONFIGS["claude-code"]
     settings = load_json(path)
     current = settings.get("statusLine")
     # Ours: this script, or the former one-liner (it named ~/.cache/ai-activity).
@@ -143,12 +160,10 @@ def install_claude(url, key):
 
 def install_codex(url, key):
     script = os.path.join(CODEX_HOME, "ai-activity-codex.py")
-    changed = write(script, fill(FILES["codex.py"], url, key), 0o600)
-    path = os.path.join(CODEX_HOME, "hooks.json")
+    path = CONFIGS["codex"]
     config = load_json(path)
-    hooks = config.setdefault("hooks", {})
-    if not isinstance(hooks, dict):
-        fail(f"{path}: \"hooks\" is not an object: fix it, then run this again")
+    hooks = config.setdefault("hooks", {})  # an object: preflight checked
+    changed = write(script, fill(FILES["codex.py"], url, key), 0o600)
     if WINDOWS or not shutil.which("setsid"):
         # --hook answers Codex and detaches the upload itself (macOS has no setsid).
         run = command(script, "~/.codex/ai-activity-codex.py", "--hook")
@@ -169,7 +184,7 @@ def install_codex(url, key):
 def install_antigravity(url, key):
     script = os.path.join(GEMINI_HOME, "ai-activity-antigravity.py")
     changed = write(script, fill(FILES["antigravity.py"], url, key), 0o600)
-    path = os.path.join(GEMINI_HOME, "config", "hooks.json")
+    path = CONFIGS["antigravity"]
     config = load_json(path)
     run = lambda flag: {"type": "command", "command": command(script, "~/.gemini/ai-activity-antigravity.py", flag), "timeout": 10}
     # A named hook: ours is replaced whole, the others are kept.
@@ -195,11 +210,23 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def redirected(url, e):
+    """A redirect is fatal: the collectors POST, and urllib follows no
+    redirect of a POST, so every upload to this URL would fail."""
+    if 300 <= e.code < 400:
+        fail(f"{url} redirects to {e.headers.get('Location') or 'another address'}: "
+             "set AI_ACTIVITY_URL to the server's final address (https://...), then run this again")
+
+
 def check(url, key):
     """The server answers and takes the key (an empty batch stores nothing)."""
     opener = urllib.request.build_opener(NoRedirect)
     try:
         opener.open(url + "/api/health", timeout=15).read()
+    except urllib.error.HTTPError as e:
+        redirected(url, e)
+        say(f"warning: {url} answered {e.code}; the collectors will retry later")
+        return
     except (urllib.error.URLError, OSError) as e:
         say(f"warning: {url} does not answer ({e}); the collectors will retry later")
         return
@@ -209,6 +236,7 @@ def check(url, key):
         opener.open(req, timeout=15).read()
         say(f"{url} accepts this device key")
     except urllib.error.HTTPError as e:
+        redirected(url, e)
         if e.code == 401:
             fail("the server refused this device key (unknown or revoked): copy it again from Settings > Devices")
         say(f"warning: key check answered {e.code}; the collectors will retry later")
@@ -239,6 +267,7 @@ def main():
             fail("no Claude Code, Codex, Antigravity or OpenCode found in " + HOME +
                  "; set AI_ACTIVITY_TOOLS=" + ",".join(TOOLS) + " to install anyway")
 
+    preflight(tools)
     check(url, key)
     install = {"claude-code": install_claude, "codex": install_codex,
                "antigravity": install_antigravity, "opencode": install_opencode}

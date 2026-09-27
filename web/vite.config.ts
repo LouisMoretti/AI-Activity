@@ -15,7 +15,11 @@ export default defineConfig({
     strictPort: true,
     // Live review through a Cloudflare quick tunnel.
     allowedHosts: [".trycloudflare.com"],
-    proxy: { "/api": `http://localhost:${process.env.PORT || 3000}` },
+    // The install scripts too: the Devices panel's commands fetch them from
+    // this origin, and the SPA fallback would hand `sh` the page's HTML.
+    proxy: Object.fromEntries(
+      ["/api", "/install.sh", "/install.ps1"].map((p) => [p, `http://localhost:${process.env.PORT || 3000}`]),
+    ),
     // The dev server may be exposed through the tunnel: only serve the web
     // sources, shared types and dependencies — never data/ (the SQLite DB)
     // or other repo files.
