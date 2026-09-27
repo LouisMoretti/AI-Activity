@@ -391,8 +391,11 @@ export function insertQuotaSnapshot(db: DB, q: QuotaSnapshotInput): void {
  * an API call yet), so "last posted" is not "current". Among the rows
  * measured in the day before the latest one, the window that resets last is
  * the current one, and within a window the usage only goes up: show its
- * highest percentage. Ingest drops a resets_at further away than the window
- * is long; the one-day bound also retires rows stored before that check.
+ * highest percentage. Codex reports one window's resets_at a few seconds
+ * apart from one snapshot to the next, so resets within 10 minutes of the
+ * latest are the same window (a new window resets hours later). Ingest drops
+ * a resets_at further away than the window is long; the one-day bound also
+ * retires rows stored before that check.
  */
 export function latestQuotas(db: DB, userId: number): Quota[] {
   return db
@@ -405,8 +408,8 @@ export function latestQuotas(db: DB, userId: number): Quota[] {
          FROM recent WHERE measured_at >= last - 86400
        )
        SELECT account_ref, tool, limit_type, MAX(used_pct) AS used_pct,
-              resets_at, MAX(measured_at) AS measured_at
-       FROM live WHERE COALESCE(resets_at, -1) = win
+              MAX(resets_at) AS resets_at, MAX(measured_at) AS measured_at
+       FROM live WHERE COALESCE(resets_at, -1) >= win - 600
        GROUP BY account_ref, tool, limit_type
        ORDER BY account_ref, tool, limit_type`
     )

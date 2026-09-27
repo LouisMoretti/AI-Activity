@@ -201,9 +201,12 @@ describe("basics (signed in as the test admin)", () => {
     // A second terminal posts the same window's older, lower value later.
     await post(20, now + 3600, now - 10);
     assert.deepEqual([(await shown()).used_pct, (await shown()).resets_at], [35, now + 3600]);
+    // Codex jitters a window's resets_at by a few seconds: still that window.
+    await post(40, now + 3599, now - 8);
+    assert.deepEqual([(await shown()).used_pct, (await shown()).resets_at], [40, now + 3600]);
     // …or the previous, already reset window.
     await post(90, now - 100, now - 5);
-    assert.equal((await shown()).used_pct, 35);
+    assert.equal((await shown()).used_pct, 40);
     // The next window replaces it, even with a lower value.
     await post(4, now + 18000, now);
     assert.deepEqual([(await shown()).used_pct, (await shown()).resets_at], [4, now + 18000]);
