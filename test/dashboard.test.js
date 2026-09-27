@@ -44,7 +44,7 @@ const settle = () => new Promise((r) => setTimeout(r, 20));
 const me = { id: 1, username: "me", display_name: "Me", avatar_url: null, is_admin: false };
 const signedIn = { authenticated: true, user: me, setup_required: false, signup_open: true };
 const signedOut = { authenticated: false, user: null, setup_required: false, signup_open: true };
-const emptySummary = { tool: null, day: "2026-09-25", total: { tokens: 0, sessions: 0, events: 0, by_model: [], by_tool: [] }, today: { tokens: 0, sessions: 0, events: 0, by_model: [], by_tool: [] }, provenance: "" };
+const emptySummary = { tool: null, day: "2026-09-25", total: { tokens: 0, sessions: 0, events: 0, by_model: [], by_model_others_sessions: 0, by_tool: [] }, today: { tokens: 0, sessions: 0, events: 0, by_model: [], by_model_others_sessions: 0, by_tool: [] }, provenance: "" };
 const profileRoutes = (name, sessions = { sessions: [], total: 0, provenance: "" }) => ({
   [`/api/u/${name}`]: { username: name, display_name: name, avatar_url: null },
   [`/api/u/${name}/summary`]: emptySummary,

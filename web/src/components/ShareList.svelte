@@ -13,7 +13,7 @@
   } = $props();
   const total = $derived(of ?? rows.reduce((a, r) => a + r.value, 0));
   // Largest share first; the "others" row always stays last.
-  const sorted = $derived([...rows].sort((a, b) => b.value - a.value));
+  const sorted = $derived([...rows].sort((a, b) => b.value - a.value || (a.name < b.name ? -1 : 1)));
   const shown = $derived(sorted.length > max ? sorted.slice(0, max - 1) : sorted);
   const rest = $derived(sorted.slice(shown.length));
   const foldedValue = $derived(restValue ?? rest.reduce((a, r) => a + r.value, 0));
@@ -50,7 +50,7 @@
   {#if rest.length}
     <div class="row">
       <span class="name" title={rest.map((r) => label(r.name)).join(", ")}>{rest.length} others</span>
-      {@render num(foldedValue, restValue !== null || of === null)}
+      {@render num(foldedValue, (restValue !== null) || (of === null))}
     </div>
   {/if}
   </div>

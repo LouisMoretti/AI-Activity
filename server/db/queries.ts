@@ -579,11 +579,11 @@ export function breakdown(
   // counts. The grouped query already returned model + session from the
   // covering read index; this needs no second database pass.
   const foldedModels = byModelRows.length > BREAKDOWN_DISPLAY_ROWS
-    ? [...byModelRows].sort((a, b) => b.sessions - a.sessions).slice(BREAKDOWN_DISPLAY_ROWS - 1)
+    ? [...byModelRows].sort((a, b) => b.sessions - a.sessions || (a.name < b.name ? -1 : 1)).slice(BREAKDOWN_DISPLAY_ROWS - 1)
     : [];
   const foldedSessions = new Set<string>();
   for (const row of foldedModels) {
-    for (const session of byModel.get(row.name)!.sessions) foldedSessions.add(session);
+    for (const session of byModel.get(row.name)?.sessions ?? []) foldedSessions.add(session);
   }
   return {
     tokens: total.tokens,
