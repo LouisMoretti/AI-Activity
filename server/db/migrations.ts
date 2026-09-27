@@ -12,7 +12,25 @@ import type { DB } from "./schema.ts";
 export const MIGRATIONS: ((db: DB) => void)[] = [
   baseline,
   cleanupCoveredSnapshots,
+  collectorVersions,
 ];
+
+/**
+ * 3: The collector version each device last posted with, per tool (issue
+ * #125), so Settings → Devices can flag outdated copies. Devices are never
+ * deleted (only revoked), so rows need no cleanup.
+ */
+function collectorVersions(db: DB): void {
+  db.exec(`
+    CREATE TABLE collector_versions (
+      device_id INTEGER NOT NULL REFERENCES devices(id),
+      tool TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      seen_at INTEGER NOT NULL,
+      PRIMARY KEY (device_id, tool)
+    )
+  `);
+}
 
 /**
  * 2: Apply the message-ingestion snapshot cleanup retroactively. The first

@@ -3,6 +3,7 @@
   import type { Device } from "../../../shared/types.ts";
   import { api } from "../lib/api.ts";
   import { copyPending, installCommand, type Platform } from "../lib/clipboard.ts";
+  import { TOOL_META } from "../lib/view-model.ts";
 
   let devices = $state<Device[] | null>(null);
   let name = $state("");
@@ -115,7 +116,15 @@
         <li class:revoked={d.revoked}>
           <div>
             <strong>{d.name}</strong>
-            <small><span class="mono">{d.key_prefix}…</span> · added {fmtDate(d.created_at)}</small>
+            <small><span class="mono">{d.key_prefix}…</span> · added {fmtDate(d.created_at)}{#each d.collectors.filter((c) => !c.outdated) as c (c.tool)}{" · "}{TOOL_META[c.tool].name} v{c.version}{/each}</small>
+            {#if !d.revoked}
+              {#each d.collectors.filter((c) => c.outdated) as c (c.tool)}
+                <p class="outdated">
+                  {TOOL_META[c.tool].name} collector outdated ({c.version ? `v${c.version}` : "from before versions"}, latest v{c.latest}).
+                  Run this device's install command again to update it.
+                </p>
+              {/each}
+            {/if}
           </div>
           {#if d.revoked}
             <span class="muted">Revoked</span>
@@ -165,4 +174,5 @@
   .key .row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
   code { flex: 1; min-width: 0; overflow-wrap: anywhere; color: var(--text); }
   .error { color: var(--warn); margin-top: 8px; font-size: 13px; }
+  .outdated { color: var(--warn); margin-top: 4px; font-size: 12px; }
 </style>

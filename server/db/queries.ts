@@ -3,10 +3,11 @@ import type {
   Account, ActivityDay, AdminOverview, AdminUser, Profile, Breakdown, BreakdownRow, Device, LeaderboardEntry,
   LeaderboardResponse, Quota, Session,
 } from "../../shared/types.ts";
-import { BREAKDOWN_DISPLAY_ROWS } from "../../shared/types.ts";
+import { COLLECTOR_VERSIONS } from "../../shared/collectors.ts";
+import { BREAKDOWN_DISPLAY_ROWS, TOOLS } from "../../shared/types.ts";
 import { nowSec, type DB } from "./schema.ts";
 
-export interface DeviceRow extends Omit<Device, "has_key"> {
+export interface DeviceRow extends Omit<Device, "has_key" | "collectors"> {
   user_id: number;
   key_hash: string;
   key: string | null;
@@ -271,8 +272,36 @@ export function listDevices(db: DB, userId: number): Device[] {
     .prepare(
       "SELECT id, name, key_prefix, revoked, created_at, key IS NOT NULL AS has_key FROM devices WHERE user_id = ? ORDER BY id"
     )
-    .all(userId) as (Omit<Device, "has_key"> & { has_key: number })[];
-  return rows.map((d) => ({ ...d, has_key: Boolean(d.has_key) }));
+    .all(userId) as (Omit<Device, "has_key" | "collectors"> & { has_key: number })[];
+  const seen = db
+    .prepare(
+      `SELECT c.device_id, c.tool, c.version, c.seen_at FROM collector_versions c
+       JOIN devices d ON d.id = c.device_id WHERE d.user_id = ?`
+    )
+    .all(userId) as { device_id: number; tool: string; version: number; seen_at: number }[];
+  return rows.map((d) => ({
+    ...d,
+    has_key: Boolean(d.has_key),
+    collectors: TOOLS.flatMap((tool) => {
+      const c = seen.find((s) => s.device_id === d.id && s.tool === tool);
+      if (!c) return [];
+      const latest = COLLECTOR_VERSIONS[tool];
+      return [{ tool, version: c.version, latest, outdated: c.version < latest, seen_at: c.seen_at }];
+    }),
+  }));
+}
+
+/**
+ * The collector version a device posted with, per tool. Written when it
+ * changes, else at most hourly (seen_at): every post comes here, and a
+ * write would also empty the public read cache.
+ */
+export function recordCollectorVersion(db: DB, deviceId: number, tool: string, version: number, now: number): void {
+  db.prepare(
+    `INSERT INTO collector_versions (device_id, tool, version, seen_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT (device_id, tool) DO UPDATE SET version = excluded.version, seen_at = excluded.seen_at
+     WHERE version != excluded.version OR seen_at < excluded.seen_at - 3600`
+  ).run(deviceId, tool, version, now);
 }
 
 export type UpsertResult = "stored" | "updated" | "deduped";

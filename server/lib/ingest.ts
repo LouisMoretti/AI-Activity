@@ -1,3 +1,4 @@
+import { COLLECTOR_VERSIONS, MIN_COLLECTOR_VERSIONS } from "../../shared/collectors.ts";
 import { QUOTA_POOLS, QUOTA_WINDOW_SEC, type QuotaWindowType } from "../../shared/quota-pools.ts";
 import { TOOLS, type Tool } from "../../shared/types.ts";
 import { nowSec } from "../db/schema.ts";
@@ -431,4 +432,32 @@ export function normalizerFor(tool: string): ((body: unknown) => NormalizedBatch
 export function hasConsumption(m: NormalizedMessage): boolean {
   return m.input_tokens > 0 || m.output_tokens > 0 ||
     m.cache_read_tokens > 0 || m.cache_write_tokens > 0;
+}
+
+/**
+ * The collector version a payload reports (`collector: {name, version}`,
+ * name = the tool slug). Absent, malformed or for another tool: 0, so the
+ * copies from before versions are flagged as outdated.
+ */
+export function collectorVersion(body: unknown, tool: string): number {
+  const c = isObj(body) ? body.collector : null;
+  if (!isObj(c) || c.name !== tool) return 0;
+  const v = c.version;
+  return typeof v === "number" && Number.isSafeInteger(v) && v > 0 ? v : 0;
+}
+
+export interface CollectorCheck {
+  latest: number;
+  minimum: number;
+  /** Behind the latest collector: the answer carries `update`. */
+  outdated: boolean;
+  /** Older than the minimum: refused with 426. */
+  refused: boolean;
+}
+
+export function checkCollector(
+  tool: Tool, version: number,
+  latest = COLLECTOR_VERSIONS[tool], minimum = MIN_COLLECTOR_VERSIONS[tool],
+): CollectorCheck {
+  return { latest, minimum, outdated: version < latest, refused: version < minimum };
 }

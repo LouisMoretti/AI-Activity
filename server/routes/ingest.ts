@@ -1,11 +1,11 @@
 import { Hono } from "hono";
-import type { IngestBatchResult, IngestResult } from "../../shared/types.ts";
+import type { IngestBatchResult, IngestResult, Tool } from "../../shared/types.ts";
 import {
-  dropSnapshotRows, findDeviceByKey, insertQuotaSnapshot, setSessionContext, upsertUsageEvent, type UpsertResult,
+  dropSnapshotRows, findDeviceByKey, insertQuotaSnapshot, recordCollectorVersion, setSessionContext, upsertUsageEvent, type UpsertResult,
 } from "../db/queries.ts";
 import { nowSec, type DB } from "../db/schema.ts";
 import { readJson } from "../lib/http.ts";
-import { hasConsumption, normalizerFor } from "../lib/ingest.ts";
+import { checkCollector, collectorVersion, hasConsumption, normalizerFor } from "../lib/ingest.ts";
 import { LIMITS, tokenBuckets, tooManyRequests } from "../lib/rate-limit.ts";
 import { bearerKey } from "../lib/viewer-auth.ts";
 
@@ -43,6 +43,21 @@ export function ingestRoutes(db: DB) {
     // misconfigured collector, not something to guess about.
     if (body.tool !== undefined && body.tool !== tool) {
       return c.json({ error: `payload tool "${String(body.tool)}" does not match /api/ingest/${tool}` }, 400);
+    }
+
+    // Every post says which collector version sent it (0: from before
+    // versions). The device's latest one is what Settings → Devices shows.
+    // An empty body is the installer's key check, not a collector.
+    const keyCheck = Object.keys(body).length === 0;
+    const version = collectorVersion(body, tool);
+    const check = checkCollector(tool as Tool, version);
+    if (!keyCheck) recordCollectorVersion(db, device.id, tool, version, nowSec());
+    const update = check.outdated && !keyCheck ? { update: { latest: check.latest, minimum: check.minimum } } : {};
+    if (check.refused && !keyCheck) {
+      return c.json({
+        error: `${tool} collector v${version} is no longer accepted (minimum v${check.minimum}): update it`,
+        ...update,
+      }, 426);
     }
 
     const batch = normalize(body);
@@ -107,7 +122,9 @@ export function ingestRoutes(db: DB) {
     })();
     if (rowWait) return tooManyRequests(c, rowWait);
 
-    if (!batch.single) return c.json<IngestBatchResult>({ ok: true, messages: batch.messages.length, ...counts });
+    if (!batch.single) {
+      return c.json<IngestBatchResult>({ ok: true, messages: batch.messages.length, ...counts, ...update });
+    }
     const result = single as UpsertResult | null;
     return c.json<IngestResult>({
       ok: true,
@@ -115,6 +132,7 @@ export function ingestRoutes(db: DB) {
       updated: result === "updated",
       deduped: result === "deduped",
       event_id: batch.messages[0]?.event_id ?? null,
+      ...update,
     });
   })
     // Collectors have no viewer session: without this, a bare /api/ingest
