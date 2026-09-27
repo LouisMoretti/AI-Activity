@@ -2,6 +2,6 @@ node_modules
 data/
 .env
 web/dist/
-web/src/lib/.dashboard.test-build.js
+web/src/lib/.*.test-build.js
 __pycache__/
 .deploy.lock

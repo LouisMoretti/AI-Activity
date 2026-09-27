@@ -1,7 +1,9 @@
 import { Hono, type MiddlewareHandler } from "hono";
-import type { Account, AdminOverview, AdminSettings, AdminUser } from "../../shared/types.ts";
 import {
-  adminOverview, deleteUserSessions, getUser, listAdminUsers, setAvatarUrl, setDisplayName, setPasswordHash, setUserAdmin,
+  DELETE_ACTIVITY_PHRASE, type Account, type AdminOverview, type AdminSettings, type AdminUser, type DeletedActivity,
+} from "../../shared/types.ts";
+import {
+  adminOverview, deleteUserActivity, deleteUserSessions, getUser, listAdminUsers, setAvatarUrl, setDisplayName, setPasswordHash, setUserAdmin,
   setSignupOpen, setUserDisabled, signupOpen, toAccount,
 } from "../db/queries.ts";
 import type { DB } from "../db/schema.ts";
@@ -54,6 +56,25 @@ export function accountRoutes(db: DB, auth: ViewerAuth) {
       // Other browsers are signed out; this one stays signed in.
       deleteUserSessions(db, user.id, auth.sessionHash(c));
       return c.json({ ok: true });
+    })
+    // Permanently deletes the signed-in user's own usage and quotas; the
+    // account, profile, devices and sessions stay. Needs the password (a
+    // stolen session cannot wipe it) and the typed phrase.
+    .post("/delete-activity", async (c) => {
+      const body = await readJson(c);
+      if (body.confirm !== DELETE_ACTIVITY_PHRASE) {
+        return c.json({ error: `type "${DELETE_ACTIVITY_PHRASE}" to confirm` }, 400);
+      }
+      const wait = auth.attempt(c);
+      if (wait) {
+        c.header("retry-after", String(wait));
+        return c.json({ error: "too many failed attempts, try again later" }, 429);
+      }
+      const user = getUser(db, c.get("userId"))!;
+      const password = typeof body.password === "string" ? body.password : "";
+      if (!(await verifyPassword(password, user.password_hash))) return c.json({ error: "password is wrong" }, 400);
+      auth.succeeded(c);
+      return c.json<{ ok: true; deleted: DeletedActivity }>({ ok: true, deleted: deleteUserActivity(db, user.id) });
     });
 }
 

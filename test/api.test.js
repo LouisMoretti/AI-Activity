@@ -902,6 +902,78 @@ describe("open sign-up and admin panel", () => {
   });
 });
 
+describe("deleting your own activity", () => {
+  let srv;
+  before(async () => { srv = await startServer(); });
+  after(() => srv.stop());
+
+  const CONFIRM = "delete my activity";
+  const ingest = (key, body) => req(srv.base, "POST", "/api/ingest/claude-code", { key, body, anon: true });
+  const summary = async (name) => (await req(srv.base, "GET", `/api/u/${name}/summary`, { anon: true })).json.total;
+  const quotas = async (name) => (await req(srv.base, "GET", `/api/u/${name}/quotas`, { anon: true })).json.quotas;
+  const withQuota = (over) => event({ rate_limits: { five_hour: { used_percentage: 12, resets_at: soon() } }, ...over });
+
+  test("needs the password and the phrase, and only deletes the signed-in user's rows", async () => {
+    const ann = await register(srv.base, { username: "ann", password: "ann-password-1" });
+    const bob = await register(srv.base, { username: "bob", password: "bob-password-1" });
+    const annDev = await newDevice(srv.base, "ann-laptop", ann.cookie);
+    const bobDev = await newDevice(srv.base, "bob-laptop", bob.cookie);
+    const annEvent = withQuota({ session_id: "ann-s" });
+    assert.equal((await ingest(annDev.key, annEvent)).json.stored, true);
+    assert.equal((await ingest(bobDev.key, withQuota({ session_id: "bob-s" }))).json.stored, true);
+    const del = (body, cookie = ann.cookie) => req(srv.base, "POST", "/api/account/delete-activity", { body, cookie });
+
+    assert.equal((await del({ password: "ann-password-1", confirm: CONFIRM }, null)).status, 401);
+    assert.equal((await req(srv.base, "POST", "/api/account/delete-activity", { body: { password: "ann-password-1", confirm: CONFIRM }, anon: true })).status, 401);
+    assert.equal((await del({ password: "ann-password-1", confirm: "yes" })).status, 400);
+    assert.equal((await del({ password: "ann-password-1" })).status, 400);
+    const wrong = await del({ password: "nope", confirm: CONFIRM });
+    assert.equal(wrong.status, 400);
+    assert.deepEqual(wrong.json, { error: "password is wrong" });
+    assert.equal((await summary("ann")).events, 1);
+
+    const ok = await del({ password: "ann-password-1", confirm: CONFIRM });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(ok.json, { ok: true, deleted: { events: 1, quotas: 1 } });
+    assert.deepEqual([(await summary("ann")).tokens, (await summary("ann")).events], [0, 0]);
+    assert.deepEqual(await quotas("ann"), []);
+    assert.equal((await req(srv.base, "GET", "/api/u/ann/sessions", { anon: true })).json.total, 0);
+    // Bob's data, and Ann's account, session and devices are untouched.
+    assert.equal((await summary("bob")).events, 1);
+    assert.equal((await quotas("bob")).length, 1);
+    assert.equal((await req(srv.base, "GET", "/api/auth/status", { cookie: ann.cookie })).json.user.username, "ann");
+    const devices = (await req(srv.base, "GET", "/api/devices", { cookie: ann.cookie })).json.devices;
+    assert.deepEqual(devices.map((d) => [d.name, Boolean(d.revoked)]), [["ann-laptop", false]]);
+    assert.equal((await req(srv.base, "GET", `/api/devices/${annDev.id}/key`, { cookie: ann.cookie })).json.key, annDev.key);
+    // Deleting again with nothing left is fine.
+    assert.deepEqual((await del({ password: "ann-password-1", confirm: CONFIRM })).json.deleted, { events: 0, quotas: 0 });
+
+    // A collector resending its history cannot bring the deleted data back...
+    const replay = await ingest(annDev.key, { ...annEvent, event_id: `${annEvent.event_id}_again` });
+    assert.equal(replay.status, 200);
+    assert.equal(replay.json.stored, false);
+    assert.equal((await ingest(annDev.key, { messages: [{ ...annEvent, message_id: annEvent.event_id }] })).json.deduped, 1);
+    assert.equal((await summary("ann")).events, 0);
+    assert.deepEqual(await quotas("ann"), []);
+    // ...but activity after the deletion is recorded as usual.
+    await new Promise((r) => setTimeout(r, 1100));
+    assert.equal((await ingest(annDev.key, withQuota({ session_id: "ann-new" }))).json.stored, true);
+    assert.equal((await summary("ann")).events, 1);
+    assert.equal((await quotas("ann")).length, 1);
+  });
+
+  test("password guesses are throttled like a login", async () => {
+    const own = await startServer();
+    try {
+      const del = (password) => req(own.base, "POST", "/api/account/delete-activity", { body: { password, confirm: CONFIRM } });
+      for (let i = 0; i < 10; i++) assert.equal((await del("nope")).status, 400);
+      assert.equal((await del(TEST_ADMIN.password)).status, 429);
+    } finally {
+      own.stop();
+    }
+  });
+});
+
 describe("public profile pages", () => {
   test("anyone reads a profile's usage by username, never its private data", async () => {
     const srv = await startServer();

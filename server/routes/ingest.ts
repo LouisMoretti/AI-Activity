@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { IngestBatchResult, IngestResult } from "../../shared/types.ts";
 import {
-  dropSnapshotRows, findDeviceByKey, insertQuotaSnapshot, setSessionContext, upsertUsageEvent, type UpsertResult,
+  activityClearedAt, dropSnapshotRows, findDeviceByKey, insertQuotaSnapshot, setSessionContext, upsertUsageEvent, type UpsertResult,
 } from "../db/queries.ts";
 import { nowSec, type DB } from "../db/schema.ts";
 import { readJson } from "../lib/http.ts";
@@ -48,6 +48,9 @@ export function ingestRoutes(db: DB) {
     const batch = normalize(body);
     const received = nowSec();
     const counts = { stored: 0, updated: 0, deduped: 0 };
+    // Activity the user deleted stays deleted: whatever is dated up to then
+    // is dropped (answered as a replay, so collectors move their offsets on).
+    const clearedAt = activityClearedAt(db, device.user_id) ?? -Infinity;
     let single: UpsertResult | null = null;
 
     const overBudget = new Error("over the row budget");
@@ -56,6 +59,11 @@ export function ingestRoutes(db: DB) {
       db.transaction(() => {
         const sessions = new Map<string, number>(); // session → oldest message time
         for (const m of batch.messages) {
+          if (m.occurred_at <= clearedAt) {
+            counts.deduped += 1;
+            single = "deduped";
+            continue;
+          }
           if (m.session_id) sessions.set(m.session_id, Math.min(sessions.get(m.session_id) ?? m.occurred_at, m.occurred_at));
           // Empty messages skip the usage row so event counts stay honest.
           if (!hasConsumption(m)) continue;
@@ -92,7 +100,7 @@ export function ingestRoutes(db: DB) {
       // Quotas are snapshots: latest value wins, never summed. They are dated
       // by the observation time (already capped at now), so a replayed
       // payload cannot overwrite a newer snapshot with stale rate_limits.
-      for (const q of batch.quotas) {
+      for (const q of batch.measured_at > clearedAt ? batch.quotas : []) {
         insertQuotaSnapshot(db, {
           device_id: device.id,
           user_id: device.user_id,

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
-  Account, ActivityDay, AdminOverview, AdminUser, Profile, Breakdown, BreakdownRow, Device, LeaderboardEntry,
+  Account, ActivityDay, AdminOverview, AdminUser, Profile, Breakdown, BreakdownRow, DeletedActivity, Device, LeaderboardEntry,
   LeaderboardResponse, Quota, Session,
 } from "../../shared/types.ts";
 import { BREAKDOWN_DISPLAY_ROWS } from "../../shared/types.ts";
@@ -191,6 +191,26 @@ export function adminOverview(db: DB): AdminOverview {
 /** Create the first account only; null when one already exists (lost race). */
 export function createFirstAccount(db: DB, a: Parameters<typeof createAccount>[1]): number | null {
   return db.transaction(() => (accountsExist(db) ? null : createAccount(db, a)))();
+}
+
+/**
+ * Delete every usage event and quota snapshot of one user, in one
+ * transaction, and remember when: ingest drops anything dated up to then
+ * (activityClearedAt). The account, devices and sessions stay.
+ */
+export function deleteUserActivity(db: DB, userId: number): DeletedActivity {
+  return db.transaction(() => {
+    const events = db.prepare("DELETE FROM usage_events WHERE user_id = ?").run(userId).changes;
+    const quotas = db.prepare("DELETE FROM quota_snapshots WHERE user_id = ?").run(userId).changes;
+    db.prepare("UPDATE users SET activity_cleared_at = ? WHERE id = ?").run(nowSec(), userId);
+    return { events, quotas };
+  })();
+}
+
+/** When the user last deleted their activity, or null if never. */
+export function activityClearedAt(db: DB, userId: number): number | null {
+  const row = db.prepare("SELECT activity_cleared_at AS at FROM users WHERE id = ?").get(userId) as { at: number | null } | undefined;
+  return row?.at ?? null;
 }
 
 export function setPasswordHash(db: DB, userId: number, hash: string): void {

@@ -12,7 +12,17 @@ import type { DB } from "./schema.ts";
 export const MIGRATIONS: ((db: DB) => void)[] = [
   baseline,
   cleanupCoveredSnapshots,
+  activityClearedAt,
 ];
+
+/**
+ * 3: when the user last deleted their activity (unix seconds, NULL if
+ * never). Ingest drops usage and quotas dated up to then, so a collector
+ * resending its local history cannot bring the deleted data back.
+ */
+function activityClearedAt(db: DB): void {
+  db.exec("ALTER TABLE users ADD COLUMN activity_cleared_at INTEGER");
+}
 
 /**
  * 2: Apply the message-ingestion snapshot cleanup retroactively. The first

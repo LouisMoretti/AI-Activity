@@ -9,6 +9,15 @@ export type Tool = (typeof TOOLS)[number];
 /** Rows kept separate in dashboard breakdown lists (the last is the fold). */
 export const BREAKDOWN_DISPLAY_ROWS = 8;
 
+/** Typed by the user to confirm deleting all their activity (POST /api/account/delete-activity). */
+export const DELETE_ACTIVITY_PHRASE = "delete my activity";
+
+/** Rows removed by POST /api/account/delete-activity. */
+export interface DeletedActivity {
+  events: number;
+  quotas: number;
+}
+
 export interface StatsResponse {
   range_days: number;
   tool: string | null;

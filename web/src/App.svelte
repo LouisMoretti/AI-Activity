@@ -3,6 +3,7 @@
   import AuthPanel from "./components/AuthPanel.svelte";
   import ActivityChart from "./components/ActivityChart.svelte";
   import Conversations from "./components/Conversations.svelte";
+  import DeleteActivityPanel from "./components/DeleteActivityPanel.svelte";
   import DevicesPanel from "./components/DevicesPanel.svelte";
   import Leaderboard from "./components/Leaderboard.svelte";
   import NewAccountForm from "./components/NewAccountForm.svelte";
@@ -79,6 +80,10 @@
 
       <Section title="Devices" subtitle="One ingestion key per machine">
         <DevicesPanel />
+      </Section>
+
+      <Section title="Danger zone" subtitle="Cannot be undone">
+        <DeleteActivityPanel username={dash.account.username} ondeleted={() => dash.load()} />
       </Section>
 
     {/if}
