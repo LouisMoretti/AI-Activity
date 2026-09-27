@@ -37,8 +37,12 @@ header (`SiteHeader`) is the same on every page: logo, demo badge, and the
 avatar menu (or "Sign in"), plus a breadcrumb of the current page
 (`AI Activity / (picture) @name`, `/ Leaderboard`, `/ Settings`, `/ Admin panel`) that
 replaces in-page titles. It never reads the route itself (`App.svelte`
-passes the breadcrumb); site chrome (a
-future footer too) is rendered once in `App.svelte`, outside the pages.
+passes the breadcrumb); site chrome (header and `SiteFooter`) is rendered
+once in `App.svelte`, outside the pages. The footer, like the top of
+README.md, says the project is not affiliated with or endorsed by the
+makers of the tools it measures (their names are trademarks, used only to
+identify them): keep both, and name any newly supported tool's owner in
+them.
 Clicking the avatar opens Your profile / Leaderboard / Settings / Admin
 panel (admins) / Sign out. `/settings` (signed in) holds Account and Devices; `/admin`
 (admins) holds the server overview, the account-creation switch and the

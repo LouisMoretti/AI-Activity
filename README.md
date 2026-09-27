@@ -1,5 +1,14 @@
 # AI Activity
 
+> **Not affiliated.** AI Activity is an independent, unofficial project. It
+> is not affiliated with, endorsed or sponsored by Anthropic, OpenAI or the
+> OpenCode project. Claude, Claude Code, Codex, OpenCode and the other
+> product names used here are trademarks of their respective owners, named
+> only to identify the tools whose usage the dashboard measures. It reads
+> the files these tools already write on your own device; it does not call
+> their APIs on your behalf or work around their limits. Using those tools
+> stays subject to their own terms.
+
 ## Send Claude Code usage from a device
 
 1. Create a device key on the server: `npm run gen-key -- "my-laptop"`, or

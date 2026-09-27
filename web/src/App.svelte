@@ -10,6 +10,7 @@
   import NewAccountForm from "./components/NewAccountForm.svelte";
   import OpenCodeCard from "./components/OpenCodeCard.svelte";
   import ProfilePanel from "./components/ProfilePanel.svelte";
+  import SiteFooter from "./components/SiteFooter.svelte";
   import SiteHeader from "./components/SiteHeader.svelte";
   import Section from "./components/Section.svelte";
   import TodayByTool from "./components/TodayByTool.svelte";
@@ -39,7 +40,7 @@
   });
 </script>
 
-<!-- Site chrome (header, and a footer if one is ever added) lives here,
+<!-- Site chrome (header and footer) lives here,
      outside the page branches, so every page gets exactly the same. -->
 <div class="shell">
   <SiteHeader account={dash.account} demo={!!dash.vm?.demo}
@@ -120,6 +121,8 @@
       </Section>
     {/if}
   </main>
+
+  <SiteFooter />
 </div>
 
 <style>
