@@ -40,8 +40,11 @@ else:
 
 SERVER = os.environ.get("AI_ACTIVITY_URL", "<server>")
 KEY = os.environ.get("AI_ACTIVITY_KEY", "<device key>")
-CODEX_HOME = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
-CACHE = os.path.expanduser("~/.cache/ai-activity")
+# os.path.join, not "~/.codex": offsets are keyed by path, which must use
+# one separator on Windows.
+HOME = os.path.expanduser("~")
+CODEX_HOME = os.environ.get("CODEX_HOME") or os.path.join(HOME, ".codex")
+CACHE = os.path.join(HOME, ".cache", "ai-activity")
 BATCH = 400
 
 

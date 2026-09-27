@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
@@ -33,7 +33,10 @@ const filler = (n) => Array.from({ length: n }, () => JSON.stringify({ type: "us
 
 /**
  * Run a shell command with stdin in its own process group; optionally kill
- * that group early. On Windows: through cmd.exe, killing its process tree.
+ * that group early. Windows has no process groups: there it runs through
+ * cmd.exe and the kill ends that shell, as cancelling a command does. (A
+ * tree kill landing before the launcher returned would take the upload with
+ * it: that refresh is then sent by the next one.)
  */
 function run(cmd, { stdin = "{}", env, killAfterMs } = {}) {
   return new Promise((resolve) => {
@@ -44,7 +47,7 @@ function run(cmd, { stdin = "{}", env, killAfterMs } = {}) {
     p.stdin.end(stdin);
     const kill = () => {
       try {
-        if (WINDOWS) execFileSync("taskkill", ["/T", "/F", "/PID", String(p.pid)], { stdio: "ignore" });
+        if (WINDOWS) p.kill();
         else process.kill(-p.pid, "SIGKILL");
       } catch { /* exited */ }
     };
@@ -97,13 +100,15 @@ const VARIANTS = [
 ];
 
 for (const variant of VARIANTS) describe(`Claude Code collector: ${variant.name} from README.md`, () => {
-  let srv, key, home, env, proxy, project, transcript, marker;
+  let srv, key, home, env, proxy, project, transcript, marker, installed;
   const stats = async () => (await req(srv.base, "GET", "/api/u/admin/stats?days=730", { headers: asNewClient() })).json;
   const scriptPath = () => path.join(home, ".claude", "ai-activity-claude-code.py");
   /** The statusLine command posting to `base`; the script variant installs its copy for that. */
   const cmd = (base) => {
     if (!variant.script) return statusLine.replaceAll("<server>", base).replaceAll("<device key>", key);
-    fs.writeFileSync(scriptPath(), SCRIPT.replace("<server>", base).replace("<device key>", key));
+    // Rewritten only when the server changes: never under a run starting.
+    if (installed !== base) fs.writeFileSync(scriptPath(), SCRIPT.replace("<server>", base).replace("<device key>", key));
+    installed = base;
     if (!WINDOWS) return `'${PYTHON}' '${scriptPath()}'`;
     assert.ok(windowsStatusLine.startsWith(WINDOWS_PREFIX));
     return windowsStatusLine.replace(WINDOWS_PREFIX, `"${PYTHON}" "${scriptPath()}"`);
@@ -153,9 +158,8 @@ for (const variant of VARIANTS) describe(`Claude Code collector: ${variant.name}
       context_window: { used_percentage: 37, context_window_size: 200000 },
     });
     // Claude Code cancels the command on the next refresh. The proxy holds the
-    // upload for 1.5 s, so without detaching the kill always lands mid-upload
-    // (Windows starts Python slower: later there, still mid-upload).
-    await run(viaProxy(), { stdin: input, env, killAfterMs: WINDOWS ? 1000 : 300 });
+    // upload for 1.5 s, so without detaching the kill always lands mid-upload.
+    await run(viaProxy(), { stdin: input, env, killAfterMs: 300 });
     assert.ok(await waitFor(async () => (await stats()).events === 5), "the detached upload finished despite the kill");
     assert.equal((await stats()).total_tokens, 5 * PER_MESSAGE + 983 + 10 + 20 + 30 + 16);
     const q = (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas;

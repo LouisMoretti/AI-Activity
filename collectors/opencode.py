@@ -37,9 +37,12 @@ else:
 
 SERVER = os.environ.get("AI_ACTIVITY_URL", "<server>")
 KEY = os.environ.get("AI_ACTIVITY_KEY", "<device key>")
-DATA = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+# os.path.join, not "~/.local/share": the offset is keyed by the database's
+# path, which must use one separator on Windows.
+HOME = os.path.expanduser("~")
+DATA = os.environ.get("XDG_DATA_HOME") or os.path.join(HOME, ".local", "share")
 DB = os.environ.get("OPENCODE_DB") or os.path.join(DATA, "opencode", "opencode.db")
-CACHE = os.path.expanduser("~/.cache/ai-activity")
+CACHE = os.path.join(HOME, ".cache", "ai-activity")
 BATCH = 400
 
 # Numeric fields only: the message's text lives in other tables, never read.
