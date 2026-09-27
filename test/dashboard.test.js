@@ -143,6 +143,10 @@ describe("dashboard state", () => {
     assert.deepEqual(dash.vm.antigravity.pools.map(p => p.windows.map(w => w.pct)), [[42, 68], [19, 32]]);
     const ids = dash.vm.sessions.map(s => s.id.slice(0, 8));
     assert.equal(dash.vm.sessions.filter(s => s.tool === "antigravity").length, 2);
+    assert.equal(dash.vm.opencode.today.tokens, 0);
+    assert.equal(dash.vm.opencode.today.sessions, 0);
+    assert.equal(dash.vm.opencode.today.calls, 0);
+    assert.equal(dash.vm.opencode.recent.length, 1, "demo covers history without use today");
     assert.equal(new Set(ids).size, ids.length, "demo ids differ in what the list shows");
     assert.ok(dash.vm.stats.today.byTool.some(r => r.name === "antigravity" && r.value > 0));
     for (const figure of [dash.vm.stats.today, dash.vm.stats.total, dash.vm.stats.sessions]) {

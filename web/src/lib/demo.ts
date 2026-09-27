@@ -66,6 +66,7 @@ export function demoDashboard(provider: Provider): DashboardVM {
     { tool: "codex", id: "demo-e5f6a7b8", model: "gpt-5-codex", calls: 57, tokens: 6_100_000, lastActive: now - 25 * 60, context: { pct: 29, size: 258000 } },
     { tool: "claude-code", id: "demo-c9d0e1f2", model: "claude-sonnet-5", calls: 12, tokens: 940_000, lastActive: now - 5 * 3600, context: null },
     { tool: "antigravity", id: "demo-k1l2m3n4", model: "claude-sonnet-5", calls: 9, tokens: 180_000, lastActive: now - 9 * 3600, context: null },
+    { tool: "opencode", id: "demo-o5p6q7r8", model: "openai/gpt-5.2", calls: 18, tokens: 760_000, lastActive: now - 2 * 86400, context: null },
   ] satisfies SessionVM[]).filter((s) => visible.includes(s.tool));
 
   return {
@@ -90,8 +91,11 @@ export function demoDashboard(provider: Provider): DashboardVM {
       updatedAt: now - 20 * 60,
       pools: [pool(null, [38, now + 2 * 3600 + 18 * 60], [64, now + 4 * 86400])],
     },
-    // The fictional dataset has no OpenCode usage.
-    opencode: { recent: [], today: { tokens: 0, sessions: 0, calls: 0, models: 0, providers: 0 } },
+    // Exercise the state where history exists but the tool was not used today.
+    opencode: {
+      recent: sessions.filter((s) => s.tool === "opencode"),
+      today: { tokens: 0, sessions: 0, calls: 0, models: 0, providers: 0 },
+    },
     antigravity: {
       tool: "antigravity",
       updatedAt: now - 60,

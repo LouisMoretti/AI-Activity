@@ -37,10 +37,14 @@
     <ToolHeader {tool} note={last ? "" : "No usage yet"} />
     {#if last}
       <div class="label">Today</div>
-      <div class="value">{fmtCompact(vm.today.tokens)}<small> tokens</small></div>
-      <div class="meta">{plural(vm.today.sessions, "conversation")} · {plural(vm.today.calls, "call")}</div>
-      {#if vm.today.models}
-        <div class="meta">{plural(vm.today.models, "model")}{#if vm.today.providers !== null} · {plural(vm.today.providers, "provider")}{/if}</div>
+      {#if vm.today.calls === 0}
+        <div class="unused">Not used yet today</div>
+      {:else}
+        <div class="value">{fmtCompact(vm.today.tokens)}<small> tokens</small></div>
+        <div class="meta">{plural(vm.today.sessions, "conversation")} · {plural(vm.today.calls, "call")}</div>
+        {#if vm.today.models}
+          <div class="meta">{plural(vm.today.models, "model")}{#if vm.today.providers !== null} · {plural(vm.today.providers, "provider")}{/if}</div>
+        {/if}
       {/if}
     {/if}
   </section>
@@ -77,6 +81,7 @@
   .label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); }
   .status { margin-left: auto; display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; white-space: nowrap; }
   .value { font-size: 22px; font-weight: 550; font-variant-numeric: tabular-nums; line-height: 1.1; margin-bottom: 6px; }
+  .unused { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
   small { color: var(--muted); font-size: 12px; font-weight: 400; }
   .rows { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
   .row { display: flex; align-items: center; gap: 10px; min-width: 0; }
