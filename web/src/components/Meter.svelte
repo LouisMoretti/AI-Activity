@@ -1,5 +1,5 @@
 <script lang="ts">
-  // The fill blends from --tool-meter-start to --tool-meter-limit by --fill-pct (falls back to --tool, then --accent).
+  // Keep the tool colour at normal usage, then use shared warning colours.
   let { pct, label }: { pct: number | null; label: string } = $props();
   const clamped = $derived(pct === null ? 0 : Math.max(0, Math.min(100, Math.round(pct))));
 </script>
@@ -8,15 +8,14 @@
   <div class="track" aria-hidden="true"></div>
 {:else}
   <div class="track" role="progressbar" aria-label={label} aria-valuemin="0" aria-valuemax="100" aria-valuenow={clamped}>
-    <div class="fill" style:width="{clamped}%" style:--fill-pct="{clamped}%"></div>
+    <div class="fill" class:warning={clamped >= 70 && clamped < 90}
+      class:danger={clamped >= 90} style:width="{clamped}%"></div>
   </div>
 {/if}
 
 <style>
   .track { height: 6px; background: var(--track); border-radius: 10px; overflow: hidden; }
-  .fill {
-    height: 100%; border-radius: 10px;
-    background: var(--tool-meter-start, var(--tool, var(--accent)));
-    background: color-mix(in srgb, var(--tool-meter-start, var(--tool, var(--accent))), var(--tool-meter-limit, var(--accent-meter-limit)) var(--fill-pct));
-  }
+  .fill { height: 100%; border-radius: 10px; background: var(--tool, var(--accent)); }
+  .fill.warning { background: var(--warn); }
+  .fill.danger { background: var(--danger); }
 </style>

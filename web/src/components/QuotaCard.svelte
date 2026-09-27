@@ -8,8 +8,7 @@
   let { vm }: { vm: QuotaToolVM } = $props();
 </script>
 
-<article class="card" style:--tool={TOOL_META[vm.tool].color}
-  style:--tool-meter-start={TOOL_META[vm.tool].meterStart} style:--tool-meter-limit={TOOL_META[vm.tool].meterLimit}>
+<article class="card" style:--tool={TOOL_META[vm.tool].color}>
   <ToolHeader tool={vm.tool} updatedAt={vm.updatedAt} note={vm.updatedAt ? "" : "No snapshot yet"} />
   <div class="pools" class:split={vm.pools.length > 1}>
     {#each vm.pools as pool, i (pool.label ?? i)}
