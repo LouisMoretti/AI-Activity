@@ -262,6 +262,31 @@ extension.
   Give the PR the issue's labels and assign it to its author:
   `gh pr create --assignee @me --label enhancement --label ui`.
 
+### Worktrees
+
+Every change is made in its own git worktree, on its own branch. The main
+checkout stays on a clean `main` and is never edited directly:
+
+```bash
+git fetch origin
+git worktree add ../AI-Activity-<branch> -b <branch> origin/main
+cd ../AI-Activity-<branch> && npm install   # node_modules is per worktree
+cp ../AI-Activity/.env .                     # if the task needs it
+```
+
+Once the work is done (PR merged or abandoned), clean up:
+
+```bash
+cd ../AI-Activity
+git worktree remove ../AI-Activity-<branch>  # refuses if changes are left
+git branch -d <branch>                       # -D if the PR was squash-merged
+git worktree prune
+```
+
+- Stop what runs from the worktree first (`npm run dev`, tunnels, test
+  servers), and never leave a stale worktree or branch behind.
+- `data/` is per worktree: a fresh one starts with an empty database.
+
 ## 3. Architecture
 
 ```
