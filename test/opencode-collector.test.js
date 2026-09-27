@@ -2,6 +2,7 @@
 // (collectors/opencode-plugin.js), installed as README.md says, against a
 // real server, with a fake OpenCode database in a temporary HOME.
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { test, describe, before, beforeEach, after } from "node:test";
@@ -161,6 +162,36 @@ describe("OpenCode collector (plugin from README.md)", () => {
     // The events show up before the coalesced second run finished.
     await collectorsDone();
     assert.equal((await summary()).tokens - before.tokens, 105);
+  });
+
+  test("a redirect cannot forward the device bearer key", async () => {
+    const before = await summary();
+    const saved = state();
+    message("msg_redirect", "ses_root", tok(20, 2));
+    let received = 0;
+    const destination = http.createServer((request, response) => {
+      if (request.url === "/api/ingest/opencode" && request.headers.authorization === `Bearer ${key}`) received++;
+      response.end("{}");
+    });
+    await new Promise((resolve) => destination.listen(0, "127.0.0.1", resolve));
+    const source = http.createServer((request, response) => {
+      response.writeHead(302, { Location: `http://127.0.0.1:${destination.address().port}/api/ingest/opencode` });
+      response.end();
+    });
+    await new Promise((resolve) => source.listen(0, "127.0.0.1", resolve));
+    try {
+      install(`http://127.0.0.1:${source.address().port}`);
+      await idle();
+      await collectorsDone();
+      assert.equal(received, 0);
+      assert.deepEqual(state(), saved, "a rejected upload does not advance offsets");
+    } finally {
+      install(srv.base);
+      await new Promise((resolve) => source.close(resolve));
+      await new Promise((resolve) => destination.close(resolve));
+    }
+    await idle();
+    assert.ok(await waitFor(async () => (await summary()).events === before.events + 1));
   });
 
   test("no prompt, reply, title or path is read", () => {

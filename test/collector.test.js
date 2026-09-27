@@ -182,4 +182,26 @@ describe("collector one-liner from README.md", () => {
         .some((x) => x.limit_type === "five_hour" && x.used_pct === 100)));
     assert.equal((await stats()).total_tokens, before.total_tokens, "no usage stored from a quota-only refresh");
   });
+
+  test("a redirect cannot forward the device bearer key", async () => {
+    let received = 0;
+    const destination = http.createServer((request, response) => {
+      if (request.url === "/api/ingest/claude-code" && request.headers.authorization === `Bearer ${key}`) received++;
+      response.end("{}");
+    });
+    await new Promise((resolve) => destination.listen(0, "127.0.0.1", resolve));
+    const source = http.createServer((request, response) => {
+      response.writeHead(302, { Location: `http://127.0.0.1:${destination.address().port}/api/ingest/claude-code` });
+      response.end();
+    });
+    await new Promise((resolve) => source.listen(0, "127.0.0.1", resolve));
+    try {
+      await run(cmd(`http://127.0.0.1:${source.address().port}`), { env });
+      await collectorsDone(key);
+      assert.equal(received, 0);
+    } finally {
+      await new Promise((resolve) => source.close(resolve));
+      await new Promise((resolve) => destination.close(resolve));
+    }
+  });
 });

@@ -101,11 +101,17 @@ def read(since):
         db.close()
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    # Never redirect a device bearer key to a different destination.
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
 def post(body):
     req = urllib.request.Request(
         SERVER.rstrip("/") + "/api/ingest/opencode", data=json.dumps(body).encode(),
         headers={"Authorization": "Bearer " + KEY, "Content-Type": "application/json"})
-    urllib.request.urlopen(req, timeout=60).read()
+    urllib.request.build_opener(NoRedirect).open(req, timeout=60).read()
 
 
 def save(path, state):
