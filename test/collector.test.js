@@ -138,6 +138,9 @@ describe("collector one-liner from README.md", () => {
   test("later refreshes send only what was added, however long", async () => {
     const before = await stats();
     await run(cmd(srv.base), { env });
+    // Let the detached upload finish: the check then means something, and
+    // the append below cannot race this collector.
+    await collectorsDone(key);
     assert.equal((await stats()).total_tokens, before.total_tokens);
     // Finish the half-written line, then write far more than any tail window.
     fs.appendFileSync(transcript, "\n" + filler(1000) + entry("msg_late", 5) + "\n");
