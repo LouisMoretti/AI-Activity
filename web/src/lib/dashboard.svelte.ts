@@ -64,6 +64,9 @@ function routeFromPath(): Route {
 
 export const profilePath = (username: string) => `/u/${encodeURIComponent(username)}`;
 
+/** The complete in-app address to return to after signing in. */
+export const currentPath = () => location.pathname + location.search;
+
 /** Where to go after signing in: a same-site path from ?next=, if any. */
 function nextPath(): string | null {
   const next = new URLSearchParams(location.search).get("next");
@@ -120,7 +123,7 @@ export class Dashboard {
         // Public, like profile pages: the page loads its own data.
         else if (route.page === "leaderboard") this.status = "ready";
         else if (route.page === "settings" || route.page === "admin") {
-          this.go(`/?next=${encodeURIComponent(`/${route.page}`)}`, true);
+          this.go(`/?next=${encodeURIComponent(currentPath())}`, true);
         }
         else this.status = auth.setup_required ? "setup" : "signed-out";
         return;
@@ -152,7 +155,7 @@ export class Dashboard {
   }
 
   private async loadProfile(username: string): Promise<void> {
-    const [profile, summary, activity, quotas, sessions, ocSummary, ocLatest] = await Promise.all([
+    const [profile, summary, activity, quotas, sessions, ocSummary, ocLatest, agSummary, agLatest] = await Promise.all([
       api.profile(username),
       // Every tool, always: there is no tool filter.
       api.summary(username, null),
@@ -162,11 +165,15 @@ export class Dashboard {
       api.summary(username, "opencode"),
       // Enough to count the conversations active right now.
       api.sessions(username, 10, "opencode", 0),
+      // Antigravity's card falls back to the same view without quotas.
+      api.summary(username, "antigravity"),
+      api.sessions(username, 10, "antigravity", 0),
     ]);
     // Navigated elsewhere while this was in flight: its queued reload wins.
     if (this.route.page !== "profile" || this.route.username !== username) return;
     this.shown = profile;
-    this.live = { summary, activity, quotas, sessions, opencode: { summary: ocSummary, latest: ocLatest } };
+    this.live = { summary, activity, quotas, sessions, opencode: { summary: ocSummary, latest: ocLatest },
+      antigravity: { summary: agSummary, latest: agLatest } };
     this.status = "ready";
   }
 
@@ -207,7 +214,9 @@ export class Dashboard {
     } catch (e) {
       return e instanceof UnauthorizedError ? "Wrong username or password." : (e as Error).message;
     }
-    this.go(nextPath() ?? "/", true);
+    // Keep the current query while the authenticated home route resolves to
+    // the viewer's profile (notably /?demo=1 -> /u/<name>?demo=1).
+    this.go(nextPath() ?? currentPath(), true);
     return null;
   }
 
@@ -220,7 +229,7 @@ export class Dashboard {
       // The only 401 here is a wrong setup code.
       return e instanceof UnauthorizedError ? "Wrong setup code: copy it from the server log." : (e as Error).message;
     }
-    this.go("/", true);
+    this.go(nextPath() ?? currentPath(), true);
     return null;
   }
 
@@ -234,7 +243,7 @@ export class Dashboard {
   private sessionLost(): void {
     if (!this.account) return;
     this.signedOut();
-    this.go(`/?next=${encodeURIComponent(location.pathname)}`, true);
+    this.go(`/?next=${encodeURIComponent(currentPath())}`, true);
   }
 
   /** Drop everything the previous account could see. */

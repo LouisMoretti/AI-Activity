@@ -1,20 +1,23 @@
 // Runs the Codex collector (collectors/codex.py) through the Stop hook
-// command printed in README.md, against a real server, with fake rollouts in
-// a temporary HOME.
+// command printed in README.md (the Windows one on Windows), against a real
+// server, with fake rollouts in a temporary HOME.
 import fs from "node:fs";
-import os from "node:os";
+import http from "node:http";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { test, describe, before, after } from "node:test";
+import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { startServer, req, newDevice, asNewClient } from "./helpers.js";
+import { startServer, req, newDevice, asNewClient, isLocked, processesGone, PYTHON, tempHome } from "./helpers.js";
 
-const README = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8");
-const hooks = JSON.parse(README.match(/`~\/\.codex\/hooks\.json`:\n\n```json\n([\s\S]*?)\n```/)[1]);
-const hookCommand = hooks.hooks.Stop[0].hooks[0].command;
-const submitCommand = hooks.hooks.UserPromptSubmit[0].hooks[0].command;
+const WINDOWS = process.platform === "win32";
+const README = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+const hooks = JSON.parse(README.match(WINDOWS
+  ? /`%USERPROFILE%\\\.codex\\hooks\.json`:\n\n```json\n([\s\S]*?)\n```/
+  : /`~\/\.codex\/hooks\.json`:\n\n```json\n([\s\S]*?)\n```/)[1]);
 const SCRIPT = fs.readFileSync(new URL("../collectors/codex.py", import.meta.url), "utf8");
+// The README's Windows commands name C:\Users\<user>: run them on this test's copy instead.
+const WINDOWS_PREFIX = 'python "C:\\Users\\<user>\\.codex\\ai-activity-codex.py"';
 
 // Recent times: a quota window is only kept if it resets within its length of the measurement.
 const START = Date.now() - 3600 * 1000;
@@ -42,10 +45,12 @@ function response(id, session, u, total, five = 10) {
 }
 const secret = () => line("response_item", { type: "message", role: "user", content: [{ type: "input_text", text: "secret prompt" }] }) + "\n";
 
-/** Run a shell command in its own process group; resolves with its stdout. */
+/** Run a shell command (in its own process group, but on Windows); resolves with its stdout. */
 function run(cmd, env) {
   return new Promise((resolve) => {
-    const p = spawn("sh", ["-c", cmd], { env, detached: true, stdio: ["pipe", "pipe", "ignore"] });
+    const p = WINDOWS
+      ? spawn(cmd, { env, shell: true, windowsHide: true, stdio: ["pipe", "pipe", "ignore"] })
+      : spawn("sh", ["-c", cmd], { env, detached: true, stdio: ["pipe", "pipe", "ignore"] });
     let out = "";
     p.stdout.on("data", (d) => { out += d; });
     p.stdin.on("error", () => {}); // the hook may exit before reading its input (EPIPE)
@@ -64,19 +69,40 @@ async function waitFor(fn, ms = 15000) {
 }
 
 describe("Codex collector (Stop hook from README.md)", () => {
-  let srv, key, home, env, current, legacy;
+  let srv, key, home, env, current, legacy, hookCommand, submitCommand, toolCommand;
   const S1 = "01a0b861-4cf4-7f10-8e5b-8d110992ee04";
   const S0 = "019e0073-fee0-7000-8000-000000000000";
   const summary = async () => (await req(srv.base, "GET", "/api/u/admin/summary?tool=codex", { headers: asNewClient() })).json.total;
   const install = (server) => fs.writeFileSync(path.join(home, ".codex", "ai-activity-codex.py"),
     SCRIPT.replace("<server>", server).replace("<device key>", key));
-  const state = () => JSON.parse(fs.readFileSync(path.join(home, ".cache", "ai-activity", "codex.json"), "utf8"));
+  const cacheFile = () => path.join(home, ".cache", "ai-activity", "codex.json");
+  const state = () => JSON.parse(fs.readFileSync(cacheFile(), "utf8"));
+
+  /**
+   * Collectors run detached (setsid -f), so a hook's command returns before
+   * its upload ends. Wait until no run is left: one still going would
+   * otherwise read what the next test appends and move its offsets. The
+   * script path (in this test's HOME) is on its command line from the fork
+   * on, before python even starts, while a lock is only taken later.
+   */
+  async function collectorsDone() {
+    assert.ok(await processesGone(home), "a detached collector from an earlier run is still running");
+  }
 
   before(async () => {
     srv = await startServer();
     key = (await newDevice(srv.base, "codex-collector")).key;
-    home = fs.mkdtempSync(path.join(os.tmpdir(), "ai-activity-codex-"));
-    env = { ...process.env, HOME: home, CODEX_HOME: "", TZ: "IST-5:30" }; // POSIX TZ: UTC+5:30, no tz database needed
+    home = tempHome("ai-activity-codex-");
+    const { AI_ACTIVITY_URL, AI_ACTIVITY_KEY, ...inherited } = process.env; // the installed copy says where
+    // POSIX TZ (Windows reads it too): UTC+5:30, no tz database needed.
+    env = { ...inherited, HOME: home, USERPROFILE: home, CODEX_HOME: "", TZ: "IST-5:30" };
+    const command = (event) => {
+      const c = hooks.hooks[event][0].hooks[0].command;
+      if (!WINDOWS) return c;
+      assert.ok(c.startsWith(WINDOWS_PREFIX));
+      return c.replace(WINDOWS_PREFIX, `"${PYTHON}" "${path.join(home, ".codex", "ai-activity-codex.py")}"`);
+    };
+    [hookCommand, submitCommand, toolCommand] = ["Stop", "UserPromptSubmit", "PostToolUse"].map(command);
     const day = path.join(home, ".codex", "sessions", "2026", "09", "20");
     fs.mkdirSync(day, { recursive: true });
     fs.mkdirSync(path.join(home, ".codex", "archived_sessions"), { recursive: true });
@@ -101,10 +127,18 @@ describe("Codex collector (Stop hook from README.md)", () => {
       tokenCount(usage(700, 500, 30), 1250, 3),
     ].join("\n") + "\n");
   });
-  after(() => {
-    srv.stop();
-    fs.rmSync(home, { recursive: true, force: true });
+  after(async () => {
+    try {
+      await collectorsDone();
+    } finally {
+      // Clean up even if a collector is stuck, so its failure is the one reported.
+      await srv.stop();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
+  // A detached upload ends after its hook command returned: never let one
+  // read what the next test appends.
+  beforeEach(() => collectorsDone());
 
   test("first run sends every response once, detached, and answers the hook at once", async () => {
     install(srv.base);
@@ -124,20 +158,26 @@ describe("Codex collector (Stop hook from README.md)", () => {
     const utcOffsets = db.prepare("SELECT DISTINCT utc_offset_min AS o FROM usage_events").all().map((r) => r.o);
     db.close();
     assert.deepEqual(utcOffsets, [330]);
-    // The offset stops before the half-written line.
+    // The offset stops before the half-written line. It is saved after the
+    // server answered, so the events can show up first (and the state file
+    // may not exist yet).
     const complete = fs.readFileSync(current).lastIndexOf(10) + 1;
-    assert.ok(await waitFor(() => state()[current]?.[0] === complete), "the offset stops before the half-written line");
+    assert.ok(await waitFor(() => fs.existsSync(cacheFile()) && state()[current]?.[0] === complete), "the offset stops before the half-written line");
   });
 
   test("later runs send only what was added", async () => {
     const before = await summary();
     await run(hookCommand, env);
-    await sleep(1000);
+    // A no-op run saves nothing, so there is no state to wait for: wait
+    // until it is gone, then the unchanged totals mean something.
+    await collectorsDone();
     assert.equal((await summary()).tokens, before.tokens);
     fs.appendFileSync(current, "\n" + secret().repeat(500) + response("resp_3", S1, usage(3000, 2900, 10), 6160));
     await run(hookCommand, env);
     assert.ok(await waitFor(async () => (await summary()).events === before.events + 1));
     assert.equal((await summary()).tokens - before.tokens, 3010);
+    // The detached collector saves its offsets after the server answered.
+    assert.ok(await waitFor(() => state()[current]?.[0] === fs.statSync(current).size), "the offset moves past resp_3");
   });
 
   test("nothing is lost while the server is down", async () => {
@@ -145,15 +185,54 @@ describe("Codex collector (Stop hook from README.md)", () => {
     const saved = state();
     fs.appendFileSync(current, response("resp_4", S1, usage(100, 0, 5), 6265));
     install("http://127.0.0.1:9");
-    await run(hookCommand, env);
-    await sleep(1500);
-    assert.deepEqual(state(), saved);
-    install(srv.base);
+    try {
+      await run(hookCommand, env);
+      // The failed run saves nothing: wait until it is gone, then the
+      // unchanged state means something.
+      await collectorsDone();
+      assert.deepEqual(state(), saved);
+    } finally {
+      install(srv.base); // a failure here must not leave the next tests on a dead server
+    }
     // Two runs at once: the second waits for the lock, nothing is sent twice.
     await Promise.all([run(hookCommand, env), run(hookCommand, env)]);
     assert.ok(await waitFor(async () => (await summary()).events === before.events + 1));
-    await sleep(1000);
+    // The events show up before the detached uploads saved their offsets.
+    await collectorsDone();
     assert.equal((await summary()).tokens - before.tokens, 105);
+  });
+
+  test("a redirect cannot forward the device bearer key", async () => {
+    const before = await summary();
+    const saved = state();
+    fs.appendFileSync(current, response("resp_redirect", S1, usage(20, 0, 2), 6287));
+    let received = 0;
+    const destination = http.createServer((request, response) => {
+      if (request.url === "/api/ingest/codex" && request.headers.authorization === `Bearer ${key}`) received++;
+      response.end("{}");
+    });
+    await new Promise((resolve) => destination.listen(0, "127.0.0.1", resolve));
+    let redirectStatus = 302;
+    const source = http.createServer((request, response) => {
+      response.writeHead(redirectStatus, { Location: `http://127.0.0.1:${destination.address().port}/api/ingest/codex` });
+      response.end();
+    });
+    await new Promise((resolve) => source.listen(0, "127.0.0.1", resolve));
+    try {
+      install(`http://127.0.0.1:${source.address().port}`);
+      for (redirectStatus of [301, 302, 303, 307, 308]) {
+        await run(hookCommand, env);
+        await collectorsDone();
+        assert.equal(received, 0, `${redirectStatus} must not forward the key`);
+        assert.deepEqual(state(), saved, `${redirectStatus} must not advance offsets`);
+      }
+    } finally {
+      install(srv.base);
+      await new Promise((resolve) => source.close(resolve));
+      await new Promise((resolve) => destination.close(resolve));
+    }
+    await run(hookCommand, env);
+    assert.ok(await waitFor(async () => (await summary()).events === before.events + 1));
   });
 
   test("a line with an unreadable timestamp is skipped, not retried forever", async () => {
@@ -209,7 +288,57 @@ describe("Codex collector (Stop hook from README.md)", () => {
     const before = await summary();
     const out = await run(submitCommand, env);
     assert.deepEqual(JSON.parse(out), {}, "the hook prints valid JSON for Codex");
-    await sleep(1000);
+    // A no-op run saves nothing, so there is no state to wait for.
+    await collectorsDone();
     assert.equal((await summary()).tokens, before.tokens, "nothing new: the run is a no-op");
+  });
+
+  test("the PostToolUse hook sends a turn's usage while it runs", async () => {
+    const before = await summary();
+    fs.appendFileSync(current, response("resp_8", S1, usage(300, 200, 4), 6776));
+    const out = await run(toolCommand, env);
+    assert.deepEqual(JSON.parse(out), {}, "the hook prints valid JSON for Codex");
+    assert.ok(await waitFor(async () => (await summary()).events === before.events + 1));
+    assert.equal((await summary()).tokens - before.tokens, 304);
+  });
+
+  test("--hook (the Windows command, any OS) answers at once and uploads detached", async () => {
+    const before = await summary();
+    fs.appendFileSync(current, response("resp_10", S1, usage(20, 0, 2), 6849));
+    const out = await run(`"${PYTHON}" "${path.join(home, ".codex", "ai-activity-codex.py")}" --hook`, env);
+    assert.deepEqual(JSON.parse(out), {}, "the hook prints valid JSON for Codex");
+    assert.ok(await waitFor(async () => (await summary()).events === before.events + 1));
+    assert.equal((await summary()).tokens - before.tokens, 22);
+  });
+
+  test("while a run is busy, one more waits and the others stop at once", async () => {
+    const cache = path.join(home, ".cache", "ai-activity");
+    // Stands for an active run: holds the collection lock (the collector's own kind).
+    const holder = spawn(PYTHON, ["-c", WINDOWS
+      ? "import msvcrt, os, sys, time\nf = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT)\nmsvcrt.locking(f, msvcrt.LK_NBLCK, 1)\nprint('locked', flush=True)\ntime.sleep(60)"
+      : "import fcntl, sys, time\nf = open(sys.argv[1], 'w')\nfcntl.flock(f, fcntl.LOCK_EX)\nprint('locked', flush=True)\ntime.sleep(60)",
+      path.join(cache, "codex.lock")], { stdio: ["ignore", "pipe", "ignore"] });
+    const collector = path.join(home, ".codex", "ai-activity-codex.py");
+    const start = () => {
+      const p = spawn(PYTHON, [collector], { env, stdio: "ignore" });
+      return { p, exited: new Promise((r) => p.on("exit", (code) => r(code))) };
+    };
+    try {
+      await new Promise((r) => holder.stdout.once("data", r));
+      const before = await summary();
+      fs.appendFileSync(current, response("resp_9", S1, usage(50, 0, 1), 6827));
+      const waiter = start();
+      assert.ok(await waitFor(() => isLocked(path.join(cache, "codex-waiter.lock"))), "the first run waits");
+      const others = [start(), start(), start()];
+      const codes = await Promise.race([Promise.all(others.map((o) => o.exited)), sleep(10000).then(() => "still running")]);
+      assert.deepEqual(codes, [0, 0, 0], "the other runs stop at once");
+      assert.equal(waiter.p.exitCode, null, "the waiting run is still there");
+      assert.equal((await summary()).events, before.events, "nothing sent while the lock is held");
+      holder.kill();
+      assert.equal(await waiter.exited, 0);
+      assert.equal((await summary()).tokens - before.tokens, 51, "the waiting run sends what was added");
+    } finally {
+      holder.kill();
+    }
   });
 });

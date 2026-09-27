@@ -2,25 +2,25 @@
 // (collectors/opencode-plugin.js), installed as README.md says, against a
 // real server, with a fake OpenCode database in a temporary HOME.
 import fs from "node:fs";
-import os from "node:os";
+import http from "node:http";
 import path from "node:path";
-import { test, describe, before, after } from "node:test";
+import { pathToFileURL } from "node:url";
+import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { startServer, req, newDevice, asNewClient } from "./helpers.js";
+import { startServer, req, newDevice, asNewClient, processesGone, tempHome } from "./helpers.js";
 
 const SCRIPT = fs.readFileSync(new URL("../collectors/opencode.py", import.meta.url), "utf8");
 const PLUGIN = fs.readFileSync(new URL("../collectors/opencode-plugin.js", import.meta.url), "utf8");
 
 const START = Date.now() - 3600 * 1000;
 let seq = 0;
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function waitFor(fn, ms = 15000) {
   const end = Date.now() + ms;
   for (;;) {
     const v = await fn();
     if (v || Date.now() > end) return v;
-    await sleep(100);
+    await new Promise((r) => setTimeout(r, 100));
   }
 }
 
@@ -33,6 +33,18 @@ describe("OpenCode collector (plugin from README.md)", () => {
   const statePath = () => path.join(home, ".cache", "ai-activity", "opencode.json");
   const state = () => JSON.parse(fs.readFileSync(statePath(), "utf8"));
   const idle = () => hooks.event({ event: { type: "session.idle", properties: { sessionID: "ses_root" } } });
+
+  /**
+   * The plugin spawns the collector detached (unref'd), so an idle's upload
+   * ends after its event handler returned. Wait until no run is left: one
+   * still going would otherwise read what the next test appends. The script
+   * path (in this test's HOME) is on its command line from the spawn on,
+   * before python takes its lock; processesGone also covers the plugin
+   * starting its next run when one exits.
+   */
+  async function collectorsDone() {
+    assert.ok(await processesGone(home), "a detached collector from an earlier idle is still running");
+  }
 
   function session(id, parent = null) {
     db.prepare("INSERT INTO session (id, parent_id, title, directory) VALUES (?, ?, 'secret title', '/secret/path')").run(id, parent);
@@ -55,9 +67,13 @@ describe("OpenCode collector (plugin from README.md)", () => {
   before(async () => {
     srv = await startServer();
     key = (await newDevice(srv.base, "opencode-collector")).key;
-    home = fs.mkdtempSync(path.join(os.tmpdir(), "ai-activity-opencode-"));
-    // The plugin runs inside OpenCode and spawns the collector with its environment.
-    Object.assign(process.env, { HOME: home, XDG_DATA_HOME: "", OPENCODE_DB: "", TZ: "IST-5:30" }); // POSIX TZ: UTC+5:30
+    home = tempHome("ai-activity-opencode-");
+    // The plugin runs inside OpenCode and spawns the collector with its
+    // environment. POSIX TZ (Windows reads it too): UTC+5:30. The installed
+    // copy says where to send.
+    Object.assign(process.env, { HOME: home, USERPROFILE: home, XDG_DATA_HOME: "", OPENCODE_DB: "", TZ: "IST-5:30" });
+    delete process.env.AI_ACTIVITY_URL;
+    delete process.env.AI_ACTIVITY_KEY;
     fs.mkdirSync(path.join(configDir(), "plugins"), { recursive: true });
     fs.mkdirSync(path.join(home, ".local", "share", "opencode"), { recursive: true });
     db = new Database(path.join(home, ".local", "share", "opencode", "opencode.db"));
@@ -79,17 +95,25 @@ describe("OpenCode collector (plugin from README.md)", () => {
     message("msg_empty", "ses_other", tok(0, 0));
     message("msg_errored", "ses_other", undefined);
   });
-  after(() => {
-    db.close();
-    srv.stop();
-    fs.rmSync(home, { recursive: true, force: true });
+  after(async () => {
+    try {
+      await collectorsDone();
+    } finally {
+      // Clean up even if a collector is stuck, so its failure is the one reported.
+      db.close();
+      await srv.stop();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
+  // A detached upload ends after its idle handler returned: never let one
+  // read what the next test appends.
+  beforeEach(() => collectorsDone());
 
   test("the plugin sends every message once when OpenCode starts", async () => {
     install(srv.base);
     const plugin = path.join(configDir(), "plugins", "ai-activity.js");
     fs.writeFileSync(plugin, PLUGIN);
-    hooks = await (await import(plugin)).AIActivity({});
+    hooks = await (await import(pathToFileURL(plugin).href)).AIActivity({});
     assert.ok(await waitFor(async () => (await summary()).events === 4), "4 messages stored");
     const t = await summary();
     assert.equal(t.tokens, 27929 + 1070 + 15 + 10);
@@ -106,7 +130,7 @@ describe("OpenCode collector (plugin from README.md)", () => {
   });
 
   test("an idle session sends only what changed, and final counts replace a partial message", async () => {
-    await waitFor(() => fs.existsSync(statePath()));
+    assert.ok(await waitFor(() => fs.existsSync(statePath())), "the first upload saved its state");
     const before = await summary();
     message("msg_a5", "ses_root", tok(40, 2), { completed: false });
     await idle();
@@ -119,20 +143,62 @@ describe("OpenCode collector (plugin from README.md)", () => {
   });
 
   test("nothing is lost while the server is down", async () => {
-    await sleep(500);
+    // The collector saves its state after the server answered: wait for the
+    // last message sent before snapshotting it.
+    const latest = db.prepare("SELECT MAX(time_updated) AS t FROM message").get().t;
+    assert.ok(await waitFor(() => Object.values(state()).includes(latest)), "the state reaches the last message sent");
     const before = await summary();
     const saved = state();
     message("msg_a6", "ses_other", tok(100, 5));
     install("http://127.0.0.1:9");
-    await idle();
-    await sleep(1500);
-    assert.deepEqual(state(), saved);
-    install(srv.base);
+    try {
+      await idle();
+      // The failed run saves nothing: wait until it released the lock, then
+      // the unchanged state means something.
+      await collectorsDone();
+      assert.deepEqual(state(), saved);
+    } finally {
+      install(srv.base); // a failure here must not leave later runs on a dead server
+    }
     // Idle twice at once: the plugin runs the collector again after, nothing is sent twice.
     await Promise.all([idle(), idle()]);
     assert.ok(await waitFor(async () => (await summary()).events === before.events + 1));
-    await sleep(1000);
+    // The events show up before the coalesced second run finished.
+    await collectorsDone();
     assert.equal((await summary()).tokens - before.tokens, 105);
+  });
+
+  test("a redirect cannot forward the device bearer key", async () => {
+    const before = await summary();
+    const saved = state();
+    message("msg_redirect", "ses_root", tok(20, 2));
+    let received = 0;
+    const destination = http.createServer((request, response) => {
+      if (request.url === "/api/ingest/opencode" && request.headers.authorization === `Bearer ${key}`) received++;
+      response.end("{}");
+    });
+    await new Promise((resolve) => destination.listen(0, "127.0.0.1", resolve));
+    let redirectStatus = 302;
+    const source = http.createServer((request, response) => {
+      response.writeHead(redirectStatus, { Location: `http://127.0.0.1:${destination.address().port}/api/ingest/opencode` });
+      response.end();
+    });
+    await new Promise((resolve) => source.listen(0, "127.0.0.1", resolve));
+    try {
+      install(`http://127.0.0.1:${source.address().port}`);
+      for (redirectStatus of [301, 302, 303, 307, 308]) {
+        await idle();
+        await collectorsDone();
+        assert.equal(received, 0, `${redirectStatus} must not forward the key`);
+        assert.deepEqual(state(), saved, `${redirectStatus} must not advance offsets`);
+      }
+    } finally {
+      install(srv.base);
+      await new Promise((resolve) => source.close(resolve));
+      await new Promise((resolve) => destination.close(resolve));
+    }
+    await idle();
+    assert.ok(await waitFor(async () => (await summary()).events === before.events + 1));
   });
 
   test("no prompt, reply, title or path is read", () => {

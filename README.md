@@ -34,20 +34,39 @@ takes the key first, and refuses to run as root unless
 1. Create a device key on the server: `npm run gen-key -- "my-laptop"`, or
    **Settings → Devices** in the dashboard (one key per machine, it serves
    every tool on it; **Copy key** there gives it back any time).
-2. Add this to `~/.claude/settings.json` on the device, replacing
-   `<server>` (e.g. `http://localhost:3000` or your tunnel URL) and
-   `<device key>`:
+2. Copy `collectors/claude-code.py` to `~/.claude/ai-activity-claude-code.py`
+   on the device and replace `<server>` (e.g. `http://localhost:3000` or
+   your tunnel URL) and `<device key>` at its top (or set
+   `AI_ACTIVITY_URL` / `AI_ACTIVITY_KEY` in the environment Claude Code runs
+   in).
+3. Add this to `~/.claude/settings.json`:
 
 ```json
 "statusLine": {
   "type": "command",
-  "command": "input=$(cat); printf '%s' \"$input\" | setsid -f python3 -c \"import sys,json,os,glob,fcntl,signal,urllib.request as R;signal.alarm(900);N=chr(10);exec('def J(l):'+N+' d=json.JSONDecoder();i=0;r=[]'+N+' while 1:'+N+'  try: o,i=d.raw_decode(l,i)'+N+'  except Exception: return r'+N+'  r.append(o)');H=os.path.expanduser('~/.cache/ai-activity');os.makedirs(H,exist_ok=True);L=open(H+'/lock','w');fcntl.flock(L,fcntl.LOCK_EX);S=H+'/offsets.json';st=([o for o in (J(open(S).read()) if os.path.exists(S) else []) if isinstance(o,dict)] or [{}])[0];s=([o for o in J(sys.stdin.read()) if isinstance(o,dict)] or [{}])[0];off=lambda f,z:st.get(f,0) if st.get(f,0)<=z else 0;F=[(f,os.path.getsize(f)) for f in glob.glob(os.path.expanduser('~/.claude/projects/**/*.jsonl'),recursive=True)];F=[(f,off(f,z)) for f,z in F if z!=st.get(f)];NO={};RD=lambda f,o:(lambda b:b.seek(o) and 0 or b.read())(open(f,'rb'));E=[(m['id'],(u.get('output_tokens') or 0,os.path.basename(f)[:-6]==o.get('sessionId')),{'message_id':m['id'],'session_id':o.get('sessionId'),'model':m.get('model'),'occurred_at':T,'utc_offset_min':__import__('time').localtime(T).tm_gmtoff//60,'usage':{k:u.get(k) or 0 for k in ('input_tokens','output_tokens','cache_creation_input_tokens','cache_read_input_tokens')}}) for f,o0 in F for d in [RD(f,o0)] for k in [d.rfind(bytes([10]))+1] if NO.__setitem__(f,o0+k) is None for l in d[:k].decode('utf-8','replace').split(N) for o in J(l) if isinstance(o,dict) and o.get('type')=='assistant' and o.get('timestamp') for m in [o.get('message')] if isinstance(m,dict) and isinstance(m.get('id'),str) and isinstance(m.get('usage'),dict) for u in [m['usage']] for T in [int(__import__('datetime').datetime.fromisoformat(o['timestamp'].replace('Z','+00:00')).timestamp())]];M=list({i:e for i,q,e in sorted(E,key=lambda x:x[1])}.values());c=s.get('context_window') or {};B=dict(rate_limits=s.get('rate_limits') or {},context=dict(session_id=s.get('session_id'),used_pct=c.get('used_percentage'),window_size=c.get('context_window_size')),occurred_at=int(__import__('time').time()));P=lambda b:R.urlopen(R.Request('<server>/api/ingest/claude-code',data=json.dumps(b).encode(),headers={'Authorization':'Bearer <device key>','Content-Type':'application/json'}),timeout=60);[P(dict(B,messages=M[i:i+400])) for i in range(0,max(len(M),1),400)];st.update(NO);open(S+'.tmp','w').write(json.dumps(st));os.replace(S+'.tmp',S)\" >/dev/null 2>&1"
+  "command": "python3 ~/.claude/ai-activity-claude-code.py"
 }
 ```
 
-It needs `python3` and `setsid` (util-linux), both standard on Linux, and
-runs as your user: no root, no script to install, nothing printed in the
-status line.
+On Windows, use this instead, replacing `<user>` with your Windows user
+directory name (backslashes and quotes are already JSON-escaped):
+
+```json
+"statusLine": {
+  "type": "command",
+  "command": "python \"C:\\Users\\<user>\\.claude\\ai-activity-claude-code.py\""
+}
+```
+
+It needs Python 3 (standard library only) and runs as your user: no root,
+nothing printed in the status line. Use the absolute path of the
+interpreter if it is not on Claude Code's PATH (`python3 -c 'import sys;
+print(sys.executable)'`, or `python -c "import sys; print(sys.executable)"`
+on Windows, JSON-escaped like the script path).
+
+Replacing the former one-liner (`setsid -f python3 -c "…"`): swap its
+`statusLine` command for this one. The script keeps the same offsets file
+and lock, so nothing is sent twice or missed.
 
 What it does on every status line refresh:
 
@@ -68,10 +87,12 @@ What it does on every status line refresh:
 - The server stores each message id once. Claude Code sometimes writes a
   partial entry (a few output tokens) before the final one; the final
   counts replace it.
-- `setsid -f` starts the upload in its own session and returns at once.
-  Claude Code cancels a status line command when the next refresh comes;
-  the upload keeps running. Uploads wait for each other (a lock in
-  `~/.cache/ai-activity`) and give up after 15 minutes.
+- The script answers at once and starts the upload detached (its own
+  session on Linux/macOS; on Windows out of the console, the process group
+  and, when Windows permits it, the parent job). Claude Code cancels a
+  status line command when the next refresh comes; the upload keeps
+  running. Uploads wait for each other (a lock in `~/.cache/ai-activity`)
+  and give up after 15 minutes.
 - Also sends the 5-hour and 7-day quotas and the context fill.
 
 **Days are local, like GitHub's contribution calendar.** Each entry carries
@@ -84,7 +105,7 @@ count as UTC days; delete `~/.cache/ai-activity/offsets.json` (and
 twice, the server only adds the missing offsets.
 
 The tool is part of the URL (`/api/ingest/claude-code`, `/api/ingest/codex`,
-`/api/ingest/opencode`);
+`/api/ingest/opencode`, `/api/ingest/antigravity`);
 a bare `/api/ingest` answers `404`. See `AGENTS.md` §5 for the payload contract.
 
 ## Send Codex usage from a device
@@ -93,7 +114,7 @@ a bare `/api/ingest` answers `404`. See `AGENTS.md` §5 for the payload contract
 2. Copy `collectors/codex.py` to `~/.codex/ai-activity-codex.py` on the
    device and replace `<server>` and `<device key>` at its top (or set
    `AI_ACTIVITY_URL` / `AI_ACTIVITY_KEY` in the environment Codex runs in).
-3. Add the Stop hook to `~/.codex/hooks.json`:
+3. Add the hooks to `~/.codex/hooks.json` (the same command three times):
 
 `~/.codex/hooks.json`:
 
@@ -105,6 +126,32 @@ a bare `/api/ingest` answers `404`. See `AGENTS.md` §5 for the payload contract
     ],
     "UserPromptSubmit": [
       { "hooks": [{ "type": "command", "command": "setsid -f python3 ~/.codex/ai-activity-codex.py >/dev/null 2>&1 </dev/null; echo '{}'", "timeout": 10 }] }
+    ],
+    "PostToolUse": [
+      { "hooks": [{ "type": "command", "command": "setsid -f python3 ~/.codex/ai-activity-codex.py >/dev/null 2>&1 </dev/null; echo '{}'", "timeout": 10 }] }
+    ]
+  }
+}
+```
+
+On Windows, use this instead, replacing `<user>` with your Windows user
+directory name (`--hook` answers Codex and starts the upload detached, in
+any shell; use the absolute path of `python.exe` if it is not on Codex's
+PATH):
+
+`%USERPROFILE%\.codex\hooks.json`:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "python \"C:\\Users\\<user>\\.codex\\ai-activity-codex.py\" --hook", "timeout": 10 }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "python \"C:\\Users\\<user>\\.codex\\ai-activity-codex.py\" --hook", "timeout": 10 }] }
+    ],
+    "PostToolUse": [
+      { "hooks": [{ "type": "command", "command": "python \"C:\\Users\\<user>\\.codex\\ai-activity-codex.py\" --hook", "timeout": 10 }] }
     ]
   }
 }
@@ -112,7 +159,11 @@ a bare `/api/ingest` answers `404`. See `AGENTS.md` §5 for the payload contract
 
 Codex asks you to review a new hook once (`/hooks`) before running it.
 
-What it does at the end of every turn:
+When you update `~/.codex/hooks.json`, re-copy `collectors/codex.py` to
+`~/.codex/ai-activity-codex.py` at the same time: an older script blocks on
+`codex.lock`, so the frequent `PostToolUse` runs would pile up behind it.
+
+What it does after every tool call and at the end of every turn:
 
 - Reads what was added to every rollout under `~/.codex/sessions` and
   `~/.codex/archived_sessions` since the last successful upload. Every
@@ -141,10 +192,219 @@ What it does at the end of every turn:
   is lost while the server is down (no separate spool needed): the next
   turn sends the backlog with its original times. Delete that file to send
   everything again (safe: the server stores each response once).
-- `setsid -f` detaches the upload so the turn ends at once; `echo '{}'` is
-  the (empty) JSON answer Codex expects from a hook. Runs wait for each
-  other and give up after 15 minutes. The script is idempotent: it can
+- `PostToolUse` sends a long turn's usage while it runs (Codex writes each
+  response to the rollout as it comes), so the dashboard follows the turn
+  instead of catching up at its end. A reply without any tool call waits
+  for `Stop`.
+- `setsid -f` detaches the upload so Codex goes on at once; `echo '{}'` is
+  the (empty) JSON answer Codex expects from a hook. One run at a time,
+  with at most one waiting behind it (it reads the rollouts once its turn
+  comes, so any other run can stop at once); a run gives up after 15
+  minutes. The script is idempotent: it can
   also run by hand or from cron.
+
+## Send Antigravity usage from a device
+
+1. Create a device key as above (the same key serves every tool).
+2. Copy `collectors/antigravity.py` to `~/.gemini/ai-activity-antigravity.py`.
+   Replace `<server>` and `<device key>` at its top, or set `AI_ACTIVITY_URL`
+   and `AI_ACTIVITY_KEY` in the environment Antigravity runs in. Python 3
+   with the standard-library SQLite module is required.
+3. Merge this named hook into `~/.gemini/config/hooks.json` (keep existing
+   hooks). For Linux/macOS:
+
+```json
+{
+  "ai-activity": {
+    "enabled": true,
+    "PostInvocation": [
+      {
+        "type": "command",
+        "command": "python3 ~/.gemini/ai-activity-antigravity.py --post-invocation",
+        "timeout": 10
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python3 ~/.gemini/ai-activity-antigravity.py --hook",
+        "timeout": 10
+      }
+    ]
+  }
+}
+```
+
+For Windows, use this instead, replacing `<user>` with your Windows user
+directory name. Backslashes and quotes below are already JSON-escaped:
+
+```json
+{
+  "ai-activity": {
+    "enabled": true,
+    "PostInvocation": [
+      {
+        "type": "command",
+        "command": "python \"C:\\Users\\<user>\\.gemini\\ai-activity-antigravity.py\" --post-invocation",
+        "timeout": 10
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python \"C:\\Users\\<user>\\.gemini\\ai-activity-antigravity.py\" --hook",
+        "timeout": 10
+      }
+    ]
+  }
+}
+```
+
+Use **absolute paths to both Python and the collector** if Python is not
+on Antigravity's PATH (desktop apps can inherit a different PATH from your
+terminal). Find the interpreter with `python3 -c 'import sys; print(sys.executable)'`
+on Linux/macOS, or `python -c "import sys; print(sys.executable)"` on Windows.
+Quote paths containing spaces; on Windows JSON-escape the interpreter path
+in the same way as the collector path. Configure the URL/key in the copied
+script if Antigravity does not inherit your terminal's environment; use a
+stable server URL for ongoing collection. Keep the device key out of the
+hook command and never commit the configured copy.
+
+The [Antigravity hook configuration](https://antigravity.google/docs/hooks/)
+is shared by Antigravity 2.0, CLI, and IDE. `PostInvocation` refreshes after
+each model invocation during a turn; `Stop` refreshes when the execution
+loop ends. Both return immediately and launch a detached collector, which
+waits two seconds for metadata to flush after acquiring the collection lock.
+At most one hook worker collects and one waits; additional
+hooks coalesce into that waiting pass, which reads a fresh snapshot. A hook
+during collection can queue the next pass, so the final Stop update is included.
+Only one uploads at a time. The quota probe runs after the collection lock
+is released, so a queued worker never waits for it. Updates need no manual
+command after setup, while Antigravity is running and these hooks are enabled.
+
+4. Restart Antigravity, then confirm **ai-activity is enabled**: `/hooks`
+   in CLI, **Settings → Customizations → Hooks** in Antigravity 2.0, or
+   **… → Customizations → Hooks** in the IDE agent side panel.
+5. Run the copied script **without either hook flag** once to import history
+   and see diagnostics. Exit code 0 means supported entries were processed;
+   warnings can still indicate skipped unsupported rows or databases, or an
+   unavailable quota report (with its reason). Exit code 1 means a busy
+   database or an upload failure; fix it and run again.
+6. Complete a new Antigravity turn and leave the dashboard open. Its existing
+   15-second refresh should show supported persisted usage after collection.
+   If it does not, check the hook is loaded, Python and script paths resolve
+   in Antigravity, the configured URL/key are correct, and a manual run works.
+   Unsupported database formats may still produce no usage; see below.
+
+For retries while Antigravity is idle, or a version that persists metadata
+later than its hooks run, you can additionally schedule the script without
+hook flags every minute (cron on Linux/macOS or Task Scheduler on Windows).
+Use the same user, configured script, and absolute interpreter/script paths;
+on Windows set the task not to start another instance if already running.
+Hooks and scheduled runs share checkpoints and safely deduplicate uploads.
+On Windows, workers detach from the console and create a new process group.
+They also break away from the parent job when Windows permits it; jobs that
+forbid breakaway fall back to console/group detachment. If the host kills its
+entire job, use the scheduled retry above to cover that restriction.
+
+What it does:
+
+- Reads existing SQLite databases only under
+  `~/.gemini/{antigravity,antigravity-cli,antigravity-ide}/conversations/`. `GEMINI_CLI_HOME` can replace `~/.gemini`.
+  Support depends on a database containing the recognized `gen_metadata`
+  table; encrypted/legacy conversation files and transcript-only versions
+  are not supported.
+- Selects generation metadata and, when needed, step metadata from a
+  read-only snapshot. Never selects conversation text, prompts, responses,
+  tool output, workspace paths, or authentication data.
+- Sends ids, recorded model (unknown stays unknown), token counts, the
+  original generation timestamp, and this machine's UTC offset at that
+  time. Input includes recorded system and new input; cached input is
+  separate; text and thinking output are added once. Subagent databases
+  count as separate conversations because parent attribution is unavailable.
+- Imports supported history, then skips every database whose stamp is
+  unchanged since all of it was accepted. The stamp covers the database and
+  its WAL: mtime, size, ctime, inode, the database header's change counter
+  and the WAL header's salts. A changed database is read again in full (edits
+  to older rows included), but only new responses, or ones with more output
+  tokens, are sent. Checkpoints in `~/.cache/ai-activity/antigravity.json`
+  hold, per conversation (hashed path), that stamp and the output tokens
+  accepted per response id; a batch is recorded only once accepted, and
+  deleted conversations are forgotten. A malformed checkpoint file starts
+  over (the server deduplicates the replay); removing it replays history
+  too. Switching server or device key automatically starts a new import.
+- A busy (locked) database fails the run and is read again next time. Any
+  other unreadable or unsupported database (not SQLite, another layout, a
+  WAL database whose `-shm` file cannot be created) is skipped with a
+  warning until its stamp changes.
+- Unconfigured URL/key placeholders exit before reading history. The first
+  HTTP/network failure on a usage upload stops the pass, including quota
+  probing. HTTP 429/503 honor `Retry-After` (seconds or HTTP date; bounded
+  to one day, with a one-minute fallback). Device keys are never forwarded
+  through redirects.
+- A generation without its own timestamp takes its step's, streamed from
+  the same snapshot, only when its step/bot key belongs to one response;
+  otherwise it is skipped with a warning, never dated by import time.
+  Metadata blobs over 1 MiB are skipped.
+- **Quotas are off by default.** With `AI_ACTIVITY_ANTIGRAVITY_QUOTAS=1` in
+  the environment the hooks run in, it collects measured five-hour and weekly
+  quota snapshots using the signed-in Antigravity CLI's `/usage` JSON report.
+  That runs `agy` automatically, and each probe reaches Google's backend.
+  [Antigravity's terms](https://antigravity.google/terms) forbid using
+  third-party tools to access the service and allow suspending the account;
+  the probe uses Google's own CLI and sign-in, but enable it at your own
+  risk. Without it the card shows **Unavailable** quotas. Install **agy 1.1.11 or later**, sign
+  in with the same Google account you use in Antigravity, and make `agy`
+  available on the collector's PATH (including hooks and scheduled tasks).
+  Verify `agy --version` (its output must contain the version) and
+  `agy -p /usage --output-format json --print-timeout 90s` in a terminal.
+  The CLI handles its own authentication; the collector never reads
+  provider credential files. Desktop/IDE history still imports without the
+  CLI; a missing CLI, an old or unrecognized version, a failed probe or an
+  unsupported report leave quota windows **Unavailable**, with a diagnostic
+  naming which. A window `agy` reports untouched (100% left, resetting a full
+  window length from now, or no reset time) has not started yet: it stays
+  **Unavailable** rather than showing 0%.
+- Quotas refresh on hooks/manual/scheduled runs, at most once per minute
+  after a successful upload, including runs with no new token activity.
+  Failed probes or uploads back off for five minutes (or the server's
+  `Retry-After`), in `~/.cache/ai-activity/antigravity-quota.json`, apart
+  from usage uploads: a refused quota upload never delays token imports.
+  Attempts are saved before probing, so interruption cannot reset the
+  throttle. Token collection finishes first; the probe then runs outside
+  the collection lock, under its own lock, and a run that finds another
+  probe in progress skips its own.
+  Use the optional one-minute schedule above for updates while idle. Gemini
+  and Claude/GPT pools remain separate: the card uses the same percentage
+  bars, elapsed-window marks, reset countdowns and expiry behavior as Codex
+  and Claude Code. Percentages are used quota, never inferred from tokens.
+  Missing/disabled buckets stay unavailable; after reset, the old value
+  stays unavailable until a fresh snapshot arrives. Free plans may expose
+  only a weekly quota. Context fill remains unavailable.
+  To preview the card, sign in and add `?demo=1` to your own profile URL.
+  The existing **Demonstration data** mode includes fictional Antigravity
+  quotas, activity and conversations; it never writes them to the server.
+- The quota subprocess runs `/usage` in an empty temporary directory,
+  without the Activity URL/key, and cannot recursively trigger this
+  collector's hooks. Versions older than 1.1.11 or an unrecognized version
+  never receive `/usage`, since older print modes may treat it as a prompt.
+  Leave `AI_ACTIVITY_ANTIGRAVITY_QUOTAS` unset (or anything but `1`) to keep
+  quota probing off.
+
+Quota command/schema evidence comes from [CodexBar's Antigravity implementation](https://github.com/steipete/CodexBar/tree/main/Sources/CodexBarCore/Providers/Antigravity).
+Google documents [the quota command](https://antigravity.google/docs/cli/commands/usage)
+and [plan windows](https://antigravity.google/docs/plans/). Quota tests run
+the collector against a fake `agy` with synthetic reports.
+
+**Format limitations:** Antigravity's persisted protobuf layout is
+undocumented. The parser follows [independently observed field evidence](https://github.com/junhoyeo/tokscale/blob/62ca1eb1677556972ba963fdfa3a41ab23c1eb4b/crates/tokscale-core/src/sessions/antigravity_cli.rs).
+It accepts standard protobuf generation timestamps, or a unique matching
+step UUID and bot id with a standard step timestamp. Unknown timestamp
+layouts, missing response ids, corrupt records, and ambiguous step matches
+are skipped with a diagnostic, and read again only when their database
+changes. They are never assigned the database modification time or import
+time, so totals may be incomplete on unsupported versions. Automated tests
+use synthetic SQLite/protobuf fixtures.
 
 ## Send OpenCode usage from a device
 
@@ -154,6 +414,10 @@ What it does at the end of every turn:
    `AI_ACTIVITY_URL` / `AI_ACTIVITY_KEY` in the environment OpenCode runs in).
 3. Copy `collectors/opencode-plugin.js` to
    `~/.config/opencode/plugins/ai-activity.js`. OpenCode loads it at start.
+
+On Windows, `~` is your user directory (`C:\Users\<user>`), for OpenCode's
+folders too, and the plugin runs `python` instead of `python3`: it must be
+on OpenCode's PATH.
 
 What it does:
 
@@ -179,3 +443,68 @@ What it does:
   database is the queue). Delete that file to send everything again (safe:
   the server stores each message once). The script is idempotent: it can
   also run by hand or from cron.
+
+## How the collector scripts work
+
+Each tool has one Python script in `collectors/`. They share the same design:
+
+- **One file, standard library only.** Copy it next to the tool, set
+  `<server>` and `<device key>` at its top, or `AI_ACTIVITY_URL` /
+  `AI_ACTIVITY_KEY` in the tool's environment (the environment wins). Linux,
+  macOS and Windows alike (`python3` or `python`).
+- **Metrics only.** They read the tool's local files read-only and send ids,
+  model, time, the machine's UTC offset and token counts (plus quotas and
+  context fill where the tool has them). Prompts, replies, tool output,
+  titles, paths and provider keys never leave the device.
+- **The key only goes to your server.** Uploads never follow an HTTP
+  redirect: a redirect fails the run (progress unchanged) instead of
+  sending the device key somewhere else.
+- **Progress only moves on success.** How far each source was sent is kept
+  in a JSON file under `~/.cache/ai-activity/`, saved once the server
+  accepted it. While the server is down nothing moves: the next run sends
+  the backlog with its original times. Delete the file to send everything
+  again; the server stores each message once, and a message seen again with
+  more output tokens replaces its partial counts.
+- **Never in the tool's way.** Called from a hook or the status line, a
+  script answers at once and uploads from a detached copy of itself
+  (Linux/macOS: its own session; Windows: out of the console, the process
+  group and, when permitted, the parent job). A failure prints one line on
+  stderr and exits 1; the tool is never blocked, and the next run retries.
+- **One upload at a time.** A lock file in `~/.cache/ai-activity/`
+  (`flock`; on Windows `msvcrt` on its first byte) serializes runs. Where
+  hooks fire often (Codex, Antigravity), one more run may wait behind the
+  active one and any other exits at once: the waiter reads the sources only
+  once its turn comes, so it sends what they would have.
+- **Idempotent.** Any script can also run by hand or from cron
+  (Task Scheduler on Windows): it sends only what is new.
+
+| Script | Copy to | Run by | Reads | Progress file | Locks |
+| --- | --- | --- | --- | --- | --- |
+| `claude-code.py` | `~/.claude/ai-activity-claude-code.py` | the statusLine, every refresh | `~/.claude/projects/**/*.jsonl` (sessions and subagents) | `offsets.json` (byte offset per transcript) | `lock` |
+| `codex.py` | `~/.codex/ai-activity-codex.py` | the `Stop`, `UserPromptSubmit` and `PostToolUse` hooks | `~/.codex/sessions`, `~/.codex/archived_sessions` (`CODEX_HOME`) | `codex.json` (byte offset per rollout) | `codex.lock`, `codex-waiter.lock` |
+| `opencode.py` | `~/.config/opencode/ai-activity-opencode.py` | `opencode-plugin.js`, at start and on `session.idle` | `~/.local/share/opencode/opencode.db` (`XDG_DATA_HOME`, `OPENCODE_DB`), numeric fields only | `opencode.json` (last `time_updated` sent) | `opencode.lock` |
+| `antigravity.py` | `~/.gemini/ai-activity-antigravity.py` | the `PostInvocation` and `Stop` hooks | `~/.gemini/{antigravity,antigravity-cli,antigravity-ide}/conversations/*.db` (`GEMINI_CLI_HOME`); quotas from `agy`, opt-in | `antigravity.json` (per database), `antigravity-quota.json` | `antigravity.lock`, `antigravity-waiter.lock`, `antigravity-quota.lock` |
+
+How each one is started:
+
+- `claude-code.py`: without arguments (the statusLine), reads the status
+  line's JSON on stdin, starts `claude-code.py --worker` detached with that
+  JSON, and prints nothing. `--worker` collects in the foreground: run
+  `python3 ~/.claude/ai-activity-claude-code.py --worker </dev/null` (on
+  Windows, `python "<path>" --worker <NUL` in cmd) to see errors while
+  setting up.
+- `codex.py`: without arguments, collects in the foreground (by hand, cron,
+  and the Linux/macOS hooks, which detach it with `setsid -f`). `--hook`
+  (the Windows hooks) prints `{}` for Codex and starts the script again
+  detached.
+- `opencode.py`: without arguments, collects in the foreground; the plugin
+  starts it detached, one run at a time.
+- `antigravity.py`: without arguments, collects in the foreground and
+  prints diagnostics (skipped rows or databases, quota availability).
+  `--post-invocation` and `--hook` answer the hook (`{}`, or
+  `{"decision":"stop"}` for `Stop`) and start a detached worker, which
+  waits 2 seconds for Antigravity to write its metadata.
+
+Claude Code, Codex and OpenCode runs give up after 15 minutes (the progress
+already accepted is kept). The payloads each script sends are described in
+`AGENTS.md` §5.

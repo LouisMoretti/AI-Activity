@@ -1,9 +1,11 @@
 <script lang="ts">
   import { clock } from "../lib/clock.svelte.ts";
   import { fmtDuration, fmtPct } from "../lib/format.ts";
+  import { meterLevel } from "../lib/meter.ts";
   import type { QuotaWindowVM } from "../lib/view-model.ts";
 
-  let { w, tone }: { w: QuotaWindowVM; tone: "claude" | "codex" } = $props();
+  // Keep the tool colour at normal usage, then use shared warning colours.
+  let { w }: { w: QuotaWindowVM } = $props();
 
   const left = $derived(w.resetsAt === null ? null : w.resetsAt - clock.now);
   // Once the reset time passes, the old percentage no longer applies.
@@ -12,6 +14,7 @@
   const elapsed = $derived(left === null || expired ? null : Math.max(0, Math.min(w.spanSec, w.spanSec - left)));
   const elapsedPct = $derived(elapsed === null ? null : (elapsed / w.spanSec) * 100);
   const fill = $derived(pct === null ? 0 : Math.max(0, Math.min(100, pct)));
+  const level = $derived(meterLevel(fill));
 
   // Where we are in the window: only in the marker's tooltip, since the
   // footer's reset countdown already implies it.
@@ -35,7 +38,8 @@
   </div>
   <div class="track" role={pct === null ? undefined : "progressbar"} aria-label="{w.label} used"
     aria-valuemin="0" aria-valuemax="100" aria-valuenow={pct === null ? undefined : Math.round(fill)}>
-    <div class="fill {tone}" class:high={fill >= 85} style:width="{fill}%"></div>
+    <div class="fill" class:warning={level === "warning"}
+      class:danger={level === "danger"} style:width="{fill}%"></div>
     {#if elapsedPct !== null}
       <div class="mark" style:left="{elapsedPct}%" title="{position} elapsed"></div>
     {/if}
@@ -47,10 +51,9 @@
   .top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 9px; }
   .top strong { font-weight: 500; }
   .track { position: relative; height: 6px; background: var(--track); border-radius: 10px; }
-  .fill { height: 100%; border-radius: 10px; }
-  .fill.claude { background: var(--claude); }
-  .fill.codex { background: var(--codex); }
-  .fill.high { background: var(--warn); }
+  .fill { height: 100%; border-radius: 10px; background: var(--tool, var(--accent)); }
+  .fill.warning { background: var(--warn); }
+  .fill.danger { background: var(--danger); }
   /* Time elapsed in the window: fill past this mark = spending faster than time passes. */
   .mark { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--text); box-shadow: 0 0 0 2px var(--surface); }
   .foot { margin-top: 9px; font-size: 12px; color: var(--muted); }

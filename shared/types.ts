@@ -2,7 +2,12 @@
 // Every numeric field is a measured value; missing data is null/absent,
 // never interpolated.
 
-export type Tool = "claude-code" | "codex" | "opencode";
+/** Every ingestable tool, in display order. */
+export const TOOLS = ["claude-code", "codex", "antigravity", "opencode"] as const;
+export type Tool = (typeof TOOLS)[number];
+
+/** Rows kept separate in dashboard breakdown lists (the last is the fold). */
+export const BREAKDOWN_DISPLAY_ROWS = 8;
 
 export interface StatsResponse {
   range_days: number;
@@ -73,6 +78,8 @@ export interface Breakdown {
   sessions: number;
   events: number;
   by_model: BreakdownRow[];
+  /** Distinct sessions across the model rows folded into "others". */
+  by_model_others_sessions: number;
   by_tool: BreakdownRow[];
 }
 
@@ -186,7 +193,7 @@ export interface LeaderboardEntry {
   top_model: string | null;
   /** Latest event in the period; null when idle. */
   last_active: number | null;
-  /** Consecutive local days with usage ending on the account's today (same rule as a profile's streak). */
+  /** Consecutive local days with usage ending on the account's today, or yesterday while today has none yet (same rule as a profile's streak). */
   current_streak: number;
 }
 

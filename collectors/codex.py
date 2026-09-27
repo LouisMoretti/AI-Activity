@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """AI Activity collector for Codex (see README.md, "Send Codex usage").
 
-Run by a Codex Stop hook at the end of every turn, and again on every
-prompt submit (the Stop hook does not fire on rate-limit stops, so without
-the second trigger the final snapshot of an exhausted quota would never be
-posted), or by hand, or from cron: it is idempotent. It reads what was added to every rollout under
+Run by Codex hooks: after every tool call (so a long turn shows up while it
+runs), at the end of every turn, and on every prompt submit (the Stop hook
+does not fire on rate-limit stops, so without it the final snapshot of an
+exhausted quota would never be posted); or by hand, or from cron: it is
+idempotent. It reads what was added to every rollout under
 ~/.codex/sessions and ~/.codex/archived_sessions since the last accepted
 upload and posts one entry per model response with its token counts, plus
 the latest rate limits and context fill of each session. Prompts, replies
@@ -15,21 +16,36 @@ only moves forward once the server accepted everything, so nothing is lost
 while the server is down: the next run sends the backlog with its original
 times. Delete that file to send everything again (the server stores each
 response once).
+
+With --hook (the Windows hook command), it answers the hook at once and runs
+itself again, detached, to do the upload.
 """
+import _thread
+import contextlib
 import datetime
-import fcntl
+import errno
 import glob
 import json
 import os
 import signal
+import subprocess
 import sys
+import threading
 import time
 import urllib.request
 
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
+
 SERVER = os.environ.get("AI_ACTIVITY_URL", "<server>")
 KEY = os.environ.get("AI_ACTIVITY_KEY", "<device key>")
-CODEX_HOME = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
-CACHE = os.path.expanduser("~/.cache/ai-activity")
+# os.path.join, not "~/.codex": offsets are keyed by path, which must use
+# one separator on Windows.
+HOME = os.path.expanduser("~")
+CODEX_HOME = os.environ.get("CODEX_HOME") or os.path.join(HOME, ".codex")
+CACHE = os.path.join(HOME, ".cache", "ai-activity")
 BATCH = 400
 
 
@@ -148,11 +164,17 @@ def read(path, state):
     return messages, limits, context, [offset + end, session, model, records]
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    # Never redirect a device bearer key to a different destination.
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
 def post(body):
     req = urllib.request.Request(
         SERVER.rstrip("/") + "/api/ingest/codex", data=json.dumps(body).encode(),
         headers={"Authorization": "Bearer " + KEY, "Content-Type": "application/json"})
-    urllib.request.urlopen(req, timeout=60).read()
+    urllib.request.build_opener(NoRedirect).open(req, timeout=60).read()
 
 
 def save(path, state):
@@ -165,47 +187,155 @@ def timeout(signum, frame):
     raise TimeoutError("time limit reached; resumes next run")
 
 
-def main():
-    signal.signal(signal.SIGALRM, timeout)  # an exception, so the finally below still saves
-    signal.alarm(900)
-    os.makedirs(CACHE, exist_ok=True)
-    lock = open(os.path.join(CACHE, "codex.lock"), "w")
-    fcntl.flock(lock, fcntl.LOCK_EX)  # runs wait for each other
-    path = os.path.join(CACHE, "codex.json")
+@contextlib.contextmanager
+def time_limit(seconds):
+    """TimeoutError in the main thread after that long, so the finally blocks
+    still save. Windows has no SIGALRM: a timer interrupts the main thread
+    through SIGINT instead, and Ctrl-C there still means KeyboardInterrupt."""
+    if hasattr(signal, "SIGALRM"):
+        previous = signal.signal(signal.SIGALRM, timeout)
+        signal.alarm(seconds)
+        try:
+            yield
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+        return
+    expired = threading.Event()
+
+    def interrupted(signum, frame):
+        if expired.is_set():
+            timeout(signum, frame)
+        raise KeyboardInterrupt
+
+    def expire():
+        expired.set()
+        _thread.interrupt_main()
+    previous = signal.signal(signal.SIGINT, interrupted)
+    timer = threading.Timer(seconds, expire)
+    timer.daemon = True
+    timer.start()
     try:
-        state = json.load(open(path))
-        state = state if isinstance(state, dict) else {}
-    except (OSError, ValueError):
-        state = {}
-    files = glob.glob(os.path.join(CODEX_HOME, "sessions", "**", "*.jsonl"), recursive=True)
-    files += glob.glob(os.path.join(CODEX_HOME, "archived_sessions", "**", "*.jsonl"), recursive=True)
-    # Progress is kept per accepted file and saved as the run goes and when it
-    # ends, even cut short (time limit, server error): a long backlog still
-    # gets through over several runs instead of starting over each time.
-    changed, saved_at = False, time.monotonic()
-    try:
-        for f in sorted(files):
-            saved = state.get(f)
-            if saved and saved[0] == os.path.getsize(f):
-                continue
-            messages, limits, context, new = read(f, state)
-            base = {"context": context}
-            if limits:
-                base["rate_limits"], base["occurred_at"] = limits
-            if messages or limits or context:
-                for i in range(0, max(len(messages), 1), BATCH):
-                    post(dict(base, messages=messages[i:i + BATCH]))
-            state[f], changed = new, True
-            if time.monotonic() - saved_at > 10:
-                save(path, state)
-                changed, saved_at = False, time.monotonic()
+        yield
     finally:
-        if changed:
-            save(path, state)
+        timer.cancel()
+        signal.signal(signal.SIGINT, previous)
+
+
+BUSY = (errno.EACCES, errno.EAGAIN, errno.EDEADLK)  # a lock held by another run
+
+
+def lock(path, wait=True):
+    """The file, holding an exclusive lock on it; None if taken and not waiting.
+    flock, or on Windows msvcrt on its first byte (never truncated: another
+    run may hold it). Release it with unlock()."""
+    f = os.fdopen(os.open(path, os.O_RDWR | os.O_CREAT, 0o600), "r+b")
+    while True:
+        try:
+            if os.name == "nt":
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                fcntl.flock(f, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+            return f
+        except OSError as error:
+            if error.errno not in BUSY:
+                f.close()
+                raise
+            if not wait:
+                f.close()
+                return None
+            time.sleep(0.1)
+
+
+def unlock(f):
+    if os.name == "nt":
+        f.seek(0)
+        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+    f.close()
+
+
+def main():
+    os.makedirs(CACHE, exist_ok=True)
+    # One active run and at most one waiting behind it: the tool-call hook
+    # fires often, and any other run can stop here, since the waiter reads
+    # the rollouts only once it holds the lock, so it sends what they would.
+    waiter = lock(os.path.join(CACHE, "codex-waiter.lock"), wait=False)
+    if waiter is None:
+        return
+    try:
+        collection = lock(os.path.join(CACHE, "codex.lock"))
+        try:
+            unlock(waiter)  # a hook firing from now on queues the next run
+            waiter = None
+            path = os.path.join(CACHE, "codex.json")
+            try:
+                state = json.load(open(path))
+                state = state if isinstance(state, dict) else {}
+            except (OSError, ValueError):
+                state = {}
+            files = glob.glob(os.path.join(CODEX_HOME, "sessions", "**", "*.jsonl"), recursive=True)
+            files += glob.glob(os.path.join(CODEX_HOME, "archived_sessions", "**", "*.jsonl"), recursive=True)
+            # Progress is kept per accepted file and saved as the run goes and when it
+            # ends, even cut short (time limit, server error): a long backlog still
+            # gets through over several runs instead of starting over each time.
+            changed, saved_at = False, time.monotonic()
+            try:
+                for f in sorted(files):
+                    saved = state.get(f)
+                    if saved and saved[0] == os.path.getsize(f):
+                        continue
+                    messages, limits, context, new = read(f, state)
+                    base = {"context": context}
+                    if limits:
+                        base["rate_limits"], base["occurred_at"] = limits
+                    if messages or limits or context:
+                        for i in range(0, max(len(messages), 1), BATCH):
+                            post(dict(base, messages=messages[i:i + BATCH]))
+                    state[f], changed = new, True
+                    if time.monotonic() - saved_at > 10:
+                        save(path, state)
+                        changed, saved_at = False, time.monotonic()
+            finally:
+                if changed:
+                    save(path, state)
+        finally:
+            unlock(collection)
+    finally:
+        if waiter:
+            unlock(waiter)
+
+
+def launch_worker():
+    """Run this script again without --hook, detached, so the hook returns at once."""
+    options = {"start_new_session": True}
+    if os.name == "nt":
+        options = {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+                   | subprocess.CREATE_BREAKAWAY_FROM_JOB}
+    args = [sys.executable, os.path.abspath(__file__)]
+    streams = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        subprocess.Popen(args, **streams, **options)
+    except OSError as error:
+        # Some Windows jobs forbid breakaway: keep the console/group detachment.
+        if os.name != "nt" or getattr(error, "winerror", None) != 5:
+            raise
+        options["creationflags"] &= ~subprocess.CREATE_BREAKAWAY_FROM_JOB
+        subprocess.Popen(args, **streams, **options)
+
 
 if __name__ == "__main__":
+    if "--hook" in sys.argv:
+        try:
+            sys.stdin.buffer.read(1 << 20)  # the hook payload (bounded): never sent
+            launch_worker()
+        except Exception as e:  # never break the Codex turn; retried next time
+            print("ai-activity codex collector: %s" % e, file=sys.stderr)
+        print("{}")  # the (empty) JSON answer Codex expects from a hook
+        sys.exit(0)
     try:
-        main()
+        with time_limit(900):
+            main()
     except Exception as e:  # never break the Codex turn; retried next time
         print("ai-activity codex collector: %s" % e, file=sys.stderr)
         sys.exit(1)

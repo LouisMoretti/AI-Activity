@@ -6,20 +6,23 @@
 ## 1. What this is
 
 A personal, multi-device dashboard showing **real measured usage** of AI coding
-tools. Current scope: **Claude Code, Codex and OpenCode ingestion**.
+tools. Current scope: **Claude Code, Codex, OpenCode and Antigravity ingestion**.
 OpenCode has no quota of its own: its card shows the conversations active
 now (a reply in the last 10 minutes; listed in creation order so parallel
 ones never swap places), else the last one, on the right; today's tokens, conversations,
-calls, models and providers on the left.
+calls, models and providers on the left. Antigravity has two quota pools
+(Gemini, Claude/GPT), each shown with its own 5-hour and weekly windows;
+quotas are opt-in, and while no window is running its card shows the same
+activity view as OpenCode (`ActivityToolCard`).
 
 Layout, top to bottom: token activity (centered year calendar, readout shows
 today unless a day is hovered; the Weekly and Cumulative tabs likewise show
 the last 7 days or the running total unless a week is hovered, focused or
 tapped), four stats (all-time tokens, today, sessions,
 current streak; hover shows the split by tool and model, or the longest
-streak), one card per tool (Claude Code, Codex, OpenCode are separate
-components; OpenCode takes 2/3 of its row, next to "Today by tool": today's
-tokens split by tool), recent conversations (10 + "Show more"). No tool filter:
+streak), one card per tool in `TOOLS` order (Claude Code, Codex,
+Antigravity on a full row, then OpenCode, which takes 2/3 of the last row,
+next to "Today by tool": today's tokens split by tool), recent conversations (10 + "Show more"). No tool filter:
 every tool is always shown. No cost or subscription tracking (removed on
 purpose). Only demo data carries a badge ("Demonstration data"). Palette: the
 original dark theme; type: Geist, with Geist Mono only for ids and model
@@ -98,7 +101,9 @@ CI (`.github/workflows/ci.yml`) runs typecheck, the web build and tests
 (tests serve `web/dist`, so the build comes first) on
 every PR and push to main, on x64 and ARM64 runners (`better-sqlite3` is
 native). It also builds the Docker image on both and smoke-tests it
-(healthy, setup code, first account, device key, backup, clean stop).
+(healthy, setup code, first account, device key, backup, clean stop), and
+runs every collector test on Windows (`collectors (windows)`, through the
+README's Windows commands).
 
 ### Deploy (Docker + Caddy)
 
@@ -233,21 +238,66 @@ restores; `test/client.test.js` covers client addresses behind proxies;
 client; `test/dashboard.test.js` runs the client's state class
 (`dashboard.svelte.ts`, compiled with `svelte/compiler`) against a fake
 browser and fetch; `test/live.test.js` covers the API → view-model mapping;
-`test/collector.test.js` runs the README collector and
+`test/collector.test.js` runs `collectors/claude-code.py` through the
+README's statusLine command and
 `test/codex-collector.test.js` runs `collectors/codex.py` through the
 README's Codex Stop hook; `test/opencode-collector.test.js` runs
 `collectors/opencode.py` through its plugin on a fake OpenCode database;
-`test/install.test.js` runs `/install.sh` in a temporary home.
+`test/antigravity-collector.test.js` runs `collectors/antigravity.py` on
+synthetic Antigravity databases; `test/install.test.js` runs `/install.sh`
+(and, on Windows, `/install.ps1`) in a temporary home.
 Types: `npm run typecheck` (tsc for server, svelte-check for web). Node >= 22.18 runs the TypeScript server directly
 (type stripping, no build step), so only erasable TS syntax is allowed (no
 `enum`, no parameter properties) and relative imports keep their `.ts`
 extension.
 
+### Issues and pull requests
+
+- Every issue is labeled: a type (`bug`, `enhancement`, `question`), at
+  least one area (`ui`, `server`, `collectors`, `infra`, `security`,
+  `documentation`, `accessibility`), and `needs decision` while a choice
+  is open. The forms in `.github/ISSUE_TEMPLATE/` (blank issues are off)
+  add the type, and ask for the areas: people who cannot label (not
+  maintainers) pick them there, a maintainer then adds them as labels.
+  From the CLI:
+  `gh issue create --label enhancement --label ui`.
+- Every pull request closes an issue: open the issue first, then put
+  `Closes #<issue>` in the description (`.github/pull_request_template.md`).
+  Give the PR the issue's labels and assign it to its author:
+  `gh pr create --assignee @me --label enhancement --label ui`.
+
+### Worktrees
+
+Every change is made in its own git worktree, on its own branch. The main
+checkout stays on a clean `main` and is never edited directly:
+
+```bash
+git fetch origin
+git worktree add ../AI-Activity-<branch> -b <branch> origin/main
+cd ../AI-Activity-<branch> && npm install   # node_modules is per worktree
+cp ../AI-Activity/.env .                     # if the task needs it
+```
+
+Once the work is done (PR merged or abandoned), clean up:
+
+```bash
+cd ../AI-Activity
+git worktree remove ../AI-Activity-<branch>  # refuses if changes are left
+git branch -d <branch>                       # -D if the PR was squash-merged
+git worktree prune
+```
+
+- Stop what runs from the worktree first (`npm run dev`, tunnels, test
+  servers), and never leave a stale worktree or branch behind.
+- `data/` is per worktree: a fresh one starts with an empty database.
+
 ## 3. Architecture
 
 ```
-Claude Code statusLine one-liner    Codex Stop hook → collectors/codex.py
+Claude Code statusLine → collectors/claude-code.py
+Codex Stop hook → collectors/codex.py
 OpenCode plugin → collectors/opencode.py
+Antigravity hooks → collectors/antigravity.py
 (python3, detached, on the user's device; README.md)
    │  HTTPS  Authorization: Bearer <device key> (never in the URL)
    ▼
@@ -277,7 +327,8 @@ server/
   lib/http.ts
   routes/           auth, ingest, usage (public profiles + leaderboard),
                     devices, account (profile + admin users)
-shared/types.ts     API response types shared with the web client
+shared/types.ts     API response types shared with the web client, TOOLS
+shared/quota-pools.ts  quota window lengths, quota pools per tool (QUOTA_POOLS)
 web/
   src/lib/api.ts          typed fetch client (401 → UnauthorizedError)
   src/lib/view-model.ts   what components render (DashboardVM)
@@ -288,8 +339,11 @@ web/
   src/lib/dashboard.svelte.ts  state: provider, auth status, 15 s refresh
   src/App.svelte          routes the pages; renders the site chrome once
   src/components/         StatsRow (StatCard), ActivityChart (Heatmap,
-                          TrendChart), ClaudeCodeCard / CodexCard /
-                          OpenCodeCard (ToolHeader, QuotaWindow, Meter),
+                          TrendChart), QuotaCard (Claude Code, Codex,
+                          Antigravity: one column per quota pool;
+                          ToolHeader, QuotaWindow, Meter), OpenCodeCard
+                          (wraps ActivityToolCard, the card of a tool
+                          without quota windows),
                           TodayByTool,
                           Conversations, DevicesPanel, AccountMenu,
                           SiteHeader, ProfilePanel, UsersPanel,
@@ -309,24 +363,40 @@ Components never branch on live vs demo: both sources map into the same
 - The first account is created with the setup code or `npm run user --
   add`: both need access to the server, so whoever reaches the public
   tunnel first cannot take it.
-- The collector is a one-liner in the Claude Code statusLine (README.md,
-  exercised by `test/collector.test.js`): it reads what was added to every
+- The Claude Code collector (`collectors/claude-code.py`, copied to
+  `~/.claude/ai-activity-claude-code.py`, run as the statusLine command;
+  exercised by `test/collector.test.js`) reads what was added to every
   local transcript since the last accepted upload (byte offsets in
   `~/.cache/ai-activity/offsets.json`; the first run imports all history)
-  and posts one entry per Anthropic message id, detached with `setsid -f`
-  so Claude Code cancelling the status line does not kill it.
+  and posts one entry per Anthropic message id. It answers at once and
+  runs itself again detached (`--worker`, handed the status line's JSON),
+  so Claude Code cancelling the status line does not kill the upload. It
+  replaced a `setsid -f python3 -c` one-liner and kept its offsets file
+  and lock, so a device switching over sends nothing twice.
+- README.md ends with "How the collector scripts work": what the four
+  scripts share and, per script, where it is copied, what runs it, what it
+  reads, its progress and lock files, and its flags. Keep it in step.
+- The collectors run on Windows too: locks are `msvcrt.locking` on the
+  lock file's first byte there (`fcntl.flock` elsewhere), the 15-minute
+  limit a timer instead of `SIGALRM`, and detached runs leave the console,
+  the process group and, when allowed, the parent job. Hook commands on
+  Windows are `python "<script>" --hook` (Codex, Antigravity) or the
+  script alone (Claude Code, everywhere): they work in any shell.
 - The Codex collector (`collectors/codex.py`, copied to
-  `~/.codex/ai-activity-codex.py`, run detached by `Stop` and
-  `UserPromptSubmit` hooks in `~/.codex/hooks.json`) works the same way on
+  `~/.codex/ai-activity-codex.py`, run detached by `PostToolUse`, `Stop`
+  and `UserPromptSubmit` hooks in `~/.codex/hooks.json`) works the same way on
   the rollouts under `~/.codex/sessions` and `archived_sessions` (offsets in
   `~/.cache/ai-activity/codex.json`). `Stop` does not fire on rate-limit
   stops (upstream Codex bug), so `UserPromptSubmit` is the backstop that
   posts the exhausted quota's final snapshot on the next prompt; standalone
   `rate_limits` lines (a limit snapshot without token counts, e.g. from a
-  failed turn) are recorded too. Every Codex front end writes those
+  failed turn) are recorded too. `PostToolUse` sends a long turn's usage
+  while it runs; since it fires often, at most one run waits behind the
+  active one (`codex-waiter.lock`) and any other exits at once. Every Codex front end writes those
   files (CLI, `codex exec`, IDE extension, desktop app), so desktop tasks
   are counted without subscribing to its App Server: a separate App Server
-  only streams the threads it runs itself. Codex runs a new user hook only
+  only streams the threads it runs itself. On Windows the hooks run
+  `codex.py --hook`, which answers `{}` and starts itself detached. Codex runs a new user hook only
   after it was trusted once (`/hooks`); until then the script can run by
   hand or from cron (idempotent).
 - The OpenCode collector (`collectors/opencode.py`, copied to
@@ -336,8 +406,9 @@ Components never branch on live vs demo: both sources map into the same
   assistant messages changed since the last accepted `time_updated`
   (`~/.cache/ai-activity/opencode.json`), so the database is the queue.
   The plugin (`collectors/opencode-plugin.js` →
-  `~/.config/opencode/plugins/ai-activity.js`) runs it detached at
-  OpenCode start and on every `session.idle`, one run at a time.
+  `~/.config/opencode/plugins/ai-activity.js`) runs it detached (with
+  `python` on Windows, `python3` elsewhere) at OpenCode start and on every
+  `session.idle`, one run at a time.
 - One-command install: `GET /install.sh` (no session) is
   `collectors/install.py` with the collectors and the README's statusLine
   embedded (`server/lib/installer.ts`, built at start; the Docker image
@@ -462,14 +533,17 @@ Counting rules:
   included). "Today", the end of a profile's calendar and its current
   streak use the offset of the owner's latest event that has one (UTC if
   none); the leaderboard's streaks too, per account, and its calendar ends
-  on the latest of those days. Time ranges (`stats?days`, leaderboard
+  on the latest of those days. A streak counts back from today, or from
+  yesterday while today has no usage yet (it only breaks once a whole
+  local day passes without any). Time ranges (`stats?days`, leaderboard
   periods) stay rolling windows of 24 h days.
 
 ## 5. Ingestion API
 
 `POST /api/ingest/<tool>` with header `Authorization: Bearer <device key>`.
 The tool slug in the URL picks the payload normalizer
-(`server/lib/ingest.ts`, one entry per slug): `claude-code`, `codex` and `opencode`. There is no default: a bare `/api/ingest` and unknown slugs → `404`.
+(`server/lib/ingest.ts`, one entry per slug): `claude-code`, `codex`, `antigravity` and `opencode` (`TOOLS` in
+`shared/types.ts`). There is no default: a bare `/api/ingest` and unknown slugs → `404`.
 Unknown or revoked keys → `401`. Small JSON bodies only (256 KB max).
 Rate limits per device key **and tool** (one key serves every tool on a
 machine: a Claude Code import never holds up Codex), all `429` with
@@ -555,10 +629,15 @@ Notes:
   can post stale values (a terminal that has not called the API yet), so
   per `(account_ref, tool, limit_type)` the dashboard shows, among the
   rows measured in the day before the latest one, the window that resets
-  last and its highest `used_pct` (usage only rises within a window). A
+  last and its highest `used_pct` (usage only rises within a window;
+  resets within 10 min of the latest are the same window, since Codex
+  jitters `resets_at` by seconds between snapshots). A
   window whose `resets_at` is further away than its length (5 h, 7 days,
   31 days for unknown types; plus 10 min) is dropped at ingest, since it
   would pin the display. Cost fields are ignored.
+- Antigravity quotas are recorded only for the `account_ref`s of
+  `QUOTA_POOLS.antigravity` (`gemini`, `claude-gpt`; `shared/quota-pools.ts`),
+  any other is dropped; each pool is its own quota, shown apart, never summed.
 
 ### Claude Code sources → payload mapping
 
@@ -630,6 +709,46 @@ Same batch shape (`messages`, `rate_limits`, `context`, `occurred_at`,
   no 5-hour or weekly window. `cost` is never read. Billing mode per
   session (BYOK vs OpenCode's own) is not recorded yet: it cannot be told
   from the database (a zero cost is free, subscription or unknown price).
+
+### Antigravity sources → payload mapping (`POST /api/ingest/antigravity`)
+
+`collectors/antigravity.py` (hooks: `PostInvocation` and `Stop` in
+`~/.gemini/config/hooks.json`; README.md) reads the `gen_metadata` table of
+each conversation database under
+`~/.gemini/{antigravity,antigravity-cli,antigravity-ide}/conversations/*.db`
+(read-only; `data` is an undocumented protobuf):
+
+| Database source | Payload field |
+| --- | --- |
+| `data` 1.4.11 (response id) | `messages[].response_id` → event `antigravity:<session>:<response>` |
+| database file name | `messages[].session_id` → stored as `antigravity:<name>` |
+| `data` 1.19 (`gemini-default` → null) | `messages[].model` |
+| `data` 1.9.4 timestamp, else the unique `steps` row matching step 4 / bot 1.4.7 | `occurred_at` |
+| machine clock at that time | `messages[].utc_offset_min` |
+| `data` 1.4.1 + 1.4.2 / 1.4.5 / 1.4.9 + 1.4.10 | `usage.input_tokens` / `cache_read_tokens` / `output_tokens` (text + thinking) |
+| `agy -p /usage` buckets `gemini-*` / `3p-*` (`5h`, `weekly`) | quota-only batch, `account_ref` `gemini` / `claude-gpt`, `rate_limits.five_hour` / `seven_day` |
+
+- The same response id in two conversation databases counts twice (the
+  event id includes the session). Subagent conversations count on their
+  own: the local format does not link them to a parent.
+- A row without a response id, a timestamp (or a unique step match) or a
+  valid protobuf is skipped with a warning, never dated by file mtime or
+  import time. A database in an unsupported format, or unreadable other
+  than busy, is skipped until it changes; a busy one fails the run.
+- Only new responses, or ones with more output tokens than accepted, are
+  sent (partial then final counts, like the other tools); unchanged
+  databases are not read. Cache writes and context are not recorded.
+- Quotas are opt-in (`AI_ACTIVITY_ANTIGRAVITY_QUOTAS=1`): the probe runs the
+  signed-in `agy`, which reaches Google's backend, and Antigravity's terms
+  restrict third-party tools. Off, nothing but local metadata is read.
+- Quota pools and windows mirror `QUOTA_POOLS` / `QUOTA_WINDOW_SEC`
+  (`shared/quota-pools.ts`, `POOLS` / `WINDOWS` in the collector): the two
+  pools are never summed. Only `agy` 1.1.11 or later receives `/usage`
+  (older ones may take it as a prompt), in an empty directory, without the
+  Activity URL/key. Unknown, disabled, duplicate or out-of-range buckets
+  are dropped.
+- Quota uploads back off on their own (five minutes after a failure, or
+  `Retry-After`), so they never delay usage uploads.
 
 ## 6. Viewer + device APIs
 
@@ -703,7 +822,7 @@ account exists):
   `Retry-After`:
   - public reads (`/api/u/…`, `/api/leaderboard`, `/api/profiles`): 300
     per client (the client address above), refill 5/s. A dashboard polls
-    7 of them every 15 s, so about ten tabs fit behind one address. A
+    9 of them every 15 s, so about eight tabs fit behind one address. A
     rate-limited refresh keeps the page as it was (the web client does
     not show it as "Could not reach the server");
   - signed-in routes (`/api/devices`, `/api/account`, `/api/users`,
@@ -741,9 +860,10 @@ account exists):
 
 ## 7. Testing checklist (acceptance criteria)
 
-1. Real Claude Code, Codex or OpenCode activity → new tokens and sessions
-   appear, no duplicates (Codex: after `codex exec`, or any turn once the
-   hook is trusted; OpenCode: once a session goes idle).
+1. Real Claude Code, Codex, OpenCode or Antigravity activity → new tokens
+   and sessions appear, no duplicates (Codex: after `codex exec`, or any
+   turn once the hook is trusted; OpenCode: once a session goes idle;
+   Antigravity: after a turn's hook fires).
 2. Resend the same message ids (every status line refresh does) →
    `deduped`, totals unchanged; a partial then final entry counts once.
 3. Two devices, same account → quota cards show the current window's value,

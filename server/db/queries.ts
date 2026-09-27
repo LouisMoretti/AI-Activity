@@ -3,6 +3,7 @@ import type {
   Account, ActivityDay, AdminOverview, AdminUser, Profile, Breakdown, BreakdownRow, Device, LeaderboardEntry,
   LeaderboardResponse, Quota, Session,
 } from "../../shared/types.ts";
+import { BREAKDOWN_DISPLAY_ROWS } from "../../shared/types.ts";
 import { nowSec, type DB } from "./schema.ts";
 
 export interface DeviceRow extends Omit<Device, "has_key"> {
@@ -384,6 +385,9 @@ export function insertQuotaSnapshot(db: DB, q: QuotaSnapshotInput): void {
   ).run(q.device_id, q.user_id, q.account_ref, q.tool, q.limit_type, q.used_pct, q.resets_at, q.measured_at);
 }
 
+/** Resets this close to the latest one are the same window (Codex jitter). */
+const RESET_JITTER_SEC = 600;
+
 /**
  * Current value per (account_ref, tool, limit_type). Never summed across devices.
  *
@@ -391,8 +395,11 @@ export function insertQuotaSnapshot(db: DB, q: QuotaSnapshotInput): void {
  * an API call yet), so "last posted" is not "current". Among the rows
  * measured in the day before the latest one, the window that resets last is
  * the current one, and within a window the usage only goes up: show its
- * highest percentage. Ingest drops a resets_at further away than the window
- * is long; the one-day bound also retires rows stored before that check.
+ * highest percentage. Codex reports one window's resets_at a few seconds
+ * apart from one snapshot to the next, so resets within RESET_JITTER_SEC of
+ * the latest are the same window (a new window resets hours later). Ingest drops
+ * a resets_at further away than the window is long; the one-day bound also
+ * retires rows stored before that check.
  */
 export function latestQuotas(db: DB, userId: number): Quota[] {
   return db
@@ -405,12 +412,12 @@ export function latestQuotas(db: DB, userId: number): Quota[] {
          FROM recent WHERE measured_at >= last - 86400
        )
        SELECT account_ref, tool, limit_type, MAX(used_pct) AS used_pct,
-              resets_at, MAX(measured_at) AS measured_at
-       FROM live WHERE COALESCE(resets_at, -1) = win
+              MAX(resets_at) AS resets_at, MAX(measured_at) AS measured_at
+       FROM live WHERE COALESCE(resets_at, -1) >= win - ?
        GROUP BY account_ref, tool, limit_type
        ORDER BY account_ref, tool, limit_type`
     )
-    .all(userId) as Quota[];
+    .all(userId, RESET_JITTER_SEC) as Quota[];
 }
 
 export function usageTotals(db: DB, userId: number, sinceSec: number, tool: string | null): UsageTotals {
@@ -572,11 +579,24 @@ export function breakdown(
     if (!byTool.has(g.tool)) byTool.set(g.tool, tally());
     add(byTool.get(g.tool)!, g.tokens, g.events, g.session_id);
   }
+  const byModelRows = ranked(byModel);
+  // ShareList orders the Sessions rows by their session count. Its folded
+  // models can overlap, so sum their session sets as a union, not their row
+  // counts. The grouped query already returned model + session from the
+  // covering read index; this needs no second database pass.
+  const foldedModels = byModelRows.length > BREAKDOWN_DISPLAY_ROWS
+    ? [...byModelRows].sort((a, b) => b.sessions - a.sessions || (a.name < b.name ? -1 : 1)).slice(BREAKDOWN_DISPLAY_ROWS - 1)
+    : [];
+  const foldedSessions = new Set<string>();
+  for (const row of foldedModels) {
+    for (const session of byModel.get(row.name)?.sessions ?? []) foldedSessions.add(session);
+  }
   return {
     tokens: total.tokens,
     sessions: total.sessions.size,
     events: total.events,
-    by_model: ranked(byModel),
+    by_model: byModelRows,
+    by_model_others_sessions: foldedSessions.size,
     by_tool: ranked(byTool),
   };
 }
@@ -651,10 +671,13 @@ export function leaderboard(
     add(byModel.get(name)!, g.tokens, g.events, g.session_id);
   }
 
-  // Consecutive active days counted back from that account's today.
+  // Consecutive active days counted back from that account's today, or from
+  // yesterday while today has no usage yet (same rule as a profile's streak).
   const streak = (days: Set<string>, todayIso: string) => {
     let n = 0;
-    for (let t = Date.parse(todayIso + "T00:00:00Z"); days.has(new Date(t).toISOString().slice(0, 10)); t -= 86400000) n++;
+    let t = Date.parse(todayIso + "T00:00:00Z");
+    if (!days.has(todayIso)) t -= 86400000;
+    for (; days.has(new Date(t).toISOString().slice(0, 10)); t -= 86400000) n++;
     return n;
   };
   // Most tokens, then the model name, like ORDER BY SUM(tokens) DESC, model.

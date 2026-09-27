@@ -7,6 +7,8 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const SCRIPT = fileURLToPath(new URL("../ai-activity-opencode.py", import.meta.url));
+// Windows installs Python as python.exe (python3 is at most a Store alias).
+const PYTHON = process.platform === "win32" ? "python" : "python3";
 
 let running = false;
 let again = false;
@@ -26,9 +28,9 @@ function collect() {
     }
   };
   try {
-    const p = spawn("python3", [SCRIPT], { detached: true, stdio: "ignore" });
+    const p = spawn(PYTHON, [SCRIPT], { detached: true, stdio: "ignore", windowsHide: true });
     p.on("exit", done);
-    p.on("error", done); // no python3: never break OpenCode
+    p.on("error", done); // no Python: never break OpenCode
     p.unref();
   } catch {
     done();

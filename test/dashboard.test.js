@@ -40,11 +40,23 @@ globalThis.fetch = async (url) => {
   return { status, ok: status < 400, json: async () => (typeof r === "number" ? {} : r) };
 };
 
-const settle = () => new Promise((r) => setTimeout(r, 20));
+const settle = async (ms = 5000) => {
+  // load() is a chain of awaits (and a refresh on a ready page never leaves
+  // "ready"), so a fixed sleep cannot tell when it landed: wait until no
+  // fetch starts anymore instead. The fake fetch resolves immediately, so a
+  // quiet window means every chained reload finished.
+  const end = Date.now() + ms;
+  for (;;) {
+    const n = calls.length;
+    await new Promise((r) => setTimeout(r, 50));
+    if (calls.length === n) return;
+    assert.ok(Date.now() <= end, "fetches never settled");
+  }
+};
 const me = { id: 1, username: "me", display_name: "Me", avatar_url: null, is_admin: false };
 const signedIn = { authenticated: true, user: me, setup_required: false, signup_open: true };
 const signedOut = { authenticated: false, user: null, setup_required: false, signup_open: true };
-const emptySummary = { tool: null, day: "2026-09-25", total: { tokens: 0, sessions: 0, events: 0, by_model: [], by_tool: [] }, today: { tokens: 0, sessions: 0, events: 0, by_model: [], by_tool: [] }, provenance: "" };
+const emptySummary = { tool: null, day: "2026-09-25", total: { tokens: 0, sessions: 0, events: 0, by_model: [], by_model_others_sessions: 0, by_tool: [] }, today: { tokens: 0, sessions: 0, events: 0, by_model: [], by_model_others_sessions: 0, by_tool: [] }, provenance: "" };
 const profileRoutes = (name, sessions = { sessions: [], total: 0, provenance: "" }) => ({
   [`/api/u/${name}`]: { username: name, display_name: name, avatar_url: null },
   [`/api/u/${name}/summary`]: emptySummary,
@@ -123,11 +135,82 @@ describe("dashboard state", () => {
     stop();
   });
 
+  test("opening a protected page signed out preserves its query for sign-in", async () => {
+    const { stop } = await open("/settings?demo=1", { "/api/auth/status": signedOut });
+    assert.equal(loc.pathname + loc.search, `/?next=${encodeURIComponent("/settings?demo=1")}`);
+    stop();
+  });
+
+  test("a lost session preserves the query through sign-in", async () => {
+    const { dash, stop } = await open("/u/me?demo=1", profileRoutes("me"));
+    routes["/api/devices"] = 401;
+    routes["/api/auth/status"] = signedOut;
+    await assert.rejects(api.devices());
+    await settle();
+    assert.equal(loc.pathname + loc.search, `/?next=${encodeURIComponent("/u/me?demo=1")}`);
+
+    routes["/api/auth/status"] = signedIn;
+    routes["/api/auth/login"] = {};
+    assert.equal(await dash.login("me", "secret"), null);
+    await settle();
+    assert.equal(loc.pathname + loc.search, "/u/me?demo=1");
+    assert.equal(dash.vm.demo, true);
+    stop();
+  });
+
   test("a wrong password is not a lost session", async () => {
     const { dash, stop } = await open("/", { "/api/auth/status": signedOut, "/api/auth/login": 401 });
     assert.equal(await dash.login("me", "nope"), "Wrong username or password.");
     assert.equal(dash.status, "signed-out");
     stop();
+  });
+
+  test("signing in at /?demo=1 preserves demo through the profile redirect", async () => {
+    const { dash, stop } = await open("/?demo=1", {
+      ...profileRoutes("me"),
+      "/api/auth/status": signedOut,
+      "/api/auth/login": {},
+    });
+    routes["/api/auth/status"] = signedIn;
+    assert.equal(await dash.login("me", "secret"), null);
+    await settle();
+    assert.equal(loc.pathname + loc.search, "/u/me?demo=1");
+    assert.equal(dash.vm.demo, true);
+    stop();
+  });
+
+  test("creating an account preserves the current query and a safe return destination", async () => {
+    const account = { username: "me", display_name: "Me", password: "long-enough-password" };
+    for (const [start, expected] of [
+      ["/?demo=1", "/u/me?demo=1"],
+      [`/?next=${encodeURIComponent("/settings?demo=1")}`, "/settings?demo=1"],
+    ]) {
+      const { dash, stop } = await open(start, {
+        ...profileRoutes("me"),
+        "/api/auth/status": signedOut,
+        "/api/auth/register": {},
+      });
+      routes["/api/auth/status"] = signedIn;
+      assert.equal(await dash.createAccount(account, null), null);
+      await settle();
+      assert.equal(loc.pathname + loc.search, expected);
+      stop();
+    }
+  });
+
+  test("sign-in rejects external and protocol-relative return destinations", async () => {
+    for (const next of ["https://example.com/away", "//example.com/away"]) {
+      const { dash, stop } = await open(`/?next=${encodeURIComponent(next)}`, {
+        ...profileRoutes("me"),
+        "/api/auth/status": signedOut,
+        "/api/auth/login": {},
+      });
+      routes["/api/auth/status"] = signedIn;
+      assert.equal(await dash.login("me", "secret"), null);
+      await settle();
+      assert.equal(loc.pathname + loc.search, "/u/me");
+      stop();
+    }
   });
 
   test("the home link goes straight to your profile when signed in", async () => {
@@ -140,12 +223,26 @@ describe("dashboard state", () => {
   test("?demo=1 only lasts while it is in the address", async () => {
     const { dash, stop } = await open("/u/me?demo=1", profileRoutes("me"));
     assert.equal(dash.vm.demo, true);
+    assert.deepEqual(dash.vm.antigravity.pools.map(p => p.windows.map(w => w.pct)), [[42, 68], [19, 32]]);
+    const ids = dash.vm.sessions.map(s => s.id.slice(0, 8));
+    assert.equal(dash.vm.sessions.filter(s => s.tool === "antigravity").length, 2);
+    assert.equal(dash.vm.opencode.today.tokens, 0);
+    assert.equal(dash.vm.opencode.today.sessions, 0);
+    assert.equal(dash.vm.opencode.today.calls, 0);
+    assert.equal(dash.vm.opencode.recent.length, 1, "demo covers history without use today");
+    assert.equal(new Set(ids).size, ids.length, "demo ids differ in what the list shows");
+    assert.ok(dash.vm.stats.today.byTool.some(r => r.name === "antigravity" && r.value > 0));
+    for (const figure of [dash.vm.stats.today, dash.vm.stats.total, dash.vm.stats.sessions]) {
+      assert.equal(new Set(figure.byModel.map(r => r.name)).size, figure.byModel.length);
+    }
     dash.go("/leaderboard");
     await settle();
     dash.openProfile("me");
     await settle();
     assert.equal(dash.demo, false);
     assert.equal(dash.vm.demo, false);
+    assert.deepEqual(dash.vm.antigravity.pools.map(p => p.windows.map(w => w.pct)), [[null, null], [null, null]]);
+    assert.ok(!dash.vm.sessions.some(s => s.id.startsWith("demo-")));
     stop();
   });
 

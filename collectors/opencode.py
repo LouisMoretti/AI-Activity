@@ -18,21 +18,32 @@ while the server is down: the next run sends the backlog with its original
 times. Delete that file to send everything again (the server stores each
 message once).
 """
-import fcntl
+import _thread
+import contextlib
+import errno
 import json
 import os
 import signal
 import sqlite3
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
 
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
+
 SERVER = os.environ.get("AI_ACTIVITY_URL", "<server>")
 KEY = os.environ.get("AI_ACTIVITY_KEY", "<device key>")
-DATA = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+# os.path.join, not "~/.local/share": the offset is keyed by the database's
+# path, which must use one separator on Windows.
+HOME = os.path.expanduser("~")
+DATA = os.environ.get("XDG_DATA_HOME") or os.path.join(HOME, ".local", "share")
 DB = os.environ.get("OPENCODE_DB") or os.path.join(DATA, "opencode", "opencode.db")
-CACHE = os.path.expanduser("~/.cache/ai-activity")
+CACHE = os.path.join(HOME, ".cache", "ai-activity")
 BATCH = 400
 
 # Numeric fields only: the message's text lives in other tables, never read.
@@ -101,11 +112,17 @@ def read(since):
         db.close()
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    # Never redirect a device bearer key to a different destination.
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
 def post(body):
     req = urllib.request.Request(
         SERVER.rstrip("/") + "/api/ingest/opencode", data=json.dumps(body).encode(),
         headers={"Authorization": "Bearer " + KEY, "Content-Type": "application/json"})
-    urllib.request.urlopen(req, timeout=60).read()
+    urllib.request.build_opener(NoRedirect).open(req, timeout=60).read()
 
 
 def save(path, state):
@@ -118,36 +135,105 @@ def timeout(signum, frame):
     raise TimeoutError("time limit reached; resumes next run")
 
 
+@contextlib.contextmanager
+def time_limit(seconds):
+    """TimeoutError in the main thread after that long, so the finally blocks
+    still save. Windows has no SIGALRM: a timer interrupts the main thread
+    through SIGINT instead, and Ctrl-C there still means KeyboardInterrupt."""
+    if hasattr(signal, "SIGALRM"):
+        previous = signal.signal(signal.SIGALRM, timeout)
+        signal.alarm(seconds)
+        try:
+            yield
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+        return
+    expired = threading.Event()
+
+    def interrupted(signum, frame):
+        if expired.is_set():
+            timeout(signum, frame)
+        raise KeyboardInterrupt
+
+    def expire():
+        expired.set()
+        _thread.interrupt_main()
+    previous = signal.signal(signal.SIGINT, interrupted)
+    timer = threading.Timer(seconds, expire)
+    timer.daemon = True
+    timer.start()
+    try:
+        yield
+    finally:
+        timer.cancel()
+        signal.signal(signal.SIGINT, previous)
+
+
+BUSY = (errno.EACCES, errno.EAGAIN, errno.EDEADLK)  # a lock held by another run
+
+
+def lock(path, wait=True):
+    """The file, holding an exclusive lock on it; None if taken and not waiting.
+    flock, or on Windows msvcrt on its first byte (never truncated: another
+    run may hold it). Release it with unlock()."""
+    f = os.fdopen(os.open(path, os.O_RDWR | os.O_CREAT, 0o600), "r+b")
+    while True:
+        try:
+            if os.name == "nt":
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                fcntl.flock(f, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+            return f
+        except OSError as error:
+            if error.errno not in BUSY:
+                f.close()
+                raise
+            if not wait:
+                f.close()
+                return None
+            time.sleep(0.1)
+
+
+def unlock(f):
+    if os.name == "nt":
+        f.seek(0)
+        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+    f.close()
+
+
 def main():
-    signal.signal(signal.SIGALRM, timeout)
-    signal.alarm(900)
     if not os.path.exists(DB):
         return
     os.makedirs(CACHE, exist_ok=True)
-    lock = open(os.path.join(CACHE, "opencode.lock"), "w")
-    fcntl.flock(lock, fcntl.LOCK_EX)  # runs wait for each other
-    path = os.path.join(CACHE, "opencode.json")
+    held = lock(os.path.join(CACHE, "opencode.lock"))  # runs wait for each other
     try:
-        state = json.load(open(path))
-        state = state if isinstance(state, dict) else {}
-    except (OSError, ValueError):
-        state = {}
-    # time_updated (ms) of the last message accepted, per database. The next
-    # run starts at that same millisecond: a message updated then is sent
-    # again rather than missed (the server stores it once). A message still
-    # being written is sent again with its final counts once it changes.
-    since = state.get(DB, 0)
-    rows = read(since)
-    for i in range(0, len(rows), BATCH):
-        chunk = rows[i:i + BATCH]
-        post({"messages": [e for _, e in chunk]})
-        state[DB] = chunk[-1][0]
-        save(path, state)
+        path = os.path.join(CACHE, "opencode.json")
+        try:
+            state = json.load(open(path))
+            state = state if isinstance(state, dict) else {}
+        except (OSError, ValueError):
+            state = {}
+        # time_updated (ms) of the last message accepted, per database. The next
+        # run starts at that same millisecond: a message updated then is sent
+        # again rather than missed (the server stores it once). A message still
+        # being written is sent again with its final counts once it changes.
+        since = state.get(DB, 0)
+        rows = read(since)
+        for i in range(0, len(rows), BATCH):
+            chunk = rows[i:i + BATCH]
+            post({"messages": [e for _, e in chunk]})
+            state[DB] = chunk[-1][0]
+            save(path, state)
+    finally:
+        unlock(held)
 
 
 if __name__ == "__main__":
     try:
-        main()
+        with time_limit(900):
+            main()
     except Exception as e:  # never break OpenCode; retried next time
         print("ai-activity opencode collector: %s" % e, file=sys.stderr)
         sys.exit(1)
