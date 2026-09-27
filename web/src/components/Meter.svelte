@@ -1,5 +1,5 @@
 <script lang="ts">
-  // The fill takes the tool colour from an inherited `--tool` (accent otherwise).
+  // The fill blends from --tool-meter-start to --tool-meter-limit by --fill-pct (falls back to --tool, then --accent).
   let { pct, label }: { pct: number | null; label: string } = $props();
   const clamped = $derived(pct === null ? 0 : Math.max(0, Math.min(100, Math.round(pct))));
 </script>

@@ -3,7 +3,7 @@
   import { fmtDuration, fmtPct } from "../lib/format.ts";
   import type { QuotaWindowVM } from "../lib/view-model.ts";
 
-  // The fill takes the tool colour from an inherited `--tool` (QuotaCard).
+  // The fill blends from --tool-meter-start to --tool-meter-limit by --fill-pct (falls back to --tool, then --accent; inherited from QuotaCard).
   let { w }: { w: QuotaWindowVM } = $props();
 
   const left = $derived(w.resetsAt === null ? null : w.resetsAt - clock.now);
