@@ -370,8 +370,15 @@ function normalizeAntigravity(body: unknown): NormalizedBatch {
       occurred_at: eventTime(m.occurred_at, now), utc_offset_min: utcOffset(m.utc_offset_min),
     });
   }
-  return { tool: "antigravity", messages, quotas: [], account_ref: accountRef(src),
-    measured_at: eventTime(src.occurred_at, now), context: null, single };
+  const measuredAt = eventTime(src.occurred_at, now);
+  const limits: Obj = isObj(src.rate_limits) ? src.rate_limits : {};
+  const quotas = keepCurrent(Object.keys(QUOTA_WINDOW_SEC).map((key) => {
+    const w = limits[key];
+    return isObj(w) && typeof w.used_percentage === "number" && w.used_percentage <= 100
+      ? { limit_type: key, pct: w.used_percentage, resets: w.resets_at } : null;
+  }), measuredAt);
+  return { tool: "antigravity", messages, quotas, account_ref: accountRef(src),
+    measured_at: measuredAt, context: null, single };
 }
 
 const normalizers = new Map<string, (body: unknown) => NormalizedBatch>([
