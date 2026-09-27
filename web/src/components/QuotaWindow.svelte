@@ -3,7 +3,7 @@
   import { fmtDuration, fmtPct } from "../lib/format.ts";
   import type { QuotaWindowVM } from "../lib/view-model.ts";
 
-  let { w, tone }: { w: QuotaWindowVM; tone: "claude" | "codex" } = $props();
+  let { w, tone }: { w: QuotaWindowVM; tone: "claude" | "codex" | "antigravity" } = $props();
 
   const left = $derived(w.resetsAt === null ? null : w.resetsAt - clock.now);
   // Once the reset time passes, the old percentage no longer applies.
@@ -50,6 +50,7 @@
   .fill { height: 100%; border-radius: 10px; }
   .fill.claude { background: var(--claude); }
   .fill.codex { background: var(--codex); }
+  .fill.antigravity { background: var(--antigravity); }
   .fill.high { background: var(--warn); }
   /* Time elapsed in the window: fill past this mark = spending faster than time passes. */
   .mark { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--text); box-shadow: 0 0 0 2px var(--surface); }
