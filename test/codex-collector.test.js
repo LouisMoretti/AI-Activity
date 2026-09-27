@@ -1,22 +1,23 @@
 // Runs the Codex collector (collectors/codex.py) through the Stop hook
-// command printed in README.md, against a real server, with fake rollouts in
-// a temporary HOME.
+// command printed in README.md (the Windows one on Windows), against a real
+// server, with fake rollouts in a temporary HOME.
 import fs from "node:fs";
 import http from "node:http";
-import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { startServer, req, newDevice, asNewClient, isLocked, processesGone } from "./helpers.js";
+import { startServer, req, newDevice, asNewClient, isLocked, processesGone, PYTHON, tempHome } from "./helpers.js";
 
-const README = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8");
-const hooks = JSON.parse(README.match(/`~\/\.codex\/hooks\.json`:\n\n```json\n([\s\S]*?)\n```/)[1]);
-const hookCommand = hooks.hooks.Stop[0].hooks[0].command;
-const submitCommand = hooks.hooks.UserPromptSubmit[0].hooks[0].command;
-const toolCommand = hooks.hooks.PostToolUse[0].hooks[0].command;
+const WINDOWS = process.platform === "win32";
+const README = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+const hooks = JSON.parse(README.match(WINDOWS
+  ? /`%USERPROFILE%\\\.codex\\hooks\.json`:\n\n```json\n([\s\S]*?)\n```/
+  : /`~\/\.codex\/hooks\.json`:\n\n```json\n([\s\S]*?)\n```/)[1]);
 const SCRIPT = fs.readFileSync(new URL("../collectors/codex.py", import.meta.url), "utf8");
+// The README's Windows commands name C:\Users\<user>: run them on this test's copy instead.
+const WINDOWS_PREFIX = 'python "C:\\Users\\<user>\\.codex\\ai-activity-codex.py"';
 
 // Recent times: a quota window is only kept if it resets within its length of the measurement.
 const START = Date.now() - 3600 * 1000;
@@ -44,10 +45,12 @@ function response(id, session, u, total, five = 10) {
 }
 const secret = () => line("response_item", { type: "message", role: "user", content: [{ type: "input_text", text: "secret prompt" }] }) + "\n";
 
-/** Run a shell command in its own process group; resolves with its stdout. */
+/** Run a shell command (in its own process group, but on Windows); resolves with its stdout. */
 function run(cmd, env) {
   return new Promise((resolve) => {
-    const p = spawn("sh", ["-c", cmd], { env, detached: true, stdio: ["pipe", "pipe", "ignore"] });
+    const p = WINDOWS
+      ? spawn(cmd, { env, shell: true, windowsHide: true, stdio: ["pipe", "pipe", "ignore"] })
+      : spawn("sh", ["-c", cmd], { env, detached: true, stdio: ["pipe", "pipe", "ignore"] });
     let out = "";
     p.stdout.on("data", (d) => { out += d; });
     p.stdin.on("error", () => {}); // the hook may exit before reading its input (EPIPE)
@@ -66,7 +69,7 @@ async function waitFor(fn, ms = 15000) {
 }
 
 describe("Codex collector (Stop hook from README.md)", () => {
-  let srv, key, home, env, current, legacy;
+  let srv, key, home, env, current, legacy, hookCommand, submitCommand, toolCommand;
   const S1 = "01a0b861-4cf4-7f10-8e5b-8d110992ee04";
   const S0 = "019e0073-fee0-7000-8000-000000000000";
   const summary = async () => (await req(srv.base, "GET", "/api/u/admin/summary?tool=codex", { headers: asNewClient() })).json.total;
@@ -89,8 +92,17 @@ describe("Codex collector (Stop hook from README.md)", () => {
   before(async () => {
     srv = await startServer();
     key = (await newDevice(srv.base, "codex-collector")).key;
-    home = fs.mkdtempSync(path.join(os.tmpdir(), "ai-activity-codex-"));
-    env = { ...process.env, HOME: home, CODEX_HOME: "", TZ: "IST-5:30" }; // POSIX TZ: UTC+5:30, no tz database needed
+    home = tempHome("ai-activity-codex-");
+    const { AI_ACTIVITY_URL, AI_ACTIVITY_KEY, ...inherited } = process.env; // the installed copy says where
+    // POSIX TZ (Windows reads it too): UTC+5:30, no tz database needed.
+    env = { ...inherited, HOME: home, USERPROFILE: home, CODEX_HOME: "", TZ: "IST-5:30" };
+    const command = (event) => {
+      const c = hooks.hooks[event][0].hooks[0].command;
+      if (!WINDOWS) return c;
+      assert.ok(c.startsWith(WINDOWS_PREFIX));
+      return c.replace(WINDOWS_PREFIX, `"${PYTHON}" "${path.join(home, ".codex", "ai-activity-codex.py")}"`);
+    };
+    [hookCommand, submitCommand, toolCommand] = ["Stop", "UserPromptSubmit", "PostToolUse"].map(command);
     const day = path.join(home, ".codex", "sessions", "2026", "09", "20");
     fs.mkdirSync(day, { recursive: true });
     fs.mkdirSync(path.join(home, ".codex", "archived_sessions"), { recursive: true });
@@ -290,15 +302,25 @@ describe("Codex collector (Stop hook from README.md)", () => {
     assert.equal((await summary()).tokens - before.tokens, 304);
   });
 
+  test("--hook (the Windows command, any OS) answers at once and uploads detached", async () => {
+    const before = await summary();
+    fs.appendFileSync(current, response("resp_10", S1, usage(20, 0, 2), 6849));
+    const out = await run(`"${PYTHON}" "${path.join(home, ".codex", "ai-activity-codex.py")}" --hook`, env);
+    assert.deepEqual(JSON.parse(out), {}, "the hook prints valid JSON for Codex");
+    assert.ok(await waitFor(async () => (await summary()).events === before.events + 1));
+    assert.equal((await summary()).tokens - before.tokens, 22);
+  });
+
   test("while a run is busy, one more waits and the others stop at once", async () => {
     const cache = path.join(home, ".cache", "ai-activity");
-    // Stands for an active run: holds the collection lock.
-    const holder = spawn("python3", ["-c",
-      "import fcntl, sys, time\nf = open(sys.argv[1], 'w')\nfcntl.flock(f, fcntl.LOCK_EX)\nprint('locked', flush=True)\ntime.sleep(60)",
+    // Stands for an active run: holds the collection lock (the collector's own kind).
+    const holder = spawn(PYTHON, ["-c", WINDOWS
+      ? "import msvcrt, os, sys, time\nf = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT)\nmsvcrt.locking(f, msvcrt.LK_NBLCK, 1)\nprint('locked', flush=True)\ntime.sleep(60)"
+      : "import fcntl, sys, time\nf = open(sys.argv[1], 'w')\nfcntl.flock(f, fcntl.LOCK_EX)\nprint('locked', flush=True)\ntime.sleep(60)",
       path.join(cache, "codex.lock")], { stdio: ["ignore", "pipe", "ignore"] });
     const collector = path.join(home, ".codex", "ai-activity-codex.py");
     const start = () => {
-      const p = spawn("python3", [collector], { env, stdio: "ignore" });
+      const p = spawn(PYTHON, [collector], { env, stdio: "ignore" });
       return { p, exited: new Promise((r) => p.on("exit", (code) => r(code))) };
     };
     try {

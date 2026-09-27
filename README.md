@@ -5,20 +5,39 @@
 1. Create a device key on the server: `npm run gen-key -- "my-laptop"`, or
    **Settings → Devices** in the dashboard (one key per machine, it serves
    every tool on it; **Copy key** there gives it back any time).
-2. Add this to `~/.claude/settings.json` on the device, replacing
-   `<server>` (e.g. `http://localhost:3000` or your tunnel URL) and
-   `<device key>`:
+2. Copy `collectors/claude-code.py` to `~/.claude/ai-activity-claude-code.py`
+   on the device and replace `<server>` (e.g. `http://localhost:3000` or
+   your tunnel URL) and `<device key>` at its top (or set
+   `AI_ACTIVITY_URL` / `AI_ACTIVITY_KEY` in the environment Claude Code runs
+   in).
+3. Add this to `~/.claude/settings.json`:
 
 ```json
 "statusLine": {
   "type": "command",
-  "command": "input=$(cat); printf '%s' \"$input\" | setsid -f python3 -c \"import sys,json,os,glob,fcntl,signal,urllib.request as R;signal.alarm(900);N=chr(10);exec('def J(l):'+N+' d=json.JSONDecoder();i=0;r=[]'+N+' while 1:'+N+'  try: o,i=d.raw_decode(l,i)'+N+'  except Exception: return r'+N+'  r.append(o)');exec('class X(R.HTTPRedirectHandler):'+N+' def redirect_request(self,*a,**k): return None');H=os.path.expanduser('~/.cache/ai-activity');os.makedirs(H,exist_ok=True);L=open(H+'/lock','w');fcntl.flock(L,fcntl.LOCK_EX);S=H+'/offsets.json';st=([o for o in (J(open(S).read()) if os.path.exists(S) else []) if isinstance(o,dict)] or [{}])[0];s=([o for o in J(sys.stdin.read()) if isinstance(o,dict)] or [{}])[0];off=lambda f,z:st.get(f,0) if st.get(f,0)<=z else 0;F=[(f,os.path.getsize(f)) for f in glob.glob(os.path.expanduser('~/.claude/projects/**/*.jsonl'),recursive=True)];F=[(f,off(f,z)) for f,z in F if z!=st.get(f)];NO={};RD=lambda f,o:(lambda b:b.seek(o) and 0 or b.read())(open(f,'rb'));E=[(m['id'],(u.get('output_tokens') or 0,os.path.basename(f)[:-6]==o.get('sessionId')),{'message_id':m['id'],'session_id':o.get('sessionId'),'model':m.get('model'),'occurred_at':T,'utc_offset_min':__import__('time').localtime(T).tm_gmtoff//60,'usage':{k:u.get(k) or 0 for k in ('input_tokens','output_tokens','cache_creation_input_tokens','cache_read_input_tokens')}}) for f,o0 in F for d in [RD(f,o0)] for k in [d.rfind(bytes([10]))+1] if NO.__setitem__(f,o0+k) is None for l in d[:k].decode('utf-8','replace').split(N) for o in J(l) if isinstance(o,dict) and o.get('type')=='assistant' and o.get('timestamp') for m in [o.get('message')] if isinstance(m,dict) and isinstance(m.get('id'),str) and isinstance(m.get('usage'),dict) for u in [m['usage']] for T in [int(__import__('datetime').datetime.fromisoformat(o['timestamp'].replace('Z','+00:00')).timestamp())]];M=list({i:e for i,q,e in sorted(E,key=lambda x:x[1])}.values());c=s.get('context_window') or {};B=dict(rate_limits=s.get('rate_limits') or {},context=dict(session_id=s.get('session_id'),used_pct=c.get('used_percentage'),window_size=c.get('context_window_size')),occurred_at=int(__import__('time').time()));P=lambda b:R.build_opener(X).open(R.Request('<server>/api/ingest/claude-code',data=json.dumps(b).encode(),headers={'Authorization':'Bearer <device key>','Content-Type':'application/json'}),timeout=60);[P(dict(B,messages=M[i:i+400])) for i in range(0,max(len(M),1),400)];st.update(NO);open(S+'.tmp','w').write(json.dumps(st));os.replace(S+'.tmp',S)\" >/dev/null 2>&1"
+  "command": "python3 ~/.claude/ai-activity-claude-code.py"
 }
 ```
 
-It needs `python3` and `setsid` (util-linux), both standard on Linux, and
-runs as your user: no root, no script to install, nothing printed in the
-status line.
+On Windows, use this instead, replacing `<user>` with your Windows user
+directory name (backslashes and quotes are already JSON-escaped):
+
+```json
+"statusLine": {
+  "type": "command",
+  "command": "python \"C:\\Users\\<user>\\.claude\\ai-activity-claude-code.py\""
+}
+```
+
+It needs Python 3 (standard library only) and runs as your user: no root,
+nothing printed in the status line. Use the absolute path of the
+interpreter if it is not on Claude Code's PATH (`python3 -c 'import sys;
+print(sys.executable)'`, or `python -c "import sys; print(sys.executable)"`
+on Windows, JSON-escaped like the script path).
+
+Replacing the former one-liner (`setsid -f python3 -c "…"`): swap its
+`statusLine` command for this one. The script keeps the same offsets file
+and lock, so nothing is sent twice or missed.
 
 What it does on every status line refresh:
 
@@ -39,10 +58,12 @@ What it does on every status line refresh:
 - The server stores each message id once. Claude Code sometimes writes a
   partial entry (a few output tokens) before the final one; the final
   counts replace it.
-- `setsid -f` starts the upload in its own session and returns at once.
-  Claude Code cancels a status line command when the next refresh comes;
-  the upload keeps running. Uploads wait for each other (a lock in
-  `~/.cache/ai-activity`) and give up after 15 minutes.
+- The script answers at once and starts the upload detached (its own
+  session on Linux/macOS; on Windows out of the console, the process group
+  and, when Windows permits it, the parent job). Claude Code cancels a
+  status line command when the next refresh comes; the upload keeps
+  running. Uploads wait for each other (a lock in `~/.cache/ai-activity`)
+  and give up after 15 minutes.
 - Also sends the 5-hour and 7-day quotas and the context fill.
 
 **Days are local, like GitHub's contribution calendar.** Each entry carries
@@ -79,6 +100,29 @@ a bare `/api/ingest` answers `404`. See `AGENTS.md` §5 for the payload contract
     ],
     "PostToolUse": [
       { "hooks": [{ "type": "command", "command": "setsid -f python3 ~/.codex/ai-activity-codex.py >/dev/null 2>&1 </dev/null; echo '{}'", "timeout": 10 }] }
+    ]
+  }
+}
+```
+
+On Windows, use this instead, replacing `<user>` with your Windows user
+directory name (`--hook` answers Codex and starts the upload detached, in
+any shell; use the absolute path of `python.exe` if it is not on Codex's
+PATH):
+
+`%USERPROFILE%\.codex\hooks.json`:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "python \"C:\\Users\\<user>\\.codex\\ai-activity-codex.py\" --hook", "timeout": 10 }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "python \"C:\\Users\\<user>\\.codex\\ai-activity-codex.py\" --hook", "timeout": 10 }] }
+    ],
+    "PostToolUse": [
+      { "hooks": [{ "type": "command", "command": "python \"C:\\Users\\<user>\\.codex\\ai-activity-codex.py\" --hook", "timeout": 10 }] }
     ]
   }
 }
@@ -342,6 +386,10 @@ use synthetic SQLite/protobuf fixtures.
 3. Copy `collectors/opencode-plugin.js` to
    `~/.config/opencode/plugins/ai-activity.js`. OpenCode loads it at start.
 
+On Windows, `~` is your user directory (`C:\Users\<user>`), for OpenCode's
+folders too, and the plugin runs `python` instead of `python3`: it must be
+on OpenCode's PATH.
+
 What it does:
 
 - The plugin runs the collector, detached, when OpenCode starts and
@@ -366,3 +414,68 @@ What it does:
   database is the queue). Delete that file to send everything again (safe:
   the server stores each message once). The script is idempotent: it can
   also run by hand or from cron.
+
+## How the collector scripts work
+
+Each tool has one Python script in `collectors/`. They share the same design:
+
+- **One file, standard library only.** Copy it next to the tool, set
+  `<server>` and `<device key>` at its top, or `AI_ACTIVITY_URL` /
+  `AI_ACTIVITY_KEY` in the tool's environment (the environment wins). Linux,
+  macOS and Windows alike (`python3` or `python`).
+- **Metrics only.** They read the tool's local files read-only and send ids,
+  model, time, the machine's UTC offset and token counts (plus quotas and
+  context fill where the tool has them). Prompts, replies, tool output,
+  titles, paths and provider keys never leave the device.
+- **The key only goes to your server.** Uploads never follow an HTTP
+  redirect: a redirect fails the run (progress unchanged) instead of
+  sending the device key somewhere else.
+- **Progress only moves on success.** How far each source was sent is kept
+  in a JSON file under `~/.cache/ai-activity/`, saved once the server
+  accepted it. While the server is down nothing moves: the next run sends
+  the backlog with its original times. Delete the file to send everything
+  again; the server stores each message once, and a message seen again with
+  more output tokens replaces its partial counts.
+- **Never in the tool's way.** Called from a hook or the status line, a
+  script answers at once and uploads from a detached copy of itself
+  (Linux/macOS: its own session; Windows: out of the console, the process
+  group and, when permitted, the parent job). A failure prints one line on
+  stderr and exits 1; the tool is never blocked, and the next run retries.
+- **One upload at a time.** A lock file in `~/.cache/ai-activity/`
+  (`flock`; on Windows `msvcrt` on its first byte) serializes runs. Where
+  hooks fire often (Codex, Antigravity), one more run may wait behind the
+  active one and any other exits at once: the waiter reads the sources only
+  once its turn comes, so it sends what they would have.
+- **Idempotent.** Any script can also run by hand or from cron
+  (Task Scheduler on Windows): it sends only what is new.
+
+| Script | Copy to | Run by | Reads | Progress file | Locks |
+| --- | --- | --- | --- | --- | --- |
+| `claude-code.py` | `~/.claude/ai-activity-claude-code.py` | the statusLine, every refresh | `~/.claude/projects/**/*.jsonl` (sessions and subagents) | `offsets.json` (byte offset per transcript) | `lock` |
+| `codex.py` | `~/.codex/ai-activity-codex.py` | the `Stop`, `UserPromptSubmit` and `PostToolUse` hooks | `~/.codex/sessions`, `~/.codex/archived_sessions` (`CODEX_HOME`) | `codex.json` (byte offset per rollout) | `codex.lock`, `codex-waiter.lock` |
+| `opencode.py` | `~/.config/opencode/ai-activity-opencode.py` | `opencode-plugin.js`, at start and on `session.idle` | `~/.local/share/opencode/opencode.db` (`XDG_DATA_HOME`, `OPENCODE_DB`), numeric fields only | `opencode.json` (last `time_updated` sent) | `opencode.lock` |
+| `antigravity.py` | `~/.gemini/ai-activity-antigravity.py` | the `PostInvocation` and `Stop` hooks | `~/.gemini/{antigravity,antigravity-cli,antigravity-ide}/conversations/*.db` (`GEMINI_CLI_HOME`); quotas from `agy`, opt-in | `antigravity.json` (per database), `antigravity-quota.json` | `antigravity.lock`, `antigravity-waiter.lock`, `antigravity-quota.lock` |
+
+How each one is started:
+
+- `claude-code.py`: without arguments (the statusLine), reads the status
+  line's JSON on stdin, starts `claude-code.py --worker` detached with that
+  JSON, and prints nothing. `--worker` collects in the foreground: run
+  `python3 ~/.claude/ai-activity-claude-code.py --worker </dev/null` (on
+  Windows, `python "<path>" --worker <NUL` in cmd) to see errors while
+  setting up.
+- `codex.py`: without arguments, collects in the foreground (by hand, cron,
+  and the Linux/macOS hooks, which detach it with `setsid -f`). `--hook`
+  (the Windows hooks) prints `{}` for Codex and starts the script again
+  detached.
+- `opencode.py`: without arguments, collects in the foreground; the plugin
+  starts it detached, one run at a time.
+- `antigravity.py`: without arguments, collects in the foreground and
+  prints diagnostics (skipped rows or databases, quota availability).
+  `--post-invocation` and `--hook` answer the hook (`{}`, or
+  `{"decision":"stop"}` for `Stop`) and start a detached worker, which
+  waits 2 seconds for Antigravity to write its metadata.
+
+Claude Code, Codex and OpenCode runs give up after 15 minutes (the progress
+already accepted is kept). The payloads each script sends are described in
+`AGENTS.md` §5.
