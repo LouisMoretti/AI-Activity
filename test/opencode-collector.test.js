@@ -6,9 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import Database from "better-sqlite3";
-import { startServer, req, newDevice, asNewClient } from "./helpers.js";
+import { startServer, req, newDevice, asNewClient, processesGone } from "./helpers.js";
 
 const SCRIPT = fs.readFileSync(new URL("../collectors/opencode.py", import.meta.url), "utf8");
 const PLUGIN = fs.readFileSync(new URL("../collectors/opencode-plugin.js", import.meta.url), "utf8");
@@ -24,11 +23,6 @@ async function waitFor(fn, ms = 15000) {
   }
 }
 
-/** Whether another process holds an exclusive flock on that file (missing means free). */
-const isLocked = (file) => fs.existsSync(file) && spawnSync("python3", ["-c",
-  "import fcntl, sys\ntry: fcntl.flock(open(sys.argv[1], 'a'), fcntl.LOCK_EX | fcntl.LOCK_NB)\nexcept BlockingIOError: sys.exit(1)",
-  file]).status === 1;
-
 describe("OpenCode collector (plugin from README.md)", () => {
   let srv, key, home, db, hooks;
   const summary = async () => (await req(srv.base, "GET", "/api/u/admin/summary?tool=opencode", { headers: asNewClient() })).json.total;
@@ -41,15 +35,14 @@ describe("OpenCode collector (plugin from README.md)", () => {
 
   /**
    * The plugin spawns the collector detached (unref'd), so an idle's upload
-   * ends after its event handler returned. Wait until no run holds the
-   * lock: one still going would otherwise read what the next test appends.
-   * The key is inside the installed script rather than on the command
-   * line, so the lock (not ps) tells whether a run is left.
+   * ends after its event handler returned. Wait until no run is left: one
+   * still going would otherwise read what the next test appends. The script
+   * path (in this test's HOME) is on its command line from the spawn on,
+   * before python takes its lock; processesGone also covers the plugin
+   * starting its next run when one exits.
    */
   async function collectorsDone() {
-    const lock = path.join(home, ".cache", "ai-activity", "opencode.lock");
-    assert.ok(await waitFor(() => !isLocked(lock), 30000),
-      "a detached collector from an earlier idle is still running");
+    assert.ok(await processesGone(home), "a detached collector from an earlier idle is still running");
   }
 
   function session(id, parent = null) {

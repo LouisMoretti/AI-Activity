@@ -4,11 +4,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { startServer, req, newDevice, asNewClient } from "./helpers.js";
+import { startServer, req, newDevice, asNewClient, isLocked, processesGone } from "./helpers.js";
 
 const README = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8");
 const hooks = JSON.parse(README.match(/`~\/\.codex\/hooks\.json`:\n\n```json\n([\s\S]*?)\n```/)[1]);
@@ -55,10 +55,6 @@ function run(cmd, env) {
   });
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-/** Whether another process holds an exclusive flock on that file (missing means free). */
-const isLocked = (file) => fs.existsSync(file) && spawnSync("python3", ["-c",
-  "import fcntl, sys\ntry: fcntl.flock(open(sys.argv[1], 'a'), fcntl.LOCK_EX | fcntl.LOCK_NB)\nexcept BlockingIOError: sys.exit(1)",
-  file]).status === 1;
 async function waitFor(fn, ms = 15000) {
   const end = Date.now() + ms;
   for (;;) {
@@ -80,16 +76,13 @@ describe("Codex collector (Stop hook from README.md)", () => {
 
   /**
    * Collectors run detached (setsid -f), so a hook's command returns before
-   * its upload ends. Wait until no run holds a lock: one still going would
-   * otherwise read what the next test appends and move its offsets. The key
-   * is inside the installed script rather than on the command line, so the
-   * locks (not ps) tell whether a run is left.
+   * its upload ends. Wait until no run is left: one still going would
+   * otherwise read what the next test appends and move its offsets. The
+   * script path (in this test's HOME) is on its command line from the fork
+   * on, before python even starts, while a lock is only taken later.
    */
   async function collectorsDone() {
-    const cache = path.join(home, ".cache", "ai-activity");
-    assert.ok(await waitFor(() =>
-      !isLocked(path.join(cache, "codex.lock")) && !isLocked(path.join(cache, "codex-waiter.lock")), 30000),
-      "a detached collector from an earlier run is still running");
+    assert.ok(await processesGone(home), "a detached collector from an earlier run is still running");
   }
 
   before(async () => {

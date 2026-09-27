@@ -9,7 +9,7 @@ import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import http from "node:http";
-import { startServer, req, newDevice } from "./helpers.js";
+import { startServer, req, newDevice, isLocked } from "./helpers.js";
 
 const SCRIPT = fileURLToPath(new URL("../collectors/antigravity.py", import.meta.url));
 // Absolute interpreter, so tests can run the collector with a PATH of their own.
@@ -43,10 +43,6 @@ const run = (env, args = [], input = "", command = null, script = SCRIPT) => new
   p.stdout.on("data", (b) => out += b); p.stderr.on("data", (b) => err += b);
   p.on("error", reject); p.on("close", (code) => resolve({ code, out, err })); p.stdin.end(input);
 });
-/** Whether another process holds an exclusive flock on that file (missing means free). */
-const isLocked = (file) => fs.existsSync(file) && spawnSync("python3", ["-c",
-  "import fcntl, sys\ntry: fcntl.flock(open(sys.argv[1], 'a'), fcntl.LOCK_EX | fcntl.LOCK_NB)\nexcept BlockingIOError: sys.exit(1)",
-  file]).status === 1;
 
 describe("Antigravity collector", () => {
   let srv, key, home, db, env;
