@@ -293,7 +293,9 @@ web/
   src/components/         StatsRow (StatCard), ActivityChart (Heatmap,
                           TrendChart), QuotaCard (Claude Code, Codex,
                           Antigravity: one column per quota pool;
-                          ToolHeader, QuotaWindow, Meter), OpenCodeCard,
+                          ToolHeader, QuotaWindow, Meter), OpenCodeCard
+                          (wraps ActivityToolCard, the card of a tool
+                          without quota windows),
                           TodayByTool,
                           Conversations, DevicesPanel, AccountMenu,
                           SiteHeader, ProfilePanel, UsersPanel,
