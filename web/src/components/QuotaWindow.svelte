@@ -1,6 +1,7 @@
 <script lang="ts">
   import { clock } from "../lib/clock.svelte.ts";
   import { fmtDuration, fmtPct } from "../lib/format.ts";
+  import { meterLevel } from "../lib/meter.ts";
   import type { QuotaWindowVM } from "../lib/view-model.ts";
 
   // Keep the tool colour at normal usage, then use shared warning colours.
@@ -13,6 +14,7 @@
   const elapsed = $derived(left === null || expired ? null : Math.max(0, Math.min(w.spanSec, w.spanSec - left)));
   const elapsedPct = $derived(elapsed === null ? null : (elapsed / w.spanSec) * 100);
   const fill = $derived(pct === null ? 0 : Math.max(0, Math.min(100, pct)));
+  const level = $derived(meterLevel(fill));
 
   // Where we are in the window: only in the marker's tooltip, since the
   // footer's reset countdown already implies it.
@@ -36,8 +38,8 @@
   </div>
   <div class="track" role={pct === null ? undefined : "progressbar"} aria-label="{w.label} used"
     aria-valuemin="0" aria-valuemax="100" aria-valuenow={pct === null ? undefined : Math.round(fill)}>
-    <div class="fill" class:warning={fill >= 70 && fill < 90}
-      class:danger={fill >= 90} style:width="{fill}%"></div>
+    <div class="fill" class:warning={level === "warning"}
+      class:danger={level === "danger"} style:width="{fill}%"></div>
     {#if elapsedPct !== null}
       <div class="mark" style:left="{elapsedPct}%" title="{position} elapsed"></div>
     {/if}
