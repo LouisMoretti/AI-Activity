@@ -12,8 +12,6 @@ import { COLLECTOR_VERSIONS } from "../shared/collectors.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const SERVER_ENTRY = path.join(ROOT, "server", "index.ts");
-const USER_CLI = path.join(ROOT, "scripts", "user.ts");
-const GEN_KEY = path.join(ROOT, "scripts", "gen-key.ts");
 
 /** Session cookie used by req() when the call passes none (see startServer). */
 const defaultCookies = new Map();
@@ -267,21 +265,6 @@ export function opencodeMessage(over = {}) {
   };
 }
 
-/** Run `npm run user -- <args>` against a test DB (GitHub lookups go to the fake GitHub). */
-export async function userCli(dbPath, args) {
-  const api = await fakeGithub();
-  return new Promise((resolve) => {
-    const proc = spawn(process.execPath, [USER_CLI, ...args], {
-      env: { ...process.env, DB_PATH: dbPath, GITHUB_API_URL: api },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let out = "";
-    proc.stdout.on("data", (c) => (out += c));
-    proc.stderr.on("data", (c) => (out += c));
-    proc.on("exit", (code) => resolve({ code, out }));
-  });
-}
-
 let signInIp = 0;
 /**
  * A whole GitHub sign-in in one browser: POST /api/auth/github ({next,
@@ -327,17 +310,6 @@ export async function login(base, username) {
   const r = await githubSignIn(base, username);
   if (!r.cookie) throw new Error(`sign-in failed: ${r.start.status} ${JSON.stringify(r.start.json)} → ${r.location}`);
   return r.cookie;
-}
-
-/** Run `npm run gen-key -- <name> [...extra]` against a test DB; resolves with the key. */
-export function genKey(dbPath, name, ...extra) {
-  return new Promise((resolve, reject) => {
-    const proc = spawn(process.execPath, [GEN_KEY, name, ...extra], { env: { ...process.env, DB_PATH: dbPath } });
-    let out = "";
-    proc.stdout.on("data", (c) => (out += c));
-    proc.stderr.on("data", (c) => (out += c));
-    proc.on("exit", (code) => (code === 0 ? (out.match(/ak_[0-9a-f]+/) ? resolve(out.match(/ak_[0-9a-f]+/)[0]) : reject(new Error(`no key in output: ${out}`))) : reject(new Error(out))));
-  });
 }
 
 let pollIp = 0;

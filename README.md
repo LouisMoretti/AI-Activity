@@ -11,7 +11,7 @@
 
 ## One-command install
 
-Create a device key (**Settings → Devices**, or `npm run gen-key -- "my-laptop"`),
+Create a device key (**Settings → Devices**),
 then on that machine, as the user who runs the tools (no `sudo`, no
 administrator shell):
 
@@ -63,8 +63,7 @@ refuses to run as root unless `AI_ACTIVITY_ALLOW_ROOT=1`.
 
 ## Send Claude Code usage from a device
 
-1. Create a device key on the server: `npm run gen-key -- "my-laptop"`, or
-   **Settings → Devices** in the dashboard (one key per machine, it serves
+1. Create a device key in the dashboard, **Settings → Devices** (one key per machine, it serves
    every tool on it; **Copy key** there gives it back any time).
 2. Copy `collectors/claude-code.py` to `~/.claude/ai-activity-claude-code.py`
    on the device and replace `<server>` (e.g. `http://localhost:3000` or

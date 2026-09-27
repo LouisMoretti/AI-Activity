@@ -66,15 +66,3 @@ export async function signedInUser(gh: GithubConfig, code: string, redirectUri: 
   if (!user) throw new Error("GitHub gave no usable user");
   return user;
 }
-
-/** A public GitHub account by login (the CLI links accounts with it); null if there is none. */
-export async function lookupLogin(apiUrl: string, login: string): Promise<GithubUser | null> {
-  const r = await fetch(`${apiUrl}/users/${encodeURIComponent(login)}`, {
-    headers: { accept: "application/vnd.github+json", "user-agent": "ai-activity" },
-    redirect: "error",
-    signal: AbortSignal.timeout(TIMEOUT_MS),
-  });
-  if (r.status === 404) return null;
-  if (!r.ok) throw new Error(`GitHub answered ${r.status}`);
-  return githubUser(await r.json());
-}

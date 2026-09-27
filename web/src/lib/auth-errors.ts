@@ -10,7 +10,6 @@ const MESSAGES: Record<string, string> = {
   exists: "An account already exists: sign in instead.",
   closed: "Account creation is closed on this server: only existing accounts can sign in.",
   too_many: "Too many accounts were created from here. Try again later.",
-  taken: "Your GitHub login is the username of an account not linked to GitHub yet: an admin links it (npm run user -- link).",
   other_account: "That GitHub account is not the one signed in here: sign in again with this account's GitHub account.",
 };
 

@@ -88,8 +88,7 @@
 
       <Section title="Danger zone" subtitle="Cannot be undone">
         {#key dash.account.id}
-          <DangerZone linked={dash.account.github_linked} ondeletedactivity={() => dash.load()} onsignout={() => dash.logout()}
-            onreauth={() => dash.signInAgain()} />
+          <DangerZone ondeletedactivity={() => dash.load()} onsignout={() => dash.logout()} onreauth={() => dash.signInAgain()} />
         {/key}
       </Section>
 

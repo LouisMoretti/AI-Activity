@@ -121,7 +121,7 @@ function isoWeek(day: string): string {
   return `${d.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
 }
 
-const inUse = (dbPath: string) => new Error(`${dbPath} is in use: stop the server (and any npm run user / gen-key) first`);
+const inUse = (dbPath: string) => new Error(`${dbPath} is in use: stop the server first`);
 const isBusy = (err: unknown) => /^SQLITE_(BUSY|LOCKED)/.test((err as { code?: string }).code ?? "");
 
 /**

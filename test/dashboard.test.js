@@ -58,7 +58,7 @@ const settle = async (ms = 5000) => {
     assert.ok(Date.now() <= end, "fetches never settled");
   }
 };
-const me = { id: 1, username: "me", display_name: "Me", avatar_url: null, is_admin: false, github_linked: true };
+const me = { id: 1, username: "me", display_name: "Me", avatar_url: null, is_admin: false };
 const signedIn = { authenticated: true, user: me, setup_required: false, signup_open: true, github_sign_in: true };
 const signedOut = { authenticated: false, user: null, setup_required: false, signup_open: true, github_sign_in: true };
 const AUTHORIZE = "https://github.com/login/oauth/authorize?state=s";

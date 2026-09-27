@@ -152,8 +152,6 @@ export interface Account {
   /** https link to the profile picture (allowlisted hosts), or null. */
   avatar_url: string | null;
   is_admin: boolean;
-  /** Linked to a GitHub account, so it can sign in (accounts from before GitHub sign-in are not, until linked). */
-  github_linked: boolean;
 }
 
 /** An account as listed for admins. */

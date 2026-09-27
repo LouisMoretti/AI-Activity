@@ -19,12 +19,24 @@ export const MIGRATIONS: ((db: DB) => void)[] = [
 
 /**
  * 5: sign in with GitHub only (issue #127). `users.github_id` is the GitHub
- * account's numeric id (stable across login renames; NULL until linked).
- * Passwords are gone: existing accounts keep their data and sign in again
- * once linked (from a session still open, or `npm run user -- link`).
+ * account's numeric id (stable across login renames). Accounts from before
+ * could never sign in again, so the database starts over: every account,
+ * its usage, quotas, devices and sessions go (the `-pre-v5` backup keeps
+ * them). People sign in with GitHub, make a device key in Settings, and
+ * the collectors send their whole local history again (their offsets are
+ * kept per server and key).
  */
 function githubAccounts(db: DB): void {
   db.exec(`
+    DELETE FROM collector_versions;
+    DELETE FROM deleted_events;
+    DELETE FROM usage_events;
+    DELETE FROM quota_snapshots;
+    DELETE FROM devices;
+    DELETE FROM viewer_sessions;
+    DELETE FROM settings;
+    DELETE FROM users;
+    DELETE FROM sqlite_sequence; -- ids start at 1 again: the first account is #1
     ALTER TABLE users ADD COLUMN github_id INTEGER;
     CREATE UNIQUE INDEX idx_users_github ON users(github_id) WHERE github_id IS NOT NULL;
     ALTER TABLE users DROP COLUMN password_hash;

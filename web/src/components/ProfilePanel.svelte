@@ -13,19 +13,10 @@
       <small><span class="mono">@{account.username}</span>{account.is_admin ? " · admin" : ""}</small>
     </div>
   </div>
-  {#if account.github_linked}
-    <p class="muted">
-      You sign in with GitHub. Your username, name and picture follow your GitHub profile: they are updated each
-      time you sign in.
-    </p>
-  {:else}
-    <p class="warn">
-      This account was made before sign-in with GitHub and is not linked to a GitHub account yet: once this
-      session ends, you cannot sign in. Ask the server's admin to link it
-      (<span class="mono">npm run user -- link {account.username} &lt;your GitHub login&gt;</span>); your username
-      then becomes your GitHub login.
-    </p>
-  {/if}
+  <p class="muted">
+    You sign in with GitHub. Your username, name and picture follow your GitHub profile: they are updated each
+    time you sign in.
+  </p>
 </div>
 
 <style>
@@ -35,5 +26,4 @@
   small { color: var(--muted); font-size: 12px; }
   p { font-size: 13px; line-height: 1.5; }
   .muted { color: var(--muted); }
-  .warn { color: var(--warn); }
 </style>

@@ -61,7 +61,7 @@ export function migrate(db: DB): void {
   }
   for (let v = current; v < latest; v++) {
     // IMMEDIATE takes the write lock first: the server and the CLI
-    // (npm run user, gen-key) may open the same file at the same time, and
+    // (npm run backup) may open the same file at the same time, and
     // whichever gets it second sees the step done and skips it.
     db.transaction(() => {
       if (schemaVersion(db) !== v) return;

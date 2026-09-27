@@ -57,16 +57,12 @@ export function hashKey(rawKey: string): string {
   return createHash("sha256").update(String(rawKey)).digest("hex");
 }
 
-export function getDefaultUserId(db: DB): number {
-  return (db.prepare("SELECT id FROM users ORDER BY id LIMIT 1").get() as { id: number }).id;
-}
-
 export interface UserRow {
   id: number;
   username: string | null;
   display_name: string | null;
   avatar_url: string | null;
-  /** The linked GitHub account's numeric id; null until linked (issue #127). */
+  /** The GitHub account's numeric id (issue #127); every account has one. */
   github_id: number | null;
   is_admin: number;
   disabled: number;
@@ -79,7 +75,6 @@ export function toAccount(u: UserRow): Account {
     display_name: u.display_name || u.username || "",
     avatar_url: u.avatar_url,
     is_admin: Boolean(u.is_admin),
-    github_linked: u.github_id !== null,
   };
 }
 
@@ -88,11 +83,7 @@ export function toProfile(u: UserRow): Profile {
   return { username, display_name, avatar_url };
 }
 
-/**
- * True once at least one account exists; before that nothing is viewable
- * (setup). The pre-accounts user (who owns data collected before) has no
- * username until the first account claims it.
- */
+/** True once at least one account exists; before that nothing is viewable (setup). */
 export function accountsExist(db: DB): boolean {
   return Boolean(db.prepare("SELECT 1 FROM users WHERE username IS NOT NULL LIMIT 1").get());
 }
@@ -157,30 +148,15 @@ export function setUserDisabled(db: DB, userId: number, disabled: boolean): void
   db.prepare("UPDATE users SET disabled = ? WHERE id = ?").run(disabled ? 1 : 0, userId);
 }
 
-/**
- * Create an account, linked to a GitHub account. The very first account
- * claims the pre-accounts user (the one that already owns every device and
- * event) instead of starting empty.
- */
+/** Create an account for a GitHub account (signing in with it for the first time). */
 export function createAccount(
   db: DB,
   a: { username: string; display_name: string | null; avatar_url: string | null; github_id: number; is_admin: boolean }
 ): number {
-  return db.transaction(() => {
-    const unclaimed = accountsExist(db) ? undefined : db
-      .prepare("SELECT id FROM users WHERE username IS NULL ORDER BY id LIMIT 1")
-      .get() as { id: number } | undefined;
-    if (unclaimed) {
-      db.prepare(
-        "UPDATE users SET username = ?, display_name = ?, avatar_url = ?, github_id = ?, is_admin = ? WHERE id = ?"
-      ).run(a.username, a.display_name, a.avatar_url, a.github_id, a.is_admin ? 1 : 0, unclaimed.id);
-      return unclaimed.id;
-    }
-    const info = db.prepare(
-      "INSERT INTO users (username, display_name, avatar_url, github_id, is_admin, created_at) VALUES (?, ?, ?, ?, ?, ?)"
-    ).run(a.username, a.display_name, a.avatar_url, a.github_id, a.is_admin ? 1 : 0, nowSec());
-    return Number(info.lastInsertRowid);
-  })();
+  const info = db.prepare(
+    "INSERT INTO users (username, display_name, avatar_url, github_id, is_admin, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+  ).run(a.username, a.display_name, a.avatar_url, a.github_id, a.is_admin ? 1 : 0, nowSec());
+  return Number(info.lastInsertRowid);
 }
 
 /** Whether anyone may create an account from the sign-in page (open unless an admin closed it). */

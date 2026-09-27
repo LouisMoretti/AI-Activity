@@ -71,6 +71,25 @@ function schema(db) {
   );
 }
 
+/**
+ * Runs the pending migrations up to `version` (4: the last one that keeps
+ * data; 5 starts over for GitHub sign-in), like migrate() in schema.ts.
+ */
+function upgradeTo(file, version) {
+  const db = new Database(file);
+  for (let v = db.pragma("user_version", { simple: true }); v < version; v++) {
+    db.transaction(() => {
+      MIGRATIONS[v](db);
+      db.pragma(`user_version = ${v + 1}`);
+    })();
+  }
+  return db;
+}
+
+/** Every row in every table of the database (none after migration 5). */
+const rows = (db) => db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all()
+  .reduce((n, { name }) => n + db.prepare(`SELECT COUNT(*) AS n FROM ${name}`).get().n, 0);
+
 function freshSchema() {
   const t = tmpDb();
   const db = openDb(t.file);
@@ -88,20 +107,18 @@ describe("versioned migrations", () => {
     const db = openDb(t.file);
     try {
       assert.equal(schemaVersion(db), LATEST);
-      // The first account's placeholder user exists before any account.
-      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM users").get().n, 1);
+      // No placeholder user: the first account is made by signing in.
+      assert.equal(rows(db), 0);
     } finally {
       db.close();
       fs.rmSync(t.dir, { recursive: true, force: true });
     }
   });
 
-  test("a version 0 database (the last unversioned schema) upgrades to the fresh schema, data kept", () => {
+  test("a version 0 database (the last unversioned schema) keeps its data up to v4, then ends at the fresh schema", () => {
     const t = seeded(V0_FIXTURE);
-    const db = openDb(t.file);
+    let db = upgradeTo(t.file, 4);
     try {
-      assert.equal(schemaVersion(db), LATEST);
-      assert.deepEqual(schema(db), freshSchema());
       assert.deepEqual(
         db.prepare("SELECT id, username, is_admin, disabled FROM users ORDER BY id").all().map((r) => ({ ...r })),
         [
@@ -119,6 +136,11 @@ describe("versioned migrations", () => {
       assert.equal(db.prepare("SELECT COUNT(*) AS n FROM quota_snapshots").get().n, 1);
       assert.equal(db.prepare("SELECT COUNT(*) AS n FROM viewer_sessions").get().n, 1);
       assert.equal(db.prepare("SELECT value FROM settings WHERE key = 'signup_open'").get().value, "0");
+      db.close();
+      db = openDb(t.file);
+      assert.equal(schemaVersion(db), LATEST);
+      assert.deepEqual(schema(db), freshSchema());
+      assert.equal(rows(db), 0);
     } finally {
       db.close();
       fs.rmSync(t.dir, { recursive: true, force: true });
@@ -127,12 +149,14 @@ describe("versioned migrations", () => {
 
   test("an older unversioned layout upgrades to the fresh schema too", () => {
     const t = seeded(LEGACY);
-    const db = openDb(t.file);
+    let db = upgradeTo(t.file, 4);
     try {
-      assert.equal(schemaVersion(db), LATEST);
-      assert.deepEqual(schema(db), freshSchema());
       const e = db.prepare("SELECT input_tokens, source, utc_offset_min FROM usage_events WHERE event_id = 'e1'").get();
       assert.deepEqual({ ...e }, { input_tokens: 42, source: "snapshot", utc_offset_min: null });
+      db.close();
+      db = openDb(t.file);
+      assert.equal(schemaVersion(db), LATEST);
+      assert.deepEqual(schema(db), freshSchema());
     } finally {
       db.close();
       fs.rmSync(t.dir, { recursive: true, force: true });
@@ -183,9 +207,8 @@ describe("versioned migrations", () => {
     row("other-user", 2, "s1", 999, "snapshot");
     old.close();
 
-    const db = openDb(t.file);
+    const db = upgradeTo(t.file, 4);
     try {
-      assert.equal(schemaVersion(db), LATEST);
       assert.deepEqual(
         db.prepare("SELECT event_id FROM usage_events ORDER BY event_id").all().map((r) => r.event_id),
         ["before-slack", "later-message", "message", "only-snapshots", "other-user"]
@@ -196,7 +219,7 @@ describe("versioned migrations", () => {
     }
   });
 
-  test("version 5 keeps password accounts, their data and sessions, and drops the password hashes", () => {
+  test("version 5 starts over for GitHub sign-in: every account and its data go, into the backup", () => {
     const t = tmpDb();
     const old = new Database(t.file);
     for (const m of MIGRATIONS.slice(0, 4)) m(old);
@@ -206,7 +229,11 @@ describe("versioned migrations", () => {
     old.prepare("INSERT INTO devices (id, user_id, name, key_hash, key_prefix, created_at) VALUES (1, 2, 'laptop', 'hash', 'ak_', 0)").run();
     old.prepare(`INSERT INTO usage_events (event_id, device_id, user_id, tool, session_id, input_tokens, occurred_at, received_at, source)
       VALUES ('msg_1', 1, 2, 'claude-code', 's1', 10, 0, 0, 'message')`).run();
+    old.prepare("INSERT INTO quota_snapshots (user_id, device_id, tool, account_ref, limit_type, used_pct, measured_at) VALUES (2, 1, 'claude-code', 'default', 'five_hour', 5, 0)").run();
+    old.prepare("INSERT INTO deleted_events (user_id, event_id) VALUES (2, 'msg_0')").run();
+    old.prepare("INSERT INTO collector_versions (device_id, tool, version, seen_at) VALUES (1, 'claude-code', 1, 0)").run();
     old.prepare("INSERT INTO viewer_sessions (token_hash, user_id, expires_at, created_at) VALUES ('t', 2, 9999999999, 0)").run();
+    old.prepare("INSERT INTO settings (key, value) VALUES ('signup_open', '0')").run();
     old.close();
 
     const db = openDb(t.file);
@@ -214,20 +241,22 @@ describe("versioned migrations", () => {
       assert.equal(schemaVersion(db), LATEST);
       const cols = db.prepare("PRAGMA table_info(users)").all().map((c) => c.name);
       assert.ok(cols.includes("github_id") && !cols.includes("password_hash"), String(cols));
-      assert.deepEqual(db.prepare("SELECT id, username, display_name, is_admin, github_id FROM users ORDER BY id").all(), [
-        { id: 1, username: "louis", display_name: "Louis", is_admin: 1, github_id: null },
-        { id: 2, username: "bob", display_name: null, is_admin: 0, github_id: null },
-      ]);
-      // Not linked yet: their data, devices and open sessions stay (linking happens from one of them).
-      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM usage_events WHERE user_id = 2").get().n, 1);
-      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM devices WHERE user_id = 2").get().n, 1);
-      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM viewer_sessions WHERE user_id = 2").get().n, 1);
+      for (const table of ["users", "devices", "usage_events", "quota_snapshots", "deleted_events", "collector_versions", "viewer_sessions", "settings"]) {
+        assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0, table);
+      }
       // One account per GitHub account.
-      db.prepare("UPDATE users SET github_id = 7 WHERE id = 1").run();
-      assert.throws(() => db.prepare("UPDATE users SET github_id = 7 WHERE id = 2").run(), /UNIQUE/);
-      // The upgrade was backed up first, password hashes included (the only copy left).
+      db.prepare("INSERT INTO users (username, github_id, created_at) VALUES ('a', 7, 0)").run();
+      assert.throws(() => db.prepare("INSERT INTO users (username, github_id, created_at) VALUES ('b', 7, 0)").run(), /UNIQUE/);
+      // Everything from before is in the backup taken first (the only copy left).
       const backups = fs.readdirSync(path.join(t.dir, "backups")).filter((f) => f.endsWith("-pre-v5.db"));
       assert.equal(backups.length, 1);
+      const backup = new Database(path.join(t.dir, "backups", backups[0]), { readonly: true });
+      try {
+        assert.deepEqual(backup.prepare("SELECT username FROM users ORDER BY id").all().map((r) => r.username), ["louis", "bob"]);
+        assert.equal(backup.prepare("SELECT COUNT(*) AS n FROM usage_events").get().n, 1);
+      } finally {
+        backup.close();
+      }
     } finally {
       db.close();
       fs.rmSync(t.dir, { recursive: true, force: true });

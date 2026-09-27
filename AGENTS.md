@@ -56,11 +56,10 @@ identify them): keep both, and name any newly supported tool's owner in
 them.
 Clicking the avatar opens Your profile / Leaderboard / Settings / Admin
 panel (admins) / Sign out. `/settings` (signed in) holds Account (the
-profile from GitHub, read-only; an account from before GitHub sign-in is
-told to ask an admin to link it), Devices and a Danger zone
-(delete your own activity, or your whole account: linked accounts only); `/admin`
+profile from GitHub, read-only), Devices and a Danger zone
+(delete your own activity, or your whole account); `/admin`
 (admins) holds the server overview, the account-creation switch and the
-users (make or remove admin, disable; "not linked to GitHub" shown).
+users (make or remove admin, disable).
 
 **Hard rule:** the demo dataset is fictional and deterministic. It is only
 visible at `/demo`, always labeled "Demonstration data" (and ` · Demo` in
@@ -71,8 +70,8 @@ ever shows it (`?demo=1` is gone and does nothing).
 
 ```bash
 npm install
-cp .env.example .env        # set PORT, DB_PATH, BACKUP_DIR (loaded by npm
-                            # start/dev/gen-key/user/backup; real env vars win)
+cp .env.example .env        # set PORT, DB_PATH, BACKUP_DIR, GITHUB_* (loaded by
+                            # npm start/dev/backup/restore; real env vars win)
 npm run build               # the UI, served from web/dist
 npm start                   # http://localhost:3000
 ```
@@ -88,36 +87,19 @@ request's host, through Caddy or the tunnel). No scope is asked for: the
 server only reads the public profile (numeric id, login, name, picture),
 never an email, and drops the token at once.
 
-Nothing is viewable until the first account exists; it is an admin and
-owns the data collected so far (collectors keep posting with `gen-key`
-keys meanwhile). Create it in the browser: type the one-time **setup
-code** the server prints at start (new on every start, only while no
-account exists), then sign in with GitHub. After that, sign-up is open:
-any GitHub user who signs in gets an account (5 new accounts per client
-per hour), until an admin turns account creation off in the admin panel
-(existing accounts still sign in). Accounts are only ever created by
-signing in with GitHub: no invite links, no admin panel or CLI creation.
-
-```bash
-npm run user -- link oldname louis [--id N]   # link an account from before GitHub sign-in
-npm run user -- list
-```
+Nothing is viewable until the first account exists; it is an admin.
+Create it in the browser: type the one-time **setup code** the server
+prints at start (new on every start, only while no account exists), then
+sign in with GitHub. After that, sign-up is open: any GitHub user who
+signs in gets an account (5 new accounts per client per hour), until an
+admin turns account creation off in the admin panel (existing accounts
+still sign in). Everything happens on the site: accounts are only ever
+created by signing in with GitHub, device keys only in Settings →
+Devices (copyable again there). There is no account or key CLI.
 
 Username = the GitHub login, name and picture = GitHub's, updated at each
 sign-in (a login rename moves `/u/<login>`; the account, keyed by the
-GitHub numeric id, keeps its data). Accounts from before GitHub sign-in
-(migration 5) keep their data and open sessions, and are linked by the
-server admin with `npm run user -- link <username> <github-login>` (never
-from a session: a stolen one could tie the account to the thief's
-GitHub). Linking ends the account's sessions, gives it its GitHub login as
-username, and needs `--force` if it was linked to another GitHub account.
-
-Create a device ingestion key (also copyable later from Settings →
-Devices), for the first account unless `--user` says otherwise:
-
-```bash
-npm run gen-key -- "laptop-louis" [--user alice]
-```
+GitHub numeric id, keeps its data).
 
 Health check: `GET /api/health` → `{"ok":true}`.
 
@@ -170,7 +152,6 @@ ai.example.com {
 ```bash
 docker compose up -d --build       # build, start, restart on crash/reboot
 docker compose logs app            # setup code for the first account
-docker compose exec app node scripts/gen-key.ts "laptop" [--user alice]
 docker compose exec app node scripts/backup.ts
 git pull && docker compose up -d --build                  # upgrade by hand
 ```
@@ -201,7 +182,10 @@ Upgrades are normally deployed from GitHub (Continuous deployment below).
   `https://ai.example.com/api/auth/github/callback`) and its
   `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` in the server's `.env`
   **before** a version with it is deployed: without them nobody can sign
-  in (sessions already open still work, so linking from Settings does).
+  in. Deploying it (migration 5) deletes every account and all measured
+  data (kept in the `-pre-v5` backup): everyone signs in with GitHub again,
+  makes a new device key in Settings and reinstalls the collectors, which
+  send their whole local history again.
 - Before going live: revoke and reissue every device key used through
   quick tunnels, then point the collectors (statusLine, Codex hook,
   OpenCode plugin) at the new URL.
@@ -420,12 +404,10 @@ Components never branch on live vs demo: both sources map into the same
   browser to `/api/auth/github/callback`, which needs that same state in
   query and cookie (once only), exchanges the code server to server and
   reads `/user`. A restart drops sign-ins in progress. The account is
-  found by GitHub numeric id; its username follows the login unless an
-  account not linked to GitHub holds that name (then a new account is
-  refused, `taken`, and an existing one keeps its name); a linked account
-  still holding a login GitHub gave to someone else becomes the first free
-  `<name>-<id>`, `<name>-<id>-2`… until it signs in again
-  (`server/lib/accounts.ts`, shared with `npm run user -- link`).
+  found by GitHub numeric id; its username follows the login. Another
+  account still holding a login GitHub gave to someone else becomes the
+  first free `<name>-<id>`, `<name>-<id>-2`… until it signs in again
+  (`server/lib/accounts.ts`).
 - The Claude Code collector (`collectors/claude-code.py`, copied to
   `~/.claude/ai-activity-claude-code.py`, run as the statusLine command;
   exercised by `test/collector.test.js`) reads what was added to every
@@ -523,8 +505,8 @@ Components never branch on live vs demo: both sources map into the same
 ## 4. Data model (SQLite, `data/dashboard.db`)
 
 - `users` — viewer accounts (`username` unique, case-insensitive: the
-  GitHub login; `github_id` unique, the GitHub numeric id, NULL until
-  linked; `display_name` and `avatar_url` from GitHub; `is_admin`, `disabled`,
+  GitHub login; `github_id` unique, the GitHub numeric id; `display_name`
+  and `avatar_url` from GitHub; `is_admin`, `disabled`,
   `activity_cleared_at`: when the user last deleted their activity, §6).
   `deleted_events` — ids of the messages a user deleted (ids only), so a
   resend is refused (§5). Device, usage, quota and session tables carry
@@ -557,7 +539,7 @@ Components never branch on live vs demo: both sources map into the same
 - Migrations are versioned: `PRAGMA user_version` is the number of
   migrations a database has run, and `MIGRATIONS` in
   `server/db/migrations.ts` lists them in order. At open (server,
-  `npm run user`, `gen-key`), each pending one runs in its own transaction
+  `npm run backup` / `restore`), each pending one runs in its own transaction
   with its version bump, so a failure leaves the database at the last
   completed step. A database at a higher version than the code knows (made
   by a newer server) is refused at start. An existing database with
@@ -582,10 +564,14 @@ Components never branch on live vs demo: both sources map into the same
   the 2-minute slack existed).
 - Migration 3 adds `users.activity_cleared_at` and `deleted_events`.
 - Migration 4 adds `collector_versions`.
-- Migration 5 adds `users.github_id` (unique) and drops
-  `users.password_hash` (sign in with GitHub only; the `-pre-v5` backup
-  keeps the hashes). Existing accounts keep their data and sessions and
-  are linked afterwards (§2).
+- Migration 5 starts the database over for sign in with GitHub: it
+  deletes every account and everything tied to them (usage, quotas,
+  deleted ids, devices, collector versions, sessions, settings), then adds
+  `users.github_id` (unique) and drops `users.password_hash`. Accounts
+  from before could never sign in again. The `-pre-v5` backup keeps it
+  all; people sign in with GitHub, make a device key in Settings, and the
+  collectors send their whole local history again (their offsets are
+  kept per server and key, §3).
 
 ### Backups
 
@@ -894,8 +880,7 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
 `401` without one, including before the first account exists):
 
 - `GET /api/auth/status` → `{authenticated, user, setup_required, signup_open, github_sign_in}`
-  (`user` is `{id, username, display_name, avatar_url, is_admin, github_linked}`
-  or null, `github_linked` false for an account not linked yet;
+  (`user` is `{id, username, display_name, avatar_url, is_admin}` or null;
   `setup_required` while no account exists; `github_sign_in`: sign-in is
   set up, else nobody can sign in), `POST /api/auth/logout`
 - `POST /api/auth/github {next?, setup_code?, reauth?}` → `{url}`: the
@@ -906,9 +891,8 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   site), else `/`. While no account exists it needs `setup_code` (wrong or
   missing → `401`, `409` if the server has none; throttled below; the code
   ignores case, spaces and dashes): that sign-in creates the first
-  account, admin. `reauth: true` (signed in, else `401`; `409` for an
-  account not linked yet) signs the same account in again, for the
-  danger zone.
+  account, admin. `reauth: true` (signed in, else `401`) signs the same
+  account in again, for the danger zone.
 - `GET /api/auth/github/callback?code&state` (GitHub sends the browser
   here) → `302` to `next` with a new session, or to `/?auth_error=<code>`
   (`<next>?auth_error=` for `reauth`, so Settings says why): `denied`
@@ -917,8 +901,7 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   cookie alone), `github` (the exchange or `/user` failed), `disabled`,
   `setup`, `exists` (a first-account sign-in after one was made), `closed`
   (sign-up closed, new GitHub user), `too_many` (5 new accounts from one
-  client in an hour, counted once made), `taken` (the login is the
-  username of an account not linked to GitHub), `other_account` (`reauth`
+  client in an hour, counted once made), `other_account` (`reauth`
   with another GitHub account: the session stays as it was). The web
   client shows a fixed message per code.
 - `GET /api/profiles` → enabled accounts `{username, display_name, avatar_url}`,
@@ -979,8 +962,7 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   events), and `deleted_events` keeps one id per deleted message until
   the account goes: fine for a personal instance, to bound if it ever
   serves many accounts.
-- Admin only (`403` otherwise): `GET /api/users` (with `github`: linked
-  or not), `POST /api/users/:id/admin {is_admin}` (grant or remove admin
+- Admin only (`403` otherwise): `GET /api/users`, `POST /api/users/:id/admin {is_admin}` (grant or remove admin
   rights, never your own, so an admin always remains),
   `POST /api/users/:id/disable|enable`. A disabled account cannot sign
   in and its device keys are rejected at ingest; admins cannot disable
@@ -1001,7 +983,7 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   - signed-in routes (`/api/devices`, `/api/account`, `/api/users`,
     `/api/admin`): 120 per user, refill 1/s;
   - at most 20 live devices per account (`POST /api/devices` → `409`;
-    revoking one frees a slot; `npm run gen-key` is not capped);
+    revoking one frees a slot);
   - GitHub sign-in (`/api/auth/github` and its callback): 30 per client,
     refill one per 10 s (a sign-in takes two);
   - ingest: per device key (§5). Health and the rest of `/api/auth/*` are
@@ -1063,8 +1045,7 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
    `/settings` and `/admin` signed out: sign-in, then back. A new GitHub
    user gets an account (after the first one) until an admin closes
    sign-up; then new users land on `/?auth_error=closed` and existing ones
-   still sign in. An account from before GitHub sign-in, once linked with
-   `npm run user -- link`, signs in with GitHub and keeps its data.
+   still sign in.
 10. `/u/<name>` opens without an account and shows usage only: no devices
    or account sections, for visitors and other accounts alike.
 11. `/leaderboard` opens without an account and lists every enabled

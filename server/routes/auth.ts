@@ -27,8 +27,7 @@ const STATE_PATH = "/api/auth/github";
  * web client says it in words: a link cannot put any text on the page).
  */
 export type AuthError =
-  | "denied" | "expired" | "github" | "disabled" | "setup" | "exists" | "closed" | "too_many" | "taken"
-  | "other_account";
+  | "denied" | "expired" | "github" | "disabled" | "setup" | "exists" | "closed" | "too_many" | "other_account";
 
 /**
  * What a sign-in started with POST /api/auth/github does once GitHub sends
@@ -89,7 +88,7 @@ export function authRoutes(
   const signUp = (c: Context, gh: GithubUser, admin: boolean): number | AuthError => {
     if (!admin && signupsBy(c) >= SIGNUPS_PER_CLIENT) return "too_many";
     const id = db.transaction(() => {
-      if (!claimLogin(db, gh.login, null)) return "taken" as const;
+      claimLogin(db, gh.login, null);
       const a = { username: gh.login, display_name: gh.name, avatar_url: gh.avatar_url, github_id: gh.id, is_admin: admin };
       return admin ? createFirstAccount(db, a) ?? ("exists" as const) : createAccount(db, a);
     })();
@@ -133,9 +132,6 @@ export function authRoutes(
       if (body.reauth === true) {
         const who = auth.resolve(c);
         if (!who) return c.json({ error: "sign in first" }, 401);
-        if (!who.account.github_linked) {
-          return c.json({ error: "this account is not linked to GitHub yet: ask an admin to link it" }, 409);
-        }
         p = { ...base, mode: "reauth", userId: who.userId };
       } else if (!accountsExist(db)) {
         if (!setupCode) return c.json({ error: "no setup code: restart the server for a new one" }, 409);

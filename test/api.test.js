@@ -4,9 +4,8 @@ import os from "node:os";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { COLLECTOR_VERSIONS } from "../shared/collectors.ts";
-import { createHash, randomBytes } from "node:crypto";
 import {
-  startServer, req, newDevice, event, collector, codexResponse, opencodeMessage, userCli, login, genKey, register, userId, TEST_ADMIN,
+  startServer, req, newDevice, event, collector, codexResponse, opencodeMessage, login, register, userId, TEST_ADMIN,
   awayFromMidnight, githubSignIn, githubUser, renameGithubUser, githubRequests, githubCode,
 } from "./helpers.js";
 
@@ -489,23 +488,6 @@ function withDb(srv, fn) {
   }
 }
 
-/**
- * An account from before GitHub sign-in (no github_id), as migration 5
- * leaves it, with a session it opened back then (sessions survive the
- * upgrade): the only ways in are linking from that session or the CLI.
- */
-function legacyAccount(srv, username, { signedInAgo = 0 } = {}) {
-  const now = Math.floor(Date.now() / 1000);
-  const token = randomBytes(32).toString("base64url");
-  const id = withDb(srv, (db) => {
-    const id = Number(db.prepare("INSERT INTO users (username, created_at) VALUES (?, ?)").run(username, now).lastInsertRowid);
-    db.prepare("INSERT INTO viewer_sessions (token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)")
-      .run(createHash("sha256").update(token).digest("hex"), id, now + 86400, now - signedInAgo);
-    return id;
-  });
-  return { id, cookie: `dash_session=${token}` };
-}
-
 /** Makes every session of that user look opened `sec` seconds ago. */
 const ageSessions = (srv, id, sec) => withDb(srv, (db) =>
   db.prepare("UPDATE viewer_sessions SET created_at = ? WHERE user_id = ?").run(Math.floor(Date.now() / 1000) - sec, id));
@@ -531,7 +513,7 @@ describe("locked server (first account made from the CLI)", () => {
     const cookie = r.cookie;
     assert.equal((await req(srv.base, "GET", "/api/devices", { cookie })).status, 200);
     const me = (await req(srv.base, "GET", "/api/auth/status", { cookie })).json;
-    assert.deepEqual(me.user, { id: 1, username: "admin", display_name: "admin", avatar_url: null, is_admin: true, github_linked: true });
+    assert.deepEqual(me.user, { id: 1, username: "admin", display_name: "admin", avatar_url: null, is_admin: true });
     const d = await newDevice(srv.base, "locked-dev", cookie);
     assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { body: event(), key: d.key })).json.stored, true);
     await req(srv.base, "POST", "/api/auth/logout", { cookie });
@@ -683,7 +665,7 @@ describe("client addresses for the sign-up cap", () => {
 });
 
 describe("accounts", () => {
-  test("nothing is viewable without an account; the first one claims the existing data", async () => {
+  test("nothing is viewable without an account; the first one is made with the setup code", async () => {
     const srv = await startServer({ autoLogin: false });
     try {
       assert.deepEqual((await req(srv.base, "GET", "/api/auth/status")).json,
@@ -694,61 +676,20 @@ describe("accounts", () => {
       // The public account list is empty until the first account exists.
       assert.deepEqual((await req(srv.base, "GET", "/api/profiles")).json.profiles, []);
       assert.equal((await req(srv.base, "POST", "/api/devices", { body: { name: "x" } })).status, 401);
-      // Collectors keep working before any account exists (keys from the CLI).
-      const key = await genKey(srv.dbPath, "pre-accounts");
-      assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event() })).json.stored, true);
-
       // The first account: the setup code from the server log, then GitHub.
       githubUser("louis", { name: "Louis", avatar_url: "https://avatars.githubusercontent.com/u/77?v=4" });
       const { cookie } = await githubSignIn(srv.base, "louis", { setup_code: srv.setupCode() });
       const st = (await req(srv.base, "GET", "/api/auth/status", { cookie })).json;
       assert.deepEqual(st, {
         authenticated: true, setup_required: false, signup_open: true, github_sign_in: true,
-        user: { id: 1, username: "louis", display_name: "Louis", avatar_url: "https://avatars.githubusercontent.com/u/77?v=4", is_admin: true, github_linked: true },
+        user: { id: 1, username: "louis", display_name: "Louis", avatar_url: "https://avatars.githubusercontent.com/u/77?v=4", is_admin: true },
       });
-      assert.equal((await req(srv.base, "GET", "/api/u/louis/stats?days=730", { cookie })).json.events, 1);
-      assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event() })).json.stored, true);
+      assert.equal((await req(srv.base, "GET", "/api/u/louis/stats?days=730", { cookie })).json.events, 0);
     } finally {
       await srv.stop();
     }
   });
 
-  test("CLI: link and list; accounts are never created from it", async () => {
-    const srv = await startServer();
-    try {
-      await register(srv.base, "carol");
-      // Linking an account from before GitHub sign-in.
-      legacyAccount(srv, "oldtimer");
-      githubUser("newtimer");
-      assert.notEqual((await userCli(srv.dbPath, ["link", "nobody", "newtimer"])).code, 0);
-      assert.notEqual((await userCli(srv.dbPath, ["link", "oldtimer", "no spaces"])).code, 0);
-      const unknown = await userCli(srv.dbPath, ["link", "oldtimer", "nobody-on-github"]);
-      assert.notEqual(unknown.code, 0);
-      assert.match(unknown.out, /no GitHub account "nobody-on-github"/);
-      assert.notEqual((await userCli(srv.dbPath, ["link", "oldtimer", "CAROL"])).code, 0, "carol's GitHub is linked already");
-      assert.notEqual((await userCli(srv.dbPath, ["link", "oldtimer", "x", "--id", "0"])).code, 0);
-      let list = (await userCli(srv.dbPath, ["list"])).out;
-      assert.match(list, /#\d+ oldtimer \[not linked to GitHub\]/);
-      assert.match(list, /#1 admin \[admin\]\n/);
-      assert.match(list, /#\d+ carol\n/);
-      assert.equal((await userCli(srv.dbPath, ["link", "oldtimer", "newtimer"])).code, 0);
-      list = (await userCli(srv.dbPath, ["list"])).out;
-      assert.doesNotMatch(list, /not linked/);
-      // Its username follows the GitHub login from its next sign-in on.
-      const cookie = await login(srv.base, "newtimer");
-      assert.equal((await req(srv.base, "GET", "/api/auth/status", { cookie })).json.user.username, "newtimer");
-      // --id: no GitHub call at all (offline servers).
-      legacyAccount(srv, "offline");
-      assert.equal((await userCli(srv.dbPath, ["link", "offline", "offline-gh", "--id", "4242"])).code, 0);
-      githubUser("offline-gh", { id: 4242 });
-      assert.equal((await githubSignIn(srv.base, "offline-gh")).error, null);
-      for (const gone of [["add", "dora"], ["passwd", "admin"]]) {
-        assert.notEqual((await userCli(srv.dbPath, gone)).code, 0, gone[0]);
-      }
-    } finally {
-      await srv.stop();
-    }
-  });
 
   test("usage lands on the device owner; devices stay private", async () => {
     const srv = await startServer({ signedIn: false });
@@ -823,14 +764,14 @@ describe("profiles from GitHub and user management", () => {
   test("admins list accounts; others cannot", async () => {
     const carol = (await register(srv.base, "carol", { over: { name: " Carol " } })).cookie;
     const me = (await req(srv.base, "GET", "/api/auth/status", { cookie: carol })).json.user;
-    assert.deepEqual(me, { id: me.id, username: "carol", display_name: "Carol", avatar_url: null, is_admin: false, github_linked: true });
+    assert.deepEqual(me, { id: me.id, username: "carol", display_name: "Carol", avatar_url: null, is_admin: false });
     assert.equal((await req(srv.base, "GET", "/api/users", { cookie: carol })).status, 403);
     assert.equal((await req(srv.base, "GET", "/api/admin/overview", { cookie: carol })).status, 403);
     // Accounts are only created by signing up: there is no admin creation route.
     assert.equal((await post("/api/users", { username: "eve" }, admin)).status, 404);
     const list = (await req(srv.base, "GET", "/api/users", { cookie: admin })).json.users;
-    assert.deepEqual(list.map((u) => [u.username, u.is_admin, u.disabled, u.github_linked]),
-      [["admin", true, false, true], ["carol", false, false, true]]);
+    assert.deepEqual(list.map((u) => [u.username, u.is_admin, u.disabled]),
+      [["admin", true, false], ["carol", false, false]]);
   });
 
   test("name and picture follow GitHub at each sign-in; only allowlisted pictures are kept", async () => {
@@ -883,60 +824,12 @@ describe("profiles from GitHub and user management", () => {
     assert.equal((await req(srv.base, "GET", "/api/auth/status", { cookie: old.cookie })).json.user.username, "handle2");
   });
 
-  test("a login held by an account not linked to GitHub is not taken", async () => {
-    const legacy = legacyAccount(srv, "keeper");
-    const r = await register(srv.base, "keeper");
-    assert.deepEqual([r.error, r.cookie], ["taken", null]);
-    assert.equal((await req(srv.base, "GET", "/api/auth/status", { cookie: legacy.cookie })).json.user.username, "keeper");
-    // An existing account whose new login is held that way keeps its username.
-    const ok = await register(srv.base, "mover");
-    renameGithubUser("mover", "keeper");
-    const again = await githubSignIn(srv.base, "keeper");
-    assert.equal(again.error, null);
-    assert.equal((await req(srv.base, "GET", "/api/auth/status", { cookie: again.cookie })).json.user.username, "mover");
-    renameGithubUser("keeper", "mover");
-    assert.ok(ok.cookie);
-  });
 
-  test("an account from before GitHub sign-in is linked from the server CLI only, which ends its sessions", async () => {
-    const legacy = legacyAccount(srv, "Old.Name");
-    const me = (cookie = legacy.cookie) => req(srv.base, "GET", "/api/auth/status", { cookie });
-    assert.equal((await me()).json.user.github_linked, false);
-    const githubId = () => withDb(srv, (db) => db.prepare("SELECT github_id FROM users WHERE id = ?").get(legacy.id).github_id);
-    // Its session (maybe a stolen one) cannot sign in again with GitHub
-    // (what deleting needs), nor tie it to a GitHub account: a sign-in from
-    // it is someone signing in (replacing that session), and "link" means nothing.
-    const reauth = await req(srv.base, "POST", "/api/auth/github", { body: { reauth: true }, cookie: legacy.cookie });
-    assert.equal(reauth.status, 409);
-    const stolen = legacyAccount(srv, "Old.Name2");
-    const other = await githubSignIn(srv.base, "stealer", { link: true, cookie: stolen.cookie });
-    assert.equal(other.error, null);
-    assert.notEqual((await me(other.cookie)).json.user.id, stolen.id);
-    assert.equal(withDb(srv, (db) => db.prepare("SELECT github_id FROM users WHERE id = ?").get(stolen.id).github_id), null);
-    assert.equal(githubId(), null);
-
-    githubUser("linker", { name: "Linker" });
-    const linked = await userCli(srv.dbPath, ["link", "Old.Name", "linker"]);
-    assert.equal(linked.code, 0, linked.out);
-    // Every session from before ends; it signs in with GitHub, as "linker".
-    assert.equal((await me()).json.authenticated, false);
-    assert.equal(withDb(srv, (db) => db.prepare("SELECT username, display_name FROM users WHERE id = ?").get(legacy.id)).username, "linker");
-    const cookie = await login(srv.base, "linker");
-    const user = (await me(cookie)).json.user;
-    assert.deepEqual([user.id, user.username, user.display_name, user.github_linked], [legacy.id, "linker", "Linker", true]);
-    // Relinking to another GitHub account needs --force; someone else's is refused.
-    githubUser("linker2");
-    assert.notEqual((await userCli(srv.dbPath, ["link", "linker", "linker2"])).code, 0);
-    assert.notEqual((await userCli(srv.dbPath, ["link", "linker", "stealer"])).code, 0);
-    assert.equal((await userCli(srv.dbPath, ["link", "linker", "linker2", "--force"])).code, 0);
-    assert.equal((await me(cookie)).json.authenticated, false);
-    assert.equal((await me(await login(srv.base, "linker2"))).json.user.id, legacy.id);
-  });
 
   test("a stale username moves to a free name, even when <name>-<id> is taken", async () => {
     await register(srv.base, "dup");
     const id = await userId(srv.base, "dup", admin);
-    legacyAccount(srv, `dup-${id}`);
+    await register(srv.base, `dup-${id}`);
     renameGithubUser("dup", "dup-renamed");
     assert.equal((await register(srv.base, "dup")).error, null);
     const names = (await req(srv.base, "GET", "/api/users", { cookie: admin })).json.users.map((u) => [u.id, u.username]);
@@ -986,8 +879,6 @@ describe("creating accounts from the site", () => {
     try {
       const code = srv.setupCode();
       assert.match(code, /^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/);
-      const key = await genKey(srv.dbPath, "pre-accounts");
-      await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event() });
       githubUser("founder", { name: "Founder" });
       const wrong = await githubSignIn(srv.base, "founder", { setup_code: "AAAA-BBBB-CCCC" });
       assert.deepEqual([wrong.start.status, wrong.cookie], [401, null]);
@@ -996,8 +887,7 @@ describe("creating accounts from the site", () => {
       const first = await githubSignIn(srv.base, "founder", { setup_code: ` ${code.toLowerCase().replace(/-/g, "")} ` });
       assert.equal(first.location, "/");
       const st = (await req(srv.base, "GET", "/api/auth/status", { cookie: first.cookie })).json;
-      assert.deepEqual(st.user, { id: 1, username: "founder", display_name: "Founder", avatar_url: null, is_admin: true, github_linked: true });
-      assert.equal((await req(srv.base, "GET", "/api/u/founder/stats?days=730", { cookie: first.cookie })).json.events, 1);
+      assert.deepEqual(st.user, { id: 1, username: "founder", display_name: "Founder", avatar_url: null, is_admin: true });
       // ...then the setup code means nothing: new GitHub users sign up (not admin).
       const second = await githubSignIn(srv.base, "second", { setup_code: code });
       assert.equal(second.error, null);
@@ -1072,7 +962,7 @@ describe("open sign-up and admin panel", () => {
       const r = await register(srv.base, "neo", { over: { name: "Neo", avatar_url: pic } });
       assert.deepEqual([r.location, r.error], ["/", null]);
       const me = (await req(srv.base, "GET", "/api/auth/status", { cookie: r.cookie })).json.user;
-      assert.deepEqual(me, { id: me.id, username: "neo", display_name: "Neo", avatar_url: pic, is_admin: false, github_linked: true });
+      assert.deepEqual(me, { id: me.id, username: "neo", display_name: "Neo", avatar_url: pic, is_admin: false });
       assert.equal((await req(srv.base, "GET", "/api/admin/overview", { cookie: r.cookie })).status, 403);
       assert.equal((await req(srv.base, "GET", "/api/u/neo", { anon: true })).json.display_name, "Neo");
     } finally {
@@ -1686,26 +1576,10 @@ describe("limits, bounds and admin edge cases", () => {
     }
   });
 
-  test("CLI: user list and gen-key --user", async () => {
-    const srv = await startServer();
-    try {
-      await register(srv.base, "carol");
-      const list = await userCli(srv.dbPath, ["list"]);
-      assert.equal(list.code, 0);
-      assert.match(list.out, /#1 admin \[admin\]/);
-      assert.match(list.out, /#\d+ carol\n/);
-      const key = await genKey(srv.dbPath, "carol-laptop", "--user", "carol");
-      assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event() })).json.stored, true);
-      assert.equal((await req(srv.base, "GET", "/api/u/carol/stats?days=730", { anon: true })).json.events, 1);
-      await assert.rejects(genKey(srv.dbPath, "x", "--user", "nobody"), /no user "nobody"/);
-    } finally {
-      srv.stop();
-    }
-  });
 });
 
 describe("migrations", () => {
-  test("leftovers of removed features are dropped, measured data kept", async () => {
+  test("an old database: removed features' leftovers dropped, the data in the pre-upgrade backup only", async () => {
     const dir = fs.mkdtempSync(`${os.tmpdir()}/ai-usage-legacy-`);
     const dbPath = `${dir}/t.db`;
     const old = new Database(dbPath);
@@ -1737,10 +1611,12 @@ describe("migrations", () => {
       for (const t of ["billing_records", "subscriptions", "invites", "app_settings"]) assert.ok(!tables.includes(t), t);
       const cols = db.prepare("PRAGMA table_info(usage_events)").all().map((c) => c.name);
       assert.ok(!cols.includes("cost_estimated_usd"));
-      assert.equal(db.prepare("SELECT input_tokens FROM usage_events WHERE event_id = 'e1'").get().input_tokens, 42);
-      // Rows from before per-message ingestion are snapshot rows: messages of
-      // their session replace them (see "messages replace … snapshot rows").
-      assert.equal(db.prepare("SELECT source FROM usage_events WHERE event_id = 'e1'").get().source, "snapshot");
+      // Migration 5 starts over for GitHub sign-in; the backup made first keeps it.
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM usage_events").get().n, 0);
+      const [backup] = fs.readdirSync(`${dir}/backups`).filter((f) => f.endsWith("-pre-v5.db"));
+      const kept = new Database(`${dir}/backups/${backup}`, { readonly: true });
+      assert.equal(kept.prepare("SELECT input_tokens FROM usage_events WHERE event_id = 'e1'").get().input_tokens, 42);
+      kept.close();
     } finally {
       db.close();
       fs.rmSync(dir, { recursive: true, force: true });
@@ -2063,7 +1939,5 @@ describe("rate limits", () => {
     assert.match(full.json.error, /at most 20 devices/);
     assert.equal((await req(srv.base, "POST", `/api/devices/${ids[0]}/revoke`)).status, 200);
     assert.equal((await req(srv.base, "POST", "/api/devices", { body: { name: "replacement" } })).status, 200);
-    // The server CLI is not capped.
-    assert.match(await genKey(srv.dbPath, "from-cli"), /^ak_/);
   });
 });
