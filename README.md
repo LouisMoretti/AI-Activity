@@ -64,7 +64,7 @@ a bare `/api/ingest` answers `404`. See `AGENTS.md` §5 for the payload contract
 2. Copy `collectors/codex.py` to `~/.codex/ai-activity-codex.py` on the
    device and replace `<server>` and `<device key>` at its top (or set
    `AI_ACTIVITY_URL` / `AI_ACTIVITY_KEY` in the environment Codex runs in).
-3. Add the Stop hook to `~/.codex/hooks.json`:
+3. Add the hooks to `~/.codex/hooks.json` (the same command three times):
 
 `~/.codex/hooks.json`:
 
@@ -76,6 +76,9 @@ a bare `/api/ingest` answers `404`. See `AGENTS.md` §5 for the payload contract
     ],
     "UserPromptSubmit": [
       { "hooks": [{ "type": "command", "command": "setsid -f python3 ~/.codex/ai-activity-codex.py >/dev/null 2>&1 </dev/null; echo '{}'", "timeout": 10 }] }
+    ],
+    "PostToolUse": [
+      { "hooks": [{ "type": "command", "command": "setsid -f python3 ~/.codex/ai-activity-codex.py >/dev/null 2>&1 </dev/null; echo '{}'", "timeout": 10 }] }
     ]
   }
 }
@@ -83,7 +86,7 @@ a bare `/api/ingest` answers `404`. See `AGENTS.md` §5 for the payload contract
 
 Codex asks you to review a new hook once (`/hooks`) before running it.
 
-What it does at the end of every turn:
+What it does after every tool call and at the end of every turn:
 
 - Reads what was added to every rollout under `~/.codex/sessions` and
   `~/.codex/archived_sessions` since the last successful upload. Every
@@ -112,9 +115,15 @@ What it does at the end of every turn:
   is lost while the server is down (no separate spool needed): the next
   turn sends the backlog with its original times. Delete that file to send
   everything again (safe: the server stores each response once).
-- `setsid -f` detaches the upload so the turn ends at once; `echo '{}'` is
-  the (empty) JSON answer Codex expects from a hook. Runs wait for each
-  other and give up after 15 minutes. The script is idempotent: it can
+- `PostToolUse` sends a long turn's usage while it runs (Codex writes each
+  response to the rollout as it comes), so the dashboard follows the turn
+  instead of catching up at its end. A reply without any tool call waits
+  for `Stop`.
+- `setsid -f` detaches the upload so Codex goes on at once; `echo '{}'` is
+  the (empty) JSON answer Codex expects from a hook. One run at a time,
+  with at most one waiting behind it (it reads the rollouts once its turn
+  comes, so any other run can stop at once); a run gives up after 15
+  minutes. The script is idempotent: it can
   also run by hand or from cron.
 
 ## Send Antigravity usage from a device

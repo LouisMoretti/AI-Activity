@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """AI Activity collector for Codex (see README.md, "Send Codex usage").
 
-Run by a Codex Stop hook at the end of every turn, and again on every
-prompt submit (the Stop hook does not fire on rate-limit stops, so without
-the second trigger the final snapshot of an exhausted quota would never be
-posted), or by hand, or from cron: it is idempotent. It reads what was added to every rollout under
+Run by Codex hooks: after every tool call (so a long turn shows up while it
+runs), at the end of every turn, and on every prompt submit (the Stop hook
+does not fire on rate-limit stops, so without it the final snapshot of an
+exhausted quota would never be posted); or by hand, or from cron: it is
+idempotent. It reads what was added to every rollout under
 ~/.codex/sessions and ~/.codex/archived_sessions since the last accepted
 upload and posts one entry per model response with its token counts, plus
 the latest rate limits and context fill of each session. Prompts, replies
@@ -169,8 +170,17 @@ def main():
     signal.signal(signal.SIGALRM, timeout)  # an exception, so the finally below still saves
     signal.alarm(900)
     os.makedirs(CACHE, exist_ok=True)
+    # One active run and at most one waiting behind it: the tool-call hook
+    # fires often, and any other run can stop here, since the waiter reads
+    # the rollouts only once it holds the lock, so it sends what they would.
+    waiter = open(os.path.join(CACHE, "codex-waiter.lock"), "w")
+    try:
+        fcntl.flock(waiter, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return
     lock = open(os.path.join(CACHE, "codex.lock"), "w")
-    fcntl.flock(lock, fcntl.LOCK_EX)  # runs wait for each other
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    waiter.close()  # a hook firing from now on queues the next run
     path = os.path.join(CACHE, "codex.json")
     try:
         state = json.load(open(path))
