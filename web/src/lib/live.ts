@@ -16,7 +16,6 @@ export interface LiveData {
   sessions: SessionsResponse;
   /** OpenCode's card: its summary (today) and its latest sessions. */
   opencode: { summary: SummaryResponse; latest: SessionsResponse };
-  antigravity: { summary: SummaryResponse; latest: SessionsResponse };
 }
 
 export const ACTIVITY_DAYS = 364;
@@ -31,6 +30,20 @@ function figure(b: Breakdown, metric: "tokens" | "sessions"): FigureVM {
 }
 
 function toolQuotas(q: QuotasResponse, tool: QuotaToolVM["tool"]): QuotaToolVM {
+  if (tool === "antigravity") {
+    // These are independent quota pools, not separate subscriptions. Never
+    // add their percentages or pair one pool's usage with another's reset.
+    const pools = ["gemini", "claude-gpt"];
+    const rows = q.quotas.filter((x) => x.tool === tool && pools.includes(x.account_ref));
+    const windows = pools.flatMap((pool) => ["five_hour", "seven_day"].map((type) => {
+      const row = rows.find((x) => x.account_ref === pool && x.limit_type === type);
+      const name = pool === "gemini" ? "Gemini" : "Claude/GPT";
+      return { label: `${name} · ${type === "five_hour" ? "5-hour window" : "This week"}`,
+        pct: row?.used_pct ?? null, resetsAt: row?.resets_at ?? null,
+        spanSec: type === "five_hour" ? WINDOW_SPANS.five_hour : WINDOW_SPANS.seven_day };
+    }));
+    return { tool, updatedAt: Math.max(0, ...rows.map((x) => x.measured_at)) || null, windows };
+  }
   const find = (type: keyof typeof WINDOW_SPANS) =>
     q.quotas.find((x) => x.tool === tool && x.limit_type === type);
   const five = find("five_hour");
@@ -90,7 +103,7 @@ export function liveDashboard(d: LiveData, provider: Provider): DashboardVM {
     claude: toolQuotas(d.quotas, "claude-code"),
     codex: toolQuotas(d.quotas, "codex"),
     opencode: activityTool(d.opencode),
-    antigravity: activityTool(d.antigravity),
+    antigravity: toolQuotas(d.quotas, "antigravity"),
     sessions,
     sessionsTotal: d.sessions.total,
   };
