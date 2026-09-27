@@ -363,7 +363,8 @@ describe("Antigravity quota reports", () => {
     const now = Math.floor(Date.now() / 1000);
     return { status: "SUCCESS", command: { name: "usage", data: { email: "PRIVATE_EMAIL", groups: [
       { display_name: "Gemini Models", buckets: [
-        { bucket_id: "gemini-5h", remaining: { remaining_fraction: 0.75 }, reset_time: new Date((now + 3600) * 1000).toISOString() },
+        // The shape agy 1.2.11 prints.
+        { id: "gemini-5h", name: "Five Hour Limit", window: "5h", remaining_fraction: 0.75, reset_time: new Date((now + 3600) * 1000).toISOString() },
         { bucket_id: "gemini-weekly", remaining: { case: "remainingFraction", value: 0.5 }, reset_time: new Date((now + 86400) * 1000).toISOString() },
       ] },
       { displayName: "Claude and GPT models", buckets: [

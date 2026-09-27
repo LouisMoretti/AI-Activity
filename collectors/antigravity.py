@@ -290,7 +290,8 @@ def quota_reports(report, measured_at):
         for bucket in buckets:
             if not isinstance(bucket, dict):
                 continue
-            ident = bucket.get("bucketId", bucket.get("bucket_id"))
+            # agy 1.2.11 prints "id"; older reports used bucketId / bucket_id.
+            ident = bucket.get("id", bucket.get("bucketId", bucket.get("bucket_id")))
             pool, _, cadence = ident.partition("-") if isinstance(ident, str) else ("", "", "")
             if pool not in POOLS or cadence not in WINDOWS:
                 continue
