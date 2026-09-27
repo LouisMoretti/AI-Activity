@@ -2,9 +2,11 @@
 // mapped into these shapes, so components never branch on the data source.
 // Time-relative text (countdowns, "x ago") is derived in components from
 // timestamps here plus the shared clock.
+import type { QUOTA_POOLS, QuotaWindowType } from "../../../shared/quota-pools.ts";
+import { TOOLS, type Tool } from "../../../shared/types.ts";
 import type { DayPoint } from "./series.ts";
 
-export type ToolKey = "claude-code" | "codex" | "opencode" | "antigravity";
+export type ToolKey = Tool;
 export type Provider = "all" | ToolKey;
 
 export interface ShareRow { name: string; value: number }
@@ -30,10 +32,16 @@ export interface QuotaWindowVM {
   spanSec: number; // window length, for the "where are we in the window" mark
 }
 
+/** One quota pool: its windows are shown together, never summed with another's. */
+export interface QuotaPoolVM {
+  label: string | null; // null → the tool's only pool, no heading
+  windows: QuotaWindowVM[];
+}
+
 export interface QuotaToolVM {
   tool: "claude-code" | "codex" | "antigravity";
   updatedAt: number | null; // latest snapshot time
-  windows: QuotaWindowVM[];
+  pools: QuotaPoolVM[];
 }
 
 /** OpenCode has no quota of its own: its card shows what is going on now. */
@@ -68,17 +76,23 @@ export interface DashboardVM {
   sessionsTotal: number;
 }
 
-export const TOOL_META: Record<ToolKey, { name: string; icon: string }> = {
-  "claude-code": { name: "Claude Code", icon: "✳" },
-  codex: { name: "Codex", icon: "⌘" },
-  opencode: { name: "OpenCode", icon: "◇" },
-  antigravity: { name: "Antigravity", icon: "△" },
+// color: the tool's design token, set as `--tool` on its elements.
+export const TOOL_META: Record<ToolKey, { name: string; icon: string; color: string }> = {
+  "claude-code": { name: "Claude Code", icon: "✳", color: "var(--claude)" },
+  codex: { name: "Codex", icon: "⌘", color: "var(--codex)" },
+  opencode: { name: "OpenCode", icon: "◇", color: "var(--opencode)" },
+  antigravity: { name: "Antigravity", icon: "△", color: "var(--antigravity)" },
 };
+
+type PoolId = (typeof QUOTA_POOLS)[keyof typeof QUOTA_POOLS][number];
+/** Headings of the quota pools in shared/quota-pools.ts. */
+export const POOL_LABELS: Record<PoolId, string> = { gemini: "Gemini", "claude-gpt": "Claude/GPT" };
 
 export const toolName = (key: string) =>
   key in TOOL_META ? TOOL_META[key as ToolKey].name : key;
 
 export const toolsFor = (p: Provider): ToolKey[] =>
-  p === "all" ? ["claude-code", "codex", "opencode", "antigravity"] : [p];
+  p === "all" ? [...TOOLS] : [p];
 
-export const WINDOW_SPANS = { five_hour: 5 * 3600, seven_day: 7 * 86400 } as const;
+/** Labels of the quota windows, in display order (spans: QUOTA_WINDOW_SEC). */
+export const WINDOW_LABELS: Record<QuotaWindowType, string> = { five_hour: "5-hour window", seven_day: "This week" };

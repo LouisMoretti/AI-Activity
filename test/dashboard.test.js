@@ -140,8 +140,10 @@ describe("dashboard state", () => {
   test("?demo=1 only lasts while it is in the address", async () => {
     const { dash, stop } = await open("/u/me?demo=1", profileRoutes("me"));
     assert.equal(dash.vm.demo, true);
-    assert.deepEqual(dash.vm.antigravity.windows.map(w => w.pct), [42, 68, 19, 32]);
+    assert.deepEqual(dash.vm.antigravity.pools.map(p => p.windows.map(w => w.pct)), [[42, 68], [19, 32]]);
+    const ids = dash.vm.sessions.map(s => s.id.slice(0, 8));
     assert.equal(dash.vm.sessions.filter(s => s.tool === "antigravity").length, 2);
+    assert.equal(new Set(ids).size, ids.length, "demo ids differ in what the list shows");
     assert.ok(dash.vm.stats.today.byTool.some(r => r.name === "antigravity" && r.value > 0));
     for (const figure of [dash.vm.stats.today, dash.vm.stats.total, dash.vm.stats.sessions]) {
       assert.equal(new Set(figure.byModel.map(r => r.name)).size, figure.byModel.length);
@@ -152,8 +154,8 @@ describe("dashboard state", () => {
     await settle();
     assert.equal(dash.demo, false);
     assert.equal(dash.vm.demo, false);
-    assert.deepEqual(dash.vm.antigravity.windows.map(w => w.pct), [null, null, null, null]);
-    assert.ok(!dash.vm.sessions.some(s => s.id.startsWith("demo-antigravity-")));
+    assert.deepEqual(dash.vm.antigravity.pools.map(p => p.windows.map(w => w.pct)), [[null, null], [null, null]]);
+    assert.ok(!dash.vm.sessions.some(s => s.id.startsWith("demo-")));
     stop();
   });
 

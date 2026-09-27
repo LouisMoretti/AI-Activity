@@ -1,4 +1,5 @@
-import { QUOTA_POOLS } from "../../shared/quota-pools.ts";
+import { QUOTA_POOLS, QUOTA_WINDOW_SEC, type QuotaWindowType } from "../../shared/quota-pools.ts";
+import { TOOLS, type Tool } from "../../shared/types.ts";
 import { nowSec } from "../db/schema.ts";
 
 export interface NormalizedQuota {
@@ -120,8 +121,8 @@ function toMessage(m: Obj, now: number): NormalizedMessage | null {
   };
 }
 
-/** Quota window lengths: a window cannot reset later than this after it was observed. */
-const QUOTA_WINDOW_SEC: Record<string, number> = { five_hour: 5 * 3600, seven_day: 7 * 86400 };
+/** Known quota window types (QUOTA_WINDOW_SEC: a window cannot reset later than that after it was observed). */
+const isWindowType = (key: string): key is QuotaWindowType => Object.hasOwn(QUOTA_WINDOW_SEC, key);
 const MAX_WINDOW_SEC = 31 * 86400;
 const RESET_SLACK_SEC = 600;
 
@@ -137,7 +138,8 @@ function keepCurrent(raw: (RawQuota | null)[], measuredAt: number): NormalizedQu
     const resets = w.resets !== undefined && w.resets !== null ? toSec(w.resets, null) : null;
     // The window that resets last is shown as current (latestQuotas), so a
     // reset further away than the window is long would pin it: drop it.
-    const span = w.windowSec ?? QUOTA_WINDOW_SEC[w.limit_type] ?? MAX_WINDOW_SEC;
+    const span = w.windowSec ??
+      (isWindowType(w.limit_type) ? QUOTA_WINDOW_SEC[w.limit_type] : MAX_WINDOW_SEC);
     if (resets !== null && resets > measuredAt + span + RESET_SLACK_SEC) continue;
     quotas.push({ limit_type: w.limit_type, used_pct: pct, resets_at: resets });
   }
@@ -273,7 +275,7 @@ function normalizeCodex(body: unknown): NormalizedBatch {
     if (!isObj(w)) return null;
     const minutes = toInt(w.window_minutes);
     // Named already (five_hour, …) or a primary/secondary window of a known length.
-    const type = QUOTA_WINDOW_SEC[key] ? key : CODEX_WINDOWS[minutes];
+    const type = isWindowType(key) ? key : CODEX_WINDOWS[minutes];
     if (!type) return null;
     return { limit_type: type, pct: w.used_percent ?? w.used_percentage, resets: w.resets_at };
   }), measuredAt);
@@ -348,50 +350,81 @@ function normalizeOpenCode(body: unknown): NormalizedBatch {
   };
 }
 
-/** Antigravity collector sends disjoint input, output (including thinking), and cache counts. */
+/** Antigravity ids (session and response) are opaque; stored prefixed so they never collide. */
+const ANTIGRAVITY_ID = /^[A-Za-z0-9_-]{1,200}$/;
+const antigravityId = (v: unknown): v is string => typeof v === "string" && ANTIGRAVITY_ID.test(v);
+
+/** Account refs that are Antigravity quota pools (QUOTA_POOLS), each recorded apart. */
+const isAntigravityPool = (ref: string) => (QUOTA_POOLS.antigravity as readonly string[]).includes(ref);
+
+/**
+ * One Antigravity response, keyed by its session and response id. The
+ * collector sends disjoint counts: input excludes the cache, output includes
+ * thinking, cache read apart. Cache writes are not exposed by the collector,
+ * so cache_write_tokens is always 0.
+ */
+function toAntigravityMessage(m: Obj, now: number): NormalizedMessage | null {
+  if (!antigravityId(m.response_id) || !antigravityId(m.session_id)) return null;
+  const u: Obj = isObj(m.usage) ? m.usage : {};
+  return {
+    event_id: `antigravity:${m.session_id}:${m.response_id}`,
+    session_id: `antigravity:${m.session_id}`,
+    prompt_id: null,
+    model: modelOf(m.model),
+    input_tokens: toInt(u.input_tokens),
+    output_tokens: toInt(u.output_tokens),
+    cache_read_tokens: toInt(u.cache_read_tokens),
+    cache_write_tokens: 0,
+    context_window_size: null,
+    context_used_pct: null,
+    occurred_at: eventTime(m.occurred_at, now),
+    utc_offset_min: utcOffset(m.utc_offset_min),
+  };
+}
+
+/** The five-hour and weekly windows of one pool, with a percentage of at most 100. */
+function antigravityQuotas(limits: Obj, measuredAt: number): NormalizedQuota[] {
+  return keepCurrent(Object.keys(QUOTA_WINDOW_SEC).map((key) => {
+    const w = limits[key];
+    return isObj(w) && typeof w.used_percentage === "number" && w.used_percentage <= 100
+      ? { limit_type: key, pct: w.used_percentage, resets: w.resets_at } : null;
+  }), measuredAt);
+}
+
+/**
+ * Normalize an Antigravity payload (POST /api/ingest/antigravity):
+ * { messages: [...] } (or one flat event). Quotas are recorded only for the
+ * pools of QUOTA_POOLS.antigravity, one account_ref each, never summed.
+ */
 function normalizeAntigravity(body: unknown): NormalizedBatch {
   const src: Obj = isObj(body) ? body : {};
   const now = nowSec();
   const single = !Array.isArray(src.messages);
   const messages: NormalizedMessage[] = [];
   for (const m of single ? [src] : src.messages as unknown[]) {
-    if (!isObj(m) || !isObj(m.usage) || typeof m.response_id !== "string" ||
-        !/^[A-Za-z0-9_-]{1,200}$/.test(m.response_id) ||
-        typeof m.session_id !== "string" || !/^[A-Za-z0-9_-]{1,200}$/.test(m.session_id)) continue;
-    messages.push({
-      event_id: `antigravity:${m.session_id}:${m.response_id}`,
-      session_id: `antigravity:${m.session_id}`, prompt_id: null, model: modelOf(m.model),
-      input_tokens: toInt(m.usage.input_tokens), output_tokens: toInt(m.usage.output_tokens),
-      cache_read_tokens: toInt(m.usage.cache_read_tokens), cache_write_tokens: 0,
-      context_window_size: null, context_used_pct: null,
-      occurred_at: eventTime(m.occurred_at, now), utc_offset_min: utcOffset(m.utc_offset_min),
-    });
+    const msg = isObj(m) && isObj(m.usage) ? toAntigravityMessage(m, now) : null;
+    if (msg) messages.push(msg);
   }
   const measuredAt = eventTime(src.occurred_at, now);
-  const limits: Obj = isObj(src.rate_limits) ? src.rate_limits : {};
   const ref = accountRef(src);
-  const quotas = QUOTA_POOLS.antigravity.some((pool) => pool.ref === ref) ? keepCurrent(Object.keys(QUOTA_WINDOW_SEC).map((key) => {
-    const w = limits[key];
-    return isObj(w) && typeof w.used_percentage === "number" && w.used_percentage <= 100
-      ? { limit_type: key, pct: w.used_percentage, resets: w.resets_at } : null;
-  }), measuredAt) : [];
-  return { tool: "antigravity", messages, quotas, account_ref: ref,
-    measured_at: measuredAt, context: null, single };
+  const quotas = isAntigravityPool(ref) && isObj(src.rate_limits)
+    ? antigravityQuotas(src.rate_limits, measuredAt) : [];
+  return { tool: "antigravity", messages, quotas, account_ref: ref, measured_at: measuredAt, context: null, single };
 }
 
 /**
  * One normalizer per tool slug, picked by the ingest URL
- * (/api/ingest/<slug>). A tool is ingestable once it has an entry here.
+ * (/api/ingest/<slug>); every tool of TOOLS (shared/types.ts) has one.
  */
-const normalizers = new Map<string, (body: unknown) => NormalizedBatch>([
-  ["claude-code", normalizeClaudeCode],
-  ["codex", normalizeCodex],
-  ["opencode", normalizeOpenCode],
-  ["antigravity", normalizeAntigravity],
-]);
+const normalizers: Record<Tool, (body: unknown) => NormalizedBatch> = {
+  "claude-code": normalizeClaudeCode,
+  codex: normalizeCodex,
+  opencode: normalizeOpenCode,
+  antigravity: normalizeAntigravity,
+};
 
 export function normalizerFor(tool: string): ((body: unknown) => NormalizedBatch) | null {
-  return normalizers.get(tool) ?? null;
+  return (TOOLS as readonly string[]).includes(tool) ? normalizers[tool as Tool] : null;
 }
 
 /** Empty messages (zero tokens) carry no consumption. */

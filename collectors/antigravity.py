@@ -20,11 +20,20 @@ import subprocess
 import sys
 import time
 import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
+from email.utils import parsedate_to_datetime
 
 SERVER = os.environ.get("AI_ACTIVITY_URL", "<server>")
 KEY = os.environ.get("AI_ACTIVITY_KEY", "<device key>")
 ID = re.compile(r"^[A-Za-z0-9_-]{1,200}$")
 MAX_BLOB = 1024 * 1024
+MIN_AGY = (1, 1, 11)  # first agy with a print-mode /usage command
+# Mirror shared/quota-pools.ts: bucket id prefix -> account_ref (QUOTA_POOLS),
+# suffix -> limit type and window length in seconds (QUOTA_WINDOW_SEC).
+POOLS = {"gemini": "gemini", "3p": "claude-gpt"}
+WINDOWS = {"5h": ("five_hour", 5 * 3600), "weekly": ("seven_day", 7 * 86400)}
 
 
 def fields(blob):
@@ -131,7 +140,8 @@ def step_times(db, wanted):
     if not wanted or not schema(db, "steps", ("idx", "metadata")):
         return {}
     times = {key: set() for key in wanted}
-    for (blob,) in db.execute("SELECT CASE WHEN length(metadata) <= ? THEN metadata END FROM steps", (MAX_BLOB,)):
+    rows = db.execute("SELECT CASE WHEN length(metadata) <= ? THEN metadata END FROM steps", (MAX_BLOB,))
+    for (blob,) in rows:
         try:
             meta = fields(blob)
             key = (text(meta, 12), text(message(meta, 9), 7))
@@ -153,7 +163,8 @@ def read_database(path):
         if not schema(db, "gen_metadata", ("idx", "data")):
             return [], 0
         rows, skipped, uses = [], 0, {}
-        for (blob,) in db.execute("SELECT CASE WHEN length(data) <= ? THEN data END FROM gen_metadata", (MAX_BLOB,)):
+        blobs = db.execute("SELECT CASE WHEN length(data) <= ? THEN data END FROM gen_metadata", (MAX_BLOB,))
+        for (blob,) in blobs:
             try:
                 row = parse(blob)
             except (ValueError, UnicodeError):
@@ -245,6 +256,15 @@ def save_state(path, state):
     os.replace(temp, path)
 
 
+def load_state(path):
+    """Saved state, or None when missing or malformed (starting over is safe)."""
+    try:
+        state = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return state if isinstance(state, dict) else None
+
+
 def quota_reports(report, measured_at):
     """Allowlist measured CLI quota buckets, keeping model pools separate.
 
@@ -262,9 +282,7 @@ def quota_reports(report, measured_at):
     groups = data.get("groups", []) if isinstance(data, dict) else []
     if not isinstance(groups, list):
         return []
-    pools = {}
-    seen = set()
-    ambiguous = set()
+    pools, seen, ambiguous = {}, set(), set()
     for group in groups:
         buckets = group.get("buckets", []) if isinstance(group, dict) else []
         if not isinstance(buckets, list):
@@ -273,10 +291,12 @@ def quota_reports(report, measured_at):
             if not isinstance(bucket, dict):
                 continue
             ident = bucket.get("bucketId", bucket.get("bucket_id"))
-            if ident not in ("gemini-5h", "gemini-weekly", "3p-5h", "3p-weekly"):
+            pool, _, cadence = ident.partition("-") if isinstance(ident, str) else ("", "", "")
+            if pool not in POOLS or cadence not in WINDOWS:
                 continue
+            limit, span = WINDOWS[cadence]
             if ident in seen:
-                ambiguous.add(ident)
+                ambiguous.add((pool, limit))
             seen.add(ident)
             if bucket.get("disabled", False) is not False:
                 continue
@@ -297,19 +317,18 @@ def quota_reports(report, measured_at):
                     reset = parsed.timestamp()
                 except (AttributeError, ValueError, OverflowError):
                     continue
-            pool, cadence = ident.split("-", 1)
-            limit = "five_hour" if cadence == "5h" else "seven_day"
-            span = 18000 if cadence == "5h" else 604800
             if reset is not None and not measured_at < reset <= measured_at + span + 600:
                 continue
             pools.setdefault(pool, {})[limit] = {
                 "used_percentage": round((1 - fraction) * 100, 8), "resets_at": reset}
-    for ident in ambiguous:
-        pool, cadence = ident.split("-", 1)
-        pools.get(pool, {}).pop("five_hour" if cadence == "5h" else "seven_day", None)
-    return [{"messages": [], "account_ref": "gemini" if pool == "gemini" else "claude-gpt",
-             "occurred_at": measured_at, "rate_limits": limits}
+    for pool, limit in ambiguous:
+        pools.get(pool, {}).pop(limit, None)
+    return [{"messages": [], "account_ref": POOLS[pool], "occurred_at": measured_at, "rate_limits": limits}
             for pool, limits in sorted(pools.items()) if limits]
+
+
+class QuotaUnavailable(Exception):
+    pass
 
 
 def read_quotas():
@@ -322,49 +341,194 @@ def read_quotas():
     """
     binary = shutil.which("agy")
     if binary is None:
-        raise ValueError("quota CLI unavailable")
-    env = dict(os.environ)
-    env.pop("AI_ACTIVITY_KEY", None)
-    env.pop("AI_ACTIVITY_URL", None)
+        raise QuotaUnavailable("agy CLI not found on PATH")
+    env = {k: v for k, v in os.environ.items() if k not in ("AI_ACTIVITY_KEY", "AI_ACTIVITY_URL")}
     env["AI_ACTIVITY_ANTIGRAVITY_QUOTA_PROBE"] = "1"
+    flags = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
     with tempfile.TemporaryDirectory(prefix="ai-activity-agy-quota-") as directory:
         def run(args, timeout):
             # Keep raw stdout off the collector's logs and bound the parsed size.
-            with tempfile.TemporaryFile() as output:
-                result = subprocess.run([binary, *args], cwd=directory, env=env,
-                    stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.DEVNULL,
-                    timeout=timeout, **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
-                if result.returncode != 0 or output.tell() > MAX_BLOB:
-                    raise ValueError("quota command failed")
-                output.seek(0)
-                return output.read(MAX_BLOB).decode("utf-8")
-        version = run(["--version"], 3).strip()
-        if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) or tuple(map(int, version.split("."))) < (1, 1, 11):
-            raise ValueError("unsupported quota CLI version")
-        report = json.loads(run(["-p", "/usage", "--output-format", "json", "--print-timeout", "90s"], 95))
-        return quota_reports(report, int(time.time()))
+            try:
+                with tempfile.TemporaryFile() as output:
+                    result = subprocess.run([binary, *args], cwd=directory, env=env, timeout=timeout,
+                        stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.DEVNULL, **flags)
+                    if result.returncode == 0 and output.tell() <= MAX_BLOB:
+                        output.seek(0)
+                        return output.read().decode("utf-8")
+            except (OSError, subprocess.SubprocessError, UnicodeError):
+                pass
+            raise QuotaUnavailable("agy %s failed" % " ".join(args[:2]))
+        found = re.search(r"(\d+)\.(\d+)\.(\d+)", run(["--version"], 3))
+        if found is None or tuple(map(int, found.groups())) < MIN_AGY:
+            raise QuotaUnavailable("agy version %s; %s or later required" % (
+                found.group(0) if found else "unrecognized", ".".join(map(str, MIN_AGY))))
+        try:
+            report = json.loads(run(["-p", "/usage", "--output-format", "json",
+                                     "--print-timeout", "90s"], 95))
+        except ValueError:
+            raise QuotaUnavailable("agy /usage printed invalid JSON") from None
+    reports = quota_reports(report, int(time.time()))
+    if not reports:
+        raise QuotaUnavailable("no supported quota bucket in agy /usage")
+    return reports
 
 
 def file_stamp(path):
     # WAL-only commits and edits to old rows invalidate the whole snapshot.
-    # Include identity/ctime to detect replacements, not just appended bytes.
-    def stat(p):
+    # Identity/ctime detect replacements; the database header's change
+    # counter and the WAL header's salts catch a same-size rewrite.
+    def stat(p, offset, length):
         try:
             v = p.stat()
-            return [v.st_mtime_ns, v.st_size, v.st_ctime_ns, v.st_ino]
+            with p.open("rb") as f:
+                f.seek(offset)
+                return [v.st_mtime_ns, v.st_size, v.st_ctime_ns, v.st_ino, f.read(length).hex()]
         except FileNotFoundError:
             return None
-    return [stat(path), stat(Path(str(path) + "-wal"))]
+    return [stat(path, 24, 4), stat(Path(str(path) + "-wal"), 16, 8)]
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    # Never redirect a device bearer key to a different destination.
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def upload(payload, state, retry_key):
+    """POST one batch; HTTP 429/503 store the server's Retry-After in state[retry_key]."""
+    request = urllib.request.Request(SERVER.rstrip("/") + "/api/ingest/antigravity",
+        data=json.dumps(payload).encode(),
+        headers={"Authorization": "Bearer " + KEY, "Content-Type": "application/json"})
+    try:
+        with urllib.request.build_opener(NoRedirect).open(request, timeout=30) as response:
+            result = json.loads(response.read(MAX_BLOB + 1))
+    except urllib.error.HTTPError as error:
+        error.close()
+        if error.code in (429, 503):
+            header = str(error.headers.get("Retry-After", "")).strip()
+            try:
+                if header.isdigit():
+                    delay = float(header)
+                else:
+                    delay = parsedate_to_datetime(header).timestamp() - time.time()
+            except (ValueError, TypeError, OverflowError):
+                delay = 60
+            state[retry_key] = int(time.time() + min(86400, max(1, delay)))
+        raise
+    if not isinstance(result, dict) or result.get("ok") is not True \
+            or result.get("messages") != len(payload["messages"]):
+        raise ValueError("server did not accept every metadata entry")
+    state.pop(retry_key, None)
+
+
+def deferred(state, key):
+    retry = state.get(key, 0)
+    return type(retry) in (int, float) and time.time() < retry <= time.time() + 86400
+
+
+def transient(error):
+    """Busy/locked SQLite clears up; any other failure only changes with the file."""
+    text = str(error).lower()
+    return isinstance(error, sqlite3.OperationalError) and ("locked" in text or "busy" in text)
+
+
+def collect_tokens(state_path):
+    """Upload new or grown responses of changed databases; True if one was busy."""
+    scope = hashlib.sha256((SERVER.rstrip("/") + "\n" + KEY).encode()).hexdigest()
+    state = load_state(state_path)
+    # Only save a foreign or malformed state once this run achieved something.
+    can_save = state is not None and state.get("scope") == scope
+    if not can_save:
+        state = {"scope": scope}
+    if deferred(state, "upload_retry_at"):
+        raise RuntimeError("upload retry deferred by server")
+    sources = [(hashlib.sha256(str(p.resolve()).encode()).hexdigest(), p) for p in databases()]
+    # hashed path -> {"stamp": stamp once all of it was accepted,
+    #                 "sent": {response id: output tokens accepted}}.
+    # Entries of deleted databases and malformed ones are dropped.
+    files = state.get("files") if isinstance(state.get("files"), dict) else {}
+    state["files"] = files = {name: files[name] for name, _ in sources if isinstance(files.get(name), dict)
+                              and isinstance(files[name].get("sent"), dict)
+                              and all(type(n) is int for n in files[name]["sent"].values())}
+    failed = False
+    try:
+        for name, path in sources:
+            # A stamp taken before the read and stored once all of it was
+            # accepted: a write during the read makes the next run read again.
+            before = file_stamp(path)
+            entry = files.setdefault(name, {"sent": {}})
+            if entry.get("stamp") == before:
+                continue
+            try:
+                entries, skipped = read_database(path)
+            except (sqlite3.DatabaseError, ValueError, UnicodeError) as error:
+                if transient(error):
+                    print("ai-activity antigravity: conversation database busy; retry on next run",
+                          file=sys.stderr)
+                    failed = True
+                else:
+                    print("ai-activity antigravity: unsupported or unreadable conversation database skipped "
+                          "until it changes", file=sys.stderr)
+                    entry["stamp"] = before
+                continue
+            if skipped:
+                print("ai-activity antigravity: %d metadata rows unavailable; skipped "
+                      "(unsupported or incomplete)" % skipped, file=sys.stderr)
+            # A response written twice (partial, then final) is sent once, with its final counts.
+            best = {}
+            for row in entries:
+                digest = hashlib.sha256(json.dumps(row, sort_keys=True).encode()).hexdigest()
+                rank = (row["usage"]["output_tokens"], sum(row["usage"].values()), row["occurred_at"], digest)
+                if row["response_id"] not in best or rank > best[row["response_id"]][0]:
+                    best[row["response_id"]] = (rank, row)
+            # Only new responses, or ones with more output (the server's update rule).
+            sent = entry["sent"]
+            pending = [row for _, row in best.values()
+                       if row["usage"]["output_tokens"] > sent.get(row["response_id"], -1)]
+            for i in range(0, len(pending), 200):
+                # Network/HTTP/acceptance errors end the pass; what this
+                # batch holds is sent again next run.
+                batch = pending[i:i + 200]
+                upload({"messages": batch}, state, "upload_retry_at")
+                can_save = True
+                sent.update((row["response_id"], row["usage"]["output_tokens"]) for row in batch)
+            # Every response now in the database was accepted; forget removed ones.
+            entry.update(stamp=before, sent={rid: sent[rid] for rid in best})
+    finally:
+        if can_save or "upload_retry_at" in state:
+            save_state(state_path, state)
+    return failed
+
+
+def collect_quotas(state_path):
+    """Probe agy once a minute, five after a failure, or after the server's Retry-After."""
+    state = load_state(state_path) or {}
+    tried = state.get("tried_at", 0)
+    if type(tried) not in (int, float) or not 0 <= tried <= time.time():
+        tried = 0
+    if deferred(state, "retry_at") or time.time() - tried < (300 if state.get("failed") else 60):
+        return
+    state.update(tried_at=int(time.time()), failed=True)
+    save_state(state_path, state)  # a killed probe keeps its throttle
+    try:
+        for report in read_quotas():
+            upload(report, state, "retry_at")
+        state["failed"] = False
+    except QuotaUnavailable as error:
+        print("ai-activity antigravity: quota report unavailable (%s); usage collection continues" % error,
+              file=sys.stderr)
+    finally:
+        save_state(state_path, state)
 
 
 def collect(on_locked=None):
-    import urllib.request
-    import urllib.error
-    import urllib.parse
-    from email.utils import parsedate_to_datetime
     url = urllib.parse.urlsplit(SERVER)
-    url.port  # validate malformed ports before opening history
-    if url.scheme not in ("http", "https") or not url.hostname or url.username or url.password or url.query or url.fragment or "<" in SERVER:
+    try:
+        port = url.port  # raises on a malformed or out-of-range port
+    except ValueError:
+        port = 0
+    if port == 0 or url.scheme not in ("http", "https") or not url.hostname or url.username \
+            or url.password or url.query or url.fragment or "<" in SERVER:
         raise ValueError("configure AI_ACTIVITY_URL before collecting")
     if not KEY.strip() or "<" in KEY or any(ord(c) < 32 for c in KEY):
         raise ValueError("configure AI_ACTIVITY_KEY before collecting")
@@ -373,120 +537,15 @@ def collect(on_locked=None):
     with locked(cache / "antigravity.lock"):
         if on_locked is not None:
             on_locked()
-        state_path = cache / "antigravity.json"
-        try:
-            state = json.loads(state_path.read_text())
-        except (OSError, ValueError):
-            state = {}
-        scope = hashlib.sha256((SERVER.rstrip("/") + "\n" + KEY).encode()).hexdigest()
-        can_save = isinstance(state, dict) and state.get("scope") == scope
-        if not can_save:
-            state = {"scope": scope}
-        files = state.setdefault("files", {})  # hashed path -> stamp of the last complete upload
-        if not isinstance(files, dict):
-            raise ValueError("invalid collector state; remove antigravity.json to replay")
-        retry = state.get("upload_retry_at", 0)
-        if type(retry) in (int, float) and time.time() < retry <= time.time() + 86400:
-            raise RuntimeError("upload retry deferred by server")
-
-        def upload(payload):
-            nonlocal can_save
-            # Never redirect a device bearer key to a different destination.
-            class NoRedirect(urllib.request.HTTPRedirectHandler):
-                def redirect_request(self, *args, **kwargs):
-                    return None
-            request = urllib.request.Request(SERVER.rstrip("/") + "/api/ingest/antigravity",
-                data=json.dumps(payload).encode(),
-                headers={"Authorization": "Bearer " + KEY, "Content-Type": "application/json"})
-            try:
-                with urllib.request.build_opener(NoRedirect).open(request, timeout=30) as response:
-                    result = json.loads(response.read(MAX_BLOB + 1))
-                if not isinstance(result, dict) or result.get("ok") is not True or result.get("messages") != len(payload["messages"]):
-                    raise ValueError("server did not accept every metadata entry")
-            except urllib.error.HTTPError as error:
-                if error.code in (429, 503):
-                    headers = getattr(error, "headers", None) or {}
-                    header = headers.get("Retry-After", "") if hasattr(headers, "get") else ""
-                    try:
-                        delay = float(header) if str(header).strip().isdigit() else parsedate_to_datetime(str(header)).timestamp() - time.time()
-                    except (ValueError, TypeError, OverflowError):
-                        delay = 60
-                    state["upload_retry_at"] = int(time.time() + min(86400, max(1, delay)))
-                    can_save = True
-                if hasattr(error, "close"):
-                    try:
-                        error.close()
-                    except Exception:
-                        pass
-                raise
-            state.pop("upload_retry_at", None)
-            can_save = True
-
-        sources = [(hashlib.sha256(str(p.resolve()).encode()).hexdigest(), p) for p in databases()]
-        # Deleted sources must not retain checkpoints indefinitely.
-        for name in set(files) - {n for n, _ in sources}:
-            del files[name]
-        failed = False
-        try:
-            for name, path in sources:
-                # Most conversations are dormant: an unchanged database and WAL
-                # were uploaded in full already. Any write (old rows included)
-                # changes the stamp; one during the read leaves the stamp taken
-                # before it stale, so the next run reads the database again.
-                before = file_stamp(path)
-                if files.get(name) == before:
-                    continue
-                try:
-                    entries, skipped = read_database(path)
-                except sqlite3.OperationalError:
-                    # Busy or unreadable right now: retried on the next run.
-                    print("ai-activity antigravity: conversation database unreadable; retry on next run", file=sys.stderr)
-                    failed = True
-                    continue
-                except (sqlite3.DatabaseError, ValueError, UnicodeError):
-                    # Not a supported conversation database: retrying cannot
-                    # help, so skip it until it changes instead of failing forever.
-                    print("ai-activity antigravity: unsupported conversation database skipped", file=sys.stderr)
-                    files[name] = before
-                    continue
-                if skipped:
-                    print("ai-activity antigravity: %d metadata rows unavailable; skipped (unsupported or incomplete)" % skipped, file=sys.stderr)
-                # A response written twice (partial, then final) is sent once, with its final counts.
-                best = {}
-                for entry in entries:
-                    digest = hashlib.sha256(json.dumps(entry, sort_keys=True).encode()).hexdigest()
-                    rank = (entry["usage"]["output_tokens"], sum(entry["usage"].values()), entry["occurred_at"], digest)
-                    if entry["response_id"] not in best or rank > best[entry["response_id"]][0]:
-                        best[entry["response_id"]] = (rank, entry)
-                pending = [entry for _, entry in best.values()]
-                for i in range(0, len(pending), 200):
-                    # Network/HTTP/acceptance errors end the pass; the database
-                    # is read and sent again next run (the server dedups).
-                    upload({"messages": pending[i:i + 200]})
-                files[name] = before
-            tried = state.get("quota_tried_at", 0)
-            if type(tried) not in (int, float) or not 0 <= tried <= time.time():
-                tried = 0
-            interval = 300 if state.get("quota_failed") else 60
-            if os.environ.get("AI_ACTIVITY_ANTIGRAVITY_QUOTAS") != "0" and time.time() - tried >= interval:
-                state.update(quota_tried_at=int(time.time()), quota_failed=True)
-                can_save = True
-                save_state(state_path, state)  # a killed probe retains its throttle
-                try:
-                    reports = read_quotas()
-                except Exception:
-                    reports = []
-                if not reports:
-                    print("ai-activity antigravity: quota report unavailable; usage collection continues", file=sys.stderr)
-                else:
-                    for report in reports:
-                        upload(report)
-                    state["quota_failed"] = False
-            if failed:
-                raise RuntimeError("collection failed")
-        finally:
-            if can_save:
-                save_state(state_path, state)
+        failed = collect_tokens(cache / "antigravity.json")
+    # Probe after releasing the collection lock, so a queued hook worker never
+    # waits for agy; a probe already running elsewhere makes this one skip.
+    if os.environ.get("AI_ACTIVITY_ANTIGRAVITY_QUOTAS") != "0":
+        with locked(cache / "antigravity-quota.lock", wait=False) as mine:
+            if mine:
+                collect_quotas(cache / "antigravity-quota.json")
+    if failed:
+        raise RuntimeError("collection failed")
 
 
 def hook_worker():
@@ -510,7 +569,8 @@ def hook_worker():
 def launch_worker():
     options = {"start_new_session": True}
     if os.name == "nt":
-        options = {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_BREAKAWAY_FROM_JOB}
+        options = {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+                   | subprocess.CREATE_BREAKAWAY_FROM_JOB}
     args = [sys.executable, str(Path(__file__).resolve()), "--hook-worker"]
     streams = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
@@ -537,7 +597,8 @@ if __name__ == "__main__":
             except OSError:
                 # A process limit or missing interpreter must not break the
                 # app's hook protocol. A manual/scheduled pass can retry.
-                print("ai-activity antigravity: worker launch failed; retry manually or on next hook", file=sys.stderr)
+                print("ai-activity antigravity: worker launch failed; retry manually or on next hook",
+                      file=sys.stderr)
         # PostInvocation must not inject steps or change execution flow.
         # Antigravity's Stop contract requires a decision; only "continue"
         # re-enters the loop, and every other value permits the normal stop:

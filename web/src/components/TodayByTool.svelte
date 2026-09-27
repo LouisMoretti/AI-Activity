@@ -1,10 +1,10 @@
 <script lang="ts">
   import { fmtCompact } from "../lib/format.ts";
-  import { toolName, type FigureVM } from "../lib/view-model.ts";
+  import { TOOL_META, toolName, type FigureVM, type ToolKey } from "../lib/view-model.ts";
 
   // Today's tokens split by tool, one bar each in the tool's colour.
   let { today }: { today: FigureVM } = $props();
-  const COLOR: Record<string, string> = { "claude-code": "var(--claude)", codex: "var(--codex)", opencode: "var(--opencode)", antigravity: "var(--antigravity)" };
+  const color = (name: string) => (name in TOOL_META ? TOOL_META[name as ToolKey].color : "var(--accent)");
   const total = $derived(today.value ?? 0);
   const share = (v: number) => (total ? (v / total) * 100 : 0);
 </script>
@@ -15,7 +15,7 @@
     {#each today.byTool as t (t.name)}
       <div>
         <div class="line"><span>{toolName(t.name)}</span><span class="meta">{fmtCompact(t.value)} · {Math.round(share(t.value))} %</span></div>
-        <div class="track"><i style:width="{share(t.value)}%" style:background={COLOR[t.name] ?? "var(--accent)"}></i></div>
+        <div class="track"><i style:width="{share(t.value)}%" style:background={color(t.name)}></i></div>
       </div>
     {:else}
       <div class="meta">Nothing yet today</div>

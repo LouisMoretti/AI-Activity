@@ -1,12 +1,13 @@
-import { QUOTA_POOLS } from "../../../shared/quota-pools.ts";
 // Maps measured API responses into the view model. Missing data stays
 // null ("—" / "Unavailable"); nothing is interpolated.
-import type {
-  ActivityResponse, Breakdown, QuotasResponse, Session, SessionsResponse, SummaryResponse,
+import { QUOTA_POOLS, QUOTA_WINDOW_SEC, type QuotaWindowType } from "../../../shared/quota-pools.ts";
+import {
+  TOOLS, type ActivityResponse, type Breakdown, type QuotasResponse, type Session,
+  type SessionsResponse, type SummaryResponse,
 } from "../../../shared/types.ts";
 import { denseSeries, streaks } from "./series.ts";
 import {
-  toolsFor, WINDOW_SPANS, type DashboardVM, type FigureVM, type Provider,
+  POOL_LABELS, toolsFor, WINDOW_LABELS, type DashboardVM, type FigureVM, type Provider,
   type OpenCodeVM, type QuotaToolVM, type SessionVM, type ToolKey,
 } from "./view-model.ts";
 
@@ -30,28 +31,44 @@ function figure(b: Breakdown, metric: "tokens" | "sessions"): FigureVM {
   };
 }
 
-const WINDOWS = [["five_hour", "5-hour window"], ["seven_day", "This week"]] as const;
+const WINDOW_TYPES = Object.keys(WINDOW_LABELS) as QuotaWindowType[];
 
+// One pool per quota account_ref of the tool (shared/quota-pools.ts), or a
+// single unlabeled pool matching any ref. Rows of other refs or limit types
+// are not shown, so they never move the update time either.
 function toolQuotas(q: QuotasResponse, tool: QuotaToolVM["tool"]): QuotaToolVM {
-  const pools: readonly { ref: string | null; label: string }[] =
-    tool in QUOTA_POOLS ? QUOTA_POOLS[tool as keyof typeof QUOTA_POOLS] : [{ ref: null, label: "" }];
+  const refs: readonly (keyof typeof POOL_LABELS | null)[] =
+    tool in QUOTA_POOLS ? QUOTA_POOLS[tool as keyof typeof QUOTA_POOLS] : [null];
   const rows = q.quotas.filter((x) => x.tool === tool);
-  const used: typeof rows = [];
-  const windows = pools.flatMap((pool) => WINDOWS.map(([type, label]) => {
-    const row = rows.find((x) => x.limit_type === type && (pool.ref === null || x.account_ref === pool.ref));
-    if (row) used.push(row);
-    return { label: pool.label + label, pct: row?.used_pct ?? null,
-      resetsAt: row?.resets_at ?? null, spanSec: WINDOW_SPANS[type] };
+  const pools = refs.map((ref) => ({
+    label: ref === null ? null : POOL_LABELS[ref],
+    rows: WINDOW_TYPES.map((type) =>
+      [type, rows.find((x) => x.limit_type === type && (ref === null || x.account_ref === ref))] as const),
   }));
-  return { tool, updatedAt: Math.max(0, ...used.map((x) => x.measured_at)) || null, windows };
+  const shown = pools.flatMap((p) => p.rows.flatMap(([, row]) => (row ? [row.measured_at] : [])));
+  return {
+    tool,
+    updatedAt: shown.length ? Math.max(...shown) : null,
+    pools: pools.map((p) => ({
+      label: p.label,
+      windows: p.rows.map(([type, row]) => ({
+        label: WINDOW_LABELS[type], pct: row?.used_pct ?? null,
+        resetsAt: row?.resets_at ?? null, spanSec: QUOTA_WINDOW_SEC[type],
+      })),
+    })),
+  };
 }
 
 const asTool = (t: string): ToolKey =>
-  t === "codex" || t === "opencode" || t === "antigravity" ? t : "claude-code";
+  (TOOLS as readonly string[]).includes(t) ? (t as ToolKey) : "claude-code";
+
+// Antigravity ids are stored "antigravity:<id>" (never colliding with other
+// tools'); the list shows the id itself. The tool keeps rows apart.
+const displayId = (id: string) => id.replace(/^antigravity:/, "");
 
 const toSession = (s: Session): SessionVM => ({
   tool: asTool(s.tool),
-  id: s.session_id,
+  id: displayId(s.session_id),
   model: s.model,
   calls: s.events,
   tokens: s.tokens,

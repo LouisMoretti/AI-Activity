@@ -2,15 +2,13 @@
   import AdminOverview from "./components/AdminOverview.svelte";
   import AuthPanel from "./components/AuthPanel.svelte";
   import ActivityChart from "./components/ActivityChart.svelte";
-  import ClaudeCodeCard from "./components/ClaudeCodeCard.svelte";
-  import CodexCard from "./components/CodexCard.svelte";
-  import AntigravityCard from "./components/AntigravityCard.svelte";
   import Conversations from "./components/Conversations.svelte";
   import DevicesPanel from "./components/DevicesPanel.svelte";
   import Leaderboard from "./components/Leaderboard.svelte";
   import NewAccountForm from "./components/NewAccountForm.svelte";
   import OpenCodeCard from "./components/OpenCodeCard.svelte";
   import ProfilePanel from "./components/ProfilePanel.svelte";
+  import QuotaCard from "./components/QuotaCard.svelte";
   import SiteHeader from "./components/SiteHeader.svelte";
   import Section from "./components/Section.svelte";
   import TodayByTool from "./components/TodayByTool.svelte";
@@ -100,22 +98,24 @@
 
     {#if dash.vm && dash.shown}
       {@const vm = dash.vm}
+      {@const quotaCards = { "claude-code": vm.claude, codex: vm.codex, antigravity: vm.antigravity }}
       <ActivityChart series={vm.series} today={vm.today} demo={vm.demo} hasActivity={vm.hasActivity} />
       <StatsRow stats={vm.stats} />
 
       <Section title="Tools" subtitle="Limits are per account, latest snapshot">
         <div class="tools">
-          {#if vm.tools.includes("claude-code")}<ClaudeCodeCard vm={vm.claude} />{/if}
-          {#if vm.tools.includes("codex")}<CodexCard vm={vm.codex} />{/if}
-          {#if vm.tools.includes("antigravity")}
-            <div class="full"><AntigravityCard vm={vm.antigravity} /></div>
-          {/if}
-          {#if vm.tools.includes("opencode")}
-            <div class="wide">
-              <OpenCodeCard vm={vm.opencode} />
-              <TodayByTool today={vm.stats.today} />
-            </div>
-          {/if}
+          <!-- In TOOLS order (shared/types.ts). -->
+          {#each vm.tools as tool (tool)}
+            {#if tool === "opencode"}
+              <div class="wide">
+                <OpenCodeCard vm={vm.opencode} />
+                <TodayByTool today={vm.stats.today} />
+              </div>
+            {:else}
+              {@const q = quotaCards[tool]}
+              <div class="quota" class:full={q.pools.length > 1}><QuotaCard vm={q} /></div>
+            {/if}
+          {/each}
         </div>
       </Section>
 
@@ -131,8 +131,10 @@
   .gate { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 20px; color: var(--muted); font-size: 13px; line-height: 1.6; }
   .gate button { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 4px 10px; font-size: 12px; color: var(--text); }
   .notice { color: var(--warn); margin: 12px 0; text-align: center; }
-  /* OpenCode (2/3) and today's split by tool (1/3) share the last row. */
+  .quota { display: grid; } /* the card fills its grid cell */
+  /* A quota card with several pools (Antigravity) takes a whole row. */
   .full { grid-column: 1 / -1; }
+  /* OpenCode (2/3) and today's split by tool (1/3) share a row. */
   .wide { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; }
   @media (max-width: 720px) { .wide { grid-template-columns: 1fr; } }
   .tools { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr)); gap: 16px; }

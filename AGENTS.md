@@ -10,15 +10,16 @@ tools. Current scope: **Claude Code, Codex, OpenCode and Antigravity ingestion**
 OpenCode has no quota of its own: its card shows the conversations active
 now (a reply in the last 10 minutes; listed in creation order so parallel
 ones never swap places), else the last one, on the right; today's tokens, conversations,
-calls, models and providers on the left.
+calls, models and providers on the left. Antigravity has two quota pools
+(Gemini, Claude/GPT), each shown with its own 5-hour and weekly windows.
 
 Layout, top to bottom: token activity (centered year calendar, readout shows
 today unless a day is hovered; the Weekly and Cumulative tabs likewise show
 the last 7 days or the running total unless a week is hovered, focused or
 tapped), four stats (all-time tokens, today, sessions,
 current streak; hover shows the split by tool and model, or the longest
-streak), one card per tool (Claude Code, Codex, OpenCode are separate
-components; OpenCode takes 2/3 of its row, next to "Today by tool": today's
+streak), one card per tool (Claude Code, Codex, OpenCode, Antigravity are
+separate components; OpenCode takes 2/3 of its row, next to "Today by tool": today's
 tokens split by tool), recent conversations (10 + "Show more"). No tool filter:
 every tool is always shown. No cost or subscription tracking (removed on
 purpose). Only demo data carries a badge ("Demonstration data"). Palette: the
@@ -236,7 +237,9 @@ browser and fetch; `test/live.test.js` covers the API → view-model mapping;
 `test/collector.test.js` runs the README collector and
 `test/codex-collector.test.js` runs `collectors/codex.py` through the
 README's Codex Stop hook; `test/opencode-collector.test.js` runs
-`collectors/opencode.py` through its plugin on a fake OpenCode database.
+`collectors/opencode.py` through its plugin on a fake OpenCode database;
+`test/antigravity-collector.test.js` runs `collectors/antigravity.py` on
+synthetic Antigravity databases.
 Types: `npm run typecheck` (tsc for server, svelte-check for web). Node >= 22.18 runs the TypeScript server directly
 (type stripping, no build step), so only erasable TS syntax is allowed (no
 `enum`, no parameter properties) and relative imports keep their `.ts`
@@ -247,6 +250,7 @@ extension.
 ```
 Claude Code statusLine one-liner    Codex Stop hook → collectors/codex.py
 OpenCode plugin → collectors/opencode.py
+Antigravity hooks → collectors/antigravity.py
 (python3, detached, on the user's device; README.md)
    │  HTTPS  Authorization: Bearer <device key> (never in the URL)
    ▼
@@ -275,7 +279,8 @@ server/
   lib/http.ts
   routes/           auth, ingest, usage (public profiles + leaderboard),
                     devices, account (profile + admin users)
-shared/types.ts     API response types shared with the web client
+shared/types.ts     API response types shared with the web client, TOOLS
+shared/quota-pools.ts  quota window lengths, quota pools per tool (QUOTA_POOLS)
 web/
   src/lib/api.ts          typed fetch client (401 → UnauthorizedError)
   src/lib/view-model.ts   what components render (DashboardVM)
@@ -286,9 +291,9 @@ web/
   src/lib/dashboard.svelte.ts  state: provider, auth status, 15 s refresh
   src/App.svelte          routes the pages; renders the site chrome once
   src/components/         StatsRow (StatCard), ActivityChart (Heatmap,
-                          TrendChart), ClaudeCodeCard / CodexCard /
-                          OpenCodeCard (ToolHeader, QuotaWindow, Meter),
-                          AntigravityCard,
+                          TrendChart), QuotaCard (Claude Code, Codex,
+                          Antigravity: one column per quota pool;
+                          ToolHeader, QuotaWindow, Meter), OpenCodeCard,
                           TodayByTool,
                           Conversations, DevicesPanel, AccountMenu,
                           SiteHeader, ProfilePanel, UsersPanel,
@@ -453,7 +458,8 @@ Counting rules:
 
 `POST /api/ingest/<tool>` with header `Authorization: Bearer <device key>`.
 The tool slug in the URL picks the payload normalizer
-(`server/lib/ingest.ts`, one entry per slug): `claude-code`, `codex` and `opencode`. There is no default: a bare `/api/ingest` and unknown slugs → `404`.
+(`server/lib/ingest.ts`, one entry per slug): `claude-code`, `codex`, `opencode` and `antigravity` (`TOOLS` in
+`shared/types.ts`). There is no default: a bare `/api/ingest` and unknown slugs → `404`.
 Unknown or revoked keys → `401`. Small JSON bodies only (256 KB max).
 Rate limits per device key **and tool** (one key serves every tool on a
 machine: a Claude Code import never holds up Codex), all `429` with
@@ -543,6 +549,9 @@ Notes:
   window whose `resets_at` is further away than its length (5 h, 7 days,
   31 days for unknown types; plus 10 min) is dropped at ingest, since it
   would pin the display. Cost fields are ignored.
+- Antigravity quotas are recorded only for the `account_ref`s of
+  `QUOTA_POOLS.antigravity` (`gemini`, `claude-gpt`; `shared/quota-pools.ts`),
+  any other is dropped; each pool is its own quota, shown apart, never summed.
 
 ### Claude Code sources → payload mapping
 
@@ -617,54 +626,40 @@ Same batch shape (`messages`, `rate_limits`, `context`, `occurred_at`,
 
 ### Antigravity sources → payload mapping (`POST /api/ingest/antigravity`)
 
-`collectors/antigravity.py` scans recognized local SQLite `gen_metadata`
-usage blobs; only metadata tables are read. The collector uses a shared
-PostInvocation and Stop hooks (`~/.gemini/config/hooks.json`) or can run
-periodically by hand. One detached hook worker collects and at most one waits
-for the lock. Further hooks coalesce into that waiting pass.
-Its two-second flush delay starts after acquiring the collection lock; hooks
-during collection can queue a fresh pass, preserving overlapping final turns.
-Each entry carries `response_id`, `session_id`, `model`, `occurred_at`,
-`utc_offset_min`, and disjoint `usage.input_tokens`, `output_tokens`
-(including thinking), `cache_read_tokens`. Cache writes and context
-are not exposed by this collector. Model and timestamp are never inferred
-from the current hook, file mtime, or import time. Standard generation
-timestamps or unique step UUID/bot-id timestamp matches are supported;
-unsupported rows are skipped with a warning, and a database in an
-unsupported format is skipped until its stamp changes (never a failed run).
-Server keys are `antigravity:<session>:<response>`; session keys also have
-an `antigravity:` prefix to avoid collisions with other tools. The usual
-partial/final upsert and replay rules apply. Subagents count separately
-because the local format does not establish parent sessions. Checkpoints
-hold one DB/WAL stamp per conversation (hashed path), scoped to server/device
-key, and never contain credentials. A stamp is taken before the read and
-stored once the whole database is accepted, so unchanged conversations are
-never read again, and any change (old rows, or a write during the read) makes
-the next run read and resend the whole database (the server dedups).
-Deleted sources are pruned; state is saved once per run (and before quota
-probing to retain its throttle). Network/HTTP failures stop the run; HTTP
-429/503 honor bounded Retry-After. Discovery is restricted to the apps'
-`conversations/` directories. Unconfigured placeholders exit before
-discovery, and bearer keys cannot follow HTTP redirects.
-See README.md for setup, evidence and limits.
-Measured quotas use the signed-in `agy` CLI's JSON `/usage` report, gated
-on a plain version >= 1.1.11 to avoid older versions interpreting it as a
-model prompt. Quota-only batches carry `messages: []`, `occurred_at`,
-`account_ref` (`gemini` or `claude-gpt`, representing independent pools),
-and `rate_limits.five_hour` / `seven_day` with `used_percentage` and
-`resets_at`. Only recognized bucket ids, finite fractions and valid reset
-timestamps are used. Disabled, duplicate/ambiguous and unknown buckets stay
-unavailable. The subprocess runs in an empty directory without Activity
-credentials; its inherited probe marker prevents collector-hook recursion.
-Successful uploads throttle probes for 60 seconds. `quota_tried_at` is saved
-before probing; failed probes/uploads back off for five minutes, including
-after interruption. Tokens are collected before probes; failed uploads remain
-retryable errors. The
-Antigravity card uses QuotaWindow for both pools, never sums percentages,
-and expires old snapshots at reset like Codex and Claude Code.
-`test/antigravity-collector.test.js` uses synthetic wire fixtures against
-real SQLite/WAL and the ingestion API. Local live history reads were also
-checked; installed-hook triggering from a real turn remains to be verified.
+`collectors/antigravity.py` (hooks: `PostInvocation` and `Stop` in
+`~/.gemini/config/hooks.json`; README.md) reads the `gen_metadata` table of
+each conversation database under
+`~/.gemini/{antigravity,antigravity-cli,antigravity-ide}/conversations/*.db`
+(read-only; `data` is an undocumented protobuf):
+
+| Database source | Payload field |
+| --- | --- |
+| `data` 1.4.11 (response id) | `messages[].response_id` → event `antigravity:<session>:<response>` |
+| database file name | `messages[].session_id` → stored as `antigravity:<name>` |
+| `data` 1.19 (`gemini-default` → null) | `messages[].model` |
+| `data` 1.9.4 timestamp, else the unique `steps` row matching step 4 / bot 1.4.7 | `occurred_at` |
+| machine clock at that time | `messages[].utc_offset_min` |
+| `data` 1.4.1 + 1.4.2 / 1.4.5 / 1.4.9 + 1.4.10 | `usage.input_tokens` / `cache_read_tokens` / `output_tokens` (text + thinking) |
+| `agy -p /usage` buckets `gemini-*` / `3p-*` (`5h`, `weekly`) | quota-only batch, `account_ref` `gemini` / `claude-gpt`, `rate_limits.five_hour` / `seven_day` |
+
+- The same response id in two conversation databases counts twice (the
+  event id includes the session). Subagent conversations count on their
+  own: the local format does not link them to a parent.
+- A row without a response id, a timestamp (or a unique step match) or a
+  valid protobuf is skipped with a warning, never dated by file mtime or
+  import time. A database in an unsupported format, or unreadable other
+  than busy, is skipped until it changes; a busy one fails the run.
+- Only new responses, or ones with more output tokens than accepted, are
+  sent (partial then final counts, like the other tools); unchanged
+  databases are not read. Cache writes and context are not recorded.
+- Quota pools and windows mirror `QUOTA_POOLS` / `QUOTA_WINDOW_SEC`
+  (`shared/quota-pools.ts`, `POOLS` / `WINDOWS` in the collector): the two
+  pools are never summed. Only `agy` 1.1.11 or later receives `/usage`
+  (older ones may take it as a prompt), in an empty directory, without the
+  Activity URL/key. Unknown, disabled, duplicate or out-of-range buckets
+  are dropped.
+- Quota uploads back off on their own (five minutes after a failure, or
+  `Retry-After`), so they never delay usage uploads.
 
 ## 6. Viewer + device APIs
 
@@ -776,9 +771,10 @@ account exists):
 
 ## 7. Testing checklist (acceptance criteria)
 
-1. Real Claude Code, Codex or OpenCode activity → new tokens and sessions
-   appear, no duplicates (Codex: after `codex exec`, or any turn once the
-   hook is trusted; OpenCode: once a session goes idle).
+1. Real Claude Code, Codex, OpenCode or Antigravity activity → new tokens
+   and sessions appear, no duplicates (Codex: after `codex exec`, or any
+   turn once the hook is trusted; OpenCode: once a session goes idle;
+   Antigravity: after a turn's hook fires).
 2. Resend the same message ids (every status line refresh does) →
    `deduped`, totals unchanged; a partial then final entry counts once.
 3. Two devices, same account → quota cards show the current window's value,

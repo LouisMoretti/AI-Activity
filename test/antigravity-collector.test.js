@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -12,6 +12,10 @@ import http from "node:http";
 import { startServer, req, newDevice } from "./helpers.js";
 
 const SCRIPT = fileURLToPath(new URL("../collectors/antigravity.py", import.meta.url));
+// Absolute interpreter, so tests can run the collector with a PATH of their own.
+const PYTHON = spawnSync(process.env.PYTHON || (process.platform === "win32" ? "python" : "python3"),
+  ["-c", "import sys; print(sys.executable)"], { encoding: "utf8" }).stdout.trim();
+const PATH_KEY = Object.keys(process.env).find(k => k.toUpperCase() === "PATH") || "PATH";
 const varint = (n) => {
   const out = [];
   do { out.push((n & 127) | (n >= 128 ? 128 : 0)); n = Math.floor(n / 128); } while (n);
@@ -31,7 +35,7 @@ function generation(id, { output = 20, model = "gemini-test", when = WHEN, step 
     ...(when ? [bytes(9, bytes(4, stamp(when)))] : [])])), bytes(4, step)]);
 }
 const run = (env, args = [], input = "", command = null, script = SCRIPT) => new Promise((resolve, reject) => {
-  const p = spawn(command || process.env.PYTHON || (process.platform === "win32" ? "python" : "python3"), command ? [] : [script, ...args],
+  const p = spawn(command || PYTHON, command ? [] : [script, ...args],
     { env: { ...process.env, AI_ACTIVITY_ANTIGRAVITY_QUOTAS: "0", ...env }, shell: !!command, stdio: ["pipe", "pipe", "pipe"] });
   let out = "", err = "";
   p.stdout.on("data", (b) => out += b); p.stderr.on("data", (b) => err += b);
@@ -136,10 +140,10 @@ describe("Antigravity collector", () => {
     const other = new Database(layout); other.exec("CREATE TABLE gen_metadata(idx INTEGER PRIMARY KEY, other BLOB)"); other.close();
     try {
       const first = await run(env); assert.equal(first.code, 0, first.err);
-      assert.equal(first.err.match(/unsupported conversation database skipped/g).length, 2);
+      assert.equal(first.err.match(/conversation database skipped/g).length, 2);
       const again = await run(env); assert.equal(again.code, 0); assert.doesNotMatch(again.err, /unsupported/);
       fs.appendFileSync(broken, "changed");
-      assert.match((await run(env)).err, /unsupported conversation database skipped/);
+      assert.match((await run(env)).err, /conversation database skipped/);
       assert.equal((await summary()).events, 4);
     } finally { fs.unlinkSync(broken); fs.unlinkSync(layout); }
     assert.equal((await run(env)).code, 0);
@@ -308,16 +312,53 @@ describe("Antigravity collector", () => {
   });
 });
 
+// A fake `agy` first on PATH: answers from bin/agy.json, logs every call
+// (argv, working directory, environment) to bin/calls.json, and holds the
+// /usage probe while bin/hold exists.
+const FAKE_AGY = `import json, os, pathlib, sys, time, urllib.request
+here = pathlib.Path(__file__).resolve().parent
+control = json.loads((here / "agy.json").read_text())
+args = sys.argv[1:]
+call = {"argv": args, "cwd_empty": not any(pathlib.Path.cwd().iterdir()), "stdin": sys.stdin.read(),
+        "probe": os.environ.get("AI_ACTIVITY_ANTIGRAVITY_QUOTA_PROBE"),
+        "leaked": [k for k in ("AI_ACTIVITY_KEY", "AI_ACTIVITY_URL") if k in os.environ]}
+if control.get("check_url"):
+    call["events"] = json.load(urllib.request.urlopen(control["check_url"]))["total"]["events"]
+log = here / "calls.json"
+log.write_text(json.dumps((json.loads(log.read_text()) if log.exists() else []) + [call]))
+print("AGY STDERR MUST STAY LOCAL", file=sys.stderr)
+if args == ["--version"]:
+    print(control["version"])
+    sys.exit(0)
+(here / "probing").touch()
+while (here / "hold").exists():
+    time.sleep(0.05)
+if control.get("fail"):
+    sys.exit(1)
+print(json.dumps(control["report"]))
+`;
+
+function fakeAgy(dir) {
+  fs.mkdirSync(dir, { recursive: true });
+  if (process.platform === "win32") {
+    fs.writeFileSync(path.join(dir, "fake-agy.py"), FAKE_AGY);
+    fs.writeFileSync(path.join(dir, "agy.cmd"), `@"${PYTHON}" "%~dp0fake-agy.py" %*\r\n`);
+  } else {
+    fs.writeFileSync(path.join(dir, "agy"), `#!${PYTHON}\n` + FAKE_AGY, { mode: 0o755 });
+  }
+}
+
 describe("Antigravity quota reports", () => {
-  let srv, home, env, key;
-  const calls = () => JSON.parse(fs.readFileSync(path.join(home, "calls.json"), "utf8"));
+  let srv, home, env, key, bin;
+  const callsPath = () => path.join(bin, "calls.json");
+  const calls = () => fs.existsSync(callsPath()) ? JSON.parse(fs.readFileSync(callsPath(), "utf8")) : [];
+  const argv = () => calls().map(c => c.argv);
+  const resetCalls = () => fs.rmSync(callsPath(), { force: true });
+  const USAGE = ["-p", "/usage", "--output-format", "json", "--print-timeout", "90s"];
   const statePath = () => path.join(home, ".cache", "ai-activity", "antigravity.json");
-  const clearThrottle = () => {
-    if (!fs.existsSync(statePath())) return;
-    const state = JSON.parse(fs.readFileSync(statePath(), "utf8"));
-    delete state.quota_tried_at; delete state.quota_failed;
-    fs.writeFileSync(statePath(), JSON.stringify(state));
-  };
+  const quotaPath = () => path.join(home, ".cache", "ai-activity", "antigravity-quota.json");
+  const quotaState = () => JSON.parse(fs.readFileSync(quotaPath(), "utf8"));
+  const clearThrottle = () => fs.rmSync(quotaPath(), { force: true });
   const sample = () => {
     const now = Math.floor(Date.now() / 1000);
     return { status: "SUCCESS", command: { name: "usage", data: { email: "PRIVATE_EMAIL", groups: [
@@ -331,69 +372,76 @@ describe("Antigravity quota reports", () => {
       ] },
     ] } }, credential: "PRIVATE_CREDENTIAL" };
   };
-  const collect = (report, { version = "1.1.11", timeout = false, checkUsage = false, key: uploadKey = key } = {}) => {
-    const script = path.join(home, "quota-test.py");
-    fs.writeFileSync(script, `import importlib.util, json, os, pathlib, subprocess, types\n` +
-      `spec = importlib.util.spec_from_file_location('collector', ${JSON.stringify(SCRIPT)})\nm = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(m)\n` +
-      `calls = []\nreport = json.loads(${JSON.stringify(JSON.stringify(report))})\nm.shutil.which = lambda name: '/fake/agy'\n` +
-      `def command(args, **options):\n` +
-      ` assert options['env']['AI_ACTIVITY_ANTIGRAVITY_QUOTA_PROBE'] == '1'\n` +
-      ` assert 'AI_ACTIVITY_KEY' not in options['env'] and 'AI_ACTIVITY_URL' not in options['env']\n` +
-      ` assert list(pathlib.Path(options['cwd']).iterdir()) == []\n` +
-      ` assert options['stdin'] == subprocess.DEVNULL and options['stderr'] == subprocess.DEVNULL\n` +
-      ` calls.append(args[1:])\n pathlib.Path(${JSON.stringify(path.join(home, "calls.json"))}).write_text(json.dumps(calls))\n` +
-      (checkUsage ? ` import urllib.request\n assert json.load(urllib.request.urlopen(m.SERVER + '/api/u/admin/summary?tool=antigravity'))['total']['events'] == 1\n` : "") +
-      ` if args[1:] == ['--version']:\n  options['stdout'].write(${JSON.stringify(version)}.encode())\n` +
-      ` else:\n  assert args[1:] == ['-p', '/usage', '--output-format', 'json', '--print-timeout', '90s']\n` +
-      (timeout ? `  raise subprocess.TimeoutExpired(args, options['timeout'])\n` : `  options['stdout'].write(json.dumps(report).encode())\n`) +
-      ` return types.SimpleNamespace(returncode=0)\nm.subprocess.run = command\ntry:\n m.collect()\nexcept Exception:\n import traceback\n traceback.print_exc()\n raise SystemExit(1)\n`);
-    return run({ ...env, AI_ACTIVITY_KEY: uploadKey, AI_ACTIVITY_ANTIGRAVITY_QUOTAS: "1" }, [], "", null, script);
+  const collect = (report = sample(), { version = "1.1.11", fail = false, checkUsage = false, key: uploadKey = key, extra = {} } = {}) => {
+    fs.writeFileSync(path.join(bin, "agy.json"), JSON.stringify({ version, fail, report,
+      check_url: checkUsage ? `${srv.base}/api/u/admin/summary?tool=antigravity` : null }));
+    return run({ ...env, AI_ACTIVITY_KEY: uploadKey, AI_ACTIVITY_ANTIGRAVITY_QUOTAS: "1", ...extra });
   };
   const quotas = async () => (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas;
+  const waitFor = async (file) => {
+    for (let i = 0; i < 100 && !fs.existsSync(file); i++) await new Promise(resolve => setTimeout(resolve, 100));
+    assert.ok(fs.existsSync(file), `${file} never appeared`);
+  };
   before(async () => {
     srv = await startServer(); key = (await newDevice(srv.base)).key;
     home = fs.mkdtempSync(path.join(os.tmpdir(), "ai-activity-antigravity-quotas-"));
-    env = { HOME: home, USERPROFILE: home, GEMINI_CLI_HOME: path.join(home, ".gemini"), AI_ACTIVITY_URL: srv.base };
+    bin = path.join(home, "bin"); fakeAgy(bin);
+    env = { HOME: home, USERPROFILE: home, GEMINI_CLI_HOME: path.join(home, ".gemini"), AI_ACTIVITY_URL: srv.base,
+      [PATH_KEY]: bin + path.delimiter + process.env[PATH_KEY] };
   });
   after(() => { srv.stop(); fs.rmSync(home, { recursive: true, force: true }); });
 
   test("CLI report uploads both pools without usage or private fields, then throttles successful probes", async () => {
-    assert.equal((await collect(sample())).code, 0);
-    assert.deepEqual(calls(), [["--version"], ["-p", "/usage", "--output-format", "json", "--print-timeout", "90s"]]);
+    const r = await collect(); assert.equal(r.code, 0, r.err);
+    assert.deepEqual(argv(), [["--version"], USAGE]);
+    for (const call of calls()) {
+      assert.equal(call.cwd_empty, true); assert.equal(call.probe, "1");
+      assert.deepEqual(call.leaked, []); assert.equal(call.stdin, "");
+    }
+    assert.ok(!r.err.includes("AGY STDERR") && !r.err.includes("PRIVATE") && !r.out.includes("PRIVATE"));
     const rows = await quotas();
     assert.deepEqual(rows.map(q => [q.account_ref, q.limit_type, q.used_pct]),
       [["claude-gpt", "five_hour", 0], ["claude-gpt", "seven_day", 70], ["gemini", "five_hour", 25], ["gemini", "seven_day", 50]]);
     assert.equal((await req(srv.base, "GET", "/api/u/admin/summary?tool=antigravity")).json.total.events, 0);
     assert.ok(rows.every(q => q.resets_at > q.measured_at));
-    const saved = fs.readFileSync(statePath(), "utf8");
+    const saved = fs.readFileSync(quotaPath(), "utf8");
     for (const secret of [key, "PRIVATE_EMAIL", "PRIVATE_CREDENTIAL"]) {
       assert.ok(!saved.includes(secret)); assert.ok(!JSON.stringify(rows).includes(secret));
     }
-    fs.unlinkSync(path.join(home, "calls.json"));
-    assert.equal((await collect(sample())).code, 0);
-    assert.ok(!fs.existsSync(path.join(home, "calls.json")), "no probe within the successful one-minute interval");
+    resetCalls();
+    assert.equal((await collect()).code, 0);
+    assert.deepEqual(calls(), [], "no probe within the successful one-minute interval");
   });
 
-  test("old/unknown versions cannot invoke /usage; failed probes and uploads remain retryable", async () => {
+  test("diagnostics tell a missing CLI, an unsupported version and a failed probe apart; failures back off", async () => {
     clearThrottle();
-    for (const version of ["1.1.10", "unknown", "1.2.0-beta"]) {
-      clearThrottle();
-      const r = await collect(sample(), { version }); assert.equal(r.code, 0); assert.match(r.err, /quota report unavailable/);
-      assert.deepEqual(calls(), [["--version"]]);
+    const missing = await collect(sample(), { extra: { [PATH_KEY]: path.join(home, ".gemini") } });
+    assert.equal(missing.code, 0); assert.match(missing.err, /quota report unavailable \(agy CLI not found on PATH\)/);
+    for (const version of ["1.1.10", "unknown", "agy 1.0.9 (build 1.2.3)"]) {
+      clearThrottle(); resetCalls();
+      const r = await collect(sample(), { version }); assert.equal(r.code, 0);
+      assert.match(r.err, /quota report unavailable \(agy version [^;]+; 1\.1\.11 or later required\)/);
+      assert.deepEqual(argv(), [["--version"]], `${version} must never receive /usage`);
     }
+    clearThrottle(); resetCalls();
+    assert.equal((await collect(sample(), { version: "Antigravity CLI 1.2.0 (abc123)" })).code, 0);
+    assert.deepEqual(argv(), [["--version"], USAGE], "a version inside other text is found");
     clearThrottle();
-    const timed = await collect(sample(), { timeout: true }); assert.equal(timed.code, 0, timed.err);
-    fs.unlinkSync(path.join(home, "calls.json"));
-    assert.equal((await collect(sample(), { timeout: true })).code, 0);
-    assert.ok(!fs.existsSync(path.join(home, "calls.json")), "failed probes back off across processes");
-    const saved = JSON.parse(fs.readFileSync(statePath(), "utf8"));
-    assert.equal(saved.quota_failed, true);
-    saved.quota_tried_at -= 301; fs.writeFileSync(statePath(), JSON.stringify(saved));
-    assert.equal((await collect(sample())).code, 0, "retry succeeds after five-minute backoff");
+    const failed = await collect(sample(), { fail: true }); assert.equal(failed.code, 0, failed.err);
+    assert.match(failed.err, /quota report unavailable \(agy -p \/usage failed\)/);
+    resetCalls();
+    assert.equal((await collect()).code, 0);
+    assert.deepEqual(calls(), [], "failed probes back off across processes");
+    const saved = quotaState(); assert.equal(saved.failed, true);
+    saved.tried_at -= 301; fs.writeFileSync(quotaPath(), JSON.stringify(saved));
+    assert.equal((await collect()).code, 0, "retry succeeds after five-minute backoff");
+    assert.equal(quotaState().failed, false);
+    clearThrottle();
     assert.equal((await collect(sample(), { key: "invalid-device-key" })).code, 1);
-    assert.equal(JSON.parse(fs.readFileSync(statePath(), "utf8")).quota_failed, true);
-    assert.equal((await collect(sample())).code, 0);
-    assert.equal(JSON.parse(fs.readFileSync(statePath(), "utf8")).quota_failed, false);
+    assert.equal(quotaState().failed, true);
+    clearThrottle();
+    assert.equal((await collect()).code, 0);
+    assert.equal(quotaState().failed, false);
   });
 
   test("unknown, disabled, duplicate, invalid and expired buckets cannot produce quota measurements", async () => {
@@ -429,13 +477,14 @@ describe("Antigravity quota reports", () => {
   });
 
   test("quota subprocess hooks return normally without spawning recursive collectors", async () => {
-    const prior = fs.readFileSync(statePath(), "utf8");
+    const snapshot = () => [statePath(), quotaPath()].map(p => fs.existsSync(p) ? fs.readFileSync(p, "utf8") : null);
+    const prior = snapshot();
     for (const arg of ["--hook", "--post-invocation"]) {
       const r = await run({ ...env, AI_ACTIVITY_KEY: key, AI_ACTIVITY_ANTIGRAVITY_QUOTA_PROBE: "1" }, [arg], "{}");
       assert.equal(r.code, 0); assert.deepEqual(JSON.parse(r.out), arg === "--hook" ? { decision: "stop" } : {});
     }
     await new Promise(resolve => setTimeout(resolve, 2300));
-    assert.equal(fs.readFileSync(statePath(), "utf8"), prior);
+    assert.deepEqual(snapshot(), prior);
   });
 
   test("token uploads finish before a failing quota probe starts", async () => {
@@ -444,12 +493,65 @@ describe("Antigravity quota reports", () => {
     const db = new Database(path.join(dir, "quota-timeout.db"));
     db.exec("CREATE TABLE gen_metadata(idx INTEGER PRIMARY KEY, data BLOB)");
     db.prepare("INSERT INTO gen_metadata VALUES (1, ?)").run(generation("before-probe")); db.close();
-    clearThrottle();
-    assert.equal((await collect(sample(), { timeout: true, checkUsage: true })).code, 0);
-    assert.equal((await req(srv.base, "GET", "/api/u/admin/summary?tool=antigravity")).json.total.events, 1);
-    fs.unlinkSync(path.join(home, "calls.json"));
+    clearThrottle(); resetCalls();
+    assert.equal((await collect(sample(), { fail: true, checkUsage: true })).code, 0);
+    assert.deepEqual(calls().map(c => c.events), [1, 1]);
+    resetCalls();
     assert.equal((await collect(sample(), { checkUsage: true })).code, 0);
-    assert.ok(!fs.existsSync(path.join(home, "calls.json")));
+    assert.deepEqual(calls(), []);
+  });
+
+  test("a slow probe runs outside the collection lock; a concurrent run collects tokens and skips probing", async () => {
+    clearThrottle(); resetCalls();
+    fs.rmSync(path.join(bin, "probing"), { force: true });
+    fs.writeFileSync(path.join(bin, "hold"), "");
+    const slow = collect();
+    try {
+      await waitFor(path.join(bin, "probing"));
+      const db = new Database(path.join(home, ".gemini", "antigravity-cli", "conversations", "quota-timeout.db"));
+      db.prepare("INSERT INTO gen_metadata VALUES (2, ?)").run(generation("during-probe")); db.close();
+      clearThrottle();
+      const quick = await collect(); assert.equal(quick.code, 0, quick.err);
+      assert.equal((await req(srv.base, "GET", "/api/u/admin/summary?tool=antigravity")).json.total.events, 2);
+      assert.deepEqual(argv(), [["--version"], USAGE], "the concurrent run never probes");
+    } finally { fs.rmSync(path.join(bin, "hold"), { force: true }); }
+    assert.equal((await slow).code, 0);
+  });
+
+  test("a refused quota upload backs off quotas only, never token uploads", async () => {
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), "ai-activity-antigravity-quota429-"));
+    const dir = path.join(other, ".gemini", "antigravity-cli", "conversations");
+    fs.mkdirSync(dir, { recursive: true });
+    const db = new Database(path.join(dir, "limited.db"));
+    db.exec("CREATE TABLE gen_metadata(idx INTEGER PRIMARY KEY, data BLOB)");
+    db.prepare("INSERT INTO gen_metadata VALUES (1, ?)").run(generation("t1"));
+    const bodies = [];
+    const proxy = http.createServer(async (request, response) => {
+      let body = ""; for await (const b of request) body += b;
+      const payload = JSON.parse(body); bodies.push(payload);
+      response.setHeader("content-type", "application/json");
+      if (!payload.messages.length) { response.writeHead(429, { "Retry-After": "3600" }); response.end("{}"); return; }
+      response.end(JSON.stringify({ ok: true, messages: payload.messages.length }));
+    });
+    await new Promise(resolve => proxy.listen(0, "127.0.0.1", resolve));
+    const local = { ...env, HOME: other, USERPROFILE: other, GEMINI_CLI_HOME: path.join(other, ".gemini"),
+      AI_ACTIVITY_URL: `http://127.0.0.1:${proxy.address().port}`, AI_ACTIVITY_KEY: "test-key", AI_ACTIVITY_ANTIGRAVITY_QUOTAS: "1" };
+    const cache = path.join(other, ".cache", "ai-activity");
+    try {
+      fs.writeFileSync(path.join(bin, "agy.json"), JSON.stringify({ version: "1.1.11", report: sample() }));
+      const before = Date.now() / 1000;
+      assert.equal((await run(local)).code, 1, "a refused quota upload is reported");
+      assert.deepEqual(bodies.map(b => b.messages.length), [1, 0]);
+      assert.equal(JSON.parse(fs.readFileSync(path.join(cache, "antigravity.json"), "utf8")).upload_retry_at, undefined);
+      const retry = JSON.parse(fs.readFileSync(path.join(cache, "antigravity-quota.json"), "utf8")).retry_at - before;
+      assert.ok(retry > 3597 && retry <= 3603, String(retry));
+      db.prepare("INSERT INTO gen_metadata VALUES (2, ?)").run(generation("t2"));
+      const next = await run(local); assert.equal(next.code, 0, next.err);
+      assert.deepEqual(bodies.slice(2).map(b => b.messages.map(e => e.response_id)), [["t2"]]);
+    } finally {
+      db.close(); await new Promise(resolve => proxy.close(resolve));
+      fs.rmSync(other, { recursive: true, force: true });
+    }
   });
 });
 
@@ -478,14 +580,16 @@ async function scanFixture() {
     for (const [i, blob] of steps.entries()) db.prepare("INSERT INTO steps VALUES (?, ?)").run(i + 1, blob);
     db.close();
   };
-  const state = () => JSON.parse(fs.readFileSync(path.join(home, ".cache", "ai-activity", "antigravity.json"), "utf8"));
+  const statePath = path.join(home, ".cache", "ai-activity", "antigravity.json");
+  const state = () => JSON.parse(fs.readFileSync(statePath, "utf8"));
+  const writeState = (value) => fs.writeFileSync(statePath, JSON.stringify(value));
   const collect = async (setup = "") => {
     const script = path.join(home, "scan-test.py");
     fs.writeFileSync(script, `import importlib.util, time\nspec = importlib.util.spec_from_file_location('collector', ${JSON.stringify(SCRIPT)})\nm = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(m)\n` +
       setup + "try:\n m.collect()\nexcept Exception:\n import traceback\n traceback.print_exc()\n raise SystemExit(1)\n");
     return run(env, [], "", null, script);
   };
-  return { add, state, collect, accepted, batches, dir, refuse: value => refuse = value,
+  return { add, state, writeState, collect, accepted, batches, dir, home, refuse: value => refuse = value,
     close: async () => { await new Promise(resolve => proxy.close(resolve)); fs.rmSync(home, { recursive: true, force: true }); } };
 }
 
@@ -585,12 +689,13 @@ test("first HTTP failure stops sources and quota probing; Retry-After delays ret
     assert.equal((await f.collect(setup)).code, 1);
     assert.equal(f.accepted.size, 200);
     assert.equal(f.batches.length, 1);
-    assert.deepEqual(f.state().files, {});
+    assert.ok(Object.values(f.state().files).every(entry => !entry.stamp));
     assert.equal((await f.collect()).code, 1);
     assert.equal(f.batches.length, 1, "Retry-After suppresses every upload");
     const noWait = "import time\noriginal_time = time.time\ntime.time = lambda: original_time() + 121\n";
     assert.equal((await f.collect(noWait)).code, 0);
     assert.equal(f.accepted.size, 251);
+    assert.equal(f.batches.slice(1).flat().length, 51, "accepted batches are not sent again");
     assert.equal(Object.keys(f.state().files).length, 2);
   } finally { await f.close(); }
 });
@@ -657,4 +762,74 @@ test("an actual HTTP redirect cannot forward the device bearer key", async () =>
     await new Promise(resolve => destination.close(resolve));
     await f.close();
   }
+});
+
+test("a changed conversation re-sends only its new or grown responses", async () => {
+  const f = await scanFixture();
+  try {
+    f.add("grow", [generation("a"), generation("b"), generation("c")]);
+    assert.equal((await f.collect()).code, 0);
+    assert.deepEqual(f.batches.map(b => b.length), [3]);
+    const db = new Database(path.join(f.dir, "grow.db"));
+    db.prepare("UPDATE gen_metadata SET data=? WHERE idx=2").run(generation("b", { output: 90 }));
+    db.prepare("INSERT INTO gen_metadata VALUES (4, ?)").run(generation("d"));
+    db.close();
+    assert.equal((await f.collect()).code, 0);
+    assert.deepEqual(f.batches[1].map(e => e.response_id).sort(), ["b", "d"]);
+    assert.deepEqual(Object.values(f.state().files)[0].sent, { a: 50, b: 120, c: 50, d: 50 });
+  } finally { await f.close(); }
+});
+
+test("malformed checkpoints start over instead of failing every run", async () => {
+  const f = await scanFixture();
+  try {
+    f.add("state", [generation("one")]);
+    assert.equal((await f.collect()).code, 0);
+    const name = Object.keys(f.state().files)[0];
+    for (const files of ["not an object", { [name]: 5 }, { [name]: { stamp: null, sent: { one: "x" } } }]) {
+      f.writeState({ ...f.state(), files });
+      const r = await f.collect(); assert.equal(r.code, 0, r.err);
+      assert.equal(f.batches.at(-1)[0].response_id, "one", "the conversation is replayed");
+      assert.deepEqual(Object.values(f.state().files)[0].sent, { one: 50 });
+    }
+  } finally { await f.close(); }
+});
+
+test("unopenable databases are skipped until they change; busy ones fail the run and are retried",
+  { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
+    const f = await scanFixture();
+    // A WAL database in a read-only directory cannot get its -shm file: permanent.
+    const ide = path.join(f.home, ".gemini", "antigravity-ide", "conversations");
+    try {
+      fs.mkdirSync(ide, { recursive: true });
+      const db = new Database(path.join(ide, "readonly.db")); db.pragma("journal_mode = WAL");
+      db.exec("CREATE TABLE gen_metadata(idx INTEGER PRIMARY KEY, data BLOB)");
+      db.prepare("INSERT INTO gen_metadata VALUES (1, ?)").run(generation("ro")); db.close();
+      fs.chmodSync(ide, 0o555);
+      f.add("ok", [generation("ok")]);
+      const first = await f.collect(); assert.equal(first.code, 0, first.err);
+      assert.match(first.err, /conversation database skipped until it changes/);
+      assert.deepEqual([...f.accepted.keys()], ["ok:ok"]);
+      assert.doesNotMatch((await f.collect()).err, /skipped/);
+      const busy = "import sqlite3\nm.read_database = lambda path: (_ for _ in ()).throw(sqlite3.OperationalError('database is locked'))\n";
+      f.add("later", [generation("later")]);
+      const locked = await f.collect(busy); assert.equal(locked.code, 1); assert.match(locked.err, /busy; retry on next run/);
+      assert.equal((await f.collect()).code, 0); assert.ok(f.accepted.has("later:later"));
+    } finally { fs.chmodSync(ide, 0o755); await f.close(); }
+  });
+
+test("stamps change with the SQLite change counter and WAL salts, not only size and times", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "ai-activity-stamp-"));
+  try {
+    const file = path.join(home, "stamp.db"), script = path.join(home, "stamp.py");
+    const db = new Database(file); db.pragma("journal_mode = WAL"); db.exec("CREATE TABLE t(x)");
+    fs.writeFileSync(script, `import importlib.util, json, pathlib, sys\nspec = importlib.util.spec_from_file_location('collector', ${JSON.stringify(SCRIPT)})\n` +
+      `m = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(m)\nprint(json.dumps(m.file_stamp(pathlib.Path(${JSON.stringify(file)}))))\n`);
+    const stamp = async () => JSON.parse((await run({}, [], "", null, script)).out);
+    const [main, wal] = await stamp();
+    assert.equal(main[4], fs.readFileSync(file).subarray(24, 28).toString("hex"));
+    assert.equal(wal[4], fs.readFileSync(file + "-wal").subarray(16, 24).toString("hex"));
+    db.close();
+    assert.equal((await stamp())[1], null, "a missing WAL has no stamp");
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });

@@ -182,7 +182,8 @@ waits two seconds for metadata to flush after acquiring the collection lock.
 At most one hook worker collects and one waits; additional
 hooks coalesce into that waiting pass, which reads a fresh snapshot. A hook
 during collection can queue the next pass, so the final Stop update is included.
-Only one uploads at a time. Updates need no manual
+Only one uploads at a time. The quota probe runs after the collection lock
+is released, so a queued worker never waits for it. Updates need no manual
 command after setup, while Antigravity is running and these hooks are enabled.
 
 4. Restart Antigravity, then confirm **ai-activity is enabled**: `/hooks`
@@ -190,9 +191,9 @@ command after setup, while Antigravity is running and these hooks are enabled.
    **… → Customizations → Hooks** in the IDE agent side panel.
 5. Run the copied script **without either hook flag** once to import history
    and see diagnostics. Exit code 0 means supported entries were processed;
-   warnings can still indicate skipped unsupported rows or databases. Exit
-   code 1 means an unreadable database or an upload failure; fix it and run
-   again.
+   warnings can still indicate skipped unsupported rows or databases, or an
+   unavailable quota report (with its reason). Exit code 1 means a busy
+   database or an upload failure; fix it and run again.
 6. Complete a new Antigravity turn and leave the dashboard open. Its existing
    15-second refresh should show supported persisted usage after collection.
    If it does not, check the hook is loaded, Python and script paths resolve
@@ -225,19 +226,26 @@ What it does:
   time. Input includes recorded system and new input; cached input is
   separate; text and thinking output are added once. Subagent databases
   count as separate conversations because parent attribution is unavailable.
-- Imports supported history, then skips every database whose file and WAL
-  stamps (mtime, size) are unchanged since all of it was accepted. A changed
-  database is read again in full (edits to older rows included) and resent;
-  the server deduplicates. Checkpoints in `~/.cache/ai-activity/antigravity.json`
-  hold one stamp per conversation (hashed path) and are saved once per run;
-  a database whose upload failed is read again on the next run. A database
-  in an unsupported format is skipped with a warning until it changes.
-  Remove the checkpoint file to replay history. Switching server or device
-  key automatically starts a new import.
+- Imports supported history, then skips every database whose stamp is
+  unchanged since all of it was accepted. The stamp covers the database and
+  its WAL: mtime, size, ctime, inode, the database header's change counter
+  and the WAL header's salts. A changed database is read again in full (edits
+  to older rows included), but only new responses, or ones with more output
+  tokens, are sent. Checkpoints in `~/.cache/ai-activity/antigravity.json`
+  hold, per conversation (hashed path), that stamp and the output tokens
+  accepted per response id; a batch is recorded only once accepted, and
+  deleted conversations are forgotten. A malformed checkpoint file starts
+  over (the server deduplicates the replay); removing it replays history
+  too. Switching server or device key automatically starts a new import.
+- A busy (locked) database fails the run and is read again next time. Any
+  other unreadable or unsupported database (not SQLite, another layout, a
+  WAL database whose `-shm` file cannot be created) is skipped with a
+  warning until its stamp changes.
 - Unconfigured URL/key placeholders exit before reading history. The first
-  HTTP/network failure stops the pass, including quota probing. HTTP 429/503
-  honor `Retry-After` (seconds or HTTP date; bounded to one day, with a
-  one-minute fallback). Device keys are never forwarded through redirects.
+  HTTP/network failure on a usage upload stops the pass, including quota
+  probing. HTTP 429/503 honor `Retry-After` (seconds or HTTP date; bounded
+  to one day, with a one-minute fallback). Device keys are never forwarded
+  through redirects.
 - A generation without its own timestamp takes its step's, streamed from
   the same snapshot, only when its step/bot key belongs to one response;
   otherwise it is skipped with a warning, never dated by import time.
@@ -246,16 +254,22 @@ What it does:
   Antigravity CLI's `/usage` JSON report. Install **agy 1.1.11 or later**, sign
   in with the same Google account you use in Antigravity, and make `agy`
   available on the collector's PATH (including hooks and scheduled tasks).
-  Verify `agy --version` and `agy -p /usage --output-format json
-  --print-timeout 90s` in a terminal. The CLI handles its own authentication;
-  the collector never reads provider credential files. Desktop/IDE history
-  still imports without the CLI; missing CLI/authentication or unsupported
-  reports leave quota windows **Unavailable**, with a diagnostic.
+  Verify `agy --version` (its output must contain the version) and
+  `agy -p /usage --output-format json --print-timeout 90s` in a terminal.
+  The CLI handles its own authentication; the collector never reads
+  provider credential files. Desktop/IDE history still imports without the
+  CLI; a missing CLI, an old or unrecognized version, a failed probe or an
+  unsupported report leave quota windows **Unavailable**, with a diagnostic
+  naming which.
 - Quotas refresh on hooks/manual/scheduled runs, at most once per minute
   after a successful upload, including runs with no new token activity.
-  Failed probes or uploads back off for five minutes; attempts are saved
-  before probing so interruption cannot reset the throttle. Token collection
-  runs before quota probes, so a slow quota command cannot delay that pass's tokens.
+  Failed probes or uploads back off for five minutes (or the server's
+  `Retry-After`), in `~/.cache/ai-activity/antigravity-quota.json`, apart
+  from usage uploads: a refused quota upload never delays token imports.
+  Attempts are saved before probing, so interruption cannot reset the
+  throttle. Token collection finishes first; the probe then runs outside
+  the collection lock, under its own lock, and a run that finds another
+  probe in progress skips its own.
   Use the optional one-minute schedule above for updates while idle. Gemini
   and Claude/GPT pools remain separate: the card uses the same percentage
   bars, elapsed-window marks, reset countdowns and expiry behavior as Codex
@@ -270,24 +284,22 @@ What it does:
   without the Activity URL/key, and cannot recursively trigger this
   collector's hooks. Versions older than 1.1.11 or an unrecognized version
   never receive `/usage`, since older print modes may treat it as a prompt.
-  Failed quota uploads retry on subsequent runs without blocking token
-  imports. Set `AI_ACTIVITY_ANTIGRAVITY_QUOTAS=0` to disable quota probing.
+  Set `AI_ACTIVITY_ANTIGRAVITY_QUOTAS=0` to disable quota probing.
 
 Quota command/schema evidence comes from [CodexBar's Antigravity implementation](https://github.com/steipete/CodexBar/tree/main/Sources/CodexBarCore/Providers/Antigravity).
 Google documents [the quota command](https://antigravity.google/docs/cli/commands/usage)
-and [plan windows](https://antigravity.google/docs/plans/). Quota tests use
-synthetic CLI reports; a live signed-in quota report still needs verification.
+and [plan windows](https://antigravity.google/docs/plans/). Quota tests run
+the collector against a fake `agy` with synthetic reports.
 
 **Format limitations:** Antigravity's persisted protobuf layout is
 undocumented. The parser follows [independently observed field evidence](https://github.com/junhoyeo/tokscale/blob/62ca1eb1677556972ba963fdfa3a41ab23c1eb4b/crates/tokscale-core/src/sessions/antigravity_cli.rs).
 It accepts standard protobuf generation timestamps, or a unique matching
 step UUID and bot id with a standard step timestamp. Unknown timestamp
 layouts, missing response ids, corrupt records, and ambiguous step matches
-are skipped with a diagnostic and retried later. They are never assigned
-the database modification time or import time, so totals may be incomplete
-on unsupported versions. Automated tests use synthetic SQLite/protobuf fixtures. Read-only parsing
-was also checked against local Antigravity history; triggering the installed
-hook from a live Antigravity turn still needs verification.
+are skipped with a diagnostic, and read again only when their database
+changes. They are never assigned the database modification time or import
+time, so totals may be incomplete on unsupported versions. Automated tests
+use synthetic SQLite/protobuf fixtures.
 
 ## Send OpenCode usage from a device
 

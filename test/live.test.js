@@ -17,15 +17,16 @@ test("each tool card shows its own quota windows, never another tool's", () => {
   const vm = liveDashboard(data([
     q("claude-code", "five_hour", 20, 100), q("codex", "five_hour", 17, 200), q("codex", "seven_day", 75, 300),
   ]), "all");
-  assert.deepEqual(vm.claude.windows.map((w) => w.pct), [20, null]);
-  assert.deepEqual(vm.codex.windows.map((w) => w.pct), [17, 75]);
+  assert.deepEqual(vm.claude.pools.map((p) => p.label), [null]);
+  assert.deepEqual(vm.claude.pools[0].windows.map((w) => w.pct), [20, null]);
+  assert.deepEqual(vm.codex.pools[0].windows.map((w) => w.pct), [17, 75]);
   assert.equal(vm.codex.updatedAt, 300);
 });
 
 test("no Codex snapshot yet: Unavailable, not zero", () => {
   const vm = liveDashboard(data([]), "all");
   assert.equal(vm.codex.updatedAt, null);
-  assert.deepEqual(vm.codex.windows.map((w) => w.pct), [null, null]);
+  assert.deepEqual(vm.codex.pools[0].windows.map((w) => [w.label, w.pct]), [["5-hour window", null], ["This week", null]]);
 });
 
 test("the OpenCode card gets its latest conversations and today; none yet is empty", () => {
@@ -51,10 +52,11 @@ test("Antigravity keeps its identity in sessions, cards and token breakdowns", (
   const vm = liveDashboard(d, "all");
   assert.ok(vm.tools.includes("antigravity"));
   assert.equal(vm.sessions[0].tool, "antigravity");
+  assert.equal(vm.sessions[0].id, "abc"); // shown without the storage prefix
   assert.equal(vm.sessions[0].context, null);
   assert.equal(vm.sessions[0].model, null);
   assert.equal(vm.antigravity.updatedAt, null);
-  assert.deepEqual(vm.antigravity.windows.map((w) => w.pct), [null, null, null, null]);
+  assert.deepEqual(vm.antigravity.pools.map((p) => p.windows.map((w) => w.pct)), [[null, null], [null, null]]);
   assert.equal(vm.opencode.today.tokens, 0);
 });
 
@@ -63,10 +65,9 @@ test("Antigravity quota pools keep their own usage, resets and missing windows",
   const thirdParty = { ...q("antigravity", "seven_day", 70, 600), account_ref: "claude-gpt", resets_at: 70000 };
   const vm = liveDashboard(data([thirdParty, gemini, q("codex", "five_hour", 90, 700)]), "all");
   assert.equal(vm.antigravity.updatedAt, 600);
-  assert.deepEqual(vm.antigravity.windows.map((w) => [w.pct, w.resetsAt, w.spanSec]),
-    [[25, 4100, 18000], [null, null, 604800], [null, null, 18000], [70, 70000, 604800]]);
-  assert.match(vm.antigravity.windows[0].label, /Gemini/);
-  assert.match(vm.antigravity.windows[2].label, /Claude\/GPT/);
+  assert.deepEqual(vm.antigravity.pools.map((p) => p.label), ["Gemini", "Claude/GPT"]);
+  assert.deepEqual(vm.antigravity.pools.map((p) => p.windows.map((w) => [w.pct, w.resetsAt, w.spanSec])),
+    [[[25, 4100, 18000], [null, null, 604800]], [[null, null, 18000], [70, 70000, 604800]]]);
 });
 
 
@@ -77,5 +78,5 @@ test("quota card update time ignores unrendered pools and limit types", () => {
     { ...q("antigravity", "custom", 80, 999), account_ref: "gemini" },
   ]), "all");
   assert.equal(vm.antigravity.updatedAt, 500);
-  assert.deepEqual(vm.antigravity.windows.map(w => w.pct), [25, null, null, null]);
+  assert.deepEqual(vm.antigravity.pools.map((p) => p.windows.map((w) => w.pct)), [[25, null], [null, null]]);
 });
