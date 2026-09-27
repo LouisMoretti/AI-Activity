@@ -17,7 +17,17 @@ const hooks = JSON.parse(README.match(WINDOWS
   : /`~\/\.codex\/hooks\.json`:\n\n```json\n([\s\S]*?)\n```/)[1]);
 const SCRIPT = fs.readFileSync(new URL("../collectors/codex.py", import.meta.url), "utf8");
 // The README's Windows commands name C:\Users\<user>: run them on this test's copy instead.
-const WINDOWS_PREFIX = 'python "C:\\Users\\<user>\\.codex\\ai-activity-codex.py"';
+const WINDOWS_PREFIX = '& python "C:\\Users\\<user>\\.codex\\ai-activity-codex.py"';
+
+test("Windows README hook commands preserve PowerShell invocation and JSON escaping", () => {
+  const windowsHooks = JSON.parse(README.match(/`%USERPROFILE%\\\.codex\\hooks\.json`:\n\n```json\n([\s\S]*?)\n```/)[1]);
+  for (const event of ["Stop", "UserPromptSubmit", "PostToolUse"]) {
+    assert.equal(windowsHooks.hooks[event][0].hooks[0].command, `${WINDOWS_PREFIX} --hook`);
+  }
+  const example = JSON.parse(README.match(/command for each of the three hooks:\n\n```json\n([\s\S]*?)\n```/)[1]);
+  assert.equal(example.command,
+    '& "C:\\Program Files\\Python312\\python.exe" "C:\\Users\\<user>\\.codex\\ai-activity-codex.py" --hook');
+});
 
 // Recent times: a quota window is only kept if it resets within its length of the measurement.
 const START = Date.now() - 3600 * 1000;
@@ -47,15 +57,20 @@ const secret = () => line("response_item", { type: "message", role: "user", cont
 
 /** Run a shell command (in its own process group, but on Windows); resolves with its stdout. */
 function run(cmd, env) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const p = WINDOWS
-      ? spawn(cmd, { env, shell: true, windowsHide: true, stdio: ["pipe", "pipe", "ignore"] })
+      ? spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", cmd],
+        { env, windowsHide: true, stdio: ["pipe", "pipe", "ignore"] })
       : spawn("sh", ["-c", cmd], { env, detached: true, stdio: ["pipe", "pipe", "ignore"] });
     let out = "";
     p.stdout.on("data", (d) => { out += d; });
     p.stdin.on("error", () => {}); // the hook may exit before reading its input (EPIPE)
     p.stdin.end(JSON.stringify({ session_id: "s", hook_event_name: "Stop", turn_id: "t" }));
-    p.on("exit", () => resolve(out));
+    p.on("error", reject);
+    p.on("exit", (code) => {
+      if (code !== 0) reject(new Error(`hook command exited with code ${code}`));
+      else resolve(out);
+    });
   });
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -92,7 +107,7 @@ describe("Codex collector (Stop hook from README.md)", () => {
   before(async () => {
     srv = await startServer();
     key = (await newDevice(srv.base, "codex-collector")).key;
-    home = tempHome("ai-activity-codex-");
+    home = tempHome(WINDOWS ? "ai-activity codex-" : "ai-activity-codex-");
     const { AI_ACTIVITY_URL, AI_ACTIVITY_KEY, ...inherited } = process.env; // the installed copy says where
     // POSIX TZ (Windows reads it too): UTC+5:30, no tz database needed.
     env = { ...inherited, HOME: home, USERPROFILE: home, CODEX_HOME: "", TZ: "IST-5:30" };
@@ -100,7 +115,7 @@ describe("Codex collector (Stop hook from README.md)", () => {
       const c = hooks.hooks[event][0].hooks[0].command;
       if (!WINDOWS) return c;
       assert.ok(c.startsWith(WINDOWS_PREFIX));
-      return c.replace(WINDOWS_PREFIX, `"${PYTHON}" "${path.join(home, ".codex", "ai-activity-codex.py")}"`);
+      return c.replace(WINDOWS_PREFIX, `& "${PYTHON}" "${path.join(home, ".codex", "ai-activity-codex.py")}"`);
     };
     [hookCommand, submitCommand, toolCommand] = ["Stop", "UserPromptSubmit", "PostToolUse"].map(command);
     const day = path.join(home, ".codex", "sessions", "2026", "09", "20");
@@ -305,7 +320,7 @@ describe("Codex collector (Stop hook from README.md)", () => {
   test("--hook (the Windows command, any OS) answers at once and uploads detached", async () => {
     const before = await summary();
     fs.appendFileSync(current, response("resp_10", S1, usage(20, 0, 2), 6849));
-    const out = await run(`"${PYTHON}" "${path.join(home, ".codex", "ai-activity-codex.py")}" --hook`, env);
+    const out = await run(`${WINDOWS ? "& " : ""}"${PYTHON}" "${path.join(home, ".codex", "ai-activity-codex.py")}" --hook`, env);
     assert.deepEqual(JSON.parse(out), {}, "the hook prints valid JSON for Codex");
     assert.ok(await waitFor(async () => (await summary()).events === before.events + 1));
     assert.equal((await summary()).tokens - before.tokens, 22);
