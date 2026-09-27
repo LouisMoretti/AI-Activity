@@ -4,8 +4,8 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
-import { test, describe, before, after } from "node:test";
+import { execFileSync, spawn } from "node:child_process";
+import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { startServer, req, newDevice, asNewClient } from "./helpers.js";
@@ -42,6 +42,17 @@ async function waitFor(fn, ms = 15000) {
     if (v || Date.now() > end) return v;
     await sleep(100);
   }
+}
+
+/**
+ * Collectors run detached (setsid -f), so a refresh's command returns before
+ * its upload ends. Wait until none carrying this device key is left: one still
+ * queued on the lock would otherwise read what the next test appends and move
+ * its offsets (issue #123). The key is on the python command line.
+ */
+const running = (key) => execFileSync("ps", ["-Aww", "-o", "args="], { encoding: "utf8" }).includes(key);
+async function collectorsDone(key) {
+  assert.ok(await waitFor(() => !running(key), 30000), "a detached collector from an earlier refresh is still running");
 }
 
 /** Forwards to the server after delayMs, so an upload is still in flight when its group is killed. */
@@ -88,7 +99,9 @@ describe("collector one-liner from README.md", () => {
     ].join("\n") + entry("msg_half", 1)); // no trailing newline: still being written
     fs.writeFileSync(path.join(project, "sess-1", "subagents", "agent-x.jsonl"), entry("msg_sub", 16, { agent: "x" }) + "\n");
   });
+  beforeEach(() => collectorsDone(key));
   after(async () => {
+    await collectorsDone(key);
     await new Promise((r) => proxy.close(r));
     srv.stop();
     fs.rmSync(home, { recursive: true, force: true });
