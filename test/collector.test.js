@@ -101,10 +101,14 @@ describe("collector one-liner from README.md", () => {
   });
   beforeEach(() => collectorsDone(key));
   after(async () => {
-    await collectorsDone(key);
-    await new Promise((r) => proxy.close(r));
-    srv.stop();
-    fs.rmSync(home, { recursive: true, force: true });
+    try {
+      await collectorsDone(key);
+    } finally {
+      // Clean up even if a collector is stuck, so its failure is the one reported.
+      await new Promise((r) => proxy.close(r));
+      srv.stop();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test("first refresh sends every message once, even when its process group is killed mid-upload", async () => {
