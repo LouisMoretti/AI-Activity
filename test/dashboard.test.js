@@ -40,7 +40,19 @@ globalThis.fetch = async (url) => {
   return { status, ok: status < 400, json: async () => (typeof r === "number" ? {} : r) };
 };
 
-const settle = () => new Promise((r) => setTimeout(r, 20));
+const settle = async (ms = 5000) => {
+  // load() is a chain of awaits (and a refresh on a ready page never leaves
+  // "ready"), so a fixed sleep cannot tell when it landed: wait until no
+  // fetch starts anymore instead. The fake fetch resolves immediately, so a
+  // quiet window means every chained reload finished.
+  const end = Date.now() + ms;
+  for (;;) {
+    const n = calls.length;
+    await new Promise((r) => setTimeout(r, 50));
+    if (calls.length === n) return;
+    assert.ok(Date.now() <= end, "fetches never settled");
+  }
+};
 const me = { id: 1, username: "me", display_name: "Me", avatar_url: null, is_admin: false };
 const signedIn = { authenticated: true, user: me, setup_required: false, signup_open: true };
 const signedOut = { authenticated: false, user: null, setup_required: false, signup_open: true };

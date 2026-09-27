@@ -3,7 +3,7 @@ import Database from "better-sqlite3";
 import os from "node:os";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { startServer, req, newDevice, event, codexResponse, opencodeMessage, userCli, login, genKey, register, userId, TEST_ADMIN } from "./helpers.js";
+import { startServer, req, newDevice, event, codexResponse, opencodeMessage, userCli, login, genKey, register, userId, TEST_ADMIN, awayFromMidnight } from "./helpers.js";
 
 /** A plausible reset time for a current quota window (a far-future one is dropped). */
 const soon = () => Math.floor(Date.now() / 1000) + 3600;
@@ -272,9 +272,10 @@ describe("basics (signed in as the test admin)", () => {
     const other = (await newDevice(srv.base, "second")).key;
     const resets = soon();
     const rl = (pct) => ({ five_hour: { used_percentage: pct, resets_at: resets } });
-    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ account_ref: "shared", rate_limits: rl(30) }) });
-    await new Promise((r) => setTimeout(r, 1100)); // measured_at has 1 s resolution
-    await req(srv.base, "POST", "/api/ingest/claude-code", { key: other, body: event({ account_ref: "shared", rate_limits: rl(45) }) });
+    // measured_at has 1 s resolution: separate the posts by two seconds.
+    const at = Math.floor(Date.now() / 1000);
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ account_ref: "shared", rate_limits: rl(30), occurred_at: at - 2 }) });
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key: other, body: event({ account_ref: "shared", rate_limits: rl(45), occurred_at: at }) });
     const rows = (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas
       .filter((q) => q.account_ref === "shared" && q.limit_type === "five_hour");
     assert.equal(rows.length, 1);
@@ -985,14 +986,17 @@ describe("leaderboard", () => {
       const bob = (await register(srv.base, { username: "bob", password: "bob-password", display_name: "Bob" })).cookie;
       await register(srv.base, { username: "idle", password: "idle-password" });
       const gone = (await register(srv.base, { username: "gone", password: "gone-password" })).cookie;
+      // The server decides "today" when it reads: keep the posts and the
+      // reads on one UTC day.
+      await awayFromMidnight();
       const now = Math.floor(Date.now() / 1000);
       const post = (key, over) => req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event(over) });
       const adminKey = (await newDevice(srv.base, "a", admin)).key;
       const bobKey = (await newDevice(srv.base, "b", bob)).key;
       const goneKey = (await newDevice(srv.base, "g", gone)).key;
       // admin: 180 tokens today; bob: 180 today + 180 yesterday + 1800 sixty days ago.
-      await post(adminKey, { session_id: "a1" });
-      await post(bobKey, { session_id: "b1", model: "claude-sonnet-5" });
+      await post(adminKey, { session_id: "a1", occurred_at: now });
+      await post(bobKey, { session_id: "b1", model: "claude-sonnet-5", occurred_at: now });
       await post(bobKey, { session_id: "b2", model: "claude-sonnet-5", occurred_at: now - 86400 });
       await post(bobKey, { session_id: "b3", occurred_at: now - 60 * 86400,
         usage: { input_tokens: 1000, output_tokens: 800 } });
@@ -1037,6 +1041,9 @@ describe("leaderboard", () => {
     try {
       const admin = await login(srv.base, TEST_ADMIN.username, TEST_ADMIN.password);
       const key = (await newDevice(srv.base, "a", admin)).key;
+      // The server decides "today" when it reads: keep the posts and the
+      // reads on one UTC day.
+      await awayFromMidnight();
       const now = Math.floor(Date.now() / 1000);
       const streak = async () => (await req(srv.base, "GET", "/api/leaderboard?days=30", { anon: true })).json.entries[0].current_streak;
       // Yesterday and the day before, nothing today yet.
@@ -1110,6 +1117,9 @@ describe("summary, sessions and context (redesign APIs)", () => {
   after(() => srv.stop());
 
   test("summary splits all-time and today by model and tool", async () => {
+    // The server decides "today" when it reads: keep the posts and the
+    // read on one UTC day.
+    await awayFromMidnight();
     const now = Math.floor(Date.now() / 1000);
     await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ session_id: "a", model: "claude-opus-5-5", occurred_at: now }) });
     await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ session_id: "b", model: "claude-sonnet-5", occurred_at: now - 40 * 86400 }) });
@@ -1121,7 +1131,7 @@ describe("summary, sessions and context (redesign APIs)", () => {
     assert.deepEqual(s.total.by_model.map((r) => r.name).sort(), ["claude-opus-5-5", "claude-sonnet-5"]);
     assert.equal(s.total.by_model_others_sessions, 0);
     assert.deepEqual(s.total.by_tool, [{ name: "claude-code", tokens: 360, sessions: 2, events: 2 }]);
-    assert.equal(s.day, new Date().toISOString().slice(0, 10));
+    assert.equal(s.day, new Date(now * 1000).toISOString().slice(0, 10));
     assert.equal((await req(srv.base, "GET", "/api/u/admin/summary?tool=codex")).json.total.tokens, 0);
   });
 
@@ -1213,7 +1223,7 @@ describe("limits, bounds and admin edge cases", () => {
       });
       assert.equal(r.status, 429);
     } finally {
-      srv.stop();
+      await srv.stop();
     }
   });
 

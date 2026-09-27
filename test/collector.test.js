@@ -156,12 +156,15 @@ describe("collector one-liner from README.md", () => {
     const saved = offsets();
     fs.appendFileSync(transcript, entry("msg_offline", 7) + "\n");
     await run(cmd("http://127.0.0.1:9"), { env });
-    await sleep(1500);
+    // The failed run saves nothing: wait until it is gone, then the
+    // unchanged offsets mean something.
+    await collectorsDone(key);
     assert.deepEqual(offsets(), saved);
     // Two refreshes at once: the second waits for the lock, nothing is sent twice.
     await Promise.all([run(cmd(srv.base), { env }), run(cmd(srv.base), { env })]);
     assert.ok(await waitFor(async () => (await stats()).events === before.events + 1));
-    await sleep(1500);
+    // The events show up before the detached uploads saved their offsets.
+    await collectorsDone(key);
     assert.equal((await stats()).total_tokens - before.total_tokens, PER_MESSAGE + 7);
   });
 

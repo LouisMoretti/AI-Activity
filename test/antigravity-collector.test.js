@@ -9,7 +9,7 @@ import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import http from "node:http";
-import { startServer, req, newDevice } from "./helpers.js";
+import { startServer, req, newDevice, isLocked } from "./helpers.js";
 
 const SCRIPT = fileURLToPath(new URL("../collectors/antigravity.py", import.meta.url));
 // Absolute interpreter, so tests can run the collector with a PATH of their own.
@@ -214,13 +214,19 @@ describe("Antigravity collector", () => {
       assert.ok(!r.out.includes("secret")); assert.ok(Date.now() - start < 2000, "hook must return before worker delay");
       // Simulate the app persisting final metadata just after the hook returns.
       put(1, generation("response1", { output }));
+      // The detached worker starts after a delay: poll the stored tokens,
+      // then wait until it released the collection lock (state saved), so
+      // the next iteration starts clean.
       let tokens = 0;
-      for (let i = 0; i < 30; i++) {
+      for (let i = 0; i < 60; i++) {
         tokens = (await summary()).tokens;
         if (tokens === 2620 + output) break;
         await new Promise(resolve => setTimeout(resolve, 250));
       }
       assert.equal(tokens, 2620 + output); assert.equal((await summary()).events, 4);
+      const collection = path.join(home, ".cache", "ai-activity", "antigravity.lock");
+      for (let i = 0; i < 150 && isLocked(collection); i++) await new Promise(resolve => setTimeout(resolve, 100));
+      assert.ok(!isLocked(collection), "the detached worker released the collection lock");
     }
   });
 
@@ -244,11 +250,14 @@ describe("Antigravity collector", () => {
       await firstRequest;
       put(1, generation("response1", { output: 140 }));
       assert.equal((await run(destination, ["--hook"], "{}")).code, 0);
-      // Allow the detached Stop worker to reach the lock while it is held.
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      // The detached Stop worker queues behind the in-flight upload: wait
+      // until it holds the waiter lock, so the next assert means something.
+      const waiter = path.join(home, ".cache", "ai-activity", "antigravity-waiter.lock");
+      for (let i = 0; i < 150 && !isLocked(waiter); i++) await new Promise(resolve => setTimeout(resolve, 100));
+      assert.ok(isLocked(waiter), "the detached Stop worker queued behind the upload");
       assert.equal(batches.length, 1);
       release(); assert.equal((await first).code, 0);
-      for (let i = 0; i < 30 && batches.length < 2; i++) await new Promise(resolve => setTimeout(resolve, 100));
+      for (let i = 0; i < 150 && batches.length < 2; i++) await new Promise(resolve => setTimeout(resolve, 100));
       assert.equal(batches.length, 2);
       assert.equal(batches[1].find(e => e.response_id === "response1").usage.output_tokens, 170);
       // A final manual replay also waits for the queued worker to finish.
@@ -282,7 +291,9 @@ describe("Antigravity collector", () => {
     try {
       await firstRequest;
       for (let i = 0; i < 12; i++) workers.push(run(destination, [], "", null, script).then(r => { results.push(r); return r; }));
-      for (let i = 0; i < 50 && results.length < 11; i++) await new Promise(resolve => setTimeout(resolve, 100));
+      // Twelve concurrent python3 startups: allow a loaded runner the same
+      // budget as a detached collector drain.
+      for (let i = 0; i < 300 && results.length < 11; i++) await new Promise(resolve => setTimeout(resolve, 100));
       assert.equal(results.length, 11, "all but one waiter exit without scanning");
       assert.ok(results.every(r => r.code === 0)); assert.ok(!fs.existsSync(scans));
       put(1, generation("response1", { output: 220 }));

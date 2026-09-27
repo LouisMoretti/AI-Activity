@@ -1,6 +1,6 @@
 // Black-box harness: boots the real server on a random port with a temp DB,
 // so these tests survive internal rewrites (routing, framework, modules).
-import { spawn } from "node:child_process";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -37,14 +37,32 @@ function freePort() {
 export async function startServer({ password = "", env = {}, autoLogin = true } = {}) {
   const auto = autoLogin && !password;
   if (auto) password = TEST_ADMIN.password;
-  const port = await freePort();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ai-usage-test-"));
   const dbPath = env.DB_PATH ?? path.join(dir, "t.db");
-  // The first account, made from the CLI like on a real server.
-  if (password) {
-    const add = await userCli(dbPath, ["add", TEST_ADMIN.username], password);
-    if (add.code !== 0) throw new Error(`admin create failed: ${add.out}`);
+  try {
+    // The first account, made from the CLI like on a real server. Once
+    // only: a retry below reuses the same database.
+    if (password) {
+      const add = await userCli(dbPath, ["add", TEST_ADMIN.username], password);
+      if (add.code !== 0) throw new Error(`admin create failed: ${add.out}`);
+    }
+    // node --test runs test files in parallel: another file can bind a freed
+    // port between freePort() and listen(), so retry once with a fresh port.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await bootServer({ dir, dbPath, env, auto });
+      } catch (e) {
+        if (attempt >= 1 || !/EADDRINUSE/.test(String(e && e.message))) throw e;
+      }
+    }
+  } catch (e) {
+    fs.rmSync(dir, { recursive: true, force: true });
+    throw e;
   }
+}
+
+async function bootServer({ dir, dbPath, env, auto }) {
+  const port = await freePort();
   const proc = spawn(process.execPath, [SERVER_ENTRY], {
     env: { ...process.env, PORT: String(port), DB_PATH: dbPath, ...env },
     stdio: ["ignore", "pipe", "pipe"],
@@ -56,12 +74,17 @@ export async function startServer({ password = "", env = {}, autoLogin = true } 
   const base = `http://127.0.0.1:${port}`;
   for (let i = 0; ; i++) {
     try {
-      if ((await fetch(`${base}/api/health`)).ok) break;
+      // Only once this server logged its own listen: if another test's
+      // server took the port, that one answers /api/health too.
+      if (stdout.includes("listening on") && (await fetch(`${base}/api/health`)).ok) break;
     } catch { /* not up yet */ }
     if (proc.exitCode !== null) throw new Error(`server exited: ${stderr}`);
-    if (i >= 100) {
+    // The pass path returns as soon as /api/health is OK; the cap only
+    // bounds the failure case (type-stripping + migrations on a loaded
+    // ARM64 runner, with every test file booting at once).
+    if (i >= 600) {
       proc.kill();
-      throw new Error(`server not healthy after 5 s: ${stderr || stdout}`);
+      throw new Error(`server not healthy after 30 s: ${stderr || stdout}`);
     }
     await new Promise((r) => setTimeout(r, 50));
   }
@@ -73,6 +96,9 @@ export async function startServer({ password = "", env = {}, autoLogin = true } 
     setupCode: () => stdout.match(/Setup code: (\S+)/)?.[1] ?? null,
     /** Sends SIGTERM and resolves with the exit code once the server is gone. */
     async kill() {
+      // Ports are reused: forget the session, or a later server on this
+      // port would receive the previous server's cookie.
+      defaultCookies.delete(base);
       if (proc.exitCode !== null || proc.signalCode !== null) return proc.exitCode;
       proc.kill();
       return new Promise((r) => proc.once("exit", (code) => r(code)));
@@ -211,4 +237,51 @@ export async function register(base, body, ip = `198.18.${Math.floor(++signupIp 
 export async function userId(base, username, cookie) {
   const users = (await req(base, "GET", "/api/users", { cookie })).json.users;
   return users.find((u) => u.username === username).id;
+}
+
+/**
+ * Whether a process holds an exclusive flock on that file (missing means
+ * free). Reads /proc/locks rather than trying the lock: a probe holding it
+ * even briefly makes a collector's non-blocking attempt give up. Without
+ * /proc (macOS), falls back to that probe.
+ */
+export function isLocked(file) {
+  if (!fs.existsSync(file)) return false;
+  if (fs.existsSync("/proc/locks")) {
+    const ino = String(fs.statSync(file).ino);
+    // "1: FLOCK  ADVISORY  WRITE 1234 fd:01:5678 0 EOF"; "1: -> FLOCK …" lines are waiters.
+    return fs.readFileSync("/proc/locks", "utf8").split("\n")
+      .some((l) => /^\d+:\s+FLOCK\s+\S+\s+WRITE\s/.test(l) && l.split(/\s+/)[5]?.split(":")[2] === ino);
+  }
+  return spawnSync("python3", ["-c",
+    "import fcntl, sys\ntry: fcntl.flock(open(sys.argv[1], 'a'), fcntl.LOCK_EX | fcntl.LOCK_NB)\nexcept BlockingIOError: sys.exit(1)",
+    file]).status === 1;
+}
+
+/** Whether a process has that text on its command line (e.g. a temp HOME in the script path). */
+export const running = (text) => execFileSync("ps", ["-Aww", "-o", "args="], { encoding: "utf8" }).includes(text);
+
+/**
+ * Resolves once no process has that text on its command line, seen twice
+ * 200 ms apart: an exit handler in this process (the OpenCode plugin) may
+ * start the next run in between. False after `ms`.
+ */
+export async function processesGone(text, ms = 30000) {
+  const end = Date.now() + ms;
+  for (let clear = 0; clear < 2;) {
+    clear = running(text) ? 0 : clear + 1;
+    if (clear < 2 && Date.now() > end) return false;
+    await new Promise((r) => setTimeout(r, clear ? 200 : 100));
+  }
+  return true;
+}
+
+/**
+ * Waits past UTC midnight when it is less than `margin` seconds away, so
+ * the posts and the reads of a test that checks "today" fall on one day
+ * (the server decides today when it reads).
+ */
+export async function awayFromMidnight(margin = 15) {
+  const left = 86400000 - (Date.now() % 86400000);
+  if (left < margin * 1000) await new Promise((r) => setTimeout(r, left + 1000));
 }
