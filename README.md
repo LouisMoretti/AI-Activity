@@ -167,9 +167,10 @@ a bare `/api/ingest` answers `404`. See `AGENTS.md` §5 for the payload contract
 ```
 
 On Windows, use this instead, replacing `<user>` with your Windows user
-directory name (`--hook` answers Codex and starts the upload detached, in
-any shell; use the absolute path of `python.exe` if it is not on Codex's
-PATH):
+directory name (`--hook` answers Codex and starts the upload detached).
+These commands target PowerShell: `&` is its call operator and is required
+before a quoted executable path. If Python is not on Codex's PATH, replace
+`python` with its quoted absolute path, JSON-escaped as shown below:
 
 `%USERPROFILE%\.codex\hooks.json`:
 
@@ -177,19 +178,62 @@ PATH):
 {
   "hooks": {
     "Stop": [
-      { "hooks": [{ "type": "command", "command": "python \"C:\\Users\\<user>\\.codex\\ai-activity-codex.py\" --hook", "timeout": 10 }] }
+      { "hooks": [{ "type": "command", "command": "& python \"C:\\Users\\<user>\\.codex\\ai-activity-codex.py\" --hook", "timeout": 10 }] }
     ],
     "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "python \"C:\\Users\\<user>\\.codex\\ai-activity-codex.py\" --hook", "timeout": 10 }] }
+      { "hooks": [{ "type": "command", "command": "& python \"C:\\Users\\<user>\\.codex\\ai-activity-codex.py\" --hook", "timeout": 10 }] }
     ],
     "PostToolUse": [
-      { "hooks": [{ "type": "command", "command": "python \"C:\\Users\\<user>\\.codex\\ai-activity-codex.py\" --hook", "timeout": 10 }] }
+      { "hooks": [{ "type": "command", "command": "& python \"C:\\Users\\<user>\\.codex\\ai-activity-codex.py\" --hook", "timeout": 10 }] }
     ]
   }
 }
 ```
 
+For example, a Python installation with spaces in its path uses this JSON
+command for each of the three hooks:
+
+```json
+{ "command": "& \"C:\\Program Files\\Python312\\python.exe\" \"C:\\Users\\<user>\\.codex\\ai-activity-codex.py\" --hook" }
+```
+
+Use paths that exist on your device. The equivalent command entered directly
+in PowerShell is:
+
+```powershell
+& "C:\Program Files\Python312\python.exe" "C:\Users\<user>\.codex\ai-activity-codex.py" --hook
+```
+
+If your hook runner uses `cmd.exe`, omit `&`; it is PowerShell syntax.
+Claude Code's Windows statusLine above runs through Git Bash and keeps its
+existing command.
+
 Codex asks you to review a new hook once (`/hooks`) before running it.
+
+### Windows troubleshooting
+
+Repeated `hook exited with code 1` errors can mean PowerShell rejected a
+quoted executable path before Python ran. Check the call operator and JSON
+escaping above; a successful `--hook` invocation returns exit code 0 and `{}`.
+
+If hooks succeed but console windows still flash, Codex CLI's shared
+background server can be responsible. The following workaround stopped the
+flashes in the Windows setup reported in [AI Activity #173](https://github.com/LouisMoretti/AI-Activity/issues/173):
+
+```powershell
+codex --no-daemon
+# To resume a session:
+codex --no-daemon resume
+```
+
+This runs the CLI session without the shared background server. Keep the
+collector hooks enabled: automatic uploads, historical imports and archived
+sessions continue to work. Check `codex --help` for `--no-daemon` in your
+installed version. This is a CLI workaround, not a guaranteed fix for every
+source of console flashes or for the desktop app. Switching to `pythonw.exe`
+alone did not eliminate the flashes in that setup. Upstream reports:
+[openai/codex #48422](https://github.com/openai/codex/issues/48422) and
+[openai/codex #48074](https://github.com/openai/codex/issues/48074).
 
 When you update `~/.codex/hooks.json`, re-copy `collectors/codex.py` to
 `~/.codex/ai-activity-codex.py` at the same time: an older script blocks on
