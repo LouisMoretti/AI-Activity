@@ -770,19 +770,19 @@ test("network failures and rejected redirects stop the pass without sending a se
 
 test("an actual HTTP redirect cannot forward the device bearer key", async () => {
   const f = await scanFixture();
-  // Only a followed redirect reaches /ingest with the key: test files run in
+  // Only a followed redirect reaches /api/ingest/antigravity with the key: test files run in
   // parallel, and a detached collector of another file may post to a
   // recycled port.
   let received = 0;
   const destination = http.createServer((request, response) => {
-    if (request.url === "/ingest" && request.headers.authorization === "Bearer test-key") received++;
+    if (request.url === "/api/ingest/antigravity" && request.headers.authorization === "Bearer test-key") received++;
     response.end('{}');
   });
   await new Promise(resolve => destination.listen(0, "127.0.0.1", resolve));
   const source = http.createServer((request, response) => {
     // 302: urllib follows it for a POST (as a GET, keeping Authorization);
     // it never follows a 307 POST, which would prove nothing.
-    response.writeHead(302, { Location: `http://127.0.0.1:${destination.address().port}/ingest` }); response.end();
+    response.writeHead(302, { Location: `http://127.0.0.1:${destination.address().port}/api/ingest/antigravity` }); response.end();
   });
   await new Promise(resolve => source.listen(0, "127.0.0.1", resolve));
   try {
