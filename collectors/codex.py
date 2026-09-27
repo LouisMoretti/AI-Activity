@@ -18,6 +18,7 @@ times. Delete that file to send everything again (the server stores each
 response once).
 """
 import datetime
+import errno
 import fcntl
 import glob
 import json
@@ -175,43 +176,51 @@ def main():
     # the rollouts only once it holds the lock, so it sends what they would.
     waiter = open(os.path.join(CACHE, "codex-waiter.lock"), "w")
     try:
-        fcntl.flock(waiter, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        return
-    lock = open(os.path.join(CACHE, "codex.lock"), "w")
-    fcntl.flock(lock, fcntl.LOCK_EX)
-    waiter.close()  # a hook firing from now on queues the next run
-    path = os.path.join(CACHE, "codex.json")
-    try:
-        state = json.load(open(path))
-        state = state if isinstance(state, dict) else {}
-    except (OSError, ValueError):
-        state = {}
-    files = glob.glob(os.path.join(CODEX_HOME, "sessions", "**", "*.jsonl"), recursive=True)
-    files += glob.glob(os.path.join(CODEX_HOME, "archived_sessions", "**", "*.jsonl"), recursive=True)
-    # Progress is kept per accepted file and saved as the run goes and when it
-    # ends, even cut short (time limit, server error): a long backlog still
-    # gets through over several runs instead of starting over each time.
-    changed, saved_at = False, time.monotonic()
-    try:
-        for f in sorted(files):
-            saved = state.get(f)
-            if saved and saved[0] == os.path.getsize(f):
-                continue
-            messages, limits, context, new = read(f, state)
-            base = {"context": context}
-            if limits:
-                base["rate_limits"], base["occurred_at"] = limits
-            if messages or limits or context:
-                for i in range(0, max(len(messages), 1), BATCH):
-                    post(dict(base, messages=messages[i:i + BATCH]))
-            state[f], changed = new, True
-            if time.monotonic() - saved_at > 10:
-                save(path, state)
-                changed, saved_at = False, time.monotonic()
+        try:
+            fcntl.flock(waiter, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            if error.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                raise
+            return
+        lock = open(os.path.join(CACHE, "codex.lock"), "w")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            waiter.close()  # a hook firing from now on queues the next run
+            path = os.path.join(CACHE, "codex.json")
+            try:
+                state = json.load(open(path))
+                state = state if isinstance(state, dict) else {}
+            except (OSError, ValueError):
+                state = {}
+            files = glob.glob(os.path.join(CODEX_HOME, "sessions", "**", "*.jsonl"), recursive=True)
+            files += glob.glob(os.path.join(CODEX_HOME, "archived_sessions", "**", "*.jsonl"), recursive=True)
+            # Progress is kept per accepted file and saved as the run goes and when it
+            # ends, even cut short (time limit, server error): a long backlog still
+            # gets through over several runs instead of starting over each time.
+            changed, saved_at = False, time.monotonic()
+            try:
+                for f in sorted(files):
+                    saved = state.get(f)
+                    if saved and saved[0] == os.path.getsize(f):
+                        continue
+                    messages, limits, context, new = read(f, state)
+                    base = {"context": context}
+                    if limits:
+                        base["rate_limits"], base["occurred_at"] = limits
+                    if messages or limits or context:
+                        for i in range(0, max(len(messages), 1), BATCH):
+                            post(dict(base, messages=messages[i:i + BATCH]))
+                    state[f], changed = new, True
+                    if time.monotonic() - saved_at > 10:
+                        save(path, state)
+                        changed, saved_at = False, time.monotonic()
+            finally:
+                if changed:
+                    save(path, state)
+        finally:
+            lock.close()
     finally:
-        if changed:
-            save(path, state)
+        waiter.close()
 
 if __name__ == "__main__":
     try:

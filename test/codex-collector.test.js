@@ -57,7 +57,7 @@ function run(cmd, env) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** Whether another process holds an exclusive flock on that file. */
 const isLocked = (file) => spawnSync("python3", ["-c",
-  "import fcntl, sys\ntry: fcntl.flock(open(sys.argv[1], 'w'), fcntl.LOCK_EX | fcntl.LOCK_NB)\nexcept BlockingIOError: sys.exit(1)",
+  "import fcntl, sys\ntry: fcntl.flock(open(sys.argv[1], 'a'), fcntl.LOCK_EX | fcntl.LOCK_NB)\nexcept BlockingIOError: sys.exit(1)",
   file]).status === 1;
 async function waitFor(fn, ms = 15000) {
   const end = Date.now() + ms;

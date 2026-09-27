@@ -86,6 +86,10 @@ a bare `/api/ingest` answers `404`. See `AGENTS.md` §5 for the payload contract
 
 Codex asks you to review a new hook once (`/hooks`) before running it.
 
+When you update `~/.codex/hooks.json`, re-copy `collectors/codex.py` to
+`~/.codex/ai-activity-codex.py` at the same time: an older script blocks on
+`codex.lock`, so the frequent `PostToolUse` runs would pile up behind it.
+
 What it does after every tool call and at the end of every turn:
 
 - Reads what was added to every rollout under `~/.codex/sessions` and
