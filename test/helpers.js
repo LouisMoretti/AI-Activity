@@ -37,6 +37,18 @@ function freePort() {
 export async function startServer({ password = "", env = {}, autoLogin = true } = {}) {
   const auto = autoLogin && !password;
   if (auto) password = TEST_ADMIN.password;
+  // node --test runs test files in parallel: another file can bind a freed
+  // port between freePort() and listen(), so retry once with a fresh port.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await bootServer({ password, env, auto });
+    } catch (e) {
+      if (attempt >= 1 || !/EADDRINUSE/.test(String(e && e.message))) throw e;
+    }
+  }
+}
+
+async function bootServer({ password, env, auto }) {
   const port = await freePort();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ai-usage-test-"));
   const dbPath = env.DB_PATH ?? path.join(dir, "t.db");
@@ -59,9 +71,12 @@ export async function startServer({ password = "", env = {}, autoLogin = true } 
       if ((await fetch(`${base}/api/health`)).ok) break;
     } catch { /* not up yet */ }
     if (proc.exitCode !== null) throw new Error(`server exited: ${stderr}`);
-    if (i >= 100) {
+    // The pass path returns as soon as /api/health is OK; the cap only
+    // bounds the failure case (type-stripping + migrations on a loaded
+    // ARM64 runner, with every test file booting at once).
+    if (i >= 600) {
       proc.kill();
-      throw new Error(`server not healthy after 5 s: ${stderr || stdout}`);
+      throw new Error(`server not healthy after 30 s: ${stderr || stdout}`);
     }
     await new Promise((r) => setTimeout(r, 50));
   }
@@ -73,6 +88,9 @@ export async function startServer({ password = "", env = {}, autoLogin = true } 
     setupCode: () => stdout.match(/Setup code: (\S+)/)?.[1] ?? null,
     /** Sends SIGTERM and resolves with the exit code once the server is gone. */
     async kill() {
+      // Ports are reused: forget the session, or a later server on this
+      // port would receive the previous server's cookie.
+      defaultCookies.delete(base);
       if (proc.exitCode !== null || proc.signalCode !== null) return proc.exitCode;
       proc.kill();
       return new Promise((r) => proc.once("exit", (code) => r(code)));

@@ -51,7 +51,11 @@ describe("backups", () => {
         accepted.push(...batch.map((e) => e.event_id));
       }
     })();
-    while (accepted.length < 200) await new Promise((r) => setTimeout(r, 10));
+    // Bound the wait so a stalled writer fails with a message instead of
+    // hanging the runner until it is killed.
+    const end = Date.now() + 15000;
+    while (accepted.length < 200 && Date.now() <= end) await new Promise((r) => setTimeout(r, 10));
+    assert.ok(accepted.length >= 200, "the background writer stalled");
     const before = [...accepted];
     const dir = path.join(path.dirname(srv.dbPath), "backups");
     const run = await script("backup", srv.dbPath);

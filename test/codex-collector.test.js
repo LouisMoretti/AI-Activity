@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { test, describe, before, after } from "node:test";
+import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { startServer, req, newDevice, asNewClient } from "./helpers.js";
@@ -55,8 +55,8 @@ function run(cmd, env) {
   });
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-/** Whether another process holds an exclusive flock on that file. */
-const isLocked = (file) => spawnSync("python3", ["-c",
+/** Whether another process holds an exclusive flock on that file (missing means free). */
+const isLocked = (file) => fs.existsSync(file) && spawnSync("python3", ["-c",
   "import fcntl, sys\ntry: fcntl.flock(open(sys.argv[1], 'a'), fcntl.LOCK_EX | fcntl.LOCK_NB)\nexcept BlockingIOError: sys.exit(1)",
   file]).status === 1;
 async function waitFor(fn, ms = 15000) {
@@ -75,7 +75,22 @@ describe("Codex collector (Stop hook from README.md)", () => {
   const summary = async () => (await req(srv.base, "GET", "/api/u/admin/summary?tool=codex", { headers: asNewClient() })).json.total;
   const install = (server) => fs.writeFileSync(path.join(home, ".codex", "ai-activity-codex.py"),
     SCRIPT.replace("<server>", server).replace("<device key>", key));
-  const state = () => JSON.parse(fs.readFileSync(path.join(home, ".cache", "ai-activity", "codex.json"), "utf8"));
+  const cacheFile = () => path.join(home, ".cache", "ai-activity", "codex.json");
+  const state = () => JSON.parse(fs.readFileSync(cacheFile(), "utf8"));
+
+  /**
+   * Collectors run detached (setsid -f), so a hook's command returns before
+   * its upload ends. Wait until no run holds a lock: one still going would
+   * otherwise read what the next test appends and move its offsets. The key
+   * is inside the installed script rather than on the command line, so the
+   * locks (not ps) tell whether a run is left.
+   */
+  async function collectorsDone() {
+    const cache = path.join(home, ".cache", "ai-activity");
+    assert.ok(await waitFor(() =>
+      !isLocked(path.join(cache, "codex.lock")) && !isLocked(path.join(cache, "codex-waiter.lock")), 30000),
+      "a detached collector from an earlier run is still running");
+  }
 
   before(async () => {
     srv = await startServer();
@@ -106,10 +121,18 @@ describe("Codex collector (Stop hook from README.md)", () => {
       tokenCount(usage(700, 500, 30), 1250, 3),
     ].join("\n") + "\n");
   });
-  after(() => {
-    srv.stop();
-    fs.rmSync(home, { recursive: true, force: true });
+  after(async () => {
+    try {
+      await collectorsDone();
+    } finally {
+      // Clean up even if a collector is stuck, so its failure is the one reported.
+      await srv.stop();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
+  // A detached upload ends after its hook command returned: never let one
+  // read what the next test appends.
+  beforeEach(() => collectorsDone());
 
   test("first run sends every response once, detached, and answers the hook at once", async () => {
     install(srv.base);
@@ -129,15 +152,19 @@ describe("Codex collector (Stop hook from README.md)", () => {
     const utcOffsets = db.prepare("SELECT DISTINCT utc_offset_min AS o FROM usage_events").all().map((r) => r.o);
     db.close();
     assert.deepEqual(utcOffsets, [330]);
-    // The offset stops before the half-written line.
+    // The offset stops before the half-written line. It is saved after the
+    // server answered, so the events can show up first (and the state file
+    // may not exist yet).
     const complete = fs.readFileSync(current).lastIndexOf(10) + 1;
-    assert.ok(await waitFor(() => state()[current]?.[0] === complete), "the offset stops before the half-written line");
+    assert.ok(await waitFor(() => fs.existsSync(cacheFile()) && state()[current]?.[0] === complete), "the offset stops before the half-written line");
   });
 
   test("later runs send only what was added", async () => {
     const before = await summary();
     await run(hookCommand, env);
-    await sleep(1000);
+    // A no-op run saves nothing, so there is no state to wait for: wait
+    // until it is gone, then the unchanged totals mean something.
+    await collectorsDone();
     assert.equal((await summary()).tokens, before.tokens);
     fs.appendFileSync(current, "\n" + secret().repeat(500) + response("resp_3", S1, usage(3000, 2900, 10), 6160));
     await run(hookCommand, env);
@@ -154,7 +181,9 @@ describe("Codex collector (Stop hook from README.md)", () => {
     install("http://127.0.0.1:9");
     try {
       await run(hookCommand, env);
-      await sleep(1500);
+      // The failed run saves nothing: wait until it is gone, then the
+      // unchanged state means something.
+      await collectorsDone();
       assert.deepEqual(state(), saved);
     } finally {
       install(srv.base); // a failure here must not leave the next tests on a dead server
@@ -162,7 +191,8 @@ describe("Codex collector (Stop hook from README.md)", () => {
     // Two runs at once: the second waits for the lock, nothing is sent twice.
     await Promise.all([run(hookCommand, env), run(hookCommand, env)]);
     assert.ok(await waitFor(async () => (await summary()).events === before.events + 1));
-    await sleep(1000);
+    // The events show up before the detached uploads saved their offsets.
+    await collectorsDone();
     assert.equal((await summary()).tokens - before.tokens, 105);
   });
 
@@ -219,7 +249,8 @@ describe("Codex collector (Stop hook from README.md)", () => {
     const before = await summary();
     const out = await run(submitCommand, env);
     assert.deepEqual(JSON.parse(out), {}, "the hook prints valid JSON for Codex");
-    await sleep(1000);
+    // A no-op run saves nothing, so there is no state to wait for.
+    await collectorsDone();
     assert.equal((await summary()).tokens, before.tokens, "nothing new: the run is a no-op");
   });
 

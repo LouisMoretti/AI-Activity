@@ -4,8 +4,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test, describe, before, after } from "node:test";
+import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import Database from "better-sqlite3";
 import { startServer, req, newDevice, asNewClient } from "./helpers.js";
 
@@ -14,15 +15,19 @@ const PLUGIN = fs.readFileSync(new URL("../collectors/opencode-plugin.js", impor
 
 const START = Date.now() - 3600 * 1000;
 let seq = 0;
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function waitFor(fn, ms = 15000) {
   const end = Date.now() + ms;
   for (;;) {
     const v = await fn();
     if (v || Date.now() > end) return v;
-    await sleep(100);
+    await new Promise((r) => setTimeout(r, 100));
   }
 }
+
+/** Whether another process holds an exclusive flock on that file (missing means free). */
+const isLocked = (file) => fs.existsSync(file) && spawnSync("python3", ["-c",
+  "import fcntl, sys\ntry: fcntl.flock(open(sys.argv[1], 'a'), fcntl.LOCK_EX | fcntl.LOCK_NB)\nexcept BlockingIOError: sys.exit(1)",
+  file]).status === 1;
 
 describe("OpenCode collector (plugin from README.md)", () => {
   let srv, key, home, db, hooks;
@@ -33,6 +38,19 @@ describe("OpenCode collector (plugin from README.md)", () => {
   const statePath = () => path.join(home, ".cache", "ai-activity", "opencode.json");
   const state = () => JSON.parse(fs.readFileSync(statePath(), "utf8"));
   const idle = () => hooks.event({ event: { type: "session.idle", properties: { sessionID: "ses_root" } } });
+
+  /**
+   * The plugin spawns the collector detached (unref'd), so an idle's upload
+   * ends after its event handler returned. Wait until no run holds the
+   * lock: one still going would otherwise read what the next test appends.
+   * The key is inside the installed script rather than on the command
+   * line, so the lock (not ps) tells whether a run is left.
+   */
+  async function collectorsDone() {
+    const lock = path.join(home, ".cache", "ai-activity", "opencode.lock");
+    assert.ok(await waitFor(() => !isLocked(lock), 30000),
+      "a detached collector from an earlier idle is still running");
+  }
 
   function session(id, parent = null) {
     db.prepare("INSERT INTO session (id, parent_id, title, directory) VALUES (?, ?, 'secret title', '/secret/path')").run(id, parent);
@@ -79,11 +97,19 @@ describe("OpenCode collector (plugin from README.md)", () => {
     message("msg_empty", "ses_other", tok(0, 0));
     message("msg_errored", "ses_other", undefined);
   });
-  after(() => {
-    db.close();
-    srv.stop();
-    fs.rmSync(home, { recursive: true, force: true });
+  after(async () => {
+    try {
+      await collectorsDone();
+    } finally {
+      // Clean up even if a collector is stuck, so its failure is the one reported.
+      db.close();
+      await srv.stop();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
+  // A detached upload ends after its idle handler returned: never let one
+  // read what the next test appends.
+  beforeEach(() => collectorsDone());
 
   test("the plugin sends every message once when OpenCode starts", async () => {
     install(srv.base);
@@ -106,7 +132,7 @@ describe("OpenCode collector (plugin from README.md)", () => {
   });
 
   test("an idle session sends only what changed, and final counts replace a partial message", async () => {
-    await waitFor(() => fs.existsSync(statePath()));
+    assert.ok(await waitFor(() => fs.existsSync(statePath())), "the first upload saved its state");
     const before = await summary();
     message("msg_a5", "ses_root", tok(40, 2), { completed: false });
     await idle();
@@ -129,7 +155,9 @@ describe("OpenCode collector (plugin from README.md)", () => {
     install("http://127.0.0.1:9");
     try {
       await idle();
-      await sleep(1500);
+      // The failed run saves nothing: wait until it released the lock, then
+      // the unchanged state means something.
+      await collectorsDone();
       assert.deepEqual(state(), saved);
     } finally {
       install(srv.base); // a failure here must not leave later runs on a dead server
@@ -137,7 +165,8 @@ describe("OpenCode collector (plugin from README.md)", () => {
     // Idle twice at once: the plugin runs the collector again after, nothing is sent twice.
     await Promise.all([idle(), idle()]);
     assert.ok(await waitFor(async () => (await summary()).events === before.events + 1));
-    await sleep(1000);
+    // The events show up before the coalesced second run finished.
+    await collectorsDone();
     assert.equal((await summary()).tokens - before.tokens, 105);
   });
 
