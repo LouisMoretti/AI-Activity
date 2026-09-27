@@ -131,7 +131,9 @@ describe("collector one-liner from README.md", () => {
     const utcOffsets = db.prepare("SELECT DISTINCT utc_offset_min AS o FROM usage_events").all().map((r) => r.o);
     db.close();
     assert.deepEqual(utcOffsets, [330]);
-    // Offsets stop before the half-written line.
+    // Offsets stop before the half-written line. They are saved after the
+    // server answered, so the events can show up first.
+    await collectorsDone(key);
     assert.equal(offsets()[transcript], fs.readFileSync(transcript).lastIndexOf(10) + 1);
   });
 
@@ -147,8 +149,6 @@ describe("collector one-liner from README.md", () => {
     await run(cmd(srv.base), { env });
     assert.ok(await waitFor(async () => (await stats()).events === before.events + 2));
     assert.equal((await stats()).total_tokens - before.total_tokens, 2 * PER_MESSAGE + 1 + 5);
-    // It saves its offsets after the server answered: the next test snapshots them.
-    await collectorsDone(key);
   });
 
   test("nothing is lost while the server is down", async () => {
