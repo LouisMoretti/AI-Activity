@@ -572,7 +572,9 @@ Notes:
   can post stale values (a terminal that has not called the API yet), so
   per `(account_ref, tool, limit_type)` the dashboard shows, among the
   rows measured in the day before the latest one, the window that resets
-  last and its highest `used_pct` (usage only rises within a window). A
+  last and its highest `used_pct` (usage only rises within a window;
+  resets within 10 min of the latest are the same window, since Codex
+  jitters `resets_at` by seconds between snapshots). A
   window whose `resets_at` is further away than its length (5 h, 7 days,
   31 days for unknown types; plus 10 min) is dropped at ingest, since it
   would pin the display. Cost fields are ignored.
