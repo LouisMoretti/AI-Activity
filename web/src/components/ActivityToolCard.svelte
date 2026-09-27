@@ -79,7 +79,7 @@
   .label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); }
   .status { margin-left: auto; display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; white-space: nowrap; }
   .value { font-size: 22px; font-weight: 550; font-variant-numeric: tabular-nums; line-height: 1.1; margin-bottom: 6px; }
-  .unused { color: var(--muted); font-size: 13px; }
+  .unused { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
   small { color: var(--muted); font-size: 12px; font-weight: 400; }
   .rows { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
   .row { display: flex; align-items: center; gap: 10px; min-width: 0; }
