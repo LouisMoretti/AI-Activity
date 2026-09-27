@@ -196,6 +196,44 @@ describe("versioned migrations", () => {
     }
   });
 
+  test("version 5 keeps password accounts, their data and sessions, and drops the password hashes", () => {
+    const t = tmpDb();
+    const old = new Database(t.file);
+    for (const m of MIGRATIONS.slice(0, 4)) m(old);
+    old.pragma("user_version = 4");
+    old.prepare("UPDATE users SET username = 'louis', display_name = 'Louis', password_hash = 'scrypt$32768$8$1$salt$hash', is_admin = 1 WHERE id = 1").run();
+    old.prepare("INSERT INTO users (id, username, password_hash, created_at) VALUES (2, 'bob', 'scrypt$32768$8$1$salt$hash2', 0)").run();
+    old.prepare("INSERT INTO devices (id, user_id, name, key_hash, key_prefix, created_at) VALUES (1, 2, 'laptop', 'hash', 'ak_', 0)").run();
+    old.prepare(`INSERT INTO usage_events (event_id, device_id, user_id, tool, session_id, input_tokens, occurred_at, received_at, source)
+      VALUES ('msg_1', 1, 2, 'claude-code', 's1', 10, 0, 0, 'message')`).run();
+    old.prepare("INSERT INTO viewer_sessions (token_hash, user_id, expires_at, created_at) VALUES ('t', 2, 9999999999, 0)").run();
+    old.close();
+
+    const db = openDb(t.file);
+    try {
+      assert.equal(schemaVersion(db), LATEST);
+      const cols = db.prepare("PRAGMA table_info(users)").all().map((c) => c.name);
+      assert.ok(cols.includes("github_id") && !cols.includes("password_hash"), String(cols));
+      assert.deepEqual(db.prepare("SELECT id, username, display_name, is_admin, github_id FROM users ORDER BY id").all(), [
+        { id: 1, username: "louis", display_name: "Louis", is_admin: 1, github_id: null },
+        { id: 2, username: "bob", display_name: null, is_admin: 0, github_id: null },
+      ]);
+      // Not linked yet: their data, devices and open sessions stay (linking happens from one of them).
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM usage_events WHERE user_id = 2").get().n, 1);
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM devices WHERE user_id = 2").get().n, 1);
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM viewer_sessions WHERE user_id = 2").get().n, 1);
+      // One account per GitHub account.
+      db.prepare("UPDATE users SET github_id = 7 WHERE id = 1").run();
+      assert.throws(() => db.prepare("UPDATE users SET github_id = 7 WHERE id = 2").run(), /UNIQUE/);
+      // The upgrade was backed up first, password hashes included (the only copy left).
+      const backups = fs.readdirSync(path.join(t.dir, "backups")).filter((f) => f.endsWith("-pre-v5.db"));
+      assert.equal(backups.length, 1);
+    } finally {
+      db.close();
+      fs.rmSync(t.dir, { recursive: true, force: true });
+    }
+  });
+
   test("a failing migration rolls back entirely and leaves the version as it was", () => {
     const t = tmpDb();
     openDb(t.file).close();

@@ -1,80 +1,84 @@
-// Manage viewer accounts from the server machine:
-//   npm run user -- add <username> [--admin] [--name "Display name"]
-//   npm run user -- passwd <username>
+// Manage viewer accounts from the server machine. Accounts sign in with
+// GitHub (issue #127); these commands link them to a GitHub account:
+//   npm run user -- add <github-login> [--admin] [--id <github id>]
+//   npm run user -- link <username> <github-login> [--id <github id>]
 //   npm run user -- list
-// The password is read from a hidden prompt, or from stdin when piped.
-import { createInterface } from "node:readline";
+// The GitHub account is looked up by login on GitHub's public API, unless
+// --id gives its numeric id (offline). Name and picture come at sign-in.
 import { loadConfig } from "../server/config.ts";
 import {
-  accountsExist, createAccount, deleteUserSessions, findUserByUsername, listUsers, setPasswordHash,
+  accountsExist, createAccount, findUserByGithubId, findUserByUsername, listUsers, setGithubId,
 } from "../server/db/queries.ts";
 import { openDb } from "../server/db/schema.ts";
-import { hashPassword, passwordProblem, usernameProblem } from "../server/lib/passwords.ts";
+import { GITHUB_LOGIN, lookupLogin, type GithubUser } from "../server/lib/github.ts";
 
 function fail(msg: string): never {
   console.error(msg);
   process.exit(1);
 }
 
-async function readPassword(prompt: string): Promise<string> {
-  if (!process.stdin.isTTY) {
-    let data = "";
-    for await (const chunk of process.stdin) data += chunk;
-    return data.split(/\r?\n/)[0];
-  }
-  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
-  // Echo nothing while the password is typed.
-  (rl as unknown as { _writeToOutput: (s: string) => void })._writeToOutput = () => {};
-  process.stdout.write(prompt);
-  const answer = await new Promise<string>((resolve) => rl.question("", resolve));
-  rl.close();
-  process.stdout.write("\n");
-  return answer;
-}
+const USAGE = "usage: npm run user -- add <github-login> [--admin] [--id <github id>]"
+  + " | link <username> <github-login> [--id <github id>] | list";
 
-async function newPassword(): Promise<string> {
-  const password = await readPassword("Password: ");
-  const problem = passwordProblem(password);
-  if (problem) fail(problem);
-  if (process.stdin.isTTY && (await readPassword("Repeat: ")) !== password) fail("passwords do not match");
-  return hashPassword(password);
-}
-
-const [cmd, username, ...rest] = process.argv.slice(2);
-const flag = (name: string) => rest.includes(name);
+const [cmd, ...args] = process.argv.slice(2);
 const option = (name: string) => {
-  const i = rest.indexOf(name);
-  return i >= 0 ? rest[i + 1] ?? null : null;
+  const i = args.indexOf(name);
+  return i >= 0 ? args[i + 1] ?? null : null;
 };
+const flag = (name: string) => args.includes(name);
+const positional = args.filter((a, i) => !a.startsWith("--") && !(i > 0 && args[i - 1] === "--id"));
+
+/** The GitHub account behind a login: --id as given, else GitHub's public API. */
+async function github(login: string | undefined): Promise<GithubUser> {
+  if (!login || !GITHUB_LOGIN.test(login)) fail(`"${login ?? ""}" is not a GitHub login`);
+  const id = option("--id");
+  if (id !== null) {
+    if (!/^[1-9][0-9]{0,15}$/.test(id) || !Number.isSafeInteger(Number(id))) fail("--id must be a GitHub numeric user id");
+    return { id: Number(id), login, name: null, avatar_url: null };
+  }
+  const apiUrl = (process.env.GITHUB_API_URL?.trim() || "https://api.github.com").replace(/\/+$/, "");
+  let user: GithubUser | null;
+  try {
+    user = await lookupLogin(apiUrl, login);
+  } catch (err) {
+    fail(`could not reach GitHub (${(err as Error).message}): pass --id <github id> instead`);
+  }
+  if (!user) fail(`no GitHub account "${login}"`);
+  return user;
+}
 
 const config = loadConfig();
 const db = openDb(config.dbPath, config.backupDir);
 
 if (cmd === "add") {
-  const problem = usernameProblem(username);
-  if (problem) fail(problem);
-  if (findUserByUsername(db, username)) fail(`user "${username}" already exists`);
+  const gh = await github(positional[0]);
+  if (findUserByGithubId(db, gh.id)) fail(`GitHub account "${gh.login}" is already linked to an account`);
+  if (findUserByUsername(db, gh.login)) fail(`user "${gh.login}" already exists: link it instead`);
   const first = !accountsExist(db);
   const id = createAccount(db, {
-    username,
-    display_name: option("--name"),
-    password_hash: await newPassword(),
+    username: gh.login,
+    display_name: gh.name,
+    avatar_url: gh.avatar_url,
+    github_id: gh.id,
     // The first account owns the existing data and must be able to manage it.
     is_admin: first || flag("--admin"),
   });
-  console.log(`Account "${username}" created (#${id}${first || flag("--admin") ? ", admin" : ""}).`);
-  if (first) console.log("It owns the existing data; the dashboard now requires a login.");
-} else if (cmd === "passwd") {
-  const user = username ? findUserByUsername(db, username) : null;
-  if (!user) fail(`no user "${username ?? ""}"`);
-  setPasswordHash(db, user.id, await newPassword());
-  deleteUserSessions(db, user.id);
-  console.log(`Password changed for "${user.username}"; its sessions were signed out.`);
+  console.log(`Account "${gh.login}" created (#${id}${first || flag("--admin") ? ", admin" : ""}): it signs in with GitHub.`);
+  if (first) console.log("It owns the existing data; the dashboard now requires a sign-in.");
+} else if (cmd === "link") {
+  const user = positional[0] ? findUserByUsername(db, positional[0]) : null;
+  if (!user) fail(`no user "${positional[0] ?? ""}"`);
+  const gh = await github(positional[1]);
+  const holder = findUserByGithubId(db, gh.id);
+  if (holder && holder.id !== user.id) fail(`GitHub account "${gh.login}" is already linked to "${holder.username}"`);
+  setGithubId(db, user.id, gh.id);
+  console.log(`"${user.username}" is linked to GitHub "${gh.login}": it signs in with GitHub, and its username follows the login from then on.`);
 } else if (cmd === "list") {
   for (const u of listUsers(db)) {
-    console.log(`#${u.id} ${u.username}${u.is_admin ? " (admin)" : ""}${u.disabled ? " [disabled]" : ""}`);
+    const tags = [u.is_admin ? "admin" : "", u.disabled ? "disabled" : "", u.github_id === null ? "not linked to GitHub" : ""];
+    console.log(`#${u.id} ${u.username}${tags.filter(Boolean).map((t) => ` [${t}]`).join("")}`);
   }
 } else {
-  fail("usage: npm run user -- add <username> [--admin] [--name \"Display name\"] | passwd <username> | list");
+  fail(USAGE);
 }
 db.close();

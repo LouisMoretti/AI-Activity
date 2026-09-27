@@ -66,7 +66,8 @@ export interface UserRow {
   username: string | null;
   display_name: string | null;
   avatar_url: string | null;
-  password_hash: string | null;
+  /** The linked GitHub account's numeric id; null until linked (issue #127). */
+  github_id: number | null;
   is_admin: number;
   disabled: number;
 }
@@ -78,6 +79,7 @@ export function toAccount(u: UserRow): Account {
     display_name: u.display_name || u.username || "",
     avatar_url: u.avatar_url,
     is_admin: Boolean(u.is_admin),
+    github: u.github_id !== null,
   };
 }
 
@@ -86,9 +88,17 @@ export function toProfile(u: UserRow): Profile {
   return { username, display_name, avatar_url };
 }
 
-/** True once at least one account can log in; before that nothing is viewable (setup). */
+/**
+ * True once at least one account exists; before that nothing is viewable
+ * (setup). The pre-accounts user (who owns data collected before) has no
+ * username until the first account claims it.
+ */
 export function accountsExist(db: DB): boolean {
-  return Boolean(db.prepare("SELECT 1 FROM users WHERE password_hash IS NOT NULL LIMIT 1").get());
+  return Boolean(db.prepare("SELECT 1 FROM users WHERE username IS NOT NULL LIMIT 1").get());
+}
+
+export function findUserByGithubId(db: DB, githubId: number): UserRow | null {
+  return (db.prepare("SELECT * FROM users WHERE github_id = ?").get(githubId) as UserRow | undefined) ?? null;
 }
 
 export function findUserByUsername(db: DB, username: string): UserRow | null {
@@ -103,7 +113,7 @@ export function listUsers(db: DB): UserRow[] {
 /** Accounts that can sign in, i.e. whose profile page exists. */
 export function listProfiles(db: DB): Profile[] {
   return (db
-    .prepare("SELECT * FROM users WHERE password_hash IS NOT NULL AND disabled = 0 ORDER BY username COLLATE NOCASE")
+    .prepare("SELECT * FROM users WHERE username IS NOT NULL AND disabled = 0 ORDER BY username COLLATE NOCASE")
     .all() as UserRow[]).map(toProfile);
 }
 
@@ -122,12 +132,21 @@ export function listAdminUsers(db: DB): AdminUser[] {
   return rows.map((u) => ({ ...toAccount(u), disabled: Boolean(u.disabled), created_at: u.created_at, devices: u.devices }));
 }
 
-export function setDisplayName(db: DB, userId: number, name: string | null): void {
-  db.prepare("UPDATE users SET display_name = ? WHERE id = ?").run(name, userId);
+/** The profile as GitHub gave it at sign-in: username (the login), name and picture. */
+export function setGithubProfile(
+  db: DB, userId: number, p: { username: string; display_name: string | null; avatar_url: string | null }
+): void {
+  db.prepare("UPDATE users SET username = ?, display_name = ?, avatar_url = ? WHERE id = ?")
+    .run(p.username, p.display_name, p.avatar_url, userId);
 }
 
-export function setAvatarUrl(db: DB, userId: number, url: string | null): void {
-  db.prepare("UPDATE users SET avatar_url = ? WHERE id = ?").run(url, userId);
+export function setUsername(db: DB, userId: number, username: string): void {
+  db.prepare("UPDATE users SET username = ? WHERE id = ?").run(username, userId);
+}
+
+/** Links an account to a GitHub account; the id must not be linked elsewhere (unique index). */
+export function setGithubId(db: DB, userId: number, githubId: number): void {
+  db.prepare("UPDATE users SET github_id = ? WHERE id = ?").run(githubId, userId);
 }
 
 export function setUserAdmin(db: DB, userId: number, isAdmin: boolean): void {
@@ -139,13 +158,13 @@ export function setUserDisabled(db: DB, userId: number, disabled: boolean): void
 }
 
 /**
- * Create a login account. The very first account claims the pre-accounts
- * user (the one that already owns every device and event) instead of
- * starting empty.
+ * Create an account, linked to a GitHub account. The very first account
+ * claims the pre-accounts user (the one that already owns every device and
+ * event) instead of starting empty.
  */
 export function createAccount(
   db: DB,
-  a: { username: string; display_name: string | null; password_hash: string; is_admin: boolean }
+  a: { username: string; display_name: string | null; avatar_url: string | null; github_id: number; is_admin: boolean }
 ): number {
   return db.transaction(() => {
     const unclaimed = accountsExist(db) ? undefined : db
@@ -153,13 +172,13 @@ export function createAccount(
       .get() as { id: number } | undefined;
     if (unclaimed) {
       db.prepare(
-        "UPDATE users SET username = ?, display_name = ?, password_hash = ?, is_admin = ? WHERE id = ?"
-      ).run(a.username, a.display_name, a.password_hash, a.is_admin ? 1 : 0, unclaimed.id);
+        "UPDATE users SET username = ?, display_name = ?, avatar_url = ?, github_id = ?, is_admin = ? WHERE id = ?"
+      ).run(a.username, a.display_name, a.avatar_url, a.github_id, a.is_admin ? 1 : 0, unclaimed.id);
       return unclaimed.id;
     }
     const info = db.prepare(
-      "INSERT INTO users (username, display_name, password_hash, is_admin, created_at) VALUES (?, ?, ?, ?, ?)"
-    ).run(a.username, a.display_name, a.password_hash, a.is_admin ? 1 : 0, nowSec());
+      "INSERT INTO users (username, display_name, avatar_url, github_id, is_admin, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run(a.username, a.display_name, a.avatar_url, a.github_id, a.is_admin ? 1 : 0, nowSec());
     return Number(info.lastInsertRowid);
   })();
 }
@@ -180,8 +199,8 @@ export function setSignupOpen(db: DB, open: boolean): void {
 export function adminOverview(db: DB): AdminOverview {
   const n = (sql: string) => (db.prepare(sql).get() as { n: number | null }).n ?? 0;
   return {
-    accounts: n("SELECT COUNT(*) AS n FROM users WHERE password_hash IS NOT NULL"),
-    disabled_accounts: n("SELECT COUNT(*) AS n FROM users WHERE password_hash IS NOT NULL AND disabled = 1"),
+    accounts: n("SELECT COUNT(*) AS n FROM users WHERE username IS NOT NULL"),
+    disabled_accounts: n("SELECT COUNT(*) AS n FROM users WHERE username IS NOT NULL AND disabled = 1"),
     devices: n("SELECT COUNT(*) AS n FROM devices WHERE revoked = 0"),
     events: n("SELECT COUNT(*) AS n FROM usage_events"),
     sessions: n("SELECT COUNT(DISTINCT session_id) AS n FROM usage_events"),
@@ -271,10 +290,6 @@ export function deleteAccount(db: DB, userId: number): DeleteAccountResult {
   });
 }
 
-export function setPasswordHash(db: DB, userId: number, hash: string): void {
-  db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(hash, userId);
-}
-
 export function insertViewerSession(db: DB, tokenHash: string, userId: number, expiresAt: number): void {
   const now = nowSec();
   db.prepare("DELETE FROM viewer_sessions WHERE expires_at <= ?").run(now);
@@ -283,14 +298,17 @@ export function insertViewerSession(db: DB, tokenHash: string, userId: number, e
   ).run(tokenHash, userId, expiresAt, now);
 }
 
-/** The user behind a live session; expired sessions and disabled users get null. */
-export function viewerSessionUser(db: DB, tokenHash: string): UserRow | null {
+/**
+ * The user behind a live session, with when that session was opened;
+ * expired sessions and disabled users get null.
+ */
+export function viewerSessionUser(db: DB, tokenHash: string): (UserRow & { session_created_at: number }) | null {
   return (db
     .prepare(
-      `SELECT u.* FROM viewer_sessions s JOIN users u ON u.id = s.user_id
-       WHERE s.token_hash = ? AND s.expires_at > ? AND u.disabled = 0 AND u.password_hash IS NOT NULL`
+      `SELECT u.*, s.created_at AS session_created_at FROM viewer_sessions s JOIN users u ON u.id = s.user_id
+       WHERE s.token_hash = ? AND s.expires_at > ? AND u.disabled = 0 AND u.username IS NOT NULL`
     )
-    .get(tokenHash, nowSec()) as UserRow | undefined) ?? null;
+    .get(tokenHash, nowSec()) as (UserRow & { session_created_at: number }) | undefined) ?? null;
 }
 
 export function deleteViewerSession(db: DB, tokenHash: string): void {
@@ -734,7 +752,7 @@ export function leaderboard(
   const users = db
     .prepare(
       `SELECT id, username, display_name, avatar_url FROM users
-       WHERE password_hash IS NOT NULL AND disabled = 0`
+       WHERE username IS NOT NULL AND disabled = 0`
     )
     .all() as { id: number; username: string | null; display_name: string | null; avatar_url: string | null }[];
   const today = new Map(users.map((u) => [u.id, dayAt(latestOffset(db, u.id), now)]));
@@ -743,7 +761,7 @@ export function leaderboard(
   const firstDay = addDays(lastDay, -(calendarDays - 1));
   const activitySinceSec = earliestOfDay(firstDay);
   const LISTED_FROM = `usage_events e JOIN users u ON u.id = e.user_id
-    WHERE u.password_hash IS NOT NULL AND u.disabled = 0`;
+    WHERE u.username IS NOT NULL AND u.disabled = 0`;
   // The period, per user, session, model and day…
   const groups = db
     .prepare(

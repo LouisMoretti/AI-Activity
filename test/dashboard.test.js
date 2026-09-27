@@ -12,7 +12,9 @@ const LIB = new URL("../web/src/lib/", import.meta.url).pathname;
 const BUILT = path.join(LIB, ".dashboard.test-build.js");
 
 // --- fake browser -----------------------------------------------------------
-const loc = { pathname: "/", search: "" };
+/** Where location.assign() sent the browser (GitHub's authorize page). */
+const assigned = [];
+const loc = { pathname: "/", search: "", assign: (url) => assigned.push(url) };
 const setUrl = (url) => {
   const u = new URL(url, "http://x");
   loc.pathname = u.pathname;
@@ -29,9 +31,12 @@ globalThis.clearInterval = () => {};
 /** path → response: a JSON body, a status number, or a function of the call count. */
 let routes = {};
 const calls = [];
-globalThis.fetch = async (url) => {
+/** Bodies of POSTs, by path. */
+const sent = [];
+globalThis.fetch = async (url, init) => {
   const p = String(url);
   calls.push(p);
+  if (init?.body) sent.push({ path: p, body: JSON.parse(init.body) });
   const key = Object.keys(routes).find((k) => p === k || p.startsWith(k + "?") || (k.endsWith("*") && p.startsWith(k.slice(0, -1))));
   let r = key === undefined ? 404 : routes[key];
   if (typeof r === "function") r = r(p);
@@ -53,9 +58,10 @@ const settle = async (ms = 5000) => {
     assert.ok(Date.now() <= end, "fetches never settled");
   }
 };
-const me = { id: 1, username: "me", display_name: "Me", avatar_url: null, is_admin: false };
-const signedIn = { authenticated: true, user: me, setup_required: false, signup_open: true };
-const signedOut = { authenticated: false, user: null, setup_required: false, signup_open: true };
+const me = { id: 1, username: "me", display_name: "Me", avatar_url: null, is_admin: false, github: true };
+const signedIn = { authenticated: true, user: me, setup_required: false, signup_open: true, github: true };
+const signedOut = { authenticated: false, user: null, setup_required: false, signup_open: true, github: true };
+const AUTHORIZE = "https://github.com/login/oauth/authorize?state=s";
 const emptySummary = { tool: null, day: "2026-09-25", total: { tokens: 0, sessions: 0, events: 0, by_model: [], by_model_others_sessions: 0, by_tool: [] }, today: { tokens: 0, sessions: 0, events: 0, by_model: [], by_model_others_sessions: 0, by_tool: [] }, provenance: "" };
 const profileRoutes = (name, sessions = { sessions: [], total: 0, provenance: "" }) => ({
   [`/api/u/${name}`]: { username: name, display_name: name, avatar_url: null },
@@ -74,7 +80,7 @@ before(async () => {
   ({ api } = await import(path.join(LIB, "api.ts")));
 });
 after(() => fs.rmSync(BUILT, { force: true }));
-beforeEach(() => { routes = {}; calls.length = 0; intervals = []; });
+beforeEach(() => { routes = {}; calls.length = 0; sent.length = 0; assigned.length = 0; intervals = []; });
 
 /** A dashboard opened at url, started, and settled. */
 async function open(url, extra = {}) {
@@ -141,7 +147,7 @@ describe("dashboard state", () => {
     stop();
   });
 
-  test("a lost session preserves the query through sign-in", async () => {
+  test("a lost session preserves the query through the GitHub sign-in", async () => {
     const { dash, stop } = await open("/u/me?tab=x", profileRoutes("me"));
     routes["/api/devices"] = 401;
     routes["/api/auth/status"] = signedOut;
@@ -149,68 +155,60 @@ describe("dashboard state", () => {
     await settle();
     assert.equal(loc.pathname + loc.search, `/?next=${encodeURIComponent("/u/me?tab=x")}`);
 
-    routes["/api/auth/status"] = signedIn;
-    routes["/api/auth/login"] = {};
-    assert.equal(await dash.login("me", "secret"), null);
-    await settle();
-    assert.equal(loc.pathname + loc.search, "/u/me?tab=x");
-    assert.equal(dash.vm.demo, false);
+    routes["/api/auth/github"] = { url: AUTHORIZE };
+    assert.equal(await dash.signIn(), null);
+    // GitHub sends the browser back to next once signed in.
+    assert.deepEqual(sent, [{ path: "/api/auth/github", body: { next: "/u/me?tab=x" } }]);
+    assert.deepEqual(assigned, [AUTHORIZE]);
     stop();
   });
 
-  test("a wrong password is not a lost session", async () => {
-    const { dash, stop } = await open("/", { "/api/auth/status": signedOut, "/api/auth/login": 401 });
-    assert.equal(await dash.login("me", "nope"), "Wrong username or password.");
+  test("a wrong setup code is not a lost session", async () => {
+    const { dash, stop } = await open("/", { "/api/auth/status": { ...signedOut, setup_required: true }, "/api/auth/github": 401 });
+    assert.equal(dash.status, "setup");
+    assert.equal(await dash.signIn("WRONG-CODE"), "Wrong setup code: copy it from the server log.");
+    assert.deepEqual(sent, [{ path: "/api/auth/github", body: { next: "/", setup_code: "WRONG-CODE" } }]);
+    assert.deepEqual([dash.status, assigned.length], ["setup", 0]);
+    stop();
+  });
+
+  test("signing in comes back to a safe destination, else your profile", async () => {
+    for (const [start, next] of [
+      ["/", "/"],
+      // From the demo: the real profile, not the fiction.
+      ["/?demo=1", "/"],
+      [`/?next=${encodeURIComponent("/demo")}`, "/"],
+      [`/?next=${encodeURIComponent("/settings?tab=x")}`, "/settings?tab=x"],
+      [`/?next=${encodeURIComponent("https://example.com/away")}`, "/"],
+      [`/?next=${encodeURIComponent("//example.com/away")}`, "/"],
+    ]) {
+      const { dash, stop } = await open(start, { "/api/auth/status": signedOut, "/api/auth/github": { url: AUTHORIZE } });
+      sent.length = 0;
+      assert.equal(await dash.signIn(), null);
+      assert.deepEqual(sent, [{ path: "/api/auth/github", body: { next } }], start);
+      stop();
+    }
+  });
+
+  test("back from a failed GitHub sign-in: says why once, and drops it from the address", async () => {
+    const { dash, stop } = await open(`/?auth_error=closed&next=${encodeURIComponent("/settings")}`, { "/api/auth/status": signedOut });
+    assert.equal(dash.authError, "Account creation is closed on this server: only existing accounts can sign in.");
+    assert.equal(loc.pathname + loc.search, `/?next=${encodeURIComponent("/settings")}`);
     assert.equal(dash.status, "signed-out");
     stop();
+    // Only known codes: a link cannot put its own words on the page.
+    const other = await open("/?auth_error=Your+account+was+hacked", { "/api/auth/status": signedOut });
+    assert.equal(other.dash.authError, null);
+    assert.equal(loc.pathname + loc.search, "/");
+    other.stop();
   });
 
-  test("signing in at /?demo=1 lands on the real profile", async () => {
-    const { dash, stop } = await open("/?demo=1", {
-      ...profileRoutes("me"),
-      "/api/auth/status": signedOut,
-      "/api/auth/login": {},
-    });
-    routes["/api/auth/status"] = signedIn;
-    assert.equal(await dash.login("me", "secret"), null);
-    await settle();
-    assert.equal(loc.pathname + loc.search, "/u/me");
-    assert.equal(dash.vm.demo, false);
+  test("linking GitHub from Settings comes back to Settings", async () => {
+    const { dash, stop } = await open("/settings", { "/api/auth/github": { url: AUTHORIZE } });
+    assert.equal(await dash.linkGithub(), null);
+    assert.deepEqual(sent, [{ path: "/api/auth/github", body: { next: "/settings", link: true } }]);
+    assert.deepEqual(assigned, [AUTHORIZE]);
     stop();
-  });
-
-  test("creating an account returns to a safe destination, else your profile", async () => {
-    const account = { username: "me", display_name: "Me", password: "long-enough-password" };
-    for (const [start, expected] of [
-      ["/?demo=1", "/u/me"],
-      [`/?next=${encodeURIComponent("/settings?tab=x")}`, "/settings?tab=x"],
-    ]) {
-      const { dash, stop } = await open(start, {
-        ...profileRoutes("me"),
-        "/api/auth/status": signedOut,
-        "/api/auth/register": {},
-      });
-      routes["/api/auth/status"] = signedIn;
-      assert.equal(await dash.createAccount(account, null), null);
-      await settle();
-      assert.equal(loc.pathname + loc.search, expected);
-      stop();
-    }
-  });
-
-  test("sign-in rejects external and protocol-relative return destinations", async () => {
-    for (const next of ["https://example.com/away", "//example.com/away"]) {
-      const { dash, stop } = await open(`/?next=${encodeURIComponent(next)}`, {
-        ...profileRoutes("me"),
-        "/api/auth/status": signedOut,
-        "/api/auth/login": {},
-      });
-      routes["/api/auth/status"] = signedIn;
-      assert.equal(await dash.login("me", "secret"), null);
-      await settle();
-      assert.equal(loc.pathname + loc.search, "/u/me");
-      stop();
-    }
   });
 
   test("the home link goes straight to your profile when signed in", async () => {
@@ -238,20 +236,6 @@ describe("dashboard state", () => {
     const { dash, stop } = await open("/demo", { "/api/auth/status": new TypeError("network down") });
     assert.equal(dash.status, "ready");
     assert.equal(dash.vm.demo, true);
-    stop();
-  });
-
-  test("signing in from /demo lands on your real profile", async () => {
-    const { dash, stop } = await open(`/?next=${encodeURIComponent("/demo")}`, {
-      ...profileRoutes("me"),
-      "/api/auth/status": signedOut,
-      "/api/auth/login": {},
-    });
-    routes["/api/auth/status"] = signedIn;
-    assert.equal(await dash.login("me", "secret"), null);
-    await settle();
-    assert.equal(loc.pathname + loc.search, "/u/me");
-    assert.equal(dash.vm.demo, false);
     stop();
   });
 

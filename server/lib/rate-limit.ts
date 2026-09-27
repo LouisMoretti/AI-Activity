@@ -15,7 +15,9 @@ import type { Context, MiddlewareHandler } from "hono";
  * - public reads, per client: a dashboard polls 7 routes every 15 s
  *   (28/min); 300 with 5/s leaves room for about ten tabs behind one
  *   address;
- * - signed-in routes (devices, account, users, admin), per user.
+ * - signed-in routes (devices, account, users, admin), per user;
+ * - GitHub sign-in (starting one, and GitHub's callback), per client: a
+ *   sign-in takes two requests.
  */
 export const LIMITS = {
   ingestRequests: { capacity: 300, perSec: 5 },
@@ -23,6 +25,7 @@ export const LIMITS = {
   ingestWrites: { capacity: 20_000, perSec: 10 },
   publicReads: { capacity: 300, perSec: 5 },
   sessionRequests: { capacity: 120, perSec: 1 },
+  oauth: { capacity: 30, perSec: 0.1 },
   /** Live (not revoked) devices per account, from Settings; the CLI is not capped. */
   devicesPerAccount: 20,
 };

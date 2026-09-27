@@ -14,7 +14,22 @@ export const MIGRATIONS: ((db: DB) => void)[] = [
   cleanupCoveredSnapshots,
   activityClearedAt,
   collectorVersions,
+  githubAccounts,
 ];
+
+/**
+ * 5: sign in with GitHub only (issue #127). `users.github_id` is the GitHub
+ * account's numeric id (stable across login renames; NULL until linked).
+ * Passwords are gone: existing accounts keep their data and sign in again
+ * once linked (from a session still open, or `npm run user -- link`).
+ */
+function githubAccounts(db: DB): void {
+  db.exec(`
+    ALTER TABLE users ADD COLUMN github_id INTEGER;
+    CREATE UNIQUE INDEX idx_users_github ON users(github_id) WHERE github_id IS NOT NULL;
+    ALTER TABLE users DROP COLUMN password_hash;
+  `);
+}
 
 /**
  * 3: deleting your own activity. `users.activity_cleared_at` is when the

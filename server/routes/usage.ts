@@ -104,7 +104,7 @@ export function profileListRoutes(db: DB) {
 export function publicProfileRoutes(db: DB) {
   const owner = (c: Context) => {
     const user = findUserByUsername(db, c.req.param("username") ?? "");
-    if (!user || user.disabled || !user.password_hash) throw new HTTPException(404, { message: "profile not found" });
+    if (!user || user.disabled || !user.username) throw new HTTPException(404, { message: "profile not found" });
     return user;
   };
   return new Hono()

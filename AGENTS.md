@@ -29,10 +29,11 @@ purpose). Only demo data carries a badge ("Demonstration data"). Palette: the
 original dark theme; type: Geist, with Geist Mono only for ids and model
 names. Quota bars carry a mark for how far into the window we are.
 
-**Pages:** `/` has two tabs, Sign in and Create account (sign-up is open
-unless an admin closed it; or first-account setup while none exists); once signed
-in it redirects to `/u/<you>`, so the address bar is the shareable link;
-under the form (and the first-account form), "See a demo" links to `/demo`;
+**Pages:** `/` shows "Sign in with GitHub", the only way in (a GitHub
+user with no account yet gets one, unless an admin closed sign-up; while
+no account exists, the first-account form asks for the setup code first);
+once signed in it redirects to `/u/<you>`, so the address bar is the
+shareable link; there is no password anywhere. Under the form, "See a demo" links to `/demo`;
 signing in from `/demo` lands on your profile, not back on the demo.
 `/u/<username>` is **public and read-only**, no account needed: activity,
 stats, tools/quotas and conversations.
@@ -54,10 +55,12 @@ makers of the tools it measures (their names are trademarks, used only to
 identify them): keep both, and name any newly supported tool's owner in
 them.
 Clicking the avatar opens Your profile / Leaderboard / Settings / Admin
-panel (admins) / Sign out. `/settings` (signed in) holds Account, Devices and a Danger zone
+panel (admins) / Sign out. `/settings` (signed in) holds Account (the
+profile from GitHub, read-only; "Link GitHub account" for an account from
+before GitHub sign-in), Devices and a Danger zone
 (delete your own activity, or your whole account); `/admin`
 (admins) holds the server overview, the account-creation switch and the
-users (make or remove admin, reset password, disable).
+users (make or remove admin, disable; "not linked to GitHub" shown).
 
 **Hard rule:** the demo dataset is fictional and deterministic. It is only
 visible at `/demo`, always labeled "Demonstration data" (and ` · Demo` in
@@ -74,22 +77,41 @@ npm run build               # the UI, served from web/dist
 npm start                   # http://localhost:3000
 ```
 
-Viewer accounts. Nothing is viewable until the first one exists; that first
-account is an admin and owns the data collected so far (collectors keep
-posting with `gen-key` keys meanwhile). Create it in the browser with the
-one-time **setup code** the server prints at start (new on every start, only
-while no account exists), or from the CLI. After that, sign-up is open:
-anyone creates their own account from the sign-in page (5 accounts per
-client per hour), until an admin turns account creation off in the admin
-panel. There are no invite links and no accounts created from the admin
-panel (the server CLI `npm run user -- add` always works).
+Viewer accounts sign in with GitHub only (issue #127): no passwords. Set
+up a GitHub OAuth app first (github.com/settings/developers → OAuth Apps →
+New OAuth App): homepage URL = the public address, **Authorization
+callback URL = `<public address>/api/auth/github/callback`**. Put its
+client id and a client secret in `.env` (`GITHUB_CLIENT_ID`,
+`GITHUB_CLIENT_SECRET`; never in the repo), and `PUBLIC_URL` if the
+address the browser uses is not what reaches the server (unset: the
+request's host, through Caddy or the tunnel). No scope is asked for: the
+server only reads the public profile (numeric id, login, name, picture),
+never an email, and drops the token at once.
+
+Nothing is viewable until the first account exists; it is an admin and
+owns the data collected so far (collectors keep posting with `gen-key`
+keys meanwhile). Create it in the browser: type the one-time **setup
+code** the server prints at start (new on every start, only while no
+account exists), then sign in with GitHub; or from the CLI. After that,
+sign-up is open: any GitHub user who signs in gets an account (5 new
+accounts per client per hour), until an admin turns account creation off
+in the admin panel (existing accounts still sign in). There are no invite
+links and no accounts created from the admin panel (the server CLI
+`npm run user -- add` always works).
 
 ```bash
-npm run user -- add louis --name "Louis"   # password prompt (or piped stdin)
-npm run user -- add alice [--admin]
-npm run user -- passwd louis               # also signs that user out
+npm run user -- add louis [--admin]           # by GitHub login (GitHub's public API)
+npm run user -- add louis --id 1234567        # offline: the GitHub numeric id
+npm run user -- link oldname louis [--id N]   # link an account from before GitHub sign-in
 npm run user -- list
 ```
+
+Username = the GitHub login, name and picture = GitHub's, updated at each
+sign-in (a login rename moves `/u/<login>`; the account, keyed by the
+GitHub numeric id, keeps its data). Accounts from before GitHub sign-in
+(migration 5) keep their data and open sessions: they link themselves
+from Settings (still signed in) or through `npm run user -- link`, and
+take their GitHub login as username then.
 
 Create a device ingestion key (also copyable later from Settings →
 Devices), for the first account unless `--user` says otherwise:
@@ -149,7 +171,7 @@ ai.example.com {
 ```bash
 docker compose up -d --build       # build, start, restart on crash/reboot
 docker compose logs app            # setup code for the first account
-docker compose exec app node scripts/user.ts add louis   # or the setup code
+docker compose exec app node scripts/user.ts add louis   # (GitHub login) or the setup code
 docker compose exec app node scripts/gen-key.ts "laptop" [--user alice]
 docker compose exec app node scripts/backup.ts
 git pull && docker compose up -d --build                  # upgrade by hand
@@ -171,12 +193,17 @@ Upgrades are normally deployed from GitHub (Continuous deployment below).
   `ai-activity-proxy` subnet. So nothing but Caddy and the app may join
   that network: any other container on it could forge client addresses.
   Change `PROXY_SUBNET` if the range is taken. Without it every visitor
-  would look like one client to the login throttle and the sign-up cap.
+  would look like one client to the setup-code throttle and the sign-up cap.
   IPv6 visitors may all reach Caddy as one address, depending on how
   Caddy's own network and the host's Docker are set up (issue #102).
 - Restore: `docker compose stop app backup`, then
   `docker compose run --rm --no-deps app node scripts/restore.ts /data/backups/<file>`,
   then `docker compose start app backup`.
+- Sign in with GitHub needs a production OAuth app (callback
+  `https://ai.example.com/api/auth/github/callback`) and its
+  `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` in the server's `.env`
+  **before** a version with it is deployed: without them nobody can sign
+  in (sessions already open still work, so linking from Settings does).
 - Before going live: revoke and reissue every device key used through
   quick tunnels, then point the collectors (statusLine, Codex hook,
   OpenCode plugin) at the new URL.
@@ -207,7 +234,7 @@ Server setup, once (Docker Compose ≥ 2.20 for `--wait-timeout`):
 sudo useradd -m -s /bin/bash deploy && sudo usermod -aG docker deploy
 sudo mkdir /srv/ai-activity && sudo chown deploy: /srv/ai-activity
 sudo -u deploy git clone https://github.com/LouisMoretti/AI-Activity /srv/ai-activity
-sudo -u deploy install -m 600 /dev/null /srv/ai-activity/.env   # PROXY_SUBNET=… if needed
+sudo -u deploy install -m 600 /dev/null /srv/ai-activity/.env   # GITHUB_CLIENT_ID/SECRET, PROXY_SUBNET=… if needed
 # Outside the checkout, owned by root: a commit cannot change what the key runs.
 sudo install -o root -g root -m 755 /srv/ai-activity/deploy/ai-activity-deploy /usr/local/bin/
 ssh-keygen -t ed25519 -N '' -C github-deploy -f deploy_key    # on your machine
@@ -243,6 +270,9 @@ creates `ai-activity-proxy`), add the network and the site to Caddy (above).
 
 Tests: `npm test` boots the real server on a temp DB and exercises the HTTP
 API black-box (`test/api.test.js`), so they must stay green across refactors;
+sign-ins go through a fake GitHub in the test process (`test/helpers.js`:
+`githubUser`, `githubSignIn`, `login`, `register`), and the test server's
+first account is GitHub "admin", made with `npm run user -- add --id`;
 `test/migrations.test.js` upgrades old databases through the
 migrations; `test/rate-limit.test.js` covers the token buckets;
 `test/backup.test.js` backs up during writes, prunes and
@@ -329,19 +359,19 @@ Browser dashboard (web/: Svelte 5 + TypeScript, built by Vite)
 server/
   index.ts          boot: config, DB, listen
   app.ts            Hono app: /api mount, viewer-auth gate, static + SPA fallback
-  config.ts         env → Config (PORT, DB_PATH, STATIC_DIR, BACKUP_DIR)
+  config.ts         env → Config (PORT, DB_PATH, STATIC_DIR, BACKUP_DIR, GITHUB_*, PUBLIC_URL)
   db/schema.ts      open + migrate (runs pending migrations)
   db/migrations.ts  ordered schema migrations (PRAGMA user_version)
   db/queries.ts     every SQL statement lives here
   lib/ingest.ts     payload normalizers, one per tool slug
-  lib/viewer-auth.ts  viewer sessions + login throttling
-  lib/passwords.ts    scrypt hashing, username/password rules
+  lib/viewer-auth.ts  viewer sessions + setup code throttling
+  lib/github.ts       Sign in with GitHub: authorize URL, code exchange, profile
   lib/setup.ts        one-time setup code for the first account
   lib/avatar.ts       profile picture link allowlist
   lib/installer.ts    /install.sh, /install.ps1 (collectors/install.py + collectors)
   lib/backup.ts       consistent snapshots, retention, restore
   lib/client.ts       client address + HTTPS behind the tunnel or TRUST_PROXY
-  lib/rate-limit.ts   token buckets + LIMITS (ingest, public reads, per user)
+  lib/rate-limit.ts   token buckets + LIMITS (ingest, public reads, per user, OAuth)
   lib/http.ts
   routes/           auth, ingest, usage (public profiles + leaderboard),
                     devices, account (profile + admin users)
@@ -355,8 +385,9 @@ web/
   src/lib/demo.ts         FICTIONAL /demo dataset → DashboardVM (always labeled)
   src/lib/series.ts       pure helpers: dense day series, streaks, calendar grid
   src/lib/format.ts       number, day, duration and "ago" formatting
-  src/lib/dashboard.svelte.ts  state: provider, auth status, 15 s refresh
-  src/lib/confirm-delete.svelte.ts  danger zone flows (password + typed phrase)
+  src/lib/dashboard.svelte.ts  state: provider, auth status, GitHub sign-in, 15 s refresh
+  src/lib/auth-errors.ts  ?auth_error=<code> → message (known codes only)
+  src/lib/confirm-delete.svelte.ts  danger zone flows (typed phrase; sign in again if too old)
   src/App.svelte          routes the pages; renders the site chrome once
   src/components/         StatsRow (StatCard), ActivityChart (Heatmap,
                           TrendChart), QuotaCard (Claude Code, Codex,
@@ -368,7 +399,7 @@ web/
                           Conversations, DevicesPanel,
                           DangerZone (DangerAction), AccountMenu,
                           SiteHeader, ProfilePanel, UsersPanel,
-                          NewAccountForm, AuthPanel, Leaderboard,
+                          AuthPanel, Leaderboard,
                           AdminOverview, …
   src/styles/tokens.css   design tokens — components only use these variables
 ```
@@ -377,13 +408,25 @@ Components never branch on live vs demo: both sources map into the same
 `DashboardVM`, so the "demo is always labeled" rule lives in `demo.ts` only.
 
 - The server derives the user from the ingestion key (`devices.key_hash`);
-  viewers are users with a username + scrypt password hash, and every viewer
+  viewers are users linked to a GitHub account (`users.github_id`), and every viewer
   API is scoped to the signed-in user (`c.get("userId")`, set by
   `viewer-auth.ts`). Sessions live in `viewer_sessions` (token stored as a
   SHA-256 hash), so they survive restarts.
 - The first account is created with the setup code or `npm run user --
   add`: both need access to the server, so whoever reaches the public
   tunnel first cannot take it.
+- GitHub sign-in (`routes/auth.ts`): `POST /api/auth/github` keeps the
+  sign-in in memory under a random `state` (10 minutes; mode sign-in,
+  first account or link, and where to come back) and sets it in an
+  HttpOnly `gh_oauth` cookie on `/api/auth/github`; GitHub sends the
+  browser to `/api/auth/github/callback`, which needs that same state in
+  query and cookie (once only), exchanges the code server to server and
+  reads `/user`. A restart drops sign-ins in progress. The account is
+  found by GitHub numeric id; its username follows the login unless an
+  account not linked to GitHub holds that name (then a new account is
+  refused, `taken`, and an existing one keeps its name); a linked account
+  still holding a login GitHub gave to someone else becomes
+  `<name>-<id>` until it signs in again.
 - The Claude Code collector (`collectors/claude-code.py`, copied to
   `~/.claude/ai-activity-claude-code.py`, run as the statusLine command;
   exercised by `test/collector.test.js`) reads what was added to every
@@ -479,8 +522,9 @@ Components never branch on live vs demo: both sources map into the same
 
 ## 4. Data model (SQLite, `data/dashboard.db`)
 
-- `users` — viewer accounts (`username` unique, case-insensitive;
-  `password_hash`, `is_admin`, `disabled`, `avatar_url`,
+- `users` — viewer accounts (`username` unique, case-insensitive: the
+  GitHub login; `github_id` unique, the GitHub numeric id, NULL until
+  linked; `display_name` and `avatar_url` from GitHub; `is_admin`, `disabled`,
   `activity_cleared_at`: when the user last deleted their activity, §6).
   `deleted_events` — ids of the messages a user deleted (ids only), so a
   resend is refused (§5). Device, usage, quota and session tables carry
@@ -538,6 +582,10 @@ Components never branch on live vs demo: both sources map into the same
   the 2-minute slack existed).
 - Migration 3 adds `users.activity_cleared_at` and `deleted_events`.
 - Migration 4 adds `collector_versions`.
+- Migration 5 adds `users.github_id` (unique) and drops
+  `users.password_hash` (sign in with GitHub only; the `-pre-v5` backup
+  keeps the hashes). Existing accounts keep their data and sessions and
+  are linked afterwards (§2).
 
 ### Backups
 
@@ -569,7 +617,7 @@ npm run restore -- data/backups/dashboard-20260925-134052.db   # server stopped
 - Copy the backups **off the machine** too, or they die with its disk:
   e.g. `rsync -a data/backups/ backup-host:ai-activity/` or `rclone sync
   data/backups remote:ai-activity` (an rclone `crypt` remote encrypts
-  them). Backups hold password, session and device key hashes and the
+  them). Backups hold session and device key hashes (and, before v5, password hashes) and the
   copyable device keys: the destination must be private.
 - `restore` checks the backup (integrity, schema not newer than the code),
   refuses while anything has the database open (it must leave WAL mode,
@@ -842,22 +890,31 @@ each conversation database under
 
 ## 6. Viewer + device APIs
 
-Viewer (cookie session after `POST /api/auth/login {username, password}`;
-every viewer API answers `401` without one, including before the first
-account exists):
+Viewer (cookie session after a GitHub sign-in; every viewer API answers
+`401` without one, including before the first account exists):
 
-- `GET /api/auth/status` → `{authenticated, user, setup_required, signup_open}`
-  (`user` is `{id, username, display_name, avatar_url, is_admin}` or null;
-  `setup_required` while no account exists), `POST /api/auth/logout`
-- `POST /api/auth/setup {setup_code, username, password, display_name}`:
-  first account only (`409` once one exists), throttled like a login; the
-  code ignores case, spaces and dashes. Signs in.
-- `POST /api/auth/register {username, password, display_name}`: open
-  sign-up once the first account exists; non-admin account, signs in.
-  `403` while an admin has closed account creation, `409` before the first
-  account exists or if the username is taken, `429` after 5 accounts from
-  one client in an hour, or while the login throttle blocks that client
-  (or everyone, at the global cap).
+- `GET /api/auth/status` → `{authenticated, user, setup_required, signup_open, github}`
+  (`user` is `{id, username, display_name, avatar_url, is_admin, github}`
+  or null, `github` false for an account not linked yet; `setup_required`
+  while no account exists; `github`: sign-in is set up, else nobody can
+  sign in), `POST /api/auth/logout`
+- `POST /api/auth/github {next?, setup_code?, link?}` → `{url}`: the
+  GitHub authorize page to send the browser to (`503` if GitHub sign-in is
+  not set up). `next` is where to come back (a same-site path, else `/`).
+  While no account exists it needs `setup_code` (wrong or missing → `401`,
+  `409` if the server has none; throttled below; the code ignores case,
+  spaces and dashes): that sign-in creates the first account, admin.
+  `link: true` (signed in, else `401`) links the signed-in account instead.
+- `GET /api/auth/github/callback?code&state` (GitHub sends the browser
+  here) → `302` to `next`, signed in (a new session; linking keeps the
+  current one), or to `/?auth_error=<code>` (`/settings?auth_error=` when
+  linking): `denied` (cancelled on GitHub), `expired` (unknown, reused,
+  other-browser or 10-minute-old state), `github` (the exchange or `/user`
+  failed), `disabled`, `setup`, `exists` (a first-account sign-in after
+  one was made), `closed` (sign-up closed, new GitHub user), `too_many` (5
+  new accounts from one client in an hour), `taken` (the login is the
+  username of an account not linked to GitHub), `linked_elsewhere`,
+  `already_linked`. The web client shows a fixed message per code.
 - `GET /api/profiles` → enabled accounts `{username, display_name, avatar_url}`,
   **no session needed** (the public leaderboard lists them too).
 - Public profile pages, **no session needed**: `GET /api/u/:username` →
@@ -866,14 +923,11 @@ account exists):
   copy: the signed-in viewer reads their own page through them too.
   Nothing private has a public route: devices, account and users
   always need a session and only ever act on the signed-in user.
-- Unknown usernames and wrong passwords get the same `401` and the same
-  hashing cost.
-- Login is throttled: 10 failures per client or 50 in total per 15 min →
-  `429` with `Retry-After` (the global cap locks everyone out, owner
-  included, until the window ends). Login, setup and password change count
-  each attempt as a failure before hashing (a parallel burst cannot slip
-  through) and a right password only takes back that one attempt: signing
-  in to another account never resets the count. The client
+- Setup code attempts are throttled: 10 failures per client or 50 in
+  total per 15 min → `429` with `Retry-After` (the global cap locks
+  everyone out, owner included, until the window ends). Each attempt
+  counts as a failure first (a parallel burst cannot slip through) and a
+  right code only takes back that one attempt. The client
   (`server/lib/client.ts`) is `CF-Connecting-IP` from localhost (the quick
   tunnel or the Vite proxy); the last `X-Forwarded-For` address from a
   `TRUST_PROXY` peer (the Caddy container; earlier entries can be forged);
@@ -883,25 +937,24 @@ account exists):
 - Every `/api` request other than GET must be `Content-Type:
   application/json` (`415` otherwise) and not `Sec-Fetch-Site: cross-site`
   (`403`): a cross-site HTML form could otherwise post JSON-looking
-  `text/plain` and sign the visitor in to another account.
-- `POST /api/account {display_name?, avatar_url?}` (only the fields sent
-  change; empty display name → the username, empty picture → the initial).
-  Profile pictures are links, never uploads: every visitor's browser loads
-  them (public pages, open sign-up), so only `https` images from GitHub,
-  Gravatar or Imgur are accepted (`server/lib/avatar.ts`, per-host path
-  check, no credentials or port), anything else is `400`. Hosts that show
+  `text/plain` and start a sign-in for the visitor.
+- The profile is GitHub's, updated at each sign-in: nothing to edit (no
+  `POST /api/account`). Profile pictures are links, never uploads: every
+  visitor's browser loads them (public pages, open sign-up), so only
+  `https` images from GitHub, Gravatar or Imgur are kept
+  (`server/lib/avatar.ts`, per-host path check, no credentials or port);
+  anything else GitHub gives is dropped (initial shown). Hosts that show
   the uploader access logs would let anyone track every viewer's IP. The
   client loads them with `referrerpolicy="no-referrer"`.
-  `POST /api/account/password {current_password, new_password}` (throttled
-  like a login; signs out the user's other sessions).
-  `POST /api/account/delete-activity {password, confirm}` (`confirm` must
-  be `DELETE_ACTIVITY_PHRASE`, `"delete my activity"`, else `400`, checked
-  before hashing; the password is throttled like a login, wrong → `400`)
-  deletes the signed-in user's `usage_events` and `quota_snapshots` in one
+  `POST /api/account/delete-activity {confirm}` (`confirm` must
+  be `DELETE_ACTIVITY_PHRASE`, `"delete my activity"`, else `400`; the
+  session must be under 10 minutes old, else `403 {reauth: true}`: the
+  client offers "Sign in with GitHub again", which a stolen cookie cannot
+  do, and comes back to Settings) deletes the signed-in user's `usage_events` and `quota_snapshots` in one
   transaction, keeps the deleted message ids and sets
   `activity_cleared_at` (§5) → `{ok, deleted: {events, quotas}}`. The
   account, profile, devices, keys and sessions stay.
-  `POST /api/account/delete {password, confirm}` (`DELETE_ACCOUNT_PHRASE`,
+  `POST /api/account/delete {confirm}` (`DELETE_ACCOUNT_PHRASE`,
   `"delete my account"`; same checks) deletes the account and everything
   tied to it in one transaction: usage, quotas, deleted ids, devices and
   their keys, every session, the user row (its username becomes free) →
@@ -919,10 +972,8 @@ account exists):
   events), and `deleted_events` keeps one id per deleted message until
   the account goes: fine for a personal instance, to bound if it ever
   serves many accounts.
-- Admin only (`403` otherwise): `GET /api/users`, `POST /api/users/:id/password
-  {password}` (signs that user out; not for the admin's own account, which
-  goes through `/api/account/password` so a stolen session cannot take it
-  over), `POST /api/users/:id/admin {is_admin}` (grant or remove admin
+- Admin only (`403` otherwise): `GET /api/users` (with `github`: linked
+  or not), `POST /api/users/:id/admin {is_admin}` (grant or remove admin
   rights, never your own, so an admin always remains),
   `POST /api/users/:id/disable|enable`. A disabled account cannot sign
   in and its device keys are rejected at ingest; admins cannot disable
@@ -944,8 +995,11 @@ account exists):
     `/api/admin`): 120 per user, refill 1/s;
   - at most 20 live devices per account (`POST /api/devices` → `409`;
     revoking one frees a slot; `npm run gen-key` is not capped);
-  - ingest: per device key (§5). Health and `/api/auth/*` are not rate
-    limited (login, setup and sign-up have their own throttles above).
+  - GitHub sign-in (`/api/auth/github` and its callback): 30 per client,
+    refill one per 10 s (a sign-in takes two);
+  - ingest: per device key (§5). Health and the rest of `/api/auth/*` are
+    not rate limited (the setup code and sign-ups have their own limits
+    above).
 - Public reads (`/api/u/…`, `/api/leaderboard`) are cached in memory until
   the database changes (this server's writes or the CLI's) and for 30 s at
   most (`readCache` in `server/lib/http.ts`).
@@ -996,10 +1050,14 @@ account exists):
    streak reset at the owner's local midnight.
 8. `/demo` shows labeled fictional data, signed in or out; real profiles
    never do (`?demo=1` changes nothing).
-9. `/` signed out: sign-in (or first-account) screen; signed in: redirect
-   to `/u/<you>`. `/settings` and `/admin` signed out: sign-in, then back.
-   Create account works for anyone (after the first account) until an
-   admin closes it; then the tab is hidden and `register` answers `403`.
+9. `/` signed out: "Sign in with GitHub" (or the first-account screen,
+   setup code then GitHub); no password field anywhere; signed in:
+   redirect to `/u/<github-login>`, with GitHub's name and picture.
+   `/settings` and `/admin` signed out: sign-in, then back. A new GitHub
+   user gets an account (after the first one) until an admin closes
+   sign-up; then new users land on `/?auth_error=closed` and existing ones
+   still sign in. An account from before GitHub sign-in links itself from
+   Settings and keeps its data.
 10. `/u/<name>` opens without an account and shows usage only: no devices
    or account sections, for visitors and other accounts alike.
 11. `/leaderboard` opens without an account and lists every enabled
@@ -1032,9 +1090,20 @@ reached through Caddy (§2, Deploy). After `npm start` works locally:
    ```
 3. Copy the public URL (`https://<random>.trycloudflare.com`).
 4. **Send that link to the user for testing** and keep the tunnel running
-   while they test. Mention which account to sign in with (or the setup code
-   from the server log if none exists yet) and that `/demo`
-   shows the labeled fictional dataset (no account needed).
+   while they test. Mention the setup code from the server log if no
+   account exists yet, and that `/demo` shows the labeled fictional
+   dataset (no account needed).
+
+Sign in with GitHub through a tunnel needs a GitHub OAuth app whose
+callback is on that tunnel: keep a separate **dev OAuth app** (never the
+production one) and, each time the quick tunnel's address changes, set its
+Homepage URL to `https://<random>.trycloudflare.com` and its
+Authorization callback URL to
+`https://<random>.trycloudflare.com/api/auth/github/callback` (GitHub →
+Settings → Developer settings → OAuth Apps). Its id and secret go in the
+worktree's `.env` (`GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`); restart
+`npm run dev` after editing it. The callback follows the host the browser
+used (Vite passes it on), so `PUBLIC_URL` stays unset.
 5. Revoke/replace device keys if a test key leaks; never put keys in URLs.
 
 Live review (edits show up instantly for the tester): keep the Node API on
@@ -1051,6 +1120,13 @@ cloudflared tunnel --url http://localhost:5173
 `web/vite.config.ts` allows `*.trycloudflare.com` hosts and limits what the
 dev server can read to `web/`, `shared/` and `node_modules/`, so `data/`
 (the SQLite DB) and `.env` are never served through the tunnel.
+
+Behind your own reverse proxy instead of a tunnel (e.g. a LAN Caddy with
+`reverse_proxy <this machine>:5173`), list its host names in `DEV_HOSTS`
+(`.env`, comma-separated): Vite then accepts them and listens on every
+interface, not only localhost. Firewall port 5173 to the proxy's address:
+anything else on the network could reach Vite directly and send a forged
+`CF-Connecting-IP` (trusted from localhost, which Vite's proxy is).
 
 ## 9. Roadmap (later, not now)
 

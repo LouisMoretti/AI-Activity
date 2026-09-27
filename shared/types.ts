@@ -152,6 +152,8 @@ export interface Account {
   /** https link to the profile picture (allowlisted hosts), or null. */
   avatar_url: string | null;
   is_admin: boolean;
+  /** Linked to a GitHub account, so it can sign in (accounts from before GitHub sign-in are not, until linked). */
+  github: boolean;
 }
 
 /** An account as listed for admins. */
@@ -170,6 +172,8 @@ export interface AuthStatus {
   setup_required: boolean;
   /** Anyone may create an account from the sign-in page (an admin setting). */
   signup_open: boolean;
+  /** Sign in with GitHub is configured on this server (GITHUB_CLIENT_ID / _SECRET). */
+  github: boolean;
 }
 
 /** Server settings an admin changes from the admin panel. */

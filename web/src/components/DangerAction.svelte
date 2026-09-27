@@ -2,16 +2,17 @@
   import type { Snippet } from "svelte";
   import type { ConfirmDelete } from "../lib/confirm-delete.svelte.ts";
 
-  let { title, flow, username, actionLabel, confirmLabel, success, children }: {
+  let { title, flow, actionLabel, confirmLabel, success, onreauth, children }: {
     title: string;
     flow: ConfirmDelete<T>;
-    username: string;
     /** Opens the confirmation form, e.g. "Delete activity…". */
     actionLabel: string;
     /** The final, destructive button. */
     confirmLabel: string;
     /** What to say once done (nothing when the page moves on by itself). */
     success?: (result: T) => string;
+    /** Sign in with GitHub again (the server wants a recent sign-in); an error message if it could not start. */
+    onreauth: () => Promise<string | null>;
     /** What goes and what stays, shown before anything is asked. */
     children: Snippet;
   } = $props();
@@ -19,6 +20,16 @@
   function submit(e: SubmitEvent) {
     e.preventDefault();
     void flow.confirm();
+  }
+
+  let leaving = $state(false);
+  async function reauth() {
+    leaving = true;
+    const error = await onreauth();
+    if (error) {
+      flow.error = error;
+      leaving = false;
+    }
   }
 </script>
 
@@ -37,10 +48,6 @@
     </div>
   {:else}
     <form onsubmit={submit}>
-      <input type="text" autocomplete="username" value={username} hidden readonly />
-      <label>Password
-        <input type="password" autocomplete="current-password" required bind:value={flow.password} />
-      </label>
       <label>Type <span class="mono">{flow.expected}</span> to confirm
         <input autocomplete="off" spellcheck="false" required bind:value={flow.phrase} />
       </label>
@@ -51,6 +58,12 @@
         <button type="button" disabled={flow.step === "busy"} onclick={() => flow.cancel()}>Cancel</button>
         {#if flow.error}<span class="error" role="alert">{flow.error}</span>{/if}
       </div>
+      {#if flow.reauth}
+        <div class="actions">
+          <button type="button" disabled={leaving} onclick={reauth}>{leaving ? "Opening GitHub…" : "Sign in with GitHub again"}</button>
+          <span class="muted">You come back here, then confirm again.</span>
+        </div>
+      {/if}
     </form>
   {/if}
 </div>

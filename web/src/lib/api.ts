@@ -1,6 +1,6 @@
 // Typed client for the dashboard JSON API (same origin, cookie session).
 import type {
-  Account, ActivityResponse, AdminOverview, AdminSettings, AdminUser, AuthStatus, DeletedAccount, DeletedActivity, LeaderboardResponse, Profile, Device, QuotasResponse,
+  ActivityResponse, AdminOverview, AdminSettings, AdminUser, AuthStatus, DeletedAccount, DeletedActivity, LeaderboardResponse, Profile, Device, QuotasResponse,
   SessionsResponse, SummaryResponse,
 } from "../../../shared/types.ts";
 
@@ -17,12 +17,15 @@ export class RateLimitedError extends Error {
   constructor() { super("rate limited"); }
 }
 
+/** 403 with `reauth`: sign in with GitHub again (a recent sign-in is needed), then retry. */
+export class ReauthRequiredError extends Error {}
+
 let sessionLost: (() => void) | null = null;
 
 /**
  * Called when a request that needs the viewer's session answers 401: the
- * session ended elsewhere (password changed or reset, account disabled).
- * Not for /api/auth/*, where a 401 means wrong credentials.
+ * session ended elsewhere (signed out, account disabled or deleted).
+ * Not for /api/auth/*, where a 401 means a wrong setup code.
  */
 export function onSessionLost(fn: (() => void) | null): void {
   sessionLost = fn;
@@ -51,15 +54,16 @@ async function post<T>(path: string, body: unknown = {}): Promise<T> {
   });
   if (r.status === 401) throw unauthorized(path);
   const json = await r.json().catch(() => ({}));
+  if (r.status === 403 && json.reauth) throw new ReauthRequiredError(json.error);
   if (!r.ok) throw new Error(json.error || `request failed: ${r.status}`);
   return json as T;
 }
 
-/** What someone types to create their account. */
-export interface NewAccount {
-  username: string;
-  display_name: string;
-  password: string;
+/** A GitHub sign-in: where to come back, the setup code (first account), or linking the signed-in account. */
+export interface GithubStart {
+  next: string;
+  setup_code?: string;
+  link?: boolean;
 }
 
 const toolQuery = (tool: string | null) => (tool ? `&tool=${encodeURIComponent(tool)}` : "");
@@ -67,30 +71,22 @@ const profileBase = (username: string) => `/api/u/${encodeURIComponent(username)
 
 export const api = {
   authStatus: () => get<AuthStatus>("/api/auth/status"),
-  /** Resolves on success; throws with the server's message otherwise. */
-  login: (username: string, password: string) => post<{ ok: true }>("/api/auth/login", { username, password }),
+  /** The GitHub page to send the browser to; it comes back signed in (or with ?auth_error=). */
+  startGithub: (start: GithubStart) => post<{ url: string }>("/api/auth/github", start),
   logout: () => post<{ ok: true }>("/api/auth/logout"),
-  /** First account, with the setup code from the server log; signs in. */
-  setup: (setup_code: string, a: NewAccount) => post<{ ok: true }>("/api/auth/setup", { setup_code, ...a }),
-  /** Sign-up from the sign-in page (open to anyone); signs in. */
-  register: (a: NewAccount) => post<{ ok: true }>("/api/auth/register", a),
   adminOverview: () => get<AdminOverview>("/api/admin/overview"),
   adminSettings: () => get<AdminSettings>("/api/admin/settings"),
   setSignupOpen: (signup_open: boolean) => post<AdminSettings>("/api/admin/settings", { signup_open }),
-  updateProfile: (fields: { display_name?: string; avatar_url?: string }) => post<{ user: Account }>("/api/account", fields),
-  changePassword: (current_password: string, new_password: string) =>
-    post<{ ok: true }>("/api/account/password", { current_password, new_password }),
   /** Permanently deletes the signed-in user's usage and quotas. */
-  deleteActivity: (password: string, confirm: string) =>
-    post<{ ok: true; deleted: DeletedActivity }>("/api/account/delete-activity", { password, confirm }),
+  deleteActivity: (confirm: string) =>
+    post<{ ok: true; deleted: DeletedActivity }>("/api/account/delete-activity", { confirm }),
   /** Permanently deletes the signed-in user's account; its session goes too. */
-  deleteAccount: (password: string, confirm: string) =>
-    post<{ ok: true; deleted: DeletedAccount }>("/api/account/delete", { password, confirm }),
+  deleteAccount: (confirm: string) =>
+    post<{ ok: true; deleted: DeletedAccount }>("/api/account/delete", { confirm }),
   users: () => get<{ users: AdminUser[] }>("/api/users"),
   setUserDisabled: (id: number, disabled: boolean) =>
     post<{ ok: true }>(`/api/users/${id}/${disabled ? "disable" : "enable"}`),
   setUserAdmin: (id: number, is_admin: boolean) => post<{ ok: true }>(`/api/users/${id}/admin`, { is_admin }),
-  resetPassword: (id: number, password: string) => post<{ ok: true }>(`/api/users/${id}/password`, { password }),
   /** Everyone's usage over the last `days` days, or all time (null). */
   leaderboard: (days: number | null) => get<LeaderboardResponse>(`/api/leaderboard?days=${days ?? "all"}`),
   // A profile's usage, public by username (the viewer's own page uses it too).

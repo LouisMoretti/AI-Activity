@@ -4,7 +4,11 @@ import os from "node:os";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { COLLECTOR_VERSIONS } from "../shared/collectors.ts";
-import { startServer, req, newDevice, event, collector, codexResponse, opencodeMessage, userCli, login, genKey, register, userId, TEST_ADMIN, awayFromMidnight } from "./helpers.js";
+import { createHash, randomBytes } from "node:crypto";
+import {
+  startServer, req, newDevice, event, collector, codexResponse, opencodeMessage, userCli, login, genKey, register, userId, TEST_ADMIN,
+  awayFromMidnight, githubSignIn, githubUser, renameGithubUser, githubRequests, githubCode,
+} from "./helpers.js";
 
 /** A plausible reset time for a current quota window (a far-future one is dropped). */
 const soon = () => Math.floor(Date.now() / 1000) + 3600;
@@ -43,7 +47,7 @@ describe("basics (signed in as the test admin)", () => {
     assert.equal(listed.key, undefined);
     assert.deepEqual((await req(srv.base, "GET", `/api/devices/${d.id}/key`)).json, { key: d.key });
     assert.equal((await req(srv.base, "GET", `/api/devices/${d.id}/key`, { anon: true })).status, 401);
-    const eve = await register(srv.base, { username: "keyeve", password: "eve-password-1" });
+    const eve = await register(srv.base, "keyeve");
     assert.equal((await req(srv.base, "GET", `/api/devices/${d.id}/key`, { cookie: eve.cookie })).status, 404);
     assert.equal((await req(srv.base, "GET", "/api/devices/999999/key")).status, 404);
     // Revoking forgets the key.
@@ -293,7 +297,7 @@ describe("basics (signed in as the test admin)", () => {
   });
 
   test("a message id stored by another account is never overwritten", async () => {
-    const bob = await register(srv.base, { username: "msgbob", password: "bob-password-1" });
+    const bob = await register(srv.base, "msgbob");
     const bobKey = (await newDevice(srv.base, "bob-dev", bob.cookie)).key;
     const mine = event({ event_id: "msg_shared_id", usage: { input_tokens: 1, output_tokens: 1 } });
     assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { body: mine, key })).json.stored, true);
@@ -475,144 +479,197 @@ describe("basics (signed in as the test admin)", () => {
   });
 });
 
+/** Opens the server's database from the test (WAL: the server keeps running). */
+function withDb(srv, fn) {
+  const db = new Database(srv.dbPath);
+  try {
+    return fn(db);
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * An account from before GitHub sign-in (no github_id), as migration 5
+ * leaves it, with a session it opened back then (sessions survive the
+ * upgrade): the only ways in are linking from that session or the CLI.
+ */
+function legacyAccount(srv, username, { signedInAgo = 0 } = {}) {
+  const now = Math.floor(Date.now() / 1000);
+  const token = randomBytes(32).toString("base64url");
+  const id = withDb(srv, (db) => {
+    const id = Number(db.prepare("INSERT INTO users (username, created_at) VALUES (?, ?)").run(username, now).lastInsertRowid);
+    db.prepare("INSERT INTO viewer_sessions (token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)")
+      .run(createHash("sha256").update(token).digest("hex"), id, now + 86400, now - signedInAgo);
+    return id;
+  });
+  return { id, cookie: `dash_session=${token}` };
+}
+
+/** Makes every session of that user look opened `sec` seconds ago. */
+const ageSessions = (srv, id, sec) => withDb(srv, (db) =>
+  db.prepare("UPDATE viewer_sessions SET created_at = ? WHERE user_id = ?").run(Math.floor(Date.now() / 1000) - sec, id));
+
 describe("locked server (first account made from the CLI)", () => {
   let srv;
-  before(async () => { srv = await startServer({ password: "hunter2-pass" }); });
+  before(async () => { srv = await startServer({ signedIn: false }); });
   after(() => srv.stop());
 
-  test("viewer APIs require login; ingest and health stay reachable", async () => {
+  test("viewer APIs require a sign-in; ingest and health stay reachable", async () => {
     assert.equal((await req(srv.base, "GET", "/api/health")).status, 200);
     assert.equal((await req(srv.base, "GET", "/api/devices")).status, 401);
     assert.equal((await req(srv.base, "POST", "/api/devices", { body: { name: "x" } })).status, 401);
     assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { body: event(), key: "ak_nope" })).status, 401);
     const st = (await req(srv.base, "GET", "/api/auth/status")).json;
-    assert.deepEqual(st, { authenticated: false, user: null, setup_required: false, signup_open: true });
+    assert.deepEqual(st, { authenticated: false, user: null, setup_required: false, signup_open: true, github: true });
   });
 
-  test("login / logout cycle", async () => {
-    const bad = (body) => req(srv.base, "POST", "/api/auth/login", { body });
-    assert.equal((await bad({ username: "admin", password: "wrong" })).status, 401);
-    assert.equal((await bad({ password: "hunter2-pass" })).status, 401);
-    // Unknown user and wrong password are indistinguishable.
-    assert.deepEqual((await bad({ username: "nobody", password: "hunter2-pass" })).json,
-      (await bad({ username: "admin", password: "nope" })).json);
-    const ok = await req(srv.base, "POST", "/api/auth/login", { body: { username: "ADMIN", password: "hunter2-pass" } });
-    assert.equal(ok.status, 200);
-    const cookie = ok.headers.get("set-cookie").split(";")[0];
-    assert.match(ok.headers.get("set-cookie"), /HttpOnly/);
+  test("sign in with GitHub / sign out cycle", async () => {
+    const r = await githubSignIn(srv.base, "admin");
+    assert.deepEqual([r.status, r.location, r.error], [302, "/", null]);
+    assert.match(r.headers.getSetCookie().find((c) => c.startsWith("dash_session=")), /HttpOnly/);
+    const cookie = r.cookie;
     assert.equal((await req(srv.base, "GET", "/api/devices", { cookie })).status, 200);
     const me = (await req(srv.base, "GET", "/api/auth/status", { cookie })).json;
-    assert.deepEqual(me.user, { id: 1, username: "admin", display_name: "admin", avatar_url: null, is_admin: true });
+    assert.deepEqual(me.user, { id: 1, username: "admin", display_name: "admin", avatar_url: null, is_admin: true, github: true });
     const d = await newDevice(srv.base, "locked-dev", cookie);
     assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { body: event(), key: d.key })).json.stored, true);
     await req(srv.base, "POST", "/api/auth/logout", { cookie });
     assert.equal((await req(srv.base, "GET", "/api/devices", { cookie })).status, 401);
   });
 
-  test("session cookie is Secure only over HTTPS", async () => {
-    const plain = await req(srv.base, "POST", "/api/auth/login", { body: { username: "admin", password: "hunter2-pass" } });
-    assert.doesNotMatch(plain.headers.get("set-cookie"), /Secure/);
-    const r = await fetch(srv.base + "/api/auth/login", {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-forwarded-proto": "https" },
-      body: JSON.stringify({ username: "admin", password: "hunter2-pass" }),
-    });
-    assert.match(r.headers.get("set-cookie"), /Secure/);
+  test("GitHub is asked for the public profile only, and the code is exchanged server-side", async () => {
+    const r = await githubSignIn(srv.base, "admin");
+    const q = r.start.url.searchParams;
+    assert.equal(r.start.url.pathname, "/login/oauth/authorize");
+    assert.equal(q.get("client_id"), "test-client");
+    assert.equal(q.get("redirect_uri"), `${srv.base.replace("127.0.0.1", "127.0.0.1")}/api/auth/github/callback`);
+    assert.equal(q.get("scope"), null);
+    assert.match(q.get("state"), /^[\w-]{43}$/);
+    // The secret only ever goes from the server to GitHub, with the same callback address.
+    const exchange = githubRequests().at(-1);
+    assert.deepEqual([exchange.client_id, exchange.client_secret, exchange.redirect_uri], ["test-client", "test-secret", q.get("redirect_uri")]);
+    assert.ok(!JSON.stringify(r.start.json).includes("test-secret"));
   });
 
-  test("repeated failed logins from one client are throttled", async () => {
-    const attempt = (password, ip) => fetch(srv.base + "/api/auth/login", {
-      method: "POST",
-      headers: { "content-type": "application/json", "cf-connecting-ip": ip },
-      body: JSON.stringify({ username: "admin", password }),
-    });
-    for (let i = 0; i < 10; i++) assert.equal((await attempt("nope", "203.0.113.9")).status, 401);
-    const blocked = await attempt("hunter2-pass", "203.0.113.9");
-    assert.equal(blocked.status, 429);
-    assert.ok(Number(blocked.headers.get("retry-after")) > 0);
-    assert.equal((await attempt("hunter2-pass", "203.0.113.10")).status, 200);
+  test("the callback only works once, in the browser that started it", async () => {
+    // No state cookie (another browser, or a forged link): nothing happens.
+    const start = await req(srv.base, "POST", "/api/auth/github", { body: {}, anon: true });
+    const state = new URL(start.json.url).searchParams.get("state");
+    githubUser("admin");
+    const noCookie = await fetch(`${srv.base}/api/auth/github/callback?code=x&state=${state}`, { redirect: "manual" });
+    assert.equal(noCookie.headers.get("location"), "/?auth_error=expired");
+    assert.equal(noCookie.headers.getSetCookie().some((c) => c.startsWith("dash_session=")), false);
+    // A state that is not the one in this browser's cookie.
+    assert.equal((await githubSignIn(srv.base, "admin", { state: "forged" })).error, "expired");
+    // The same state twice: the second is refused (the code is single-use too).
+    const first = await req(srv.base, "POST", "/api/auth/github", { body: {}, anon: true, headers: { "cf-connecting-ip": "198.51.100.77" } });
+    const s = new URL(first.json.url).searchParams.get("state");
+    const cookie = first.headers.getSetCookie()[0].split(";")[0];
+    const back = () => fetch(`${srv.base}/api/auth/github/callback?code=nope&state=${s}`, { redirect: "manual", headers: { cookie } });
+    assert.equal((await back()).headers.get("location"), "/?auth_error=github");
+    assert.equal((await back()).headers.get("location"), "/?auth_error=expired");
+    // Cancelled on GitHub.
+    assert.equal((await githubSignIn(srv.base, null)).error, "denied");
   });
 
-  test("signing in to another account between guesses does not reset the count", async () => {
-    const ip = "203.0.113.20";
-    const attempt = (username, password) => req(srv.base, "POST", "/api/auth/login", {
-      anon: true, body: { username, password }, headers: { "cf-connecting-ip": ip },
-    });
-    assert.equal((await register(srv.base, { username: "guesser", password: "guesser-pass" })).status, 200);
-    for (let i = 0; i < 9; i++) assert.equal((await attempt("admin", "nope")).status, 401);
-    assert.equal((await attempt("guesser", "guesser-pass")).status, 200);
-    assert.equal((await attempt("admin", "nope")).status, 401);
-    assert.equal((await attempt("admin", "nope")).status, 429);
-    assert.equal((await attempt("guesser", "guesser-pass")).status, 429);
+  test("it comes back to a same-site page only", async () => {
+    assert.equal((await githubSignIn(srv.base, "admin", { next: "/settings?tab=x" })).location, "/settings?tab=x");
+    for (const next of ["//evil.example/x", "https://evil.example/", "/\\evil.example", 42]) {
+      assert.equal((await githubSignIn(srv.base, "admin", { next })).location, "/", String(next));
+    }
+  });
+
+  test("session and state cookies are Secure only over HTTPS", async () => {
+    const plain = await githubSignIn(srv.base, "admin");
+    assert.doesNotMatch(plain.start.headers.getSetCookie()[0], /Secure/);
+    assert.doesNotMatch(plain.headers.getSetCookie().find((c) => c.startsWith("dash_session=")), /Secure/);
+    const https = await githubSignIn(srv.base, "admin", { headers: { "x-forwarded-proto": "https" } });
+    assert.match(https.start.headers.getSetCookie()[0], /Secure/);
+    assert.match(https.headers.getSetCookie().find((c) => c.startsWith("dash_session=")), /Secure/);
+    assert.equal(https.start.url.searchParams.get("redirect_uri"), `${srv.base.replace("http:", "https:")}/api/auth/github/callback`);
+  });
+
+  test("password sign-in and profile editing are gone", async () => {
+    const cookie = await login(srv.base, "admin");
+    for (const [p, body] of [
+      ["/api/auth/login", { username: "admin", password: "x" }], ["/api/auth/register", { username: "x", password: "y" }],
+      ["/api/auth/setup", { setup_code: "x" }], ["/api/account", { display_name: "x" }],
+      ["/api/account/password", { current_password: "x", new_password: "y" }], ["/api/users/1/password", { password: "x" }],
+    ]) {
+      assert.equal((await req(srv.base, "POST", p, { body, cookie })).status, 404, p);
+    }
   });
 
   test("state-changing requests must be same-site JSON", async () => {
-    const cookie = await login(srv.base, "admin", "hunter2-pass");
+    const cookie = await login(srv.base, "admin");
     // A cross-site HTML form can send text/plain that happens to be JSON.
-    const form = await req(srv.base, "POST", "/api/auth/login", {
-      anon: true, type: "text/plain", raw: JSON.stringify({ username: "admin", password: "hunter2-pass" }),
-    });
+    const form = await req(srv.base, "POST", "/api/auth/github", { anon: true, type: "text/plain", raw: "{}" });
     assert.equal(form.status, 415);
     assert.equal(form.headers.get("set-cookie"), null);
     assert.equal((await req(srv.base, "POST", "/api/auth/logout", { type: null, cookie })).status, 415);
-    assert.equal((await req(srv.base, "POST", "/api/account", { type: "application/x-www-form-urlencoded", raw: "display_name=x", cookie })).status, 415);
-    const cross = await req(srv.base, "POST", "/api/account", { body: { display_name: "x" }, headers: { "sec-fetch-site": "cross-site" }, cookie });
+    assert.equal((await req(srv.base, "POST", "/api/devices", { type: "application/x-www-form-urlencoded", raw: "name=x", cookie })).status, 415);
+    const cross = await req(srv.base, "POST", "/api/devices", { body: { name: "x" }, headers: { "sec-fetch-site": "cross-site" }, cookie });
     assert.equal(cross.status, 403);
-    assert.equal((await req(srv.base, "POST", "/api/account", { body: {}, type: "application/json; charset=utf-8", cookie })).status, 200);
+    assert.equal((await req(srv.base, "POST", "/api/auth/github", { body: {}, type: "application/json; charset=utf-8", cookie })).status, 200);
     assert.equal((await req(srv.base, "GET", "/api/devices", { type: "text/plain", cookie })).status, 200);
   });
 
   test("a device name that is not text falls back to the default", async () => {
-    const cookie = await login(srv.base, "admin", "hunter2-pass");
+    const cookie = await login(srv.base, "admin");
     const r = await req(srv.base, "POST", "/api/devices", { body: { name: { toString: 1 } }, cookie });
     assert.equal(r.status, 200);
     const d = (await req(srv.base, "GET", "/api/devices", { cookie })).json.devices.find((x) => x.id === r.json.id);
     assert.equal(d.name, "unnamed device");
   });
+
+  test("starting sign-ins is rate limited per client", async () => {
+    const start = () => req(srv.base, "POST", "/api/auth/github", { body: {}, anon: true, headers: { "cf-connecting-ip": "203.0.113.61" } });
+    const statuses = [];
+    for (let i = 0; i < 31; i++) statuses.push((await start()).status);
+    assert.deepEqual([statuses.slice(0, 30).every((s) => s === 200), statuses[30]], [true, 429]);
+    assert.equal((await req(srv.base, "POST", "/api/auth/github", { body: {}, anon: true, headers: { "cf-connecting-ip": "203.0.113.62" } })).status, 200);
+  });
 });
 
-describe("login throttling under load", () => {
+describe("a server without GitHub sign-in set up", () => {
+  test("says so, and nobody can start a sign-in", async () => {
+    const srv = await startServer({ signedIn: false, env: { GITHUB_CLIENT_ID: "", GITHUB_CLIENT_SECRET: "" } });
+    try {
+      assert.equal((await req(srv.base, "GET", "/api/auth/status")).json.github, false);
+      assert.equal((await req(srv.base, "POST", "/api/auth/github", { body: {} })).status, 503);
+    } finally {
+      await srv.stop();
+    }
+  });
+});
+
+describe("client addresses for the sign-up cap", () => {
   let srv;
   before(async () => { srv = await startServer(); });
   after(() => srv.stop());
-
-  test("a burst of parallel guesses is counted before hashing", async () => {
-    const guess = () => req(srv.base, "POST", "/api/auth/login", {
-      anon: true, body: { username: "admin", password: "nope" }, headers: { "cf-connecting-ip": "203.0.113.30" },
-    });
-    const statuses = (await Promise.all(Array.from({ length: 40 }, guess))).map((r) => r.status);
-    assert.equal(statuses.filter((s) => s === 401).length, 10);
-    assert.equal(statuses.filter((s) => s === 429).length, 30);
-  });
 
   test("CF-Connecting-IP is only trusted from localhost", async (t) => {
     const lan = Object.values(os.networkInterfaces()).flat().find((i) => i && i.family === "IPv4" && !i.internal);
     if (!lan) return t.skip("no non-loopback IPv4 address to connect from");
     const base = srv.base.replace("localhost", lan.address).replace("127.0.0.1", lan.address);
     // From the LAN, a new header on every request must not buy a new budget.
-    const statuses = [];
-    for (let i = 0; i < 12; i++) {
-      statuses.push((await req(base, "POST", "/api/auth/register", {
-        anon: true, body: { username: `lan${i}`, password: "lan-password-1" }, headers: { "cf-connecting-ip": `198.51.100.${i}` },
-      })).status);
-    }
-    assert.deepEqual(statuses.slice(0, 5), [200, 200, 200, 200, 200]);
-    assert.ok(statuses.slice(5).every((s) => s === 429), String(statuses));
+    const errors = [];
+    for (let i = 0; i < 7; i++) errors.push((await register(base, `lan${i}`, { ip: `198.51.100.${i}` })).error);
+    assert.deepEqual(errors, [null, null, null, null, null, "too_many", "too_many"]);
   });
 
   test("behind a trusted proxy (TRUST_PROXY), each X-Forwarded-For client gets its own budget", async (t) => {
     const lan = Object.values(os.networkInterfaces()).flat().find((i) => i && i.family === "IPv4" && !i.internal);
     if (!lan) return t.skip("no non-loopback IPv4 address to connect from");
-    const proxied = await startServer({ password: "hunter2-pass", env: { TRUST_PROXY: `${lan.address}/32` } });
+    const proxied = await startServer({ env: { TRUST_PROXY: `${lan.address}/32` } });
     t.after(() => proxied.stop());
     const base = proxied.base.replace("127.0.0.1", lan.address);
-    const guess = (ip) => req(base, "POST", "/api/auth/login", {
-      anon: true, body: { username: "admin", password: "nope" }, headers: { "x-forwarded-for": `198.51.100.99, ${ip}` },
-    });
-    for (let i = 0; i < 10; i++) assert.equal((await guess("203.0.113.40")).status, 401);
-    assert.equal((await guess("203.0.113.40")).status, 429);
-    // Another visitor behind the same proxy is not locked out.
-    assert.equal((await guess("203.0.113.41")).status, 401);
+    const signUp = (login, ip) => register(base, login, { headers: { "x-forwarded-for": `198.51.100.99, ${ip}` } });
+    for (let i = 0; i < 5; i++) assert.equal((await signUp(`px${i}`, "203.0.113.40")).error, null);
+    assert.equal((await signUp("px5", "203.0.113.40")).error, "too_many");
+    // Another visitor behind the same proxy is not held back.
+    assert.equal((await signUp("px6", "203.0.113.41")).error, null);
   });
 
   test("an invalid TRUST_PROXY stops the server at start", async () => {
@@ -625,25 +682,26 @@ describe("accounts", () => {
     const srv = await startServer({ autoLogin: false });
     try {
       assert.deepEqual((await req(srv.base, "GET", "/api/auth/status")).json,
-        { authenticated: false, user: null, setup_required: true, signup_open: true });
+        { authenticated: false, user: null, setup_required: true, signup_open: true, github: true });
       for (const p of ["/api/devices", "/api/users", "/api/admin/overview"]) {
         assert.equal((await req(srv.base, "GET", p)).status, 401, p);
       }
       // The public account list is empty until the first account exists.
       assert.deepEqual((await req(srv.base, "GET", "/api/profiles")).json.profiles, []);
       assert.equal((await req(srv.base, "POST", "/api/devices", { body: { name: "x" } })).status, 401);
-      assert.equal((await req(srv.base, "POST", "/api/auth/login", { body: { username: "x", password: "y" } })).status, 400);
       // Collectors keep working before any account exists (keys from the CLI).
       const key = await genKey(srv.dbPath, "pre-accounts");
       assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event() })).json.stored, true);
 
-      const add = await userCli(srv.dbPath, ["add", "louis", "--name", "Louis"], "correct horse");
+      // The CLI looks the GitHub account up by login (GitHub's public API).
+      githubUser("louis", { name: "Louis", avatar_url: "https://avatars.githubusercontent.com/u/77?v=4" });
+      const add = await userCli(srv.dbPath, ["add", "louis"]);
       assert.equal(add.code, 0, add.out);
-      const cookie = await login(srv.base, "louis", "correct horse");
+      const cookie = await login(srv.base, "louis");
       const st = (await req(srv.base, "GET", "/api/auth/status", { cookie })).json;
       assert.deepEqual(st, {
-        authenticated: true, setup_required: false, signup_open: true,
-        user: { id: 1, username: "louis", display_name: "Louis", avatar_url: null, is_admin: true },
+        authenticated: true, setup_required: false, signup_open: true, github: true,
+        user: { id: 1, username: "louis", display_name: "Louis", avatar_url: "https://avatars.githubusercontent.com/u/77?v=4", is_admin: true, github: true },
       });
       assert.equal((await req(srv.base, "GET", "/api/u/louis/stats?days=730", { cookie })).json.events, 1);
       assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event() })).json.stored, true);
@@ -652,24 +710,49 @@ describe("accounts", () => {
     }
   });
 
-  test("CLI rejects weak passwords, bad usernames and duplicates", async () => {
+  test("CLI: add, link and list by GitHub login", async () => {
     const srv = await startServer();
     try {
-      assert.notEqual((await userCli(srv.dbPath, ["add", "louis"], "short")).code, 0);
-      assert.notEqual((await userCli(srv.dbPath, ["add", "no spaces"], "long enough")).code, 0);
-      assert.equal((await userCli(srv.dbPath, ["add", "louis"], "long enough")).code, 0);
-      assert.notEqual((await userCli(srv.dbPath, ["add", "LOUIS"], "long enough")).code, 0);
+      assert.notEqual((await userCli(srv.dbPath, ["add", "no spaces"])).code, 0);
+      assert.notEqual((await userCli(srv.dbPath, ["add", "-dash"])).code, 0);
+      const unknown = await userCli(srv.dbPath, ["add", "nobody-on-github"]);
+      assert.notEqual(unknown.code, 0);
+      assert.match(unknown.out, /no GitHub account "nobody-on-github"/);
+      githubUser("carol");
+      assert.equal((await userCli(srv.dbPath, ["add", "carol"])).code, 0);
+      assert.notEqual((await userCli(srv.dbPath, ["add", "CAROL"])).code, 0, "same GitHub account twice");
+      // --id: no GitHub call at all (offline servers).
+      assert.equal((await userCli(srv.dbPath, ["add", "dora", "--id", "4242", "--admin"])).code, 0);
+      assert.notEqual((await userCli(srv.dbPath, ["add", "dora2", "--id", "4242"])).code, 0);
+      assert.notEqual((await userCli(srv.dbPath, ["add", "x", "--id", "0"])).code, 0);
+      // Linking an account from before GitHub sign-in.
+      legacyAccount(srv, "oldtimer");
+      githubUser("newtimer");
+      assert.notEqual((await userCli(srv.dbPath, ["link", "nobody", "newtimer"])).code, 0);
+      assert.notEqual((await userCli(srv.dbPath, ["link", "oldtimer", "carol"])).code, 0, "carol's GitHub is linked already");
+      let list = (await userCli(srv.dbPath, ["list"])).out;
+      assert.match(list, /#\d+ oldtimer \[not linked to GitHub\]/);
+      assert.match(list, /#1 admin \[admin\]\n/);
+      assert.match(list, /#\d+ dora \[admin\]\n/);
+      assert.equal((await userCli(srv.dbPath, ["link", "oldtimer", "newtimer"])).code, 0);
+      list = (await userCli(srv.dbPath, ["list"])).out;
+      assert.doesNotMatch(list, /not linked/);
+      // Its username follows the GitHub login from its next sign-in on.
+      const cookie = await login(srv.base, "newtimer");
+      assert.equal((await req(srv.base, "GET", "/api/auth/status", { cookie })).json.user.username, "newtimer");
+      assert.notEqual((await userCli(srv.dbPath, ["passwd", "admin"])).code, 0);
     } finally {
       await srv.stop();
     }
   });
 
   test("usage lands on the device owner; devices stay private", async () => {
-    const srv = await startServer({ password: "admin-pass" });
+    const srv = await startServer({ signedIn: false });
     try {
-      assert.equal((await userCli(srv.dbPath, ["add", "bob"], "bob-password")).code, 0);
-      const admin = await login(srv.base, "admin", "admin-pass");
-      const bob = await login(srv.base, "bob", "bob-password");
+      githubUser("bob");
+      assert.equal((await userCli(srv.dbPath, ["add", "bob"])).code, 0);
+      const admin = await login(srv.base, "admin");
+      const bob = await login(srv.base, "bob");
       const adminDev = await newDevice(srv.base, "admin-laptop", admin);
       const bobDev = await newDevice(srv.base, "bob-laptop", bob);
       await req(srv.base, "POST", "/api/ingest/claude-code", { key: bobDev.key, body: event({
@@ -694,14 +777,13 @@ describe("accounts", () => {
   });
 
   test("signing in again replaces the browser's previous session", async () => {
-    const srv = await startServer({ password: "admin-pass" });
+    const srv = await startServer({ signedIn: false });
     try {
-      const first = await login(srv.base, "admin", "admin-pass");
-      const again = await req(srv.base, "POST", "/api/auth/login", {
-        body: { username: "admin", password: "admin-pass" }, cookie: first,
-      });
-      assert.equal(again.status, 200);
+      const first = await login(srv.base, "admin");
+      const again = await githubSignIn(srv.base, "admin", { cookie: first });
+      assert.ok(again.cookie);
       assert.equal((await req(srv.base, "GET", "/api/devices", { cookie: first })).status, 401);
+      assert.equal((await req(srv.base, "GET", "/api/devices", { cookie: again.cookie })).status, 200);
     } finally {
       await srv.stop();
     }
@@ -711,8 +793,8 @@ describe("accounts", () => {
     const dir = fs.mkdtempSync(`${os.tmpdir()}/ai-usage-restart-`);
     const env = { DB_PATH: `${dir}/t.db` };
     try {
-      const first = await startServer({ password: "admin-pass", env });
-      const cookie = await login(first.base, "admin", "admin-pass");
+      const first = await startServer({ signedIn: false, env });
+      const cookie = await login(first.base, "admin");
       await first.stop();
       const second = await startServer({ env, autoLogin: false });
       try {
@@ -724,104 +806,137 @@ describe("accounts", () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
-
-  test("changing a password from the CLI signs that user out", async () => {
-    const srv = await startServer({ password: "admin-pass" });
-    try {
-      const cookie = await login(srv.base, "admin", "admin-pass");
-      assert.equal((await userCli(srv.dbPath, ["passwd", "admin"], "new-admin-pass")).code, 0);
-      assert.equal((await req(srv.base, "GET", "/api/devices", { cookie })).status, 401);
-      assert.equal((await req(srv.base, "POST", "/api/auth/login", { body: { username: "admin", password: "admin-pass" } })).status, 401);
-      await login(srv.base, "admin", "new-admin-pass");
-    } finally {
-      await srv.stop();
-    }
-  });
 });
 
-describe("profiles and user management", () => {
+describe("profiles from GitHub and user management", () => {
   let srv, admin;
   const post = (p, body, cookie) => req(srv.base, "POST", p, { body, cookie });
   before(async () => {
-    srv = await startServer({ password: "admin-pass" });
-    admin = await login(srv.base, "admin", "admin-pass");
+    srv = await startServer({ signedIn: false });
+    admin = await login(srv.base, "admin");
   });
   after(() => srv.stop());
 
   test("admins list accounts; others cannot", async () => {
-    const carol = (await register(srv.base, { username: "carol", password: "carol-pass", display_name: " Carol " })).cookie;
+    const carol = (await register(srv.base, "carol", { over: { name: " Carol " } })).cookie;
     const me = (await req(srv.base, "GET", "/api/auth/status", { cookie: carol })).json.user;
-    assert.deepEqual(me, { id: me.id, username: "carol", display_name: "Carol", avatar_url: null, is_admin: false });
+    assert.deepEqual(me, { id: me.id, username: "carol", display_name: "Carol", avatar_url: null, is_admin: false, github: true });
     assert.equal((await req(srv.base, "GET", "/api/users", { cookie: carol })).status, 403);
     assert.equal((await req(srv.base, "GET", "/api/admin/overview", { cookie: carol })).status, 403);
     // Accounts are only created by signing up: there is no admin creation route.
-    assert.equal((await post("/api/users", { username: "eve", password: "eve-password" }, admin)).status, 404);
+    assert.equal((await post("/api/users", { username: "eve" }, admin)).status, 404);
     const list = (await req(srv.base, "GET", "/api/users", { cookie: admin })).json.users;
-    assert.deepEqual(list.map((u) => [u.username, u.is_admin, u.disabled]), [["admin", true, false], ["carol", false, false]]);
+    assert.deepEqual(list.map((u) => [u.username, u.is_admin, u.disabled, u.github]),
+      [["admin", true, false, true], ["carol", false, false, true]]);
   });
 
-  test("display name can be changed and cleared", async () => {
-    const r = await post("/api/account", { display_name: "Louis M." }, admin);
-    assert.equal(r.json.user.display_name, "Louis M.");
-    assert.equal((await post("/api/account", { display_name: "  " }, admin)).json.user.display_name, "admin");
-  });
-
-  test("profile picture: only https links to allowed image hosts, public everywhere", async () => {
+  test("name and picture follow GitHub at each sign-in; only allowlisted pictures are kept", async () => {
     const pic = "https://avatars.githubusercontent.com/u/12345?v=4";
-    const r = await post("/api/account", { avatar_url: ` ${pic} ` }, admin);
-    assert.equal(r.json.user.avatar_url, pic);
-    // Changing only the picture keeps the display name, and the other way round.
-    assert.equal(r.json.user.display_name, "admin");
-    assert.equal((await post("/api/account", { display_name: "Admin" }, admin)).json.user.avatar_url, pic);
-    for (const ok of ["https://github.com/octocat.png", "https://www.gravatar.com/avatar/" + "a".repeat(32) + "?s=200",
-      "https://i.imgur.com/abc1234.jpg"]) {
-      assert.equal((await post("/api/account", { avatar_url: ok }, admin)).status, 200, ok);
-    }
-    for (const bad of ["http://github.com/octocat.png", "https://evil.example/x.png", "https://github.com/octocat",
-      "https://user:pw@i.imgur.com/abc1234.jpg", "https://i.imgur.com:8443/abc1234.jpg", "javascript:alert(1)",
-      "https://github.com.evil.example/a.png", "https://gist.github.com/x.png", 42, "https://i.imgur.com/" + "a".repeat(600)]) {
-      assert.equal((await post("/api/account", { avatar_url: bad }, admin)).status, 400, String(bad));
-    }
-    await post("/api/account", { avatar_url: pic }, admin);
+    githubUser("admin", { name: "Louis M.", avatar_url: pic });
+    const cookie = await login(srv.base, "admin");
+    const me = (await req(srv.base, "GET", "/api/auth/status", { cookie })).json.user;
+    assert.deepEqual([me.display_name, me.avatar_url], ["Louis M.", pic]);
     const anon = { anon: true };
     assert.equal((await req(srv.base, "GET", "/api/u/admin", anon)).json.avatar_url, pic);
     const board = (await req(srv.base, "GET", "/api/leaderboard?days=30", anon)).json;
     assert.equal(board.entries.find((e) => e.username === "admin").avatar_url, pic);
-    // Empty clears it.
-    assert.equal((await post("/api/account", { avatar_url: "" }, admin)).json.user.avatar_url, null);
-    await post("/api/account", { display_name: "" }, admin);
+    // A long name is cut; a picture from anywhere else is dropped.
+    githubUser("admin", { name: "x".repeat(80), avatar_url: "https://evil.example/pixel.png" });
+    await login(srv.base, "admin");
+    const after = (await req(srv.base, "GET", "/api/u/admin", anon)).json;
+    assert.deepEqual([after.display_name, after.avatar_url], ["x".repeat(60), null]);
+    // No name: the username is shown.
+    githubUser("admin", { name: null, avatar_url: null });
+    await login(srv.base, "admin");
+    assert.equal((await req(srv.base, "GET", "/api/u/admin", anon)).json.display_name, "admin");
   });
 
-  test("password change needs the current one and signs out other sessions", async () => {
-    await register(srv.base, { username: "dave", password: "dave-pass-1" });
-    const here = await login(srv.base, "dave", "dave-pass-1");
-    const elsewhere = await login(srv.base, "dave", "dave-pass-1");
-    assert.equal((await post("/api/account/password", { current_password: "nope", new_password: "dave-pass-2" }, here)).status, 400);
-    assert.equal((await post("/api/account/password", { current_password: "dave-pass-1", new_password: "x" }, here)).status, 400);
-    assert.equal((await post("/api/account/password", { current_password: "dave-pass-1", new_password: "dave-pass-2" }, here)).status, 200);
-    assert.equal((await req(srv.base, "GET", "/api/devices", { cookie: here })).status, 200);
-    assert.equal((await req(srv.base, "GET", "/api/devices", { cookie: elsewhere })).status, 401);
-    await login(srv.base, "dave", "dave-pass-2");
+  test("a GitHub login rename moves the profile page; the account and its data stay", async () => {
+    const ren = await register(srv.base, "renamer");
+    const dev = await newDevice(srv.base, "ren-laptop", ren.cookie);
+    await req(srv.base, "POST", "/api/ingest/claude-code", { key: dev.key, body: event({ session_id: "ren-s" }) });
+    const id = await userId(srv.base, "renamer", admin);
+    renameGithubUser("renamer", "renamed");
+    const cookie = await login(srv.base, "renamed");
+    assert.equal((await req(srv.base, "GET", "/api/auth/status", { cookie })).json.user.id, id);
+    assert.equal((await req(srv.base, "GET", "/api/u/renamer", { anon: true })).status, 404);
+    assert.equal((await req(srv.base, "GET", "/api/u/renamed/summary", { anon: true })).json.total.events, 1);
+    assert.equal((await req(srv.base, "GET", "/api/devices", { cookie })).json.devices.length, 1);
   });
 
-  test("disabling an account signs it out and stops its devices", async () => {
-    await register(srv.base, { username: "frank", password: "frank-pass" });
-    const json = { id: await userId(srv.base, "frank", admin) };
-    const frank = await login(srv.base, "frank", "frank-pass");
+  test("a login given up on GitHub and taken by someone else goes to its new owner", async () => {
+    const old = await register(srv.base, "handle");
+    const oldId = await userId(srv.base, "handle", admin);
+    // "handle" renames to "handle2" on GitHub but has not signed in here since;
+    // a new GitHub user takes "handle" and signs up.
+    renameGithubUser("handle", "handle2");
+    const taker = await register(srv.base, "handle");
+    assert.equal(taker.error, null);
+    const users = (await req(srv.base, "GET", "/api/users", { cookie: admin })).json.users;
+    assert.equal(users.find((u) => u.id === oldId).username, `handle-${oldId}`);
+    assert.notEqual(users.find((u) => u.username === "handle").id, oldId);
+    // Its next sign-in gives the first one its new login.
+    await login(srv.base, "handle2");
+    assert.equal((await req(srv.base, "GET", "/api/auth/status", { cookie: old.cookie })).json.user.username, "handle2");
+  });
+
+  test("a login held by an account not linked to GitHub is not taken", async () => {
+    const legacy = legacyAccount(srv, "keeper");
+    const r = await register(srv.base, "keeper");
+    assert.deepEqual([r.error, r.cookie], ["taken", null]);
+    assert.equal((await req(srv.base, "GET", "/api/auth/status", { cookie: legacy.cookie })).json.user.username, "keeper");
+    // An existing account whose new login is held that way keeps its username.
+    const ok = await register(srv.base, "mover");
+    renameGithubUser("mover", "keeper");
+    const again = await githubSignIn(srv.base, "keeper");
+    assert.equal(again.error, null);
+    assert.equal((await req(srv.base, "GET", "/api/auth/status", { cookie: again.cookie })).json.user.username, "mover");
+    renameGithubUser("keeper", "mover");
+    assert.ok(ok.cookie);
+  });
+
+  test("an account from before GitHub sign-in links itself from a session still open", async () => {
+    const legacy = legacyAccount(srv, "Old.Name");
+    const me = () => req(srv.base, "GET", "/api/auth/status", { cookie: legacy.cookie });
+    assert.equal((await me()).json.user.github, false);
+    // Not signed in: nothing to link.
+    assert.equal((await githubSignIn(srv.base, "linker", { link: true })).start.status, 401);
+    const r = await githubSignIn(srv.base, "linker", { link: true, cookie: legacy.cookie, next: "/settings" });
+    assert.deepEqual([r.location, r.cookie], ["/settings", null]);
+    const user = (await me()).json.user;
+    assert.deepEqual([user.id, user.username, user.github], [legacy.id, "linker", true]);
+    // It signs in with GitHub from now on.
+    const cookie = await login(srv.base, "linker");
+    assert.equal((await req(srv.base, "GET", "/api/auth/status", { cookie })).json.user.id, legacy.id);
+    // Linking again to another GitHub account, or someone else's, is refused.
+    assert.equal((await githubSignIn(srv.base, "other-gh", { link: true, cookie })).location, "/settings?auth_error=already_linked");
+    const second = legacyAccount(srv, "second");
+    assert.equal((await githubSignIn(srv.base, "linker", { link: true, cookie: second.cookie })).location,
+      "/settings?auth_error=linked_elsewhere");
+    // A session that does not exist cannot start linking.
+    const third = legacyAccount(srv, "third");
+    assert.equal((await githubSignIn(srv.base, "third-gh", { link: true, cookie: `${third.cookie}x` })).start.status, 401);
+  });
+
+  test("an unknown GitHub user signing in gets a new account; a disabled one cannot sign in", async () => {
+    await register(srv.base, "frank");
+    const id = await userId(srv.base, "frank", admin);
+    const frank = await login(srv.base, "frank");
     const dev = await newDevice(srv.base, "frank-laptop", frank);
-    assert.equal((await post(`/api/users/${json.id}/disable`, {}, admin)).status, 200);
+    assert.equal((await post(`/api/users/${id}/disable`, {}, admin)).status, 200);
     assert.equal((await req(srv.base, "GET", "/api/devices", { cookie: frank })).status, 401);
-    assert.equal((await post("/api/auth/login", { username: "frank", password: "frank-pass" })).status, 401);
+    const refused = await githubSignIn(srv.base, "frank");
+    assert.deepEqual([refused.error, refused.cookie], ["disabled", null]);
     assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { key: dev.key, body: event() })).status, 401);
-    assert.equal((await post(`/api/users/${json.id}/enable`, {}, admin)).status, 200);
+    assert.equal((await post(`/api/users/${id}/enable`, {}, admin)).status, 200);
     assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { key: dev.key, body: event() })).status, 200);
-    await login(srv.base, "frank", "frank-pass");
+    await login(srv.base, "frank");
     assert.equal((await post("/api/users/1/disable", {}, admin)).status, 400);
     assert.equal((await post("/api/users/999/disable", {}, admin)).status, 404);
   });
 
   test("admins grant and remove admin rights, never their own", async () => {
-    const hank = (await register(srv.base, { username: "hank", password: "hank-password" })).cookie;
+    const hank = (await register(srv.base, "hank")).cookie;
     const id = await userId(srv.base, "hank", admin);
     assert.equal((await req(srv.base, "GET", "/api/users", { cookie: hank })).status, 403);
     assert.equal((await post(`/api/users/${id}/admin`, { is_admin: "yes" }, admin)).status, 400);
@@ -837,18 +952,6 @@ describe("profiles and user management", () => {
     assert.equal((await req(srv.base, "GET", "/api/users", { cookie: hank })).status, 403);
     assert.equal((await post("/api/users/999/admin", { is_admin: true }, admin)).status, 404);
   });
-
-  test("an admin password reset signs that user out", async () => {
-    await register(srv.base, { username: "gina", password: "gina-pass-1" });
-    const json = { id: await userId(srv.base, "gina", admin) };
-    const gina = await login(srv.base, "gina", "gina-pass-1");
-    assert.equal((await post(`/api/users/${json.id}/password`, { password: "gina-pass-2" }, admin)).status, 200);
-    assert.equal((await req(srv.base, "GET", "/api/devices", { cookie: gina })).status, 401);
-    await login(srv.base, "gina", "gina-pass-2");
-    // An admin's own password needs the current one (the Account section).
-    assert.equal((await post("/api/users/1/password", { password: "taken-over" }, admin)).status, 400);
-  });
-
 });
 
 describe("creating accounts from the site", () => {
@@ -859,18 +962,56 @@ describe("creating accounts from the site", () => {
       assert.match(code, /^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/);
       const key = await genKey(srv.dbPath, "pre-accounts");
       await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event() });
-      const setup = (body) => req(srv.base, "POST", "/api/auth/setup", { body });
-      const me = { username: "louis", password: "first-pass", display_name: "Louis" };
-      assert.equal((await setup({ ...me, setup_code: "AAAA-BBBB-CCCC" })).status, 401);
-      assert.equal((await setup({ ...me, password: "short", setup_code: code })).status, 400);
-      // Case, spaces and dashes do not matter.
-      const ok = await setup({ ...me, setup_code: ` ${code.toLowerCase().replace(/-/g, "")} ` });
-      assert.equal(ok.status, 200);
-      const cookie = ok.headers.get("set-cookie").split(";")[0];
-      const st = (await req(srv.base, "GET", "/api/auth/status", { cookie })).json;
-      assert.deepEqual(st.user, { id: 1, username: "louis", display_name: "Louis", avatar_url: null, is_admin: true });
-      assert.equal((await req(srv.base, "GET", "/api/u/louis/stats?days=730", { cookie })).json.events, 1);
-      assert.equal((await setup({ ...me, username: "second", setup_code: code })).status, 409);
+      githubUser("founder", { name: "Founder" });
+      const wrong = await githubSignIn(srv.base, "founder", { setup_code: "AAAA-BBBB-CCCC" });
+      assert.deepEqual([wrong.start.status, wrong.cookie], [401, null]);
+      assert.equal((await githubSignIn(srv.base, "founder")).start.status, 401, "no code at all");
+      // Two sign-ins started with the right code (case, spaces and dashes do not matter)...
+      const first = await githubSignIn(srv.base, "founder", { setup_code: ` ${code.toLowerCase().replace(/-/g, "")} ` });
+      assert.equal(first.location, "/");
+      const st = (await req(srv.base, "GET", "/api/auth/status", { cookie: first.cookie })).json;
+      assert.deepEqual(st.user, { id: 1, username: "founder", display_name: "Founder", avatar_url: null, is_admin: true, github: true });
+      assert.equal((await req(srv.base, "GET", "/api/u/founder/stats?days=730", { cookie: first.cookie })).json.events, 1);
+      // ...then the setup code means nothing: new GitHub users sign up (not admin).
+      const second = await githubSignIn(srv.base, "second", { setup_code: code });
+      assert.equal(second.error, null);
+      assert.equal((await req(srv.base, "GET", "/api/auth/status", { cookie: second.cookie })).json.user.is_admin, false);
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  test("a setup started twice creates one admin", async () => {
+    const srv = await startServer({ autoLogin: false });
+    try {
+      const code = srv.setupCode();
+      // Both browsers pass the code before either comes back from GitHub.
+      const starts = [];
+      for (const ip of ["198.51.100.201", "198.51.100.202"]) {
+        const r = await req(srv.base, "POST", "/api/auth/github", { body: { setup_code: code }, anon: true, headers: { "cf-connecting-ip": ip } });
+        starts.push({ state: new URL(r.json.url).searchParams.get("state"), cookie: r.headers.getSetCookie()[0].split(";")[0] });
+      }
+      const back = async ({ state, cookie }, login) => {
+        githubUser(login);
+        const codeFor = await githubCode(login);
+        return (await fetch(`${srv.base}/api/auth/github/callback?code=${codeFor}&state=${state}`, { redirect: "manual", headers: { cookie } })).headers.get("location");
+      };
+      assert.equal(await back(starts[0], "one"), "/");
+      assert.equal(await back(starts[1], "two"), "/?auth_error=exists");
+      const users = withDb(srv, (db) => db.prepare("SELECT username, is_admin FROM users WHERE username IS NOT NULL").all());
+      assert.deepEqual(users, [{ username: "one", is_admin: 1 }]);
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  test("setup code guesses are throttled", async () => {
+    const srv = await startServer({ autoLogin: false });
+    try {
+      const guess = (setup_code) => req(srv.base, "POST", "/api/auth/github", { body: { setup_code }, anon: true, headers: { "cf-connecting-ip": "203.0.113.30" } });
+      const statuses = (await Promise.all(Array.from({ length: 12 }, () => guess("nope")))).map((r) => r.status);
+      assert.deepEqual([statuses.filter((s) => s === 401).length, statuses.filter((s) => s === 429).length], [10, 2]);
+      assert.equal((await guess(srv.setupCode())).status, 429);
     } finally {
       await srv.stop();
     }
@@ -880,9 +1021,6 @@ describe("creating accounts from the site", () => {
     const srv = await startServer();
     try {
       assert.equal(srv.setupCode(), null);
-      assert.equal((await req(srv.base, "POST", "/api/auth/setup", {
-        body: { setup_code: "x", username: "evil", password: "evil-password" },
-      })).status, 409);
     } finally {
       await srv.stop();
     }
@@ -890,17 +1028,16 @@ describe("creating accounts from the site", () => {
 });
 
 describe("open sign-up and admin panel", () => {
-  test("anyone creates an account from the sign-in page", async () => {
+  test("anyone with a GitHub account signs up from the sign-in page", async () => {
     const srv = await startServer();
     try {
-      assert.equal((await register(srv.base, { username: "neo", password: "short" })).status, 400);
-      assert.equal((await register(srv.base, { username: "admin", password: "long-enough" })).status, 409);
-      const r = await register(srv.base, { username: "neo", password: "neo-password", display_name: "Neo" });
-      assert.equal(r.status, 200);
-      const cookie = r.cookie;
-      const me = (await req(srv.base, "GET", "/api/auth/status", { cookie })).json.user;
-      assert.deepEqual(me, { id: me.id, username: "neo", display_name: "Neo", avatar_url: null, is_admin: false });
-      assert.equal((await req(srv.base, "GET", "/api/admin/overview", { cookie })).status, 403);
+      const pic = "https://avatars.githubusercontent.com/u/31337?v=4";
+      const r = await register(srv.base, "neo", { over: { name: "Neo", avatar_url: pic } });
+      assert.deepEqual([r.location, r.error], ["/", null]);
+      const me = (await req(srv.base, "GET", "/api/auth/status", { cookie: r.cookie })).json.user;
+      assert.deepEqual(me, { id: me.id, username: "neo", display_name: "Neo", avatar_url: pic, is_admin: false, github: true });
+      assert.equal((await req(srv.base, "GET", "/api/admin/overview", { cookie: r.cookie })).status, 403);
+      assert.equal((await req(srv.base, "GET", "/api/u/neo", { anon: true })).json.display_name, "Neo");
     } finally {
       await srv.stop();
     }
@@ -909,19 +1046,22 @@ describe("open sign-up and admin panel", () => {
   test("an admin closes and reopens account creation", async () => {
     const srv = await startServer();
     try {
-      const neo = (await register(srv.base, { username: "neo", password: "neo-password" })).cookie;
+      const neo = (await register(srv.base, "neo")).cookie;
       const settings = (body, cookie) => req(srv.base, "POST", "/api/admin/settings", { body, cookie });
       assert.equal((await req(srv.base, "GET", "/api/admin/settings", { cookie: neo })).status, 403);
       assert.equal((await settings({ signup_open: false }, neo)).status, 403);
       assert.equal((await settings({ signup_open: "no" })).status, 400);
       assert.deepEqual((await settings({ signup_open: false })).json, { signup_open: false });
       assert.equal((await req(srv.base, "GET", "/api/auth/status", { anon: true })).json.signup_open, false);
-      assert.equal((await register(srv.base, { username: "trinity", password: "trinity-password" })).status, 403);
+      const refused = await register(srv.base, "trinity");
+      assert.deepEqual([refused.error, refused.cookie], ["closed", null]);
       // Existing accounts still sign in, and the CLI still creates accounts.
-      await login(srv.base, "neo", "neo-password");
-      assert.equal((await userCli(srv.dbPath, ["add", "morpheus"], "morpheus-password")).code, 0);
+      await login(srv.base, "neo");
+      githubUser("morpheus");
+      assert.equal((await userCli(srv.dbPath, ["add", "morpheus"])).code, 0);
+      await login(srv.base, "morpheus");
       assert.deepEqual((await settings({ signup_open: true })).json, { signup_open: true });
-      assert.equal((await register(srv.base, { username: "trinity", password: "trinity-password" })).status, 200);
+      assert.equal((await register(srv.base, "trinity")).error, null);
     } finally {
       await srv.stop();
     }
@@ -930,23 +1070,23 @@ describe("open sign-up and admin panel", () => {
   test("one client cannot create accounts in bulk", async () => {
     const srv = await startServer();
     try {
-      // Concurrent requests cannot slip past the limit while passwords hash.
-      const burst = await Promise.all([0, 1, 2, 3, 4, 5, 6].map((i) =>
-        register(srv.base, { username: `race${i}`, password: "bulk-password" }, "203.0.113.50")));
-      assert.deepEqual(burst.map((r) => r.status).sort(), [200, 200, 200, 200, 200, 429, 429]);
-      const blocked = await register(srv.base, { username: "bulk5", password: "bulk-password" }, "203.0.113.50");
-      assert.equal(blocked.status, 429);
-      assert.ok(Number(blocked.headers.get("retry-after")) > 0);
-      assert.equal((await register(srv.base, { username: "other", password: "other-password" }, "203.0.113.51")).status, 200);
+      const burst = await Promise.all([0, 1, 2, 3, 4, 5, 6].map((i) => register(srv.base, `race${i}`, { ip: "203.0.113.50" })));
+      assert.deepEqual(burst.map((r) => r.error ?? "ok").sort(), ["ok", "ok", "ok", "ok", "ok", "too_many", "too_many"]);
+      assert.equal((await register(srv.base, "bulk7", { ip: "203.0.113.50" })).error, "too_many");
+      // Existing accounts still sign in from there.
+      assert.equal((await githubSignIn(srv.base, "race0", { ip: "203.0.113.50" })).error, null);
+      assert.equal((await register(srv.base, "other", { ip: "203.0.113.51" })).error, null);
     } finally {
       await srv.stop();
     }
   });
 
-  test("no open sign-up before the first account exists", async () => {
+  test("no sign-up before the first account exists", async () => {
     const srv = await startServer({ autoLogin: false });
     try {
-      assert.equal((await register(srv.base, { username: "neo", password: "neo-password" })).status, 409);
+      // Without the setup code, a sign-in does not even start.
+      assert.equal((await register(srv.base, "neo")).start.status, 401);
+      assert.equal(withDb(srv, (db) => db.prepare("SELECT COUNT(*) AS n FROM users WHERE username IS NOT NULL").get().n), 0);
     } finally {
       await srv.stop();
     }
@@ -957,7 +1097,7 @@ describe("open sign-up and admin panel", () => {
     try {
       const { key } = await newDevice(srv.base);
       await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ session_id: "o1" }) });
-      await register(srv.base, { username: "neo", password: "neo-password" });
+      await register(srv.base, "neo");
       const o = (await req(srv.base, "GET", "/api/admin/overview")).json;
       assert.equal(o.accounts, 2);
       assert.equal(o.disabled_accounts, 0);
@@ -982,9 +1122,9 @@ describe("deleting your own activity", () => {
   const quotas = async (name) => (await req(srv.base, "GET", `/api/u/${name}/quotas`, { anon: true })).json.quotas;
   const withQuota = (over) => event({ rate_limits: { five_hour: { used_percentage: 12, resets_at: soon() } }, ...over });
 
-  test("needs the password and the phrase, and only deletes the signed-in user's rows", async () => {
-    const ann = await register(srv.base, { username: "ann", password: "ann-password-1" });
-    const bob = await register(srv.base, { username: "bob", password: "bob-password-1" });
+  test("needs the phrase and a recent sign-in, and only deletes the signed-in user's rows", async () => {
+    const ann = await register(srv.base, "ann");
+    const bob = await register(srv.base, "bob");
     const annDev = await newDevice(srv.base, "ann-laptop", ann.cookie);
     const bobDev = await newDevice(srv.base, "bob-laptop", bob.cookie);
     const annEvent = withQuota({ session_id: "ann-s" });
@@ -992,16 +1132,19 @@ describe("deleting your own activity", () => {
     assert.equal((await ingest(bobDev.key, withQuota({ session_id: "bob-s" }))).json.stored, true);
     const del = (body, cookie = ann.cookie) => req(srv.base, "POST", "/api/account/delete-activity", { body, cookie });
 
-    assert.equal((await del({ password: "ann-password-1", confirm: CONFIRM }, null)).status, 401);
-    assert.equal((await req(srv.base, "POST", "/api/account/delete-activity", { body: { password: "ann-password-1", confirm: CONFIRM }, anon: true })).status, 401);
-    assert.equal((await del({ password: "ann-password-1", confirm: "yes" })).status, 400);
-    assert.equal((await del({ password: "ann-password-1" })).status, 400);
-    const wrong = await del({ password: "nope", confirm: CONFIRM });
-    assert.equal(wrong.status, 400);
-    assert.deepEqual(wrong.json, { error: "password is wrong" });
+    assert.equal((await del({ confirm: CONFIRM }, null)).status, 401);
+    assert.equal((await req(srv.base, "POST", "/api/account/delete-activity", { body: { confirm: CONFIRM }, anon: true })).status, 401);
+    assert.equal((await del({ confirm: "yes" })).status, 400);
+    assert.equal((await del({})).status, 400);
+    // Signed in 11 minutes ago: sign in with GitHub again first.
+    const annId = await userId(srv.base, "ann");
+    ageSessions(srv, annId, 11 * 60);
+    const stale = await del({ confirm: CONFIRM });
+    assert.deepEqual([stale.status, stale.json], [403, { error: "sign in with GitHub again to confirm", reauth: true }]);
     assert.equal((await summary("ann")).events, 1);
+    const fresh = await login(srv.base, "ann");
 
-    const ok = await del({ password: "ann-password-1", confirm: CONFIRM });
+    const ok = await del({ confirm: CONFIRM }, fresh);
     assert.equal(ok.status, 200);
     assert.deepEqual(ok.json, { ok: true, deleted: { events: 1, quotas: 1 } });
     assert.deepEqual([(await summary("ann")).tokens, (await summary("ann")).events], [0, 0]);
@@ -1010,12 +1153,12 @@ describe("deleting your own activity", () => {
     // Bob's data, and Ann's account, session and devices are untouched.
     assert.equal((await summary("bob")).events, 1);
     assert.equal((await quotas("bob")).length, 1);
-    assert.equal((await req(srv.base, "GET", "/api/auth/status", { cookie: ann.cookie })).json.user.username, "ann");
-    const devices = (await req(srv.base, "GET", "/api/devices", { cookie: ann.cookie })).json.devices;
+    assert.equal((await req(srv.base, "GET", "/api/auth/status", { cookie: fresh })).json.user.username, "ann");
+    const devices = (await req(srv.base, "GET", "/api/devices", { cookie: fresh })).json.devices;
     assert.deepEqual(devices.map((d) => [d.name, Boolean(d.revoked)]), [["ann-laptop", false]]);
-    assert.equal((await req(srv.base, "GET", `/api/devices/${annDev.id}/key`, { cookie: ann.cookie })).json.key, annDev.key);
+    assert.equal((await req(srv.base, "GET", `/api/devices/${annDev.id}/key`, { cookie: fresh })).json.key, annDev.key);
     // Deleting again with nothing left is fine.
-    assert.deepEqual((await del({ password: "ann-password-1", confirm: CONFIRM })).json.deleted, { events: 0, quotas: 0 });
+    assert.deepEqual((await del({ confirm: CONFIRM }, fresh)).json.deleted, { events: 0, quotas: 0 });
 
     // A collector resending its history cannot bring the deleted data back...
     const replay = await ingest(annDev.key, { ...annEvent, event_id: `${annEvent.event_id}_again` });
@@ -1032,7 +1175,7 @@ describe("deleting your own activity", () => {
   });
 
   test("a clock running ahead or a missing time cannot bring deleted messages back", async () => {
-    const cid = await register(srv.base, { username: "cid", password: "cid-password-1" });
+    const cid = await register(srv.base, "cid");
     const dev = await newDevice(srv.base, "cid-laptop", cid.cookie);
     const now = Math.floor(Date.now() / 1000);
     // Stored at the receive time (clamped): after the deletion, a resend is
@@ -1041,7 +1184,7 @@ describe("deleting your own activity", () => {
     const { occurred_at, ...timeless } = event({ session_id: "cid-timeless" });
     assert.equal((await ingest(dev.key, ahead)).json.stored, true);
     assert.equal((await ingest(dev.key, timeless)).json.stored, true);
-    const del = await req(srv.base, "POST", "/api/account/delete-activity", { body: { password: "cid-password-1", confirm: CONFIRM }, cookie: cid.cookie });
+    const del = await req(srv.base, "POST", "/api/account/delete-activity", { body: { confirm: CONFIRM }, cookie: cid.cookie });
     assert.deepEqual(del.json.deleted, { events: 2, quotas: 0 });
     await new Promise((r) => setTimeout(r, 1100));
     assert.equal((await ingest(dev.key, { ...ahead, occurred_at: Math.floor(Date.now() / 1000) + 3600 })).json.deduped, true);
@@ -1056,27 +1199,16 @@ describe("deleting your own activity", () => {
   });
 
   test("deleted rows are erased from the database file, not left in free pages or the WAL", async () => {
-    const dee = await register(srv.base, { username: "dee", password: "dee-password-1" });
+    const dee = await register(srv.base, "dee");
     const dev = await newDevice(srv.base, "dee-laptop", dee.cookie);
     const marker = `dee-secret-session-${Date.now()}`;
     for (let i = 0; i < 20; i++) await ingest(dev.key, event({ session_id: marker }));
     const found = () => [srv.dbPath, `${srv.dbPath}-wal`]
       .filter((f) => fs.existsSync(f) && fs.readFileSync(f).includes(marker));
     assert.notDeepEqual(found(), []);
-    const del = await req(srv.base, "POST", "/api/account/delete-activity", { body: { password: "dee-password-1", confirm: CONFIRM }, cookie: dee.cookie });
+    const del = await req(srv.base, "POST", "/api/account/delete-activity", { body: { confirm: CONFIRM }, cookie: dee.cookie });
     assert.equal(del.json.deleted.events, 20);
     assert.deepEqual(found(), []);
-  });
-
-  test("password guesses are throttled like a login", async () => {
-    const own = await startServer();
-    try {
-      const del = (password) => req(own.base, "POST", "/api/account/delete-activity", { body: { password, confirm: CONFIRM } });
-      for (let i = 0; i < 10; i++) assert.equal((await del("nope")).status, 400);
-      assert.equal((await del(TEST_ADMIN.password)).status, 429);
-    } finally {
-      own.stop();
-    }
   });
 });
 
@@ -1089,10 +1221,10 @@ describe("deleting your own account", () => {
   const del = (body, cookie) => req(srv.base, "POST", "/api/account/delete", { body, cookie });
   const ingest = (key, body) => req(srv.base, "POST", "/api/ingest/claude-code", { key, body, anon: true });
 
-  test("needs the password and the phrase, then removes the account and everything tied to it", async () => {
-    const eli = await register(srv.base, { username: "eli", password: "eli-password-1" });
-    const fay = await register(srv.base, { username: "fay", password: "fay-password-1" });
-    const other = await login(srv.base, "eli", "eli-password-1");
+  test("needs the phrase and a recent sign-in, then removes the account and everything tied to it", async () => {
+    const eli = await register(srv.base, "eli");
+    const fay = await register(srv.base, "fay");
+    const other = await login(srv.base, "eli");
     const dev = await newDevice(srv.base, "eli-laptop", eli.cookie);
     const eliId = await userId(srv.base, "eli");
     const fayDev = await newDevice(srv.base, "fay-laptop", fay.cookie);
@@ -1100,22 +1232,23 @@ describe("deleting your own account", () => {
     assert.equal((await ingest(dev.key, event({ session_id: "eli-s", rate_limits: quota }))).json.stored, true);
     assert.equal((await ingest(fayDev.key, event({ session_id: "fay-s", rate_limits: quota }))).json.stored, true);
 
-    assert.equal((await req(srv.base, "POST", "/api/account/delete", { body: { password: "eli-password-1", confirm: CONFIRM }, anon: true })).status, 401);
-    assert.equal((await del({ password: "eli-password-1", confirm: "delete my activity" }, eli.cookie)).status, 400);
-    const wrong = await del({ password: "nope", confirm: CONFIRM }, eli.cookie);
-    assert.deepEqual([wrong.status, wrong.json], [400, { error: "password is wrong" }]);
+    assert.equal((await req(srv.base, "POST", "/api/account/delete", { body: { confirm: CONFIRM }, anon: true })).status, 401);
+    assert.equal((await del({ confirm: "delete my activity" }, eli.cookie)).status, 400);
+    ageSessions(srv, eliId, 3600);
+    const stale = await del({ confirm: CONFIRM }, eli.cookie);
+    assert.deepEqual([stale.status, stale.json.reauth], [403, true]);
     assert.equal((await req(srv.base, "GET", "/api/u/eli", { anon: true })).status, 200);
 
-    const ok = await del({ password: "eli-password-1", confirm: CONFIRM }, eli.cookie);
+    const fresh = await login(srv.base, "eli");
+    const ok = await del({ confirm: CONFIRM }, fresh);
     assert.deepEqual([ok.status, ok.json], [200, { ok: true, deleted: { events: 1, quotas: 1, devices: 1 } }]);
     // Every session, the profile, the sign-in and the device key are gone.
-    for (const cookie of [eli.cookie, other]) {
+    for (const cookie of [eli.cookie, other, fresh]) {
       assert.equal((await req(srv.base, "GET", "/api/auth/status", { cookie })).json.authenticated, false);
       assert.equal((await req(srv.base, "GET", "/api/devices", { cookie })).status, 401);
     }
     assert.equal((await req(srv.base, "GET", "/api/u/eli", { anon: true })).status, 404);
     assert.equal((await req(srv.base, "GET", "/api/u/eli/summary", { anon: true })).status, 404);
-    assert.equal((await post("/api/auth/login", { username: "eli", password: "eli-password-1" })).status, 401);
     assert.equal((await ingest(dev.key, event({ session_id: "eli-s" }))).status, 401);
     const db = new Database(srv.dbPath, { readonly: true });
     try {
@@ -1133,11 +1266,16 @@ describe("deleting your own account", () => {
     assert.equal((await req(srv.base, "GET", "/api/u/fay/summary", { anon: true })).json.total.events, 1);
     assert.equal((await req(srv.base, "GET", "/api/u/fay/quotas", { anon: true })).json.quotas.length, 1);
     assert.equal((await req(srv.base, "GET", "/api/devices", { cookie: fay.cookie })).json.devices.length, 1);
+    // Signing in with that GitHub account again makes a new, empty account.
+    const back = await githubSignIn(srv.base, "eli");
+    assert.equal(back.error, null);
+    assert.notEqual((await req(srv.base, "GET", "/api/auth/status", { cookie: back.cookie })).json.user.id, eliId);
+    assert.equal((await req(srv.base, "GET", "/api/u/eli/summary", { anon: true })).json.total.events, 0);
   });
 
   test("the last admin cannot delete their account until another admin exists", async () => {
-    const gus = await register(srv.base, { username: "gus", password: "gus-password-1" });
-    const self = { password: TEST_ADMIN.password, confirm: CONFIRM };
+    const gus = await register(srv.base, "gus");
+    const self = { confirm: CONFIRM };
     const last = await req(srv.base, "POST", "/api/account/delete", { body: self });
     assert.equal(last.status, 409);
     assert.equal((await req(srv.base, "GET", "/api/auth/status")).json.user.username, "admin");
@@ -1145,32 +1283,17 @@ describe("deleting your own account", () => {
     assert.equal((await req(srv.base, "POST", "/api/account/delete", { body: self })).status, 200);
     assert.equal((await req(srv.base, "GET", "/api/users", { cookie: gus.cookie })).json.users.some((u) => u.username === "admin"), false);
   });
-
-  test("password guesses are throttled like a login", async () => {
-    const own = await startServer();
-    try {
-      const guess = (password) => req(own.base, "POST", "/api/account/delete", { body: { password, confirm: CONFIRM } });
-      for (let i = 0; i < 10; i++) assert.equal((await guess("nope")).status, 400);
-      assert.equal((await guess(TEST_ADMIN.password)).status, 429);
-    } finally {
-      own.stop();
-    }
-  });
-
-  function post(p, body) {
-    return req(srv.base, "POST", p, { body, anon: true });
-  }
 });
 
 describe("public profile pages", () => {
   test("anyone reads a profile's usage by username, never its private data", async () => {
     const srv = await startServer();
     try {
-      const admin = await login(srv.base, TEST_ADMIN.username, TEST_ADMIN.password);
-      await register(srv.base, { username: "bob", password: "bob-password", display_name: "Bob" });
-      await register(srv.base, { username: "gone", password: "gone-password" });
+      const admin = await login(srv.base, TEST_ADMIN.username);
+      await register(srv.base, "bob", { over: { name: "Bob" } });
+      await register(srv.base, "gone");
       await req(srv.base, "POST", `/api/users/${await userId(srv.base, "gone", admin)}/disable`, { cookie: admin });
-      const bob = await login(srv.base, "bob", "bob-password");
+      const bob = await login(srv.base, "bob");
       const dev = await newDevice(srv.base, "admin-laptop", admin);
       await req(srv.base, "POST", "/api/ingest/claude-code", { key: dev.key, body: event({
         session_id: "admin-s",
@@ -1225,7 +1348,8 @@ describe("read cache", () => {
     assert.equal((await board()).totals.tokens, before.totals.tokens + 5);
     assert.equal(await tokens(), before.totals.tokens + 5);
     // Another connection (the CLI) writing to the same DB.
-    assert.equal((await userCli(srv.dbPath, ["add", "cliuser"], "cli-password-1")).code, 0);
+    githubUser("cliuser");
+    assert.equal((await userCli(srv.dbPath, ["add", "cliuser"])).code, 0);
     assert.ok((await board()).entries.some((e) => e.username === "cliuser"));
   });
 
@@ -1242,10 +1366,10 @@ describe("leaderboard", () => {
   test("ranks every enabled account by tokens, publicly", async () => {
     const srv = await startServer();
     try {
-      const admin = await login(srv.base, TEST_ADMIN.username, TEST_ADMIN.password);
-      const bob = (await register(srv.base, { username: "bob", password: "bob-password", display_name: "Bob" })).cookie;
-      await register(srv.base, { username: "idle", password: "idle-password" });
-      const gone = (await register(srv.base, { username: "gone", password: "gone-password" })).cookie;
+      const admin = await login(srv.base, TEST_ADMIN.username);
+      const bob = (await register(srv.base, "bob", { over: { name: "Bob" } })).cookie;
+      await register(srv.base, "idle");
+      const gone = (await register(srv.base, "gone")).cookie;
       // The server decides "today" when it reads: keep the posts and the
       // reads on one UTC day.
       await awayFromMidnight();
@@ -1299,7 +1423,7 @@ describe("leaderboard", () => {
   test("a streak survives a today without usage yet, not a missed day", async () => {
     const srv = await startServer();
     try {
-      const admin = await login(srv.base, TEST_ADMIN.username, TEST_ADMIN.password);
+      const admin = await login(srv.base, TEST_ADMIN.username);
       const key = (await newDevice(srv.base, "a", admin)).key;
       // The server decides "today" when it reads: keep the posts and the
       // reads on one UTC day.
@@ -1328,7 +1452,7 @@ describe("local days (like GitHub's contribution calendar)", () => {
   const lateUtc = Math.floor(Date.now() / 86400000) * 86400 - 3 * 86400 + 23.5 * 3600;
   before(async () => {
     srv = await startServer();
-    cookie = (await register(srv.base, { username: "tz", password: "tz-password-1" })).cookie;
+    cookie = (await register(srv.base, "tz")).cookie;
     key = (await newDevice(srv.base, "tz-laptop", cookie)).key;
   });
   after(() => srv.stop());
@@ -1467,36 +1591,18 @@ describe("shutdown", () => {
 });
 
 describe("limits, bounds and admin edge cases", () => {
-  test("the global cap of 50 failures locks every client, owner included", async () => {
-    const srv = await startServer();
+  test("the global cap of 50 wrong setup codes locks every client, owner included", async () => {
+    const srv = await startServer({ autoLogin: false });
     try {
-      const attempt = (ip, password = "nope") => req(srv.base, "POST", "/api/auth/login", {
-        anon: true, body: { username: TEST_ADMIN.username, password }, headers: { "cf-connecting-ip": ip },
+      const attempt = (ip, setup_code = "nope") => req(srv.base, "POST", "/api/auth/github", {
+        anon: true, body: { setup_code }, headers: { "cf-connecting-ip": ip },
       });
       for (let c = 0; c < 5; c++) for (let i = 0; i < 10; i++) assert.equal((await attempt(`203.0.113.${100 + c}`)).status, 401);
-      const owner = await attempt("203.0.113.200", TEST_ADMIN.password);
+      const owner = await attempt("203.0.113.200", srv.setupCode());
       assert.equal(owner.status, 429);
       assert.ok(Number(owner.headers.get("retry-after")) > 0);
-      // Sign-up is refused while the cap holds, too.
-      const r = await req(srv.base, "POST", "/api/auth/register", {
-        anon: true, body: { username: "late", password: "late-password" }, headers: { "cf-connecting-ip": "203.0.113.201" },
-      });
-      assert.equal(r.status, 429);
     } finally {
       await srv.stop();
-    }
-  });
-
-  test("guessing the current password is throttled like a login", async () => {
-    const srv = await startServer();
-    try {
-      const change = (current) => req(srv.base, "POST", "/api/account/password", {
-        body: { current_password: current, new_password: "new-password-1" },
-      });
-      for (let i = 0; i < 10; i++) assert.equal((await change("nope")).status, 400);
-      assert.equal((await change(TEST_ADMIN.password)).status, 429);
-    } finally {
-      srv.stop();
     }
   });
 
@@ -1521,7 +1627,6 @@ describe("limits, bounds and admin edge cases", () => {
       assert.equal((await req(srv.base, "POST", "/api/users/99999/enable")).status, 404);
       assert.equal((await req(srv.base, "POST", "/api/users/99999/disable")).status, 404);
       assert.equal((await req(srv.base, "POST", "/api/users/99999/admin", { body: { is_admin: true } })).status, 404);
-      assert.equal((await req(srv.base, "POST", "/api/users/99999/password", { body: { password: "long-enough-1" } })).status, 404);
     } finally {
       srv.stop();
     }
@@ -1530,10 +1635,11 @@ describe("limits, bounds and admin edge cases", () => {
   test("CLI: user list and gen-key --user", async () => {
     const srv = await startServer();
     try {
-      assert.equal((await userCli(srv.dbPath, ["add", "carol", "--name", "Carol"], "carol-password")).code, 0);
+      githubUser("carol");
+      assert.equal((await userCli(srv.dbPath, ["add", "carol"])).code, 0);
       const list = await userCli(srv.dbPath, ["list"]);
       assert.equal(list.code, 0);
-      assert.match(list.out, /#1 admin \(admin\)/);
+      assert.match(list.out, /#1 admin \[admin\]/);
       assert.match(list.out, /#\d+ carol\n/);
       const key = await genKey(srv.dbPath, "carol-laptop", "--user", "carol");
       assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event() })).json.stored, true);
@@ -1890,7 +1996,7 @@ describe("rate limits", () => {
     const srv = await startServer();
     t.after(() => srv.stop());
     await burst(() => req(srv.base, "GET", "/api/devices"), { capacity: 120, perSec: 1, max: 500 });
-    const bob = await register(srv.base, { username: "ratebob", password: "bob-password-1" });
+    const bob = await register(srv.base, "ratebob");
     assert.equal((await req(srv.base, "GET", "/api/devices", { cookie: bob.cookie })).status, 200);
   });
 

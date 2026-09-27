@@ -17,7 +17,91 @@ const GEN_KEY = path.join(ROOT, "scripts", "gen-key.ts");
 
 /** Session cookie used by req() when the call passes none (see startServer). */
 const defaultCookies = new Map();
-export const TEST_ADMIN = { username: "admin", password: "test-admin-pass" };
+/** The first account of a test server: GitHub login "admin" (see githubUser). */
+export const TEST_ADMIN = { username: "admin" };
+
+/**
+ * A fake GitHub for the whole test process (OAuth token endpoint, /user,
+ * /users/<login>): servers get it as GITHUB_URL / GITHUB_API_URL. Users
+ * are made up on first use (githubUser); a code signs one of them in.
+ */
+const github = { users: new Map(), codes: new Map(), requests: [], nextId: 1000, server: null, base: "" };
+
+/** The fake GitHub account with that login (made up on first use, or changed by `over`). */
+export function githubUser(login, over = {}) {
+  const key = login.toLowerCase();
+  const user = github.users.get(key) ?? {
+    // Like many GitHub accounts: no name (the username is shown) and, here,
+    // no picture unless a test gives one.
+    id: github.nextId++, login, name: null, avatar_url: null,
+  };
+  Object.assign(user, over);
+  github.users.set(key, user);
+  return user;
+}
+
+/** Renames a fake GitHub account (same id), like a GitHub login rename. */
+export function renameGithubUser(login, to) {
+  const user = github.users.get(login.toLowerCase());
+  github.users.delete(login.toLowerCase());
+  user.login = to;
+  github.users.set(to.toLowerCase(), user);
+  return user;
+}
+
+/** A one-time OAuth code the fake GitHub turns into that user's token. */
+export async function githubCode(login) {
+  await fakeGithub();
+  githubUser(login);
+  const code = `code-${Math.random().toString(36).slice(2)}`;
+  github.codes.set(code, login.toLowerCase());
+  return code;
+}
+
+/** Token exchanges the fake GitHub received (what the server sent it). */
+export const githubRequests = () => github.requests;
+
+export async function fakeGithub() {
+  if (github.server) return github.base;
+  github.server = http.createServer(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    const url = new URL(request.url, "http://x");
+    const send = (status, json) => {
+      response.writeHead(status, { "content-type": "application/json" });
+      response.end(JSON.stringify(json));
+    };
+    if (request.method === "POST" && url.pathname === "/login/oauth/access_token") {
+      const b = JSON.parse(body || "{}");
+      github.requests.push(b);
+      const login = github.codes.get(b.code);
+      github.codes.delete(b.code); // codes work once, like GitHub's
+      if (!login || b.client_secret !== "test-secret") return send(200, { error: "bad_verification_code" });
+      return send(200, { access_token: `token-${login}`, token_type: "bearer", scope: "" });
+    }
+    if (url.pathname === "/user") {
+      const login = (request.headers.authorization ?? "").replace(/^Bearer token-/, "");
+      const user = github.users.get(login.toLowerCase());
+      return user ? send(200, user) : send(401, { message: "Bad credentials" });
+    }
+    const byLogin = url.pathname.match(/^\/users\/([^/]+)$/);
+    if (byLogin) {
+      const user = github.users.get(decodeURIComponent(byLogin[1]).toLowerCase());
+      return user ? send(200, user) : send(404, { message: "Not Found" });
+    }
+    send(404, { message: "Not Found" });
+  });
+  await new Promise((resolve) => github.server.listen(0, "127.0.0.1", resolve));
+  github.server.unref(); // never keeps a test process alive
+  github.base = `http://127.0.0.1:${github.server.address().port}`;
+  return github.base;
+}
+
+/** Server environment for Sign in with GitHub against the fake GitHub. */
+export async function githubEnv() {
+  const base = await fakeGithub();
+  return { GITHUB_CLIENT_ID: "test-client", GITHUB_CLIENT_SECRET: "test-secret", GITHUB_URL: base, GITHUB_API_URL: base };
+}
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -31,22 +115,22 @@ function freePort() {
 }
 
 /**
- * Boot the server on a temp DB. Without a password, an admin account is
- * created and signed in, and req() uses that session by default (pass
- * `anon: true` for an anonymous call). With a password, an "admin" account
- * with that password is created but not signed in. `autoLogin: false`
- * without a password boots with no account at all.
+ * Boot the server on a temp DB, with Sign in with GitHub against the fake
+ * GitHub. By default an admin account (GitHub "admin") is created and
+ * signed in, and req() uses that session by default (pass `anon: true` for
+ * an anonymous call). `signedIn: false` creates it without signing in;
+ * `autoLogin: false` boots with no account at all.
  */
-export async function startServer({ password = "", env = {}, autoLogin = true } = {}) {
-  const auto = autoLogin && !password;
-  if (auto) password = TEST_ADMIN.password;
+export async function startServer({ signedIn = true, env = {}, autoLogin = true } = {}) {
+  const auto = autoLogin && signedIn;
+  env = { ...(await githubEnv()), ...env };
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ai-usage-test-"));
   const dbPath = env.DB_PATH ?? path.join(dir, "t.db");
   try {
     // The first account, made from the CLI like on a real server. Once
     // only: a retry below reuses the same database.
-    if (password) {
-      const add = await userCli(dbPath, ["add", TEST_ADMIN.username], password);
+    if (autoLogin) {
+      const add = await userCli(dbPath, ["add", TEST_ADMIN.username, "--id", String(githubUser(TEST_ADMIN.username).id)]);
       if (add.code !== 0) throw new Error(`admin create failed: ${add.out}`);
     }
     // node --test runs test files in parallel: another file can bind a freed
@@ -91,7 +175,7 @@ async function bootServer({ dir, dbPath, env, auto }) {
     }
     await new Promise((r) => setTimeout(r, 50));
   }
-  if (auto) defaultCookies.set(base, await login(base, TEST_ADMIN.username, TEST_ADMIN.password));
+  if (auto) defaultCookies.set(base, await login(base, TEST_ADMIN.username));
   return {
     base,
     dbPath,
@@ -183,26 +267,66 @@ export function opencodeMessage(over = {}) {
   };
 }
 
-/** Run `npm run user -- <args>` against a test DB, piping the password on stdin. */
-export function userCli(dbPath, args, password = "") {
+/** Run `npm run user -- <args>` against a test DB (GitHub lookups go to the fake GitHub). */
+export async function userCli(dbPath, args) {
+  const api = await fakeGithub();
   return new Promise((resolve) => {
     const proc = spawn(process.execPath, [USER_CLI, ...args], {
-      env: { ...process.env, DB_PATH: dbPath },
-      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, DB_PATH: dbPath, GITHUB_API_URL: api },
+      stdio: ["ignore", "pipe", "pipe"],
     });
     let out = "";
     proc.stdout.on("data", (c) => (out += c));
     proc.stderr.on("data", (c) => (out += c));
-    proc.stdin.end(`${password}\n`);
     proc.on("exit", (code) => resolve({ code, out }));
   });
 }
 
-/** Log in and return the session cookie ("name=value"). */
-export async function login(base, username, password) {
-  const r = await req(base, "POST", "/api/auth/login", { body: { username, password }, anon: true });
-  if (r.status !== 200) throw new Error(`login failed: ${r.status} ${r.text}`);
-  return r.headers.get("set-cookie").split(";")[0];
+let signInIp = 0;
+/**
+ * A whole GitHub sign-in in one browser: POST /api/auth/github ({next,
+ * setup_code, link}), then GitHub's redirect back to the callback with a
+ * code for that GitHub login (`login: null`: the user cancelled). Each call
+ * comes from its own client address (the OAuth and sign-up limits are per
+ * client) unless `ip` says. Resolves with the start answer (`start`), where
+ * the callback sent the browser (`location`), its `auth_error`, and the
+ * session cookie it set (null if none).
+ */
+export async function githubSignIn(base, login, { next, setup_code, link, cookie, ip, state: forged, headers: extra = {} } = {}) {
+  ip ??= `198.17.${Math.floor(++signInIp / 250) % 250}.${signInIp % 250}`;
+  const headers = { "content-type": "application/json", "cf-connecting-ip": ip, ...(cookie ? { cookie } : {}), ...extra };
+  const start = await fetch(`${base}/api/auth/github`, {
+    method: "POST", headers, body: JSON.stringify({ next, setup_code, link }),
+  });
+  const startJson = await start.json().catch(() => null);
+  if (start.status !== 200) return { start: { status: start.status, json: startJson }, location: null, error: null, cookie: null };
+  const url = new URL(startJson.url);
+  const state = forged ?? url.searchParams.get("state");
+  const stateCookie = start.headers.getSetCookie().find((c) => c.startsWith("gh_oauth="))?.split(";")[0];
+  let query = `state=${encodeURIComponent(state)}`;
+  if (login === null) query += "&error=access_denied";
+  else query = `code=${await githubCode(login)}&${query}`;
+  const back = await fetch(`${base}/api/auth/github/callback?${query}`, {
+    redirect: "manual",
+    headers: { "cf-connecting-ip": ip, cookie: [stateCookie, cookie].filter(Boolean).join("; "), ...extra },
+  });
+  const location = back.headers.get("location");
+  const session = back.headers.getSetCookie().find((c) => c.startsWith("dash_session=") && !/Max-Age=0/i.test(c));
+  return {
+    start: { status: start.status, json: startJson, url, headers: start.headers },
+    headers: back.headers,
+    status: back.status,
+    location,
+    error: location ? new URL(location, base).searchParams.get("auth_error") : null,
+    cookie: session ? session.split(";")[0] : null,
+  };
+}
+
+/** Sign in with GitHub as that (linked) login and return the session cookie ("name=value"). */
+export async function login(base, username) {
+  const r = await githubSignIn(base, username);
+  if (!r.cookie) throw new Error(`sign-in failed: ${r.start.status} ${JSON.stringify(r.start.json)} → ${r.location}`);
+  return r.cookie;
 }
 
 /** Run `npm run gen-key -- <name> [...extra]` against a test DB; resolves with the key. */
@@ -224,20 +348,13 @@ let pollIp = 0;
  */
 export const asNewClient = () => ({ "cf-connecting-ip": `198.19.${Math.floor(++pollIp / 250) % 250}.${pollIp % 250}` });
 
-let signupIp = 0;
 /**
- * Sign up through the public form (POST /api/auth/register). Each call uses
- * its own client address so the per-client sign-up limit never interferes.
- * Resolves with the response and the new session cookie.
+ * Sign up: a GitHub sign-in by a GitHub user with no account yet (made up
+ * with `over`, e.g. a name). Resolves like githubSignIn.
  */
-export async function register(base, body, ip = `198.18.${Math.floor(++signupIp / 250)}.${signupIp % 250}`) {
-  const r = await fetch(`${base}/api/auth/register`, {
-    method: "POST",
-    headers: { "content-type": "application/json", "cf-connecting-ip": ip },
-    body: JSON.stringify(body),
-  });
-  const json = await r.json().catch(() => null);
-  return { status: r.status, json, headers: r.headers, cookie: r.headers.get("set-cookie")?.split(";")[0] ?? null };
+export async function register(base, login, { over, ...options } = {}) {
+  githubUser(login, over);
+  return githubSignIn(base, login, options);
 }
 
 /** An account's id, looked up by an admin session (the default one if omitted). */

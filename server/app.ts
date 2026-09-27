@@ -18,10 +18,12 @@ import { leaderboardRoutes, profileListRoutes, publicProfileRoutes } from "./rou
 
 /** setupCode: one-time code for creating the first account from the browser (null once one exists). */
 export function createApp(db: DB, config: Config, setupCode: string | null = null) {
-  const auth = createViewerAuth(db, clientInfo(config.trustProxy));
+  const client = clientInfo(config.trustProxy);
+  const auth = createViewerAuth(db, client);
   const cache = readCache(db);
   const publicReads = rateLimit(tokenBuckets(LIMITS.publicReads), (c) => auth.clientId(c));
   const perUser = rateLimit(tokenBuckets(LIMITS.sessionRequests), (c) => String(c.get("userId")));
+  const oauth = rateLimit(tokenBuckets(LIMITS.oauth), (c) => auth.clientId(c));
 
   const api = new Hono()
     .use(limitBody(256 * 1024))
@@ -31,7 +33,10 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
       c.header("cache-control", "no-store");
     })
     .get("/health", (c) => c.json({ ok: true }))
-    .route("/auth", authRoutes(db, auth, setupCode))
+    // Starting a GitHub sign-in and coming back from it, per client (the
+    // pattern covers /auth/github itself too).
+    .use("/auth/github/*", oauth)
+    .route("/auth", authRoutes(db, auth, client, config.github, config.publicUrl, setupCode))
     .route("/ingest", ingestRoutes(db))
     // Public, read-only: profile pages, the account list and the leaderboard.
     .use("/u/*", publicReads)
@@ -46,7 +51,7 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
     .use(auth.require)
     .use(perUser)
     .route("/devices", deviceRoutes(db))
-    .route("/account", accountRoutes(db, auth))
+    .route("/account", accountRoutes(db))
     .route("/users", userRoutes(db))
     .route("/admin", adminRoutes(db));
 
