@@ -3,10 +3,11 @@ import type {
   Account, ActivityDay, AdminOverview, AdminUser, Profile, Breakdown, BreakdownRow, DeletedAccount, DeletedActivity, Device, LeaderboardEntry,
   LeaderboardResponse, Quota, Session,
 } from "../../shared/types.ts";
-import { BREAKDOWN_DISPLAY_ROWS } from "../../shared/types.ts";
+import { COLLECTOR_VERSIONS } from "../../shared/collectors.ts";
+import { BREAKDOWN_DISPLAY_ROWS, TOOLS } from "../../shared/types.ts";
 import { nowSec, type DB } from "./schema.ts";
 
-export interface DeviceRow extends Omit<Device, "has_key"> {
+export interface DeviceRow extends Omit<Device, "has_key" | "collectors"> {
   user_id: number;
   key_hash: string;
   key: string | null;
@@ -262,6 +263,7 @@ export function deleteAccount(db: DB, userId: number): DeleteAccountResult {
     const events = run("DELETE FROM usage_events WHERE user_id = ?");
     const quotas = run("DELETE FROM quota_snapshots WHERE user_id = ?");
     run("DELETE FROM deleted_events WHERE user_id = ?");
+    run("DELETE FROM collector_versions WHERE device_id IN (SELECT id FROM devices WHERE user_id = ?)");
     const devices = run("DELETE FROM devices WHERE user_id = ?");
     run("DELETE FROM viewer_sessions WHERE user_id = ?");
     run("DELETE FROM users WHERE id = ?");
@@ -347,8 +349,49 @@ export function listDevices(db: DB, userId: number): Device[] {
     .prepare(
       "SELECT id, name, key_prefix, revoked, created_at, key IS NOT NULL AS has_key FROM devices WHERE user_id = ? ORDER BY id"
     )
-    .all(userId) as (Omit<Device, "has_key"> & { has_key: number })[];
-  return rows.map((d) => ({ ...d, has_key: Boolean(d.has_key) }));
+    .all(userId) as (Omit<Device, "has_key" | "collectors"> & { has_key: number })[];
+  const seen = db
+    .prepare(
+      `SELECT c.device_id, c.tool, c.version, c.seen_at FROM collector_versions c
+       JOIN devices d ON d.id = c.device_id WHERE d.user_id = ?`
+    )
+    .all(userId) as { device_id: number; tool: string; version: number; seen_at: number }[];
+  return rows.map((d) => ({
+    ...d,
+    has_key: Boolean(d.has_key),
+    collectors: TOOLS.flatMap((tool) => {
+      const mine = seen.filter((s) => s.device_id === d.id && s.tool === tool);
+      if (!mine.length) return [];
+      const last = mine.reduce((a, b) => (b.seen_at > a.seen_at || (b.seen_at === a.seen_at && b.version > a.version) ? b : a));
+      // The lowest version still posting: a copy seen within a day of the
+      // tool's last post. An old copy left next to an updated one (a hook
+      // running a stale script) stays flagged; one replaced stops a day later.
+      const shown = mine
+        .filter((s) => s.seen_at >= last.seen_at - COLLECTOR_STILL_POSTING_SEC)
+        .reduce((a, b) => (b.version < a.version ? b : a));
+      const latest = COLLECTOR_VERSIONS[tool];
+      return [{
+        tool, version: shown.version, seen_at: shown.seen_at, newest: last.version, latest,
+        outdated: shown.version < latest,
+      }];
+    }),
+  }));
+}
+
+/** How long after a tool's last post an older collector copy still counts as posting. */
+const COLLECTOR_STILL_POSTING_SEC = 86400;
+
+/**
+ * A device posted with this collector version. Written when the version is
+ * new for the device and tool, else at most hourly (seen_at): every post
+ * comes here, and a write would also empty the public read cache.
+ */
+export function recordCollectorVersion(db: DB, deviceId: number, tool: string, version: number, now: number): void {
+  db.prepare(
+    `INSERT INTO collector_versions (device_id, tool, version, seen_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT (device_id, tool, version) DO UPDATE SET seen_at = excluded.seen_at
+     WHERE seen_at < excluded.seen_at - 3600`
+  ).run(deviceId, tool, version, now);
 }
 
 export type UpsertResult = "stored" | "updated" | "deduped";

@@ -509,6 +509,14 @@ Each tool has one Python script in `collectors/`. They share the same design:
   once its turn comes, so it sends what they would have.
 - **Idempotent.** Any script can also run by hand or from cron
   (Task Scheduler on Windows): it sends only what is new.
+- **Versioned.** Each script has a `VERSION` at its top and sends it with
+  every upload. When the server has a newer one, the script says so on
+  stderr and in `~/.cache/ai-activity/update-available-<tool>` (removed
+  once up to date), and Settings → Devices flags that device's collector
+  as outdated. To update, run the device's install command again (or copy
+  the new script by hand). The server never sends code: updates are
+  always yours to run. A collector too old for the server (`426`) keeps
+  its backlog, which goes out once it is updated.
 
 | Script | Copy to | Run by | Reads | Progress file | Locks |
 | --- | --- | --- | --- | --- | --- |

@@ -116,6 +116,33 @@ export interface Device {
   created_at: number;
   /** The key can be fetched again (GET /api/devices/:id/key); false for revoked or older keys. */
   has_key: boolean;
+  /** The collector version of each tool this device posted for, in TOOLS order. */
+  collectors: DeviceCollector[];
+}
+
+/** The collector versions a device posts with, for one tool. */
+export interface DeviceCollector {
+  tool: Tool;
+  /**
+   * The lowest version still posting (seen within a day of the tool's last
+   * post), so an old copy next to an updated one shows. 0: from before versions.
+   */
+  version: number;
+  /** When `version` last posted (at most an hour stale: refreshed hourly). */
+  seen_at: number;
+  /** The version of the tool's last post. */
+  newest: number;
+  /** The version in this server's collectors/ (COLLECTOR_VERSIONS). */
+  latest: number;
+  /** `version` is behind `latest`: update it (run the install command again). */
+  outdated: boolean;
+}
+
+/** In an ingest answer when the collector is behind this server's. */
+export interface CollectorUpdate {
+  latest: number;
+  /** Older collectors than this get 426. */
+  minimum: number;
 }
 
 export interface Account {
@@ -184,6 +211,7 @@ export interface IngestResult {
   deduped: boolean;
   /** The message id, or null when the payload carried no usage. */
   event_id: string | null;
+  update?: CollectorUpdate;
 }
 
 /** POST /api/ingest/<tool> with { messages: [...] }. */
@@ -194,6 +222,7 @@ export interface IngestBatchResult {
   stored: number;
   updated: number;
   deduped: number;
+  update?: CollectorUpdate;
 }
 
 /** One account on the leaderboard (every enabled account, idle ones with zeros). */

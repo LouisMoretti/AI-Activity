@@ -13,6 +13,7 @@ export const MIGRATIONS: ((db: DB) => void)[] = [
   baseline,
   cleanupCoveredSnapshots,
   activityClearedAt,
+  collectorVersions,
 ];
 
 /**
@@ -30,6 +31,24 @@ function activityClearedAt(db: DB): void {
       event_id TEXT NOT NULL,
       PRIMARY KEY (user_id, event_id)
     ) WITHOUT ROWID;
+  `);
+}
+
+/**
+ * 4: The collector versions each device posted with, per tool, and when
+ * each last did (issue #125), so Settings → Devices can flag outdated
+ * copies, including an old one still posting next to an updated one.
+ * Deleting an account deletes its devices' rows first.
+ */
+function collectorVersions(db: DB): void {
+  db.exec(`
+    CREATE TABLE collector_versions (
+      device_id INTEGER NOT NULL REFERENCES devices(id),
+      tool TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      seen_at INTEGER NOT NULL,
+      PRIMARY KEY (device_id, tool, version)
+    ) WITHOUT ROWID
   `);
 }
 

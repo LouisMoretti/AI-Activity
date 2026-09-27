@@ -3,7 +3,8 @@ import Database from "better-sqlite3";
 import os from "node:os";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { startServer, req, newDevice, event, codexResponse, opencodeMessage, userCli, login, genKey, register, userId, TEST_ADMIN, awayFromMidnight } from "./helpers.js";
+import { COLLECTOR_VERSIONS } from "../shared/collectors.ts";
+import { startServer, req, newDevice, event, collector, codexResponse, opencodeMessage, userCli, login, genKey, register, userId, TEST_ADMIN, awayFromMidnight } from "./helpers.js";
 
 /** A plausible reset time for a current quota window (a far-future one is dropped). */
 const soon = () => Math.floor(Date.now() / 1000) + 3600;
@@ -50,6 +51,72 @@ describe("basics (signed in as the test admin)", () => {
     assert.equal((await req(srv.base, "GET", `/api/devices/${d.id}/key`)).status, 404);
     const revoked = (await req(srv.base, "GET", "/api/devices")).json.devices.find((x) => x.id === d.id);
     assert.equal(revoked.has_key, false);
+  });
+
+  test("collector versions: recorded per device and tool, outdated ones get an update hint", async () => {
+    const d = await newDevice(srv.base, "versions");
+    const post = (tool, body) => req(srv.base, "POST", `/api/ingest/${tool}`, { body, key: d.key });
+    const listed = async () => (await req(srv.base, "GET", "/api/devices")).json.devices.find((x) => x.id === d.id).collectors;
+    // The installer's key check (an empty body) is not a collector.
+    const check = await post("claude-code", {});
+    assert.equal(check.status, 200);
+    assert.equal(check.json.update, undefined);
+    assert.deepEqual(await listed(), []);
+    // No version (a copy from before versions): version 0, told to update.
+    const old = await post("claude-code", event({ collector: undefined }));
+    assert.equal(old.status, 200);
+    assert.equal(old.json.stored, true);
+    assert.deepEqual(old.json.update, { latest: COLLECTOR_VERSIONS["claude-code"], minimum: 0 });
+    // Another tool's name, or a version that is not a positive integer, counts as 0 too.
+    for (const collector of [{ name: "claude-code", version: 1 }, { name: "codex", version: "1" }, { name: "codex", version: 1.5 }, "codex"]) {
+      assert.ok((await post("codex", { messages: [], collector })).json.update, JSON.stringify(collector));
+    }
+    let rows = await listed();
+    assert.deepEqual(rows.map((c) => [c.tool, c.version, c.outdated]), [["claude-code", 0, true], ["codex", 0, true]]);
+    assert.equal(rows[0].latest, COLLECTOR_VERSIONS["claude-code"]);
+    assert.ok(Math.abs(rows[0].seen_at - Date.now() / 1000) < 60);
+    // The current collector: no hint. The old copy posted within a day, so
+    // the device still shows it: an old copy next to an updated one.
+    for (const tool of ["claude-code", "codex"]) {
+      const r = await post(tool, { messages: [], collector: collector(tool) });
+      assert.equal(r.status, 200);
+      assert.equal(r.json.update, undefined);
+    }
+    rows = await listed();
+    assert.deepEqual(rows.map((c) => [c.tool, c.version, c.newest, c.outdated]),
+      [["claude-code", 0, COLLECTOR_VERSIONS["claude-code"], true], ["codex", 0, COLLECTOR_VERSIONS.codex, true]]);
+    // Once the old copy has not posted for over a day before the last post, it is gone.
+    const db = new Database(srv.dbPath);
+    try {
+      db.prepare("UPDATE collector_versions SET seen_at = seen_at - 90000 WHERE device_id = ? AND version = 0").run(d.id);
+    } finally {
+      db.close();
+    }
+    rows = await listed();
+    assert.deepEqual(rows.map((c) => [c.tool, c.version, c.outdated]),
+      [["claude-code", COLLECTOR_VERSIONS["claude-code"], false], ["codex", COLLECTOR_VERSIONS.codex, false]]);
+    // One flat event carries the hint too.
+    assert.ok((await post("claude-code", event({ collector: undefined }))).json.update);
+  });
+
+  test("a known collector version is written at most hourly (a write empties the read cache)", async () => {
+    const d = await newDevice(srv.base, "versions-hourly");
+    const post = () => req(srv.base, "POST", "/api/ingest/codex", { body: { messages: [], collector: collector("codex") }, key: d.key });
+    const db = new Database(srv.dbPath);
+    const seenAt = () => db.prepare("SELECT seen_at FROM collector_versions WHERE device_id = ?").get(d.id).seen_at;
+    const age = (sec) => db.prepare("UPDATE collector_versions SET seen_at = seen_at - ? WHERE device_id = ?").run(sec, d.id);
+    try {
+      assert.equal((await post()).status, 200);
+      age(1800);
+      const half = seenAt();
+      assert.equal((await post()).status, 200);
+      assert.equal(seenAt(), half); // within the hour: untouched
+      age(1900);
+      assert.equal((await post()).status, 200);
+      assert.ok(Math.abs(seenAt() - Date.now() / 1000) < 60); // over an hour: refreshed
+    } finally {
+      db.close();
+    }
   });
 
   test("ingest rejects bad JSON, oversized bodies and unsupported tools", async () => {
@@ -121,6 +188,7 @@ describe("basics (signed in as the test admin)", () => {
       rate_limits: { five_hour: { used_percentage: 33, resets_at: soon() } },
       account_ref: "batch-acct",
       context: { session_id: "batch-s", used_pct: 61, window_size: 200000 },
+      collector: collector("claude-code"),
     };
     const r = (await req(srv.base, "POST", "/api/ingest/claude-code", { body, key })).json;
     // The entry without a message id is ignored: it cannot be deduplicated.
@@ -258,6 +326,7 @@ describe("basics (signed in as the test admin)", () => {
         rate_limits: { seven_day: { used_percentage: 44, resets_at: soon() } },
         account_ref: "raw-acct",
         cost: { total_cost_usd: 99 },
+        collector: collector("claude-code"),
       },
     });
     assert.deepEqual(r.json, { ok: true, stored: false, updated: false, deduped: false, event_id: null });
@@ -1054,6 +1123,9 @@ describe("deleting your own account", () => {
         assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE user_id = ?`).get(eliId).n, 0, table);
       }
       assert.equal(db.prepare("SELECT COUNT(*) AS n FROM users WHERE id = ?").get(eliId).n, 0);
+      // Its devices' collector versions go first (they reference the device).
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM collector_versions WHERE device_id = ?").get(dev.id).n, 0);
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM collector_versions WHERE device_id = ?").get(fayDev.id).n, 1);
     } finally {
       db.close();
     }
@@ -1536,7 +1608,7 @@ describe("web root without index.html", () => {
 
 describe("codex ingestion", () => {
   let srv, key;
-  const post = (body) => req(srv.base, "POST", "/api/ingest/codex", { body, key });
+  const post = (body) => req(srv.base, "POST", "/api/ingest/codex", { body: { collector: collector("codex"), ...body }, key });
   const summary = async (tool = "codex") => (await req(srv.base, "GET", `/api/u/admin/summary?tool=${tool}`)).json.total;
 
   before(async () => {
@@ -1613,7 +1685,7 @@ describe("codex ingestion", () => {
 
 describe("opencode ingestion", () => {
   let srv, key;
-  const post = (body) => req(srv.base, "POST", "/api/ingest/opencode", { body, key });
+  const post = (body) => req(srv.base, "POST", "/api/ingest/opencode", { body: { collector: collector("opencode"), ...body }, key });
   const summary = async (tool = "opencode") => (await req(srv.base, "GET", `/api/u/admin/summary?tool=${tool}`)).json.total;
 
   before(async () => {
@@ -1686,7 +1758,7 @@ describe("opencode ingestion", () => {
 
 describe("antigravity ingestion", () => {
   let srv, key;
-  const post = (body) => req(srv.base, "POST", "/api/ingest/antigravity", { body, key });
+  const post = (body) => req(srv.base, "POST", "/api/ingest/antigravity", { body: { collector: collector("antigravity"), ...body }, key });
   const summary = async () => (await req(srv.base, "GET", "/api/u/admin/summary?tool=antigravity")).json.total;
   const response = (over = {}) => ({
     response_id: "r1", session_id: "conv1", model: "gemini-3-pro",

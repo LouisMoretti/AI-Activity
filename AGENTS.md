@@ -247,6 +247,8 @@ API black-box (`test/api.test.js`), so they must stay green across refactors;
 migrations; `test/rate-limit.test.js` covers the token buckets;
 `test/backup.test.js` backs up during writes, prunes and
 restores; `test/client.test.js` covers client addresses behind proxies;
+`test/collector-versions.test.js` checks collector versions (constants,
+file hashes, update hints in each collector);
 `test/confirm-delete.test.js` runs the Settings danger zone's flows
 (`confirm-delete.svelte.ts`, delete activity and delete account: confirm,
 cancel, success, failure);
@@ -345,6 +347,7 @@ server/
                     devices, account (profile + admin users)
 shared/types.ts     API response types shared with the web client, TOOLS
 shared/quota-pools.ts  quota window lengths, quota pools per tool (QUOTA_POOLS)
+shared/collectors.ts   collector versions: latest and minimum per tool
 web/
   src/lib/api.ts          typed fetch client (401 → UnauthorizedError)
   src/lib/view-model.ts   what components render (DashboardVM)
@@ -447,6 +450,17 @@ Components never branch on live vs demo: both sources map into the same
   `AI_ACTIVITY_ALLOW_ROOT=1` (`test/install.test.js`, on Linux and
   Windows). Settings → Devices copies both commands per device; the owner's
   profile links there in a one-line box under the tools.
+- Collectors are versioned (issue #125): each script has a `VERSION`,
+  mirrored in `COLLECTOR_VERSIONS` (`shared/collectors.ts`), and sends
+  `collector: {name, version}` in every payload. Bump both on **every**
+  change to a collector's files (OpenCode: `opencode.py` or its plugin),
+  even a compatible one: that is what flags old copies.
+  `test/collector-versions.test.js` records each collector's file hash and
+  fails when one changed without a new version. An outdated collector
+  writes the server's hint to stderr and
+  `~/.cache/ai-activity/update-available-<tool>`; Settings → Devices shows
+  it. Updates stay manual (the install command again): the server never
+  ships code to run.
 - Never transmit prompts, transcripts, or provider keys — metrics only.
 
 ## 4. Data model (SQLite, `data/dashboard.db`)
@@ -459,6 +473,12 @@ Components never branch on live vs demo: both sources map into the same
   `user_id`. `viewer_sessions` holds hashed session tokens with expiry.
 - `settings` — server-wide key/value settings set from the admin panel
   (`signup_open`: `0` closes account creation; absent means open).
+- `collector_versions` — per device, tool and collector version (`0`: from
+  before versions), when it last posted (`seen_at`). Written for a new
+  version, else at most hourly (every post comes here, and a write empties
+  the public read cache). Settings → Devices shows the lowest version seen
+  within a day of the tool's last post, so an old copy still posting next
+  to an updated one stays flagged.
 
 - `usage_events` — one row per **Anthropic message id** (`event_id`,
   `source = 'message'`): that API response's tokens, model, session,
@@ -502,8 +522,8 @@ Components never branch on live vs demo: both sources map into the same
   the session's oldest stored message on (the ingest rule, applied to
   databases whose collectors had already advanced their offsets before
   the 2-minute slack existed).
-
 - Migration 3 adds `users.activity_cleared_at` and `deleted_events`.
+- Migration 4 adds `collector_versions`.
 
 ### Backups
 
@@ -598,6 +618,17 @@ machine: a Claude Code import never holds up Codex), all `429` with
 The payload's `tool` is optional; when present it must equal the slug
 (`400` otherwise).
 
+Collector versions: every payload carries `"collector": {"name": "<slug>",
+"version": N}` (`COLLECTOR_VERSIONS`, `shared/collectors.ts`). Missing, a
+different name or not a positive integer counts as version 0. The version
+is recorded per device and tool (`collector_versions`, §4). Behind the
+latest, the answer carries `"update": {"latest": N, "minimum": M}` (the
+post is still accepted). Below `MIN_COLLECTOR_VERSIONS` (0 for every tool
+until a breaking change needs one), the post is refused with `426` (same
+`update`, no usage stored; its version is recorded): the collectors keep their offsets, so the
+backlog goes out once updated. An empty body (`{}`, the installer's key
+check) is neither recorded nor refused.
+
 A batch of transcript messages (what the README collector sends):
 
 ```json
@@ -623,11 +654,13 @@ A batch of transcript messages (what the README collector sends):
   },
   "context": { "session_id": "7d891161-…", "used_pct": 42, "window_size": 200000 },
   "occurred_at": 1790334657,
-  "account_ref": "default"
+  "account_ref": "default",
+  "collector": { "name": "claude-code", "version": 1 }
 }
 ```
 
-→ `{ok, messages, stored, updated, deduped}`. One flat event is also
+→ `{ok, messages, stored, updated, deduped}` (plus `update` for an outdated
+collector). One flat event is also
 accepted: its `event_id` is the message id (`usage`, `session_id`, `model`,
 `occurred_at` at the top level) → `{ok, stored, updated, deduped, event_id}`.
 
@@ -916,7 +949,11 @@ account exists):
   - `sessions?limit=10&offset=0&tool=...` (grouped by unique session id,
     with latest `context_used_pct` / `context_window_size`, plus `total`
     for paging)
-- `GET /api/devices` (never the keys, only `key_prefix` and `has_key`),
+- `GET /api/devices` (never the keys, only `key_prefix` and `has_key`;
+  `collectors`: per tool it posted for, `{tool, version, seen_at, newest,
+  latest, outdated}` (`version`: the lowest still posting, §4; `newest`:
+  that of the last post), which Settings → Devices shows, outdated ones
+  in warning color with how to update),
   `POST /api/devices {name}` (returns the key), `GET /api/devices/:id/key`
   → `{key}` (one key per request, own live devices only, `404` otherwise),
   `POST /api/devices/:id/revoke` (also forgets the key). A device is a

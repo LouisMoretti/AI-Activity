@@ -1,11 +1,12 @@
 import { Hono } from "hono";
-import type { IngestBatchResult, IngestResult } from "../../shared/types.ts";
+import type { IngestBatchResult, IngestResult, Tool } from "../../shared/types.ts";
 import {
-  activityClearedAt, deletedEventCheck, dropSnapshotRows, findDeviceByKey, insertQuotaSnapshot, setSessionContext, upsertUsageEvent, type UpsertResult,
+  activityClearedAt, deletedEventCheck, dropSnapshotRows, findDeviceByKey, insertQuotaSnapshot, recordCollectorVersion,
+  setSessionContext, upsertUsageEvent, type UpsertResult,
 } from "../db/queries.ts";
 import { nowSec, type DB } from "../db/schema.ts";
 import { readJson } from "../lib/http.ts";
-import { hasConsumption, normalizerFor } from "../lib/ingest.ts";
+import { checkCollector, collectorVersion, hasConsumption, normalizerFor } from "../lib/ingest.ts";
 import { LIMITS, tokenBuckets, tooManyRequests } from "../lib/rate-limit.ts";
 import { bearerKey } from "../lib/viewer-auth.ts";
 
@@ -46,6 +47,20 @@ export function ingestRoutes(db: DB) {
     }
 
     const batch = normalize(body);
+    // Every post says which collector version sent it (0: from before
+    // versions), recorded per device and tool for Settings → Devices. An
+    // empty body is the installer's key check, not a collector.
+    const keyCheck = Object.keys(body).length === 0;
+    const version = collectorVersion(body, tool);
+    const check = checkCollector(tool as Tool, version);
+    if (!keyCheck) recordCollectorVersion(db, device.id, tool, version, nowSec());
+    const update = check.outdated && !keyCheck ? { update: { latest: check.latest, minimum: check.minimum } } : {};
+    if (check.refused && !keyCheck) {
+      return c.json({
+        error: `${tool} collector v${version} is no longer accepted (minimum v${check.minimum}): update it`,
+        ...update,
+      }, 426);
+    }
     const received = nowSec();
     const counts = { stored: 0, updated: 0, deduped: 0 };
     // Activity the user deleted stays deleted: messages they deleted (by id,
@@ -120,7 +135,9 @@ export function ingestRoutes(db: DB) {
     })();
     if (rowWait) return tooManyRequests(c, rowWait);
 
-    if (!batch.single) return c.json<IngestBatchResult>({ ok: true, messages: batch.messages.length, ...counts });
+    if (!batch.single) {
+      return c.json<IngestBatchResult>({ ok: true, messages: batch.messages.length, ...counts, ...update });
+    }
     const result = single as UpsertResult | null;
     return c.json<IngestResult>({
       ok: true,
@@ -128,6 +145,7 @@ export function ingestRoutes(db: DB) {
       updated: result === "updated",
       deduped: result === "deduped",
       event_id: batch.messages[0]?.event_id ?? null,
+      ...update,
     });
   })
     // Collectors have no viewer session: without this, a bare /api/ingest

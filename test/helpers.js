@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
+import { COLLECTOR_VERSIONS } from "../shared/collectors.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const SERVER_ENTRY = path.join(ROOT, "server", "index.ts");
@@ -135,6 +136,9 @@ export async function newDevice(base, name = "test-device", cookie) {
   return r.json;
 }
 
+/** What the current collector of `tool` sends in every payload. */
+export const collector = (tool) => ({ name: tool, version: COLLECTOR_VERSIONS[tool] });
+
 let seq = 0;
 export function event(over = {}) {
   seq += 1;
@@ -146,6 +150,7 @@ export function event(over = {}) {
     model: "claude-opus-5-5",
     usage: { input_tokens: 100, output_tokens: 50, cache_creation_input_tokens: 10, cache_read_input_tokens: 20 },
     occurred_at: Math.floor(Date.now() / 1000),
+    collector: collector("claude-code"),
     ...over,
   };
 }

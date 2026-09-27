@@ -29,6 +29,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import urllib.error
 import urllib.request
 
 if os.name == "nt":
@@ -36,6 +37,10 @@ if os.name == "nt":
 else:
     import fcntl
 
+# Bump on every change to this file or to opencode-plugin.js, with COLLECTOR_VERSIONS in
+# shared/collectors.ts: the server flags older copies as outdated.
+VERSION = 1
+COLLECTOR = {"name": "opencode", "version": VERSION}
 SERVER = os.environ.get("AI_ACTIVITY_URL", "<server>")
 KEY = os.environ.get("AI_ACTIVITY_KEY", "<device key>")
 # os.path.join, not "~/.local/share": the offset is keyed by the database's
@@ -120,9 +125,41 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def post(body):
     req = urllib.request.Request(
-        SERVER.rstrip("/") + "/api/ingest/opencode", data=json.dumps(body).encode(),
+        SERVER.rstrip("/") + "/api/ingest/opencode", data=json.dumps(dict(body, collector=COLLECTOR)).encode(),
         headers={"Authorization": "Bearer " + KEY, "Content-Type": "application/json"})
-    urllib.request.build_opener(NoRedirect).open(req, timeout=60).read()
+    try:
+        raw = urllib.request.build_opener(NoRedirect).open(req, timeout=60).read()
+    except urllib.error.HTTPError as error:
+        if error.code == 426:  # too old for this server: nothing is accepted until updated
+            report_update(answer_of(error.read(1 << 16)))
+        raise
+    report_update(answer_of(raw))
+
+
+def answer_of(raw):
+    try:
+        answer = json.loads(raw.decode("utf-8", "replace"))
+    except ValueError:
+        return {}
+    return answer if isinstance(answer, dict) else {}
+
+
+def report_update(answer):
+    """The server's answer says when a newer collector exists ("update"): tell
+    it on stderr and in ~/.cache/ai-activity/update-available-opencode, which
+    goes away once this copy is up to date."""
+    path = os.path.join(CACHE, "update-available-opencode")
+    update = answer.get("update")
+    if isinstance(update, dict):
+        latest = update.get("latest")
+        text = ("ai-activity opencode collector v%d is outdated (latest v%s): run the install command "
+                "again (Settings > Devices)\n" % (VERSION, latest if type(latest) is int else "?"))
+        sys.stderr.write(text)
+        with open(path, "w") as out:
+            out.write(text)
+    else:
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(path)
 
 
 def save(path, state):

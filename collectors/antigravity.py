@@ -25,6 +25,10 @@ import urllib.parse
 import urllib.request
 from email.utils import parsedate_to_datetime
 
+# Bump on every change to this file, with COLLECTOR_VERSIONS in
+# shared/collectors.ts: the server flags older copies as outdated.
+VERSION = 1
+COLLECTOR = {"name": "antigravity", "version": VERSION}
 SERVER = os.environ.get("AI_ACTIVITY_URL", "<server>")
 KEY = os.environ.get("AI_ACTIVITY_KEY", "<device key>")
 ID = re.compile(r"^[A-Za-z0-9_-]{1,200}$")
@@ -407,12 +411,17 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 def upload(payload, state, retry_key):
     """POST one batch; HTTP 429/503 store the server's Retry-After in state[retry_key]."""
     request = urllib.request.Request(SERVER.rstrip("/") + "/api/ingest/antigravity",
-        data=json.dumps(payload).encode(),
+        data=json.dumps(dict(payload, collector=COLLECTOR)).encode(),
         headers={"Authorization": "Bearer " + KEY, "Content-Type": "application/json"})
     try:
         with urllib.request.build_opener(NoRedirect).open(request, timeout=30) as response:
             result = json.loads(response.read(MAX_BLOB + 1))
     except urllib.error.HTTPError as error:
+        if error.code == 426:  # too old for this server: nothing is accepted until updated
+            try:
+                report_update(json.loads(error.read(1 << 16)))
+            except ValueError:
+                pass
         error.close()
         if error.code in (429, 503):
             header = str(error.headers.get("Retry-After", "")).strip()
@@ -429,6 +438,24 @@ def upload(payload, state, retry_key):
             or result.get("messages") != len(payload["messages"]):
         raise ValueError("server did not accept every metadata entry")
     state.pop(retry_key, None)
+    report_update(result)
+
+
+def report_update(answer):
+    """The server's answer says when a newer collector exists ("update"): tell
+    it on stderr and in ~/.cache/ai-activity/update-available-antigravity,
+    which goes away once this copy is up to date."""
+    path = Path.home() / ".cache" / "ai-activity" / "update-available-antigravity"
+    update = answer.get("update") if isinstance(answer, dict) else None
+    if isinstance(update, dict):
+        latest = update.get("latest")
+        text = ("ai-activity antigravity collector v%d is outdated (latest v%s): run the install command "
+                "again (Settings > Devices)\n" % (VERSION, latest if type(latest) is int else "?"))
+        sys.stderr.write(text)
+        path.write_text(text)
+    else:
+        with contextlib.suppress(FileNotFoundError):
+            path.unlink()
 
 
 def deferred(state, key):
