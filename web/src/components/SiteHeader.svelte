@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Account } from "../../../shared/types.ts";
+  import { currentPath } from "../lib/dashboard.svelte.ts";
   import AccountMenu from "./AccountMenu.svelte";
   import Avatar from "./Avatar.svelte";
   import Logo from "./Logo.svelte";
@@ -30,7 +31,7 @@
       <AccountMenu {account} {onnavigate} {onlogout} />
     {:else if signIn}
       <button type="button" class="signin"
-        onclick={() => onnavigate(`/?next=${encodeURIComponent(location.pathname + location.search)}`)}>Sign in</button>
+        onclick={() => onnavigate(`/?next=${encodeURIComponent(currentPath())}`)}>Sign in</button>
     {/if}
   </div>
 </header>

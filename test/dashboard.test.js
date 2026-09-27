@@ -179,6 +179,25 @@ describe("dashboard state", () => {
     stop();
   });
 
+  test("creating an account preserves the current query and a safe return destination", async () => {
+    const account = { username: "me", display_name: "Me", password: "long-enough-password" };
+    for (const [start, expected] of [
+      ["/?demo=1", "/u/me?demo=1"],
+      [`/?next=${encodeURIComponent("/settings?demo=1")}`, "/settings?demo=1"],
+    ]) {
+      const { dash, stop } = await open(start, {
+        ...profileRoutes("me"),
+        "/api/auth/status": signedOut,
+        "/api/auth/register": {},
+      });
+      routes["/api/auth/status"] = signedIn;
+      assert.equal(await dash.createAccount(account, null), null);
+      await settle();
+      assert.equal(loc.pathname + loc.search, expected);
+      stop();
+    }
+  });
+
   test("sign-in rejects external and protocol-relative return destinations", async () => {
     for (const next of ["https://example.com/away", "//example.com/away"]) {
       const { dash, stop } = await open(`/?next=${encodeURIComponent(next)}`, {

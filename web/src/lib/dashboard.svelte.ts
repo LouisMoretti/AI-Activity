@@ -65,7 +65,7 @@ function routeFromPath(): Route {
 export const profilePath = (username: string) => `/u/${encodeURIComponent(username)}`;
 
 /** The complete in-app address to return to after signing in. */
-const currentPath = () => location.pathname + location.search;
+export const currentPath = () => location.pathname + location.search;
 
 /** Where to go after signing in: a same-site path from ?next=, if any. */
 function nextPath(): string | null {
@@ -229,7 +229,7 @@ export class Dashboard {
       // The only 401 here is a wrong setup code.
       return e instanceof UnauthorizedError ? "Wrong setup code: copy it from the server log." : (e as Error).message;
     }
-    this.go("/", true);
+    this.go(nextPath() ?? currentPath(), true);
     return null;
   }
 
