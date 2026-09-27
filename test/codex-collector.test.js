@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
@@ -14,6 +14,7 @@ const README = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8")
 const hooks = JSON.parse(README.match(/`~\/\.codex\/hooks\.json`:\n\n```json\n([\s\S]*?)\n```/)[1]);
 const hookCommand = hooks.hooks.Stop[0].hooks[0].command;
 const submitCommand = hooks.hooks.UserPromptSubmit[0].hooks[0].command;
+const toolCommand = hooks.hooks.PostToolUse[0].hooks[0].command;
 const SCRIPT = fs.readFileSync(new URL("../collectors/codex.py", import.meta.url), "utf8");
 
 // Recent times: a quota window is only kept if it resets within its length of the measurement.
@@ -54,6 +55,10 @@ function run(cmd, env) {
   });
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** Whether another process holds an exclusive flock on that file. */
+const isLocked = (file) => spawnSync("python3", ["-c",
+  "import fcntl, sys\ntry: fcntl.flock(open(sys.argv[1], 'a'), fcntl.LOCK_EX | fcntl.LOCK_NB)\nexcept BlockingIOError: sys.exit(1)",
+  file]).status === 1;
 async function waitFor(fn, ms = 15000) {
   const end = Date.now() + ms;
   for (;;) {
@@ -211,5 +216,44 @@ describe("Codex collector (Stop hook from README.md)", () => {
     assert.deepEqual(JSON.parse(out), {}, "the hook prints valid JSON for Codex");
     await sleep(1000);
     assert.equal((await summary()).tokens, before.tokens, "nothing new: the run is a no-op");
+  });
+
+  test("the PostToolUse hook sends a turn's usage while it runs", async () => {
+    const before = await summary();
+    fs.appendFileSync(current, response("resp_8", S1, usage(300, 200, 4), 6776));
+    const out = await run(toolCommand, env);
+    assert.deepEqual(JSON.parse(out), {}, "the hook prints valid JSON for Codex");
+    assert.ok(await waitFor(async () => (await summary()).events === before.events + 1));
+    assert.equal((await summary()).tokens - before.tokens, 304);
+  });
+
+  test("while a run is busy, one more waits and the others stop at once", async () => {
+    const cache = path.join(home, ".cache", "ai-activity");
+    // Stands for an active run: holds the collection lock.
+    const holder = spawn("python3", ["-c",
+      "import fcntl, sys, time\nf = open(sys.argv[1], 'w')\nfcntl.flock(f, fcntl.LOCK_EX)\nprint('locked', flush=True)\ntime.sleep(60)",
+      path.join(cache, "codex.lock")], { stdio: ["ignore", "pipe", "ignore"] });
+    const collector = path.join(home, ".codex", "ai-activity-codex.py");
+    const start = () => {
+      const p = spawn("python3", [collector], { env, stdio: "ignore" });
+      return { p, exited: new Promise((r) => p.on("exit", (code) => r(code))) };
+    };
+    try {
+      await new Promise((r) => holder.stdout.once("data", r));
+      const before = await summary();
+      fs.appendFileSync(current, response("resp_9", S1, usage(50, 0, 1), 6827));
+      const waiter = start();
+      assert.ok(await waitFor(() => isLocked(path.join(cache, "codex-waiter.lock"))), "the first run waits");
+      const others = [start(), start(), start()];
+      const codes = await Promise.race([Promise.all(others.map((o) => o.exited)), sleep(10000).then(() => "still running")]);
+      assert.deepEqual(codes, [0, 0, 0], "the other runs stop at once");
+      assert.equal(waiter.p.exitCode, null, "the waiting run is still there");
+      assert.equal((await summary()).events, before.events, "nothing sent while the lock is held");
+      holder.kill();
+      assert.equal(await waiter.exited, 0);
+      assert.equal((await summary()).tokens - before.tokens, 51, "the waiting run sends what was added");
+    } finally {
+      holder.kill();
+    }
   });
 });
