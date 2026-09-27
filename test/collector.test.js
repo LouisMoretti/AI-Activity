@@ -142,4 +142,19 @@ describe("collector one-liner from README.md", () => {
     await sleep(1500);
     assert.equal((await stats()).total_tokens - before.total_tokens, PER_MESSAGE + 7);
   });
+
+  test("a refresh with no new messages still posts quotas", async () => {
+    // Every refresh carries the status line's rate_limits, even with nothing
+    // new in the transcripts: an exhausted quota records its final value.
+    const before = await stats();
+    const input = JSON.stringify({
+      session_id: "sess-1",
+      rate_limits: { five_hour: { used_percentage: 100, resets_at: Math.floor(Date.now() / 1000) + 3600 } },
+    });
+    await run(cmd(srv.base), { stdin: input, env });
+    assert.ok(await waitFor(async () =>
+      (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas
+        .some((x) => x.limit_type === "five_hour" && x.used_pct === 100)));
+    assert.equal((await stats()).total_tokens, before.total_tokens, "no usage stored from a quota-only refresh");
+  });
 });

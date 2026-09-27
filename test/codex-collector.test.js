@@ -13,6 +13,7 @@ import { startServer, req, newDevice, asNewClient } from "./helpers.js";
 const README = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8");
 const hooks = JSON.parse(README.match(/`~\/\.codex\/hooks\.json`:\n\n```json\n([\s\S]*?)\n```/)[1]);
 const hookCommand = hooks.hooks.Stop[0].hooks[0].command;
+const submitCommand = hooks.hooks.UserPromptSubmit[0].hooks[0].command;
 const SCRIPT = fs.readFileSync(new URL("../collectors/codex.py", import.meta.url), "utf8");
 
 // Recent times: a quota window is only kept if it resets within its length of the measurement.
@@ -188,5 +189,27 @@ describe("Codex collector (Stop hook from README.md)", () => {
   test("no prompt text is sent", () => {
     // The collector only builds messages from token records; nothing else is read into a payload.
     assert.ok(!/content|last_agent_message|text/.test(SCRIPT.match(/messages\.append\(\{[\s\S]*?\}\)/g).join("")));
+  });
+
+  test("a limit snapshot without token counts is still posted", async () => {
+    // A failed turn records its quota with no usage: the exhausted window's
+    // final value must reach the server even though no message is stored.
+    const before = await summary();
+    fs.appendFileSync(current, line("event_msg", { type: "rate_limits", rate_limits: limits(100) }) + "\n");
+    await run(hookCommand, env);
+    const quotas = async () => (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas.filter((x) => x.tool === "codex");
+    assert.ok(await waitFor(async () =>
+      (await quotas()).some((x) => x.limit_type === "five_hour" && x.used_pct === 100)));
+    assert.deepEqual((await quotas()).map((x) => [x.limit_type, x.used_pct]),
+      [["five_hour", 100], ["seven_day", 40]]);
+    assert.equal((await summary()).events, before.events, "no usage stored from a snapshot-only run");
+  });
+
+  test("the UserPromptSubmit backstop runs the same script and answers the hook", async () => {
+    const before = await summary();
+    const out = await run(submitCommand, env);
+    assert.deepEqual(JSON.parse(out), {}, "the hook prints valid JSON for Codex");
+    await sleep(1000);
+    assert.equal((await summary()).tokens, before.tokens, "nothing new: the run is a no-op");
   });
 });

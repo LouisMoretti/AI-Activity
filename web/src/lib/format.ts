@@ -5,6 +5,13 @@ export const fmtCompact = (n: number) => compact.format(n);
 export const fmtNum = (n: number) => plain.format(n);
 export const fmtPct = (n: number) => `${Math.round(n * 10) / 10}`;
 
+/** Share of a total as "42 %", "<1 %" or "0 %": a small but non-zero value never reads as "none". */
+export function fmtShare(value: number, total: number): string {
+  if (!(total > 0) || !(value > 0)) return "0 %";
+  const rounded = Math.round((value / total) * 100);
+  return rounded === 0 ? "<1 %" : `${rounded} %`;
+}
+
 export const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 /** "YYYY-MM-DD" (a calendar day) → "24 September 2026". */
