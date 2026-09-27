@@ -6,6 +6,9 @@
 export const TOOLS = ["claude-code", "codex", "antigravity", "opencode"] as const;
 export type Tool = (typeof TOOLS)[number];
 
+/** Rows kept separate in dashboard breakdown lists (the last is the fold). */
+export const BREAKDOWN_DISPLAY_ROWS = 8;
+
 export interface StatsResponse {
   range_days: number;
   tool: string | null;
@@ -75,6 +78,8 @@ export interface Breakdown {
   sessions: number;
   events: number;
   by_model: BreakdownRow[];
+  /** Distinct sessions across the model rows folded into "others". */
+  by_model_others_sessions: number;
   by_tool: BreakdownRow[];
 }
 

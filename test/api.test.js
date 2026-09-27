@@ -1116,6 +1116,7 @@ describe("summary, sessions and context (redesign APIs)", () => {
     assert.equal(s.today.tokens, 180);
     assert.equal(s.today.sessions, 1);
     assert.deepEqual(s.total.by_model.map((r) => r.name).sort(), ["claude-opus-5-5", "claude-sonnet-5"]);
+    assert.equal(s.total.by_model_others_sessions, 0);
     assert.deepEqual(s.total.by_tool, [{ name: "claude-code", tokens: 360, sessions: 2, events: 2 }]);
     assert.equal(s.day, new Date().toISOString().slice(0, 10));
     assert.equal((await req(srv.base, "GET", "/api/u/admin/summary?tool=codex")).json.total.tokens, 0);
@@ -1142,6 +1143,38 @@ describe("summary, sessions and context (redesign APIs)", () => {
     const noCtx = (await req(srv.base, "GET", "/api/u/admin/sessions?limit=50")).json.sessions.find((s) => s.session_id === "a");
     assert.equal(noCtx.context_used_pct, null);
     assert.equal((await req(srv.base, "GET", "/api/u/admin/sessions?tool=codex")).json.total, 0);
+  });
+
+  test("summary counts distinct sessions across model rows folded into others", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const messages = [];
+    for (let model = 0; model < 7; model++) {
+      for (let session = 0; session < 3; session++) {
+        messages.push({
+          response_id: `resp_fold_top_${model}_${session}`,
+          session_id: `fold-top-${model}-${session}`,
+          model: `top-${model}`,
+          occurred_at: now,
+          usage: { input_tokens: 10 + model },
+        });
+      }
+    }
+    // Both folded models have two sessions, but one session used both:
+    // the exact folded count is three, not the row sum of four.
+    messages.push(
+      { response_id: "resp_fold_a_shared", session_id: "fold-shared", model: "tail-a", occurred_at: now, usage: { input_tokens: 1 } },
+      { response_id: "resp_fold_a_own", session_id: "fold-a", model: "tail-a", occurred_at: now, usage: { input_tokens: 1 } },
+      { response_id: "resp_fold_b_shared", session_id: "fold-shared", model: "tail-b", occurred_at: now, usage: { input_tokens: 1 } },
+      { response_id: "resp_fold_b_own", session_id: "fold-b", model: "tail-b", occurred_at: now, usage: { input_tokens: 1 } },
+    );
+    const ingested = await req(srv.base, "POST", "/api/ingest/codex", { key, body: { messages } });
+    assert.equal(ingested.json.stored, messages.length);
+
+    const total = (await req(srv.base, "GET", "/api/u/admin/summary?tool=codex")).json.total;
+    const folded = [...total.by_model].sort((a, b) => b.sessions - a.sessions).slice(7);
+    assert.deepEqual(folded.map((row) => row.name), ["tail-a", "tail-b"]);
+    assert.equal(folded.reduce((sum, row) => sum + row.sessions, 0), 4);
+    assert.equal(total.by_model_others_sessions, 3);
   });
 });
 

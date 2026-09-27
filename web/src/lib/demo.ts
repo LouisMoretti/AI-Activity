@@ -39,7 +39,7 @@ function figure(tools: DemoTool[], pick: (t: DemoTool) => number): FigureVM {
   const byModel = [...models].map(([name, value]) => ({ name, value }))
     .filter((r) => r.value > 0)
     .sort((a, b) => b.value - a.value);
-  return { value: byTool.reduce((a, r) => a + r.value, 0), byTool, byModel };
+  return { value: byTool.reduce((a, r) => a + r.value, 0), byTool, byModel, byModelOthers: null };
 }
 
 // A pool's 5-hour and weekly windows: [% used, reset time] each.
