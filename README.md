@@ -243,8 +243,38 @@ What it does:
   deadline, unresolved entries stay uncollected with a warning;
   entries with their own valid generation timestamp can still upload.
   Resource limits never manufacture dates or discard an accepted page.
-- Does not collect quotas or context fill; the card shows these as
-  unavailable, with today's usage and recent conversations.
+- Collects measured five-hour and weekly quota snapshots using the signed-in
+  Antigravity CLI's `/usage` JSON report. Install **agy 1.1.11 or later**, sign
+  in with the same Google account you use in Antigravity, and make `agy`
+  available on the collector's PATH (including hooks and scheduled tasks).
+  Verify `agy --version` and `agy -p /usage --output-format json
+  --print-timeout 90s` in a terminal. The CLI handles its own authentication;
+  the collector never reads provider credential files. Desktop/IDE history
+  still imports without the CLI; missing CLI/authentication or unsupported
+  reports leave quota windows **Unavailable**, with a diagnostic.
+- Quotas refresh on hooks/manual/scheduled runs, at most once per minute
+  after a successful upload, including runs with no new token activity.
+  Use the optional one-minute schedule above for updates while idle. Gemini
+  and Claude/GPT pools remain separate: the card uses the same percentage
+  bars, elapsed-window marks, reset countdowns and expiry behavior as Codex
+  and Claude Code. Percentages are used quota, never inferred from tokens.
+  Missing/disabled buckets stay unavailable; after reset, the old value
+  stays unavailable until a fresh snapshot arrives. Free plans may expose
+  only a weekly quota. Context fill remains unavailable.
+  To preview the card, sign in and add `?demo=1` to your own profile URL.
+  The existing **Demonstration data** mode includes fictional Antigravity
+  quotas, activity and conversations; it never writes them to the server.
+- The quota subprocess runs `/usage` in an empty temporary directory,
+  without the Activity URL/key, and cannot recursively trigger this
+  collector's hooks. Versions older than 1.1.11 or an unrecognized version
+  never receive `/usage`, since older print modes may treat it as a prompt.
+  Failed quota uploads retry on subsequent runs without blocking token
+  imports. Set `AI_ACTIVITY_ANTIGRAVITY_QUOTAS=0` to disable quota probing.
+
+Quota command/schema evidence comes from [CodexBar's Antigravity implementation](https://github.com/steipete/CodexBar/tree/main/Sources/CodexBarCore/Providers/Antigravity).
+Google documents [the quota command](https://antigravity.google/docs/cli/commands/usage)
+and [plan windows](https://antigravity.google/docs/plans/). Quota tests use
+synthetic CLI reports; a live signed-in quota report still needs verification.
 
 **Format limitations:** Antigravity's persisted protobuf layout is
 undocumented. The parser follows [independently observed field evidence](https://github.com/junhoyeo/tokscale/blob/62ca1eb1677556972ba963fdfa3a41ab23c1eb4b/crates/tokscale-core/src/sessions/antigravity_cli.rs).
