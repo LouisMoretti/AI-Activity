@@ -13,7 +13,7 @@
   {#if updatedAt}
     <span class="status"><i class="dot" class:recent={clock.now - updatedAt < RECENT_SEC}></i>Updated {fmtAgo(updatedAt, clock.now)}</span>
   {:else if note}
-    <span class="status badge">{note}</span>
+    <span class="status badge" title={note}>{note}</span>
   {/if}
 </div>
 
