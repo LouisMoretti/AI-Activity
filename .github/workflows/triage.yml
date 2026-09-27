@@ -6,14 +6,17 @@ name: Triage
 # Pull requests: each one must close an issue of this repo that has labels;
 # the issue's type and area labels are copied onto the PR. A small fix
 # (typo, flaky test, dependency bump) can skip that with the "no issue" label.
+# The verdict is the "Linked issue" commit status, set on PR events and again
+# when a linked issue's labels change (.github/scripts/triage.cjs).
 # Each PR must also have an assignee: its author is assigned when it has none.
 #
 # pull_request_target (not pull_request) so PRs from forks can be labeled too.
-# Safe because this workflow never checks out or runs the PR's code.
+# Safe because this workflow never checks out or runs the PR's code: checkout
+# takes the base branch there.
 
 on:
   issues:
-    types: [opened, edited]
+    types: [opened, edited, labeled, unlabeled]
   pull_request_target:
     types: [opened, edited, reopened, synchronize, labeled, unlabeled, assigned, unassigned]
 
@@ -21,85 +24,43 @@ permissions:
   contents: read
 
 jobs:
-  issue-labels:
+  issue:
+    name: Issue triage
     if: github.event_name == 'issues'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      contents: read
       issues: write
+      pull-requests: write
+      statuses: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
       - uses: actions/github-script@v7
         with:
           script: |
-            const AREAS = ["ui", "server", "collectors", "infra", "security", "documentation", "accessibility"];
-            const issue = context.payload.issue;
-            // An issue form renders a dropdown as "### Area\n\nui, server".
-            const match = /^### Area\s*\n+([^\n]+)/m.exec(issue.body ?? "");
-            const picked = (match?.[1] ?? "").split(",").map((s) => s.trim()).filter((s) => AREAS.includes(s));
-            const has = new Set(issue.labels.map((l) => l.name));
-            const missing = picked.filter((name) => !has.has(name));
-            if (missing.length) {
-              await github.rest.issues.addLabels({ ...context.repo, issue_number: issue.number, labels: missing });
-            }
-            if (context.payload.action === "opened" && has.size === 0 && picked.length === 0) {
-              await github.rest.issues.createComment({
-                ...context.repo,
-                issue_number: issue.number,
-                body: "This issue has no labels. Please add a type (`bug`, `enhancement`, `question`) and at least one area (" +
-                  AREAS.map((a) => "`" + a + "`").join(", ") + "). A pull request can only close a labeled issue.",
-              });
-            }
+            await require("./.github/scripts/triage.cjs").onIssue({ github, context, core });
 
   linked-issue:
-    name: Linked issue
+    name: Linked issue status
     if: github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      contents: read
       issues: read
       pull-requests: write
+      statuses: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
       - uses: actions/github-script@v7
         with:
           script: |
-            // Labels worth carrying over; triage labels stay on the issue.
-            const COPY = ["bug", "enhancement", "documentation", "accessibility", "ui", "server", "collectors", "infra", "security"];
-            const pr = context.payload.pull_request;
-            if (pr.labels.some((l) => l.name === "no issue")) {
-              core.info("\"no issue\" label: no linked issue required.");
-              return;
-            }
-            const refs = [...(pr.body ?? "").matchAll(/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#(\d+)\b/gi)]
-              .map((m) => Number(m[1]));
-            if (refs.length === 0) {
-              core.setFailed("Open an issue first, then reference it in the PR description: \"Closes #<issue>\" (or add the \"no issue\" label to a small fix).");
-              return;
-            }
-            const labels = new Set();
-            for (const number of new Set(refs)) {
-              let issue;
-              try {
-                ({ data: issue } = await github.rest.issues.get({ ...context.repo, issue_number: number }));
-              } catch {
-                core.setFailed(`#${number} does not exist in this repository.`);
-                return;
-              }
-              if (issue.pull_request) {
-                core.setFailed(`#${number} is a pull request; reference an issue.`);
-                return;
-              }
-              for (const l of issue.labels) if (COPY.includes(l.name)) labels.add(l.name);
-            }
-            if (labels.size === 0) {
-              core.setFailed(`Label the linked issue first (a type and an area: ${COPY.join(", ")}).`);
-              return;
-            }
-            const has = new Set(pr.labels.map((l) => l.name));
-            const missing = [...labels].filter((name) => !has.has(name));
-            if (missing.length) {
-              await github.rest.issues.addLabels({ ...context.repo, issue_number: pr.number, labels: missing });
-            }
-            core.info(`Linked: ${refs.map((n) => "#" + n).join(", ")}; labels: ${[...labels].join(", ")}`);
+            await require("./.github/scripts/triage.cjs").onPullRequest({ github, context, core });
 
   assignee:
     name: Assignee
