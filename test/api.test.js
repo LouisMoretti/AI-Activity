@@ -287,6 +287,21 @@ describe("basics (signed in as the test admin)", () => {
     assert.equal(rows[0].used_pct, 11);
   });
 
+  test("resets a second apart are one window: its highest value shows", async () => {
+    // Codex reports one window's reset a second or two apart between responses.
+    const now = Math.floor(Date.now() / 1000);
+    const post = (pct, resets, at) => req(srv.base, "POST", "/api/ingest/codex", {
+      key, body: { account_ref: "jitter", occurred_at: at, rate_limits: { five_hour: { used_percentage: pct, resets_at: resets } } },
+    });
+    const shown = async () => (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas.find((q) => q.account_ref === "jitter");
+    await post(50, now + 3601, now - 60);
+    await post(55, now + 3600, now - 10);
+    assert.deepEqual([(await shown()).used_pct, (await shown()).resets_at], [55, now + 3600]);
+    // The next window still replaces it.
+    await post(3, now + 18000, now);
+    assert.deepEqual([(await shown()).used_pct, (await shown()).resets_at], [3, now + 18000]);
+  });
+
   test("a replayed stale snapshot does not replace a newer quota", async () => {
     const now = Math.floor(Date.now() / 1000);
     const q = (pct) => ({ five_hour: { used_percentage: pct, resets_at: now + 3600 } });

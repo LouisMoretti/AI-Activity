@@ -384,6 +384,8 @@ export function insertQuotaSnapshot(db: DB, q: QuotaSnapshotInput): void {
   ).run(q.device_id, q.user_id, q.account_ref, q.tool, q.limit_type, q.used_pct, q.resets_at, q.measured_at);
 }
 
+const RESET_JITTER_SEC = 60;
+
 /**
  * Current value per (account_ref, tool, limit_type). Never summed across devices.
  *
@@ -393,6 +395,9 @@ export function insertQuotaSnapshot(db: DB, q: QuotaSnapshotInput): void {
  * the current one, and within a window the usage only goes up: show its
  * highest percentage. Ingest drops a resets_at further away than the window
  * is long; the one-day bound also retires rows stored before that check.
+ * Codex reports one window's reset a second or two apart from one response
+ * to the next: resets within RESET_JITTER_SEC of the latest are that same
+ * window (two windows are always at least a window length apart).
  */
 export function latestQuotas(db: DB, userId: number): Quota[] {
   return db
@@ -406,11 +411,11 @@ export function latestQuotas(db: DB, userId: number): Quota[] {
        )
        SELECT account_ref, tool, limit_type, MAX(used_pct) AS used_pct,
               resets_at, MAX(measured_at) AS measured_at
-       FROM live WHERE COALESCE(resets_at, -1) = win
+       FROM live WHERE COALESCE(resets_at, -1) >= win - ?
        GROUP BY account_ref, tool, limit_type
        ORDER BY account_ref, tool, limit_type`
     )
-    .all(userId) as Quota[];
+    .all(userId, RESET_JITTER_SEC) as Quota[];
 }
 
 export function usageTotals(db: DB, userId: number, sinceSec: number, tool: string | null): UsageTotals {
