@@ -20,6 +20,7 @@ so nothing is lost while the server is down. Delete that file to send
 everything again (the server stores each message id once).
 """
 import _thread
+import contextlib
 import datetime
 import errno
 import glob
@@ -119,41 +120,85 @@ def timeout(signum, frame):
     raise TimeoutError("time limit reached; resumes next run")
 
 
+@contextlib.contextmanager
 def time_limit(seconds):
-    """TimeoutError in the main thread after that long."""
+    """TimeoutError in the main thread after that long, so the finally blocks
+    still save. Windows has no SIGALRM: a timer interrupts the main thread
+    through SIGINT instead, and Ctrl-C there still means KeyboardInterrupt."""
     if hasattr(signal, "SIGALRM"):
-        signal.signal(signal.SIGALRM, timeout)
+        previous = signal.signal(signal.SIGALRM, timeout)
         signal.alarm(seconds)
-    else:  # Windows: no SIGALRM, a timer raises it through the SIGINT handler
-        signal.signal(signal.SIGINT, timeout)
-        timer = threading.Timer(seconds, _thread.interrupt_main)
-        timer.daemon = True
-        timer.start()
+        try:
+            yield
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+        return
+    expired = threading.Event()
+
+    def interrupted(signum, frame):
+        if expired.is_set():
+            timeout(signum, frame)
+        raise KeyboardInterrupt
+
+    def expire():
+        expired.set()
+        _thread.interrupt_main()
+    previous = signal.signal(signal.SIGINT, interrupted)
+    timer = threading.Timer(seconds, expire)
+    timer.daemon = True
+    timer.start()
+    try:
+        yield
+    finally:
+        timer.cancel()
+        signal.signal(signal.SIGINT, previous)
 
 
-def lock(path):
-    """The file, once holding an exclusive lock on it (released when the run
-    exits). flock, or on Windows msvcrt on its first byte (never truncated:
-    another run may hold it)."""
+BUSY = (errno.EACCES, errno.EAGAIN, errno.EDEADLK)  # a lock held by another run
+
+
+def lock(path, wait=True):
+    """The file, holding an exclusive lock on it; None if taken and not waiting.
+    flock, or on Windows msvcrt on its first byte (never truncated: another
+    run may hold it). Release it with unlock()."""
     f = os.fdopen(os.open(path, os.O_RDWR | os.O_CREAT, 0o600), "r+b")
-    if os.name != "nt":
-        fcntl.flock(f, fcntl.LOCK_EX)
-        return f
     while True:
         try:
-            f.seek(0)
-            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            if os.name == "nt":
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                fcntl.flock(f, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
             return f
         except OSError as error:
-            if error.errno not in (errno.EACCES, errno.EDEADLK):
+            if error.errno not in BUSY:
+                f.close()
                 raise
+            if not wait:
+                f.close()
+                return None
             time.sleep(0.1)
 
 
+def unlock(f):
+    if os.name == "nt":
+        f.seek(0)
+        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+    f.close()
+
+
 def collect(status):
-    time_limit(900)
     os.makedirs(CACHE, exist_ok=True)
     held = lock(os.path.join(CACHE, "lock"))  # uploads wait for each other
+    try:
+        send(status)
+    finally:
+        unlock(held)
+
+
+def send(status):
+    """Posts what was added to the transcripts, then saves the offsets."""
     path = os.path.join(CACHE, "offsets.json")
     try:
         with open(path) as f:
@@ -183,7 +228,6 @@ def collect(status):
     with open(path + ".tmp", "w") as out:
         json.dump(state, out)
     os.replace(path + ".tmp", path)
-    held.close()
 
 
 def launch_worker(status):
@@ -208,10 +252,13 @@ def launch_worker(status):
 
 if __name__ == "__main__":
     try:
+        # The status line's JSON is a few KB: anything past 1 MB is not it.
+        status = sys.stdin.buffer.read(1 << 20)
         if "--worker" in sys.argv:
-            collect(first_dict(sys.stdin.buffer.read().decode("utf-8", "replace")))
+            with time_limit(900):
+                collect(first_dict(status.decode("utf-8", "replace")))
         else:
-            launch_worker(sys.stdin.buffer.read())
+            launch_worker(status)
     except Exception as e:  # never break the status line; retried next refresh
         print("ai-activity claude-code collector: %s" % e, file=sys.stderr)
         sys.exit(1)

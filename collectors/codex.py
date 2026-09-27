@@ -21,6 +21,7 @@ With --hook (the Windows hook command), it answers the hook at once and runs
 itself again, detached, to do the upload.
 """
 import _thread
+import contextlib
 import datetime
 import errno
 import glob
@@ -180,22 +181,48 @@ def timeout(signum, frame):
     raise TimeoutError("time limit reached; resumes next run")
 
 
+@contextlib.contextmanager
 def time_limit(seconds):
-    """TimeoutError in the main thread after that long, so the finally blocks still save."""
+    """TimeoutError in the main thread after that long, so the finally blocks
+    still save. Windows has no SIGALRM: a timer interrupts the main thread
+    through SIGINT instead, and Ctrl-C there still means KeyboardInterrupt."""
     if hasattr(signal, "SIGALRM"):
-        signal.signal(signal.SIGALRM, timeout)
+        previous = signal.signal(signal.SIGALRM, timeout)
         signal.alarm(seconds)
-    else:  # Windows: no SIGALRM, a timer raises it through the SIGINT handler
-        signal.signal(signal.SIGINT, timeout)
-        timer = threading.Timer(seconds, _thread.interrupt_main)
-        timer.daemon = True
-        timer.start()
+        try:
+            yield
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+        return
+    expired = threading.Event()
+
+    def interrupted(signum, frame):
+        if expired.is_set():
+            timeout(signum, frame)
+        raise KeyboardInterrupt
+
+    def expire():
+        expired.set()
+        _thread.interrupt_main()
+    previous = signal.signal(signal.SIGINT, interrupted)
+    timer = threading.Timer(seconds, expire)
+    timer.daemon = True
+    timer.start()
+    try:
+        yield
+    finally:
+        timer.cancel()
+        signal.signal(signal.SIGINT, previous)
+
+
+BUSY = (errno.EACCES, errno.EAGAIN, errno.EDEADLK)  # a lock held by another run
 
 
 def lock(path, wait=True):
     """The file, holding an exclusive lock on it; None if taken and not waiting.
     flock, or on Windows msvcrt on its first byte (never truncated: another
-    run may hold it)."""
+    run may hold it). Release it with unlock()."""
     f = os.fdopen(os.open(path, os.O_RDWR | os.O_CREAT, 0o600), "r+b")
     while True:
         try:
@@ -206,7 +233,7 @@ def lock(path, wait=True):
                 fcntl.flock(f, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
             return f
         except OSError as error:
-            if error.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+            if error.errno not in BUSY:
                 f.close()
                 raise
             if not wait:
@@ -223,7 +250,6 @@ def unlock(f):
 
 
 def main():
-    time_limit(900)
     os.makedirs(CACHE, exist_ok=True)
     # One active run and at most one waiting behind it: the tool-call hook
     # fires often, and any other run can stop here, since the waiter reads
@@ -295,14 +321,15 @@ def launch_worker():
 if __name__ == "__main__":
     if "--hook" in sys.argv:
         try:
-            sys.stdin.read()  # the hook payload: never sent
+            sys.stdin.buffer.read(1 << 20)  # the hook payload (bounded): never sent
             launch_worker()
         except Exception as e:  # never break the Codex turn; retried next time
             print("ai-activity codex collector: %s" % e, file=sys.stderr)
         print("{}")  # the (empty) JSON answer Codex expects from a hook
         sys.exit(0)
     try:
-        main()
+        with time_limit(900):
+            main()
     except Exception as e:  # never break the Codex turn; retried next time
         print("ai-activity codex collector: %s" % e, file=sys.stderr)
         sys.exit(1)
