@@ -5,14 +5,14 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { COLLECTOR_VERSIONS, MIN_COLLECTOR_VERSIONS } from "../shared/collectors.ts";
 import { TOOLS } from "../shared/types.ts";
 import { checkCollector } from "../server/lib/ingest.ts";
-import { PYTHON, tempHome } from "./helpers.js";
+import { PYTHON, tempHome, collectorTarget } from "./helpers.js";
 
 const dir = new URL("../collectors/", import.meta.url);
 const read = (file) => fs.readFileSync(new URL(file, dir), "utf8").replaceAll("\r\n", "\n");
@@ -29,10 +29,10 @@ const FILES = {
  * shared/collectors.ts, then record the new version and hash here.
  */
 const RECORDED = {
-  "claude-code": { version: 1, sha256: "8dc605a02e223ce4c5a0a09a8f08c4a5c517ab8868f375ce22d954d48d058071" },
-  codex: { version: 1, sha256: "8070f18df1d917281bd7cdaae60a731de84ec6649164a89ab5d1b04e4d366507" },
-  antigravity: { version: 1, sha256: "39834b447be8b4f29c32c65424e7af0212d5eac2cfd6b31ae1f848a82d571d09" },
-  opencode: { version: 1, sha256: "20d01f4309613c798461a07baa5b944854dedb0c3cf11d8ed5bd3163068e394f" },
+  "claude-code": { version: 2, sha256: "d313c2e6d556a56f3d39837ed7e63fd6a7f910df265525d27ed9cce8f39aa8b9" },
+  codex: { version: 2, sha256: "11c7356013ae10794dd1ebb6f3ee89ce96e5cf019e4452d3825feaffe06a7f5f" },
+  antigravity: { version: 2, sha256: "b4194a32992b2a2df0d04ba0707f84b629f27b87e351845abfa72da2cafed88d" },
+  opencode: { version: 2, sha256: "42e9339baa2803919daddb38bb36dd463299b6d8ca6657cbbeb4128b2f3f62d4" },
 };
 const digest = (tool) => createHash("sha256").update(FILES[tool].map(read).join("\0")).digest("hex");
 const scriptOf = (tool) => FILES[tool].find((f) => f.endsWith(".py"));
@@ -147,6 +147,45 @@ describe("collectors send their version and surface update hints", () => {
       } finally {
         fs.rmSync(home, { recursive: true, force: true });
       }
+    });
+  }
+});
+
+// Offsets are kept per server and key (issue #127): every collector must
+// fingerprint a target the same way, and the tests compute it like them.
+describe("collectors fingerprint their target the same way", () => {
+  const CASES = [
+    ["https://ai.example.com", "ak_one"],
+    ["HTTPS://AI.Example.com/", "ak_one"],
+    ["https://ai.example.com//", "ak_one"],
+    ["https://ai.example.com/sub/path/", "ak_one"],
+    ["http://127.0.0.1:3000", "ak_two"],
+    ["https://ai.example.com", "ak_two"],
+  ];
+  const PRINT = `
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("collector", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+out = []
+for server, key in json.loads(sys.argv[2]):
+    m.SERVER, m.KEY = server, key
+    out.append(m.target())
+print(json.dumps(out))
+`;
+  const expected = CASES.map(([url, key]) => collectorTarget(url, key));
+
+  test("the same server written differently is one target; another key or server is another", () => {
+    assert.equal(new Set(expected.slice(0, 3)).size, 1);
+    assert.equal(new Set(expected).size, 4);
+    assert.ok(expected.every((fp) => /^[0-9a-f]{16}$/.test(fp)));
+  });
+
+  for (const tool of TOOLS) {
+    test(tool, () => {
+      const out = execFileSync(PYTHON, ["-c", PRINT, fileURLToPath(new URL(scriptOf(tool), dir)), JSON.stringify(CASES)],
+        { encoding: "utf8", windowsHide: true });
+      assert.deepEqual(JSON.parse(out), expected);
     });
   }
 });

@@ -12,15 +12,16 @@ are never read.
 Subagent sessions are sent as their root session, so a conversation with
 subagents counts once (like Claude Code's subagents).
 
-How far the database was sent is kept in ~/.cache/ai-activity/opencode.json
-and only moves forward once the server accepted a batch, so nothing is lost
-while the server is down: the next run sends the backlog with its original
-times. Delete that file to send everything again (the server stores each
+How far the database was sent is kept in ~/.cache/ai-activity/opencode.json,
+per server and device key (a new one gets the whole history), and only moves
+forward once the server accepted a batch, so nothing is lost while the
+server is down: the next run sends the backlog with its original times. Delete that file to send everything again (the server stores each
 message once).
 """
 import _thread
 import contextlib
 import errno
+import hashlib
 import json
 import os
 import signal
@@ -39,7 +40,7 @@ else:
 
 # Bump on every change to this file or to opencode-plugin.js, with COLLECTOR_VERSIONS in
 # shared/collectors.ts: the server flags older copies as outdated.
-VERSION = 1
+VERSION = 2
 COLLECTOR = {"name": "opencode", "version": VERSION}
 SERVER = os.environ.get("AI_ACTIVITY_URL", "<server>")
 KEY = os.environ.get("AI_ACTIVITY_KEY", "<device key>")
@@ -167,6 +168,31 @@ def save(path, state):
         json.dump(state, out)
     os.replace(path + ".tmp", path)
 
+KEPT_TARGETS = 8  # most recently used servers / keys whose offsets are kept
+
+
+def target():
+    """Which server and key the offsets belong to, as a fingerprint: the
+    offsets file is not secret, so it never holds the key or a part of it."""
+    url = urllib.parse.urlsplit(SERVER.strip())
+    server = urllib.parse.urlunsplit((url.scheme.lower(), url.netloc.lower(), url.path.rstrip("/"), url.query, ""))
+    return hashlib.sha256((server + "\n" + KEY.strip()).encode()).hexdigest()[:16]
+
+
+def for_target(saved):
+    """The offsets file to write back, and in it this target's offsets.
+
+    Offsets are kept per server and key: a new one starts empty, so its first
+    run sends the whole local history (the server stores each message once),
+    and switching back to an earlier one resumes where it was. Offsets from
+    before targets (at the top level) are dropped: one full resend."""
+    targets = saved.get("targets") if isinstance(saved, dict) else None
+    targets = {k: v for k, v in targets.items() if isinstance(v, dict)} if isinstance(targets, dict) else {}
+    fp = target()
+    offsets = targets.pop(fp, {})
+    targets[fp] = offsets  # most recently used last
+    return {"targets": dict(list(targets.items())[-KEPT_TARGETS:])}, offsets
+
 
 def timeout(signum, frame):
     raise TimeoutError("time limit reached; resumes next run")
@@ -248,10 +274,11 @@ def main():
     try:
         path = os.path.join(CACHE, "opencode.json")
         try:
-            state = json.load(open(path))
-            state = state if isinstance(state, dict) else {}
+            with open(path) as f:
+                stored = json.load(f)
         except (OSError, ValueError):
-            state = {}
+            stored = {}
+        stored, state = for_target(stored)  # state: this target's offsets, inside stored
         # time_updated (ms) of the last message accepted, per database. The next
         # run starts at that same millisecond: a message updated then is sent
         # again rather than missed (the server stores it once). A message still
@@ -262,7 +289,7 @@ def main():
             chunk = rows[i:i + BATCH]
             post({"messages": [e for _, e in chunk]})
             state[DB] = chunk[-1][0]
-            save(path, state)
+            save(path, stored)
     finally:
         unlock(held)
 

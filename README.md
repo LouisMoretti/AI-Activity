@@ -97,8 +97,10 @@ print(sys.executable)'`, or `python -c "import sys; print(sys.executable)"`
 on Windows, JSON-escaped like the script path).
 
 Replacing the former one-liner (`setsid -f python3 -c "…"`): swap its
-`statusLine` command for this one. The script keeps the same offsets file
-and lock, so nothing is sent twice or missed.
+`statusLine` command for this one. Its first refresh sends every
+transcript again (the one-liner's offsets did not say which server they
+were for); the server stores each message id once, so nothing is counted
+twice or missed.
 
 What it does on every status line refresh:
 
@@ -111,11 +113,12 @@ What it does on every status line refresh:
   Code keeps about 30 days by default): that is the import of past
   sessions. It also replaces the rows the old snapshot collector sent for
   those sessions, which counted most API calls twice.
-- How far each file was sent is kept in `~/.cache/ai-activity/offsets.json`
-  and only moves forward once the server accepted everything, so nothing
-  is lost while the server is down: the next refresh sends the backlog.
-  Delete that file to send everything again (safe: the server stores each
-  message id once), or after pointing the device at another server.
+- How far each file was sent is kept in `~/.cache/ai-activity/offsets.json`,
+  per server and device key, and only moves forward once the server
+  accepted everything, so nothing is lost while the server is down: the
+  next refresh sends the backlog. A new server or key starts from nothing,
+  so its first refresh sends the whole history. Delete that file to send
+  everything again (safe: the server stores each message id once).
 - The server stores each message id once. Claude Code sometimes writes a
   partial entry (a few output tokens) before the final one; the final
   counts replace it.
@@ -219,8 +222,9 @@ What it does after every tool call and at the end of every turn:
   `UserPromptSubmit` hook runs the same script on your next prompt and picks
   it up. If Codex is driven without prompts (`codex exec`), run the script
   by hand or from cron after hitting a limit instead.
-- How far each file was sent is kept in `~/.cache/ai-activity/codex.json`
-  and only moves forward once the server accepted everything, so nothing
+- How far each file was sent is kept in `~/.cache/ai-activity/codex.json`,
+  per server and device key (a new one gets the whole history), and only
+  moves forward once the server accepted everything, so nothing
   is lost while the server is down (no separate spool needed): the next
   turn sends the backlog with its original times. Delete that file to send
   everything again (safe: the server stores each response once).
@@ -360,7 +364,7 @@ What it does:
   and the WAL header's salts. A changed database is read again in full (edits
   to older rows included), but only new responses, or ones with more output
   tokens, are sent. Checkpoints in `~/.cache/ai-activity/antigravity.json`
-  hold, per conversation (hashed path), that stamp and the output tokens
+  hold, per server and device key and per conversation (hashed path), that stamp and the output tokens
   accepted per response id; a batch is recorded only once accepted, and
   deleted conversations are forgotten. A malformed checkpoint file starts
   over (the server deduplicates the replay); removing it replays history
@@ -470,7 +474,8 @@ What it does:
 - No 5-hour or weekly limit: OpenCode has none of its own, so the card
   shows the active conversations and today's usage instead.
 - How far the database was sent is kept in
-  `~/.cache/ai-activity/opencode.json` and only moves forward once the
+  `~/.cache/ai-activity/opencode.json`, per server and device key (a new
+  one gets the whole history), and only moves forward once the
   server accepted a batch, so nothing is lost while the server is down (the
   database is the queue). Delete that file to send everything again (safe:
   the server stores each message once). The script is idempotent: it can
@@ -497,6 +502,15 @@ Each tool has one Python script in `collectors/`. They share the same design:
   the backlog with its original times. Delete the file to send everything
   again; the server stores each message once, and a message seen again with
   more output tokens replaces its partial counts.
+- **Progress is per server and key.** The progress file keeps one set of
+  offsets per server URL and device key (`{"targets": {"<fingerprint>":
+  …}}`; the fingerprint is the first 16 hex digits of the SHA-256 of both,
+  never the key itself), for the 8 most recently used. Point a device at a
+  new server, or give it a new key, and its next run sends the whole local
+  history there; switch back and it resumes where it was. With a new key
+  on the same account, everything comes back as already stored. With
+  another account on the same server, messages the first account already
+  sent stay with it (the server never moves them between accounts).
 - **Never in the tool's way.** Called from a hook or the status line, a
   script answers at once and uploads from a detached copy of itself
   (Linux/macOS: its own session; Windows: out of the console, the process

@@ -1,7 +1,9 @@
 // Black-box harness: boots the real server on a random port with a temp DB,
 // so these tests survive internal rewrites (routing, framework, modules).
 import { spawn, spawnSync, execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import net from "node:net";
@@ -309,4 +311,42 @@ export async function processesGone(text, ms = 30000) {
 export async function awayFromMidnight(margin = 15) {
   const left = 86400000 - (Date.now() % 86400000);
   if (left < margin * 1000) await new Promise((r) => setTimeout(r, left + 1000));
+}
+
+/**
+ * The collectors' fingerprint of a server and device key (target() in
+ * collectors/*.py): their offsets are kept per fingerprint (issue #127).
+ */
+export function collectorTarget(url, key) {
+  const [, scheme, host, rest = "", query = ""] = url.trim().match(/^([^:/?#]+):\/\/([^/?#]*)([^?#]*)(?:\?([^#]*))?/);
+  const server = `${scheme.toLowerCase()}://${host.toLowerCase()}${rest.replace(/\/+$/, "")}${query ? "?" + query : ""}`;
+  return createHash("sha256").update(`${server}\n${key.trim()}`).digest("hex").slice(0, 16);
+}
+
+/** One target's offsets in a collector's state file, or undefined. */
+export const targetOffsets = (file, url, key) =>
+  JSON.parse(fs.readFileSync(file, "utf8")).targets?.[collectorTarget(url, key)];
+
+/**
+ * A fake ingest server that accepts everything and records each batch's
+ * messages: tells a full resend from an incremental one.
+ */
+export async function recordingServer() {
+  const batches = [];
+  const server = http.createServer(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    const payload = JSON.parse(body);
+    batches.push({ key: request.headers.authorization, messages: payload.messages ?? [] });
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ ok: true, messages: (payload.messages ?? []).length }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return {
+    base: `http://127.0.0.1:${server.address().port}`,
+    batches,
+    /** Messages received since the last call. */
+    take: () => batches.splice(0).flatMap((b) => b.messages),
+    close: () => new Promise((resolve) => server.close(resolve)),
+  };
 }

@@ -27,7 +27,7 @@ from email.utils import parsedate_to_datetime
 
 # Bump on every change to this file, with COLLECTOR_VERSIONS in
 # shared/collectors.ts: the server flags older copies as outdated.
-VERSION = 1
+VERSION = 2
 COLLECTOR = {"name": "antigravity", "version": VERSION}
 SERVER = os.environ.get("AI_ACTIVITY_URL", "<server>")
 KEY = os.environ.get("AI_ACTIVITY_KEY", "<device key>")
@@ -263,6 +263,37 @@ def save_state(path, state):
     os.replace(temp, path)
 
 
+KEPT_TARGETS = 8  # most recently used servers / keys whose checkpoints are kept
+
+
+def target():
+    """Which server and key the checkpoints belong to, as a fingerprint: the
+    state file is not secret, so it never holds the key or a part of it."""
+    url = urllib.parse.urlsplit(SERVER.strip())
+    server = urllib.parse.urlunsplit((url.scheme.lower(), url.netloc.lower(), url.path.rstrip("/"), url.query, ""))
+    return hashlib.sha256((server + "\n" + KEY.strip()).encode()).hexdigest()[:16]
+
+
+def for_target(saved):
+    """The state file to write back, this target's checkpoints in it, and
+    whether it held them already.
+
+    Checkpoints are kept per server and key: a new one starts empty, so its
+    first run sends the whole local history (the server stores each response
+    once), and switching back to an earlier one resumes where it was. The
+    single-target shape from before ({"scope": ...}) is carried over when it
+    is this target's, else dropped."""
+    targets = saved.get("targets") if isinstance(saved, dict) else None
+    targets = {k: v for k, v in targets.items() if isinstance(v, dict)} if isinstance(targets, dict) else {}
+    fp = target()
+    if isinstance(saved, dict) and saved.get("scope") == hashlib.sha256((SERVER.rstrip("/") + "\n" + KEY).encode()).hexdigest():
+        targets[fp] = {k: v for k, v in saved.items() if k != "scope"}
+    known = fp in targets
+    entry = targets.pop(fp, {})
+    targets[fp] = entry  # most recently used last
+    return {"targets": dict(list(targets.items())[-KEPT_TARGETS:])}, entry, known
+
+
 def load_state(path):
     """Saved state, or None when missing or malformed (starting over is safe)."""
     try:
@@ -471,12 +502,8 @@ def transient(error):
 
 def collect_tokens(state_path):
     """Upload new or grown responses of changed databases; True if one was busy."""
-    scope = hashlib.sha256((SERVER.rstrip("/") + "\n" + KEY).encode()).hexdigest()
-    state = load_state(state_path)
-    # Only save a foreign or malformed state once this run achieved something.
-    can_save = state is not None and state.get("scope") == scope
-    if not can_save:
-        state = {"scope": scope}
+    stored, state, can_save = for_target(load_state(state_path))
+    # A new target is only saved once this run achieved something.
     if deferred(state, "upload_retry_at"):
         raise RuntimeError("upload retry deferred by server")
     sources = [(hashlib.sha256(str(p.resolve()).encode()).hexdigest(), p) for p in databases()]
@@ -533,7 +560,7 @@ def collect_tokens(state_path):
             entry.update(stamp=before, sent={rid: sent[rid] for rid in best})
     finally:
         if can_save or "upload_retry_at" in state:
-            save_state(state_path, state)
+            save_state(state_path, stored)
     return failed
 
 

@@ -393,7 +393,19 @@ Components never branch on live vs demo: both sources map into the same
   runs itself again detached (`--worker`, handed the status line's JSON),
   so Claude Code cancelling the status line does not kill the upload. It
   replaced a `setsid -f python3 -c` one-liner and kept its offsets file
-  and lock, so a device switching over sends nothing twice.
+  and lock.
+- Every collector keeps its progress (`offsets.json`, `codex.json`,
+  `opencode.json`, `antigravity.json`) per target: `{"targets": {"<fp>":
+  {…}}}`, `fp` = the first 16 hex digits of SHA-256 of the normalized
+  server URL (scheme and host lowercased, trailing `/` dropped), `\n`, the
+  device key (`target()` in each script; `collectorTarget` in
+  `test/helpers.js`). Never the key or a prefix of it: these files are not
+  secret. A new server or key starts empty, so its next run resends the
+  whole local history (dedup makes that safe); the 8 most recently used
+  targets are kept, so switching back resumes. The shape from before
+  targets is dropped (one full resend), except Antigravity's
+  `{"scope": sha256(url + "\n" + key), …}`, carried over when it is the
+  current target's. Issue #127.
 - README.md ends with "How the collector scripts work": what the four
   scripts share and, per script, where it is copied, what runs it, what it
   reads, its progress and lock files, and its flags. Keep it in step.
@@ -566,7 +578,8 @@ npm run restore -- data/backups/dashboard-20260925-134052.db   # server stopped
   and events posted after the backup are missing: the collectors only send
   what their offsets say is new. Deleting `~/.cache/ai-activity/*.json` on
   a device makes its next run resend its whole local history (dedup makes
-  that safe).
+  that safe). A device pointed at a new server or given a new key does it
+  on its own: offsets are kept per server and key (§3).
 
 Counting rules:
 

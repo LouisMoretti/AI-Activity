@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { startServer, req, newDevice, asNewClient, processesGone, tempHome } from "./helpers.js";
+import { startServer, req, newDevice, asNewClient, processesGone, tempHome, targetOffsets, recordingServer } from "./helpers.js";
 
 const SCRIPT = fs.readFileSync(new URL("../collectors/opencode.py", import.meta.url), "utf8");
 const PLUGIN = fs.readFileSync(new URL("../collectors/opencode-plugin.js", import.meta.url), "utf8");
@@ -28,10 +28,12 @@ describe("OpenCode collector (plugin from README.md)", () => {
   let srv, key, home, db, hooks;
   const summary = async () => (await req(srv.base, "GET", "/api/u/admin/summary?tool=opencode", { headers: asNewClient() })).json.total;
   const configDir = () => path.join(home, ".config", "opencode");
-  const install = (server) => fs.writeFileSync(path.join(configDir(), "ai-activity-opencode.py"),
-    SCRIPT.replace("<server>", server).replace("<device key>", key));
+  const install = (server, k = key) => fs.writeFileSync(path.join(configDir(), "ai-activity-opencode.py"),
+    SCRIPT.replace("<server>", server).replace("<device key>", k));
   const statePath = () => path.join(home, ".cache", "ai-activity", "opencode.json");
-  const state = () => JSON.parse(fs.readFileSync(statePath(), "utf8"));
+  /** The offsets of the test server and key, and the whole file. */
+  const state = () => targetOffsets(statePath(), srv.base, key) ?? {};
+  const saved = () => fs.readFileSync(statePath(), "utf8");
   const idle = () => hooks.event({ event: { type: "session.idle", properties: { sessionID: "ses_root" } } });
 
   /**
@@ -148,7 +150,7 @@ describe("OpenCode collector (plugin from README.md)", () => {
     const latest = db.prepare("SELECT MAX(time_updated) AS t FROM message").get().t;
     assert.ok(await waitFor(() => Object.values(state()).includes(latest)), "the state reaches the last message sent");
     const before = await summary();
-    const saved = state();
+    const file = saved();
     message("msg_a6", "ses_other", tok(100, 5));
     install("http://127.0.0.1:9");
     try {
@@ -156,7 +158,7 @@ describe("OpenCode collector (plugin from README.md)", () => {
       // The failed run saves nothing: wait until it released the lock, then
       // the unchanged state means something.
       await collectorsDone();
-      assert.deepEqual(state(), saved);
+      assert.equal(saved(), file);
     } finally {
       install(srv.base); // a failure here must not leave later runs on a dead server
     }
@@ -170,7 +172,7 @@ describe("OpenCode collector (plugin from README.md)", () => {
 
   test("a redirect cannot forward the device bearer key", async () => {
     const before = await summary();
-    const saved = state();
+    const file = saved();
     message("msg_redirect", "ses_root", tok(20, 2));
     let received = 0;
     const destination = http.createServer((request, response) => {
@@ -190,7 +192,7 @@ describe("OpenCode collector (plugin from README.md)", () => {
         await idle();
         await collectorsDone();
         assert.equal(received, 0, `${redirectStatus} must not forward the key`);
-        assert.deepEqual(state(), saved, `${redirectStatus} must not advance offsets`);
+        assert.equal(saved(), file, `${redirectStatus} must not advance offsets`);
       }
     } finally {
       install(srv.base);
@@ -199,6 +201,32 @@ describe("OpenCode collector (plugin from README.md)", () => {
     }
     await idle();
     assert.ok(await waitFor(async () => (await summary()).events === before.events + 1));
+  });
+
+  test("offsets are kept per server and key: a new one gets the whole history, an earlier one resumes", async () => {
+    const rec = await recordingServer();
+    const refresh = async (base, k) => {
+      install(base, k);
+      await idle();
+      await collectorsDone();
+      return new Set(rec.take().map((m) => m.message_id));
+    };
+    const all = new Set(db.prepare("SELECT id FROM message WHERE json_extract(data, '$.role') = 'assistant' AND id NOT IN ('msg_empty', 'msg_errored')").all().map((r) => r.id));
+    try {
+      assert.deepEqual(await refresh(rec.base), all, "a new server gets the whole history");
+      // Only the last message may come again: runs start at its millisecond.
+      assert.ok((await refresh(rec.base)).size <= 1, "an unchanged target sends nothing again");
+      assert.deepEqual(await refresh(rec.base, "ak_other"), all, "a new key gets the whole history");
+      assert.ok((await refresh(rec.base)).size <= 1, "switching back resumes where it was");
+      assert.ok(!saved().includes(key) && !saved().includes("ak_other"), "never the key");
+      // Offsets from before targets belong to an unknown server: all is sent again.
+      fs.writeFileSync(statePath(), JSON.stringify(state()));
+      assert.deepEqual(await refresh(rec.base), all, "the old shape is dropped");
+      assert.deepEqual(Object.keys(JSON.parse(saved())), ["targets"]);
+    } finally {
+      install(srv.base);
+      await rec.close();
+    }
   });
 
   test("no prompt, reply, title or path is read", () => {
