@@ -249,23 +249,16 @@ extension.
 
 ### Issues and pull requests
 
-- Every issue is labeled: a type (`bug`, `enhancement`, `question`) and at
+- Every issue is labeled: a type (`bug`, `enhancement`, `question`), at
   least one area (`ui`, `server`, `collectors`, `infra`, `security`,
-  `documentation`, `accessibility`); `needs decision` while a choice is
-  open. The forms in `.github/ISSUE_TEMPLATE/` (blank issues are off) add
-  the type and the areas picked. From the CLI, pass them yourself:
+  `documentation`, `accessibility`), and `needs decision` while a choice
+  is open. The forms in `.github/ISSUE_TEMPLATE/` (blank issues are off)
+  add the type; add the areas by hand. From the CLI:
   `gh issue create --label enhancement --label ui`.
 - Every pull request closes an issue: open the issue first, then put
   `Closes #<issue>` in the description (`.github/pull_request_template.md`).
-  The "Linked issue" commit status (`.github/workflows/triage.yml`, logic in
-  `.github/scripts/triage.cjs`) fails without a labeled issue of this repo,
-  and copies its type and area labels onto the PR. It is set again on every
-  PR change and when a linked issue's labels change.
-  A small fix (typo, flaky test, dependency bump) can skip the issue with the
-  `no issue` label instead; label the PR yourself then.
-- Every pull request has an assignee: the "Assignee" check assigns the
-  author when there is none, and fails if that is not possible (an
-  author who is not a collaborator): a maintainer assigns it then.
+  Give the PR the issue's labels and assign it to its author:
+  `gh pr create --assignee @me --label enhancement --label ui`.
 
 ## 3. Architecture
 

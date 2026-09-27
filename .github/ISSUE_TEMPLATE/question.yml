@@ -2,22 +2,6 @@ name: Question
 description: Something to check, explain or decide.
 labels: [question]
 body:
-  - type: dropdown
-    id: area
-    attributes:
-      label: Area
-      description: Which parts of the project this touches (added as labels).
-      multiple: true
-      options:
-        - ui
-        - server
-        - collectors
-        - infra
-        - security
-        - documentation
-        - accessibility
-    validations:
-      required: true
   - type: textarea
     id: question
     attributes:

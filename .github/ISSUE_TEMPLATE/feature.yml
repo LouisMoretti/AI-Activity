@@ -2,22 +2,6 @@ name: Feature request
 description: A new feature or a change to an existing one.
 labels: [enhancement]
 body:
-  - type: dropdown
-    id: area
-    attributes:
-      label: Area
-      description: Which parts of the project this touches (added as labels).
-      multiple: true
-      options:
-        - ui
-        - server
-        - collectors
-        - infra
-        - security
-        - documentation
-        - accessibility
-    validations:
-      required: true
   - type: textarea
     id: problem
     attributes:
