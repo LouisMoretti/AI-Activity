@@ -123,6 +123,14 @@
             {/if}
           {/each}
         </div>
+        {#if dash.own}
+          <!-- Owner only: how the other tools get here (README.md, "One-command install"). -->
+          <p class="howto">
+            Add a tool: run a device's install command from
+            <button type="button" onclick={() => dash.go("/settings")}>Settings → Devices</button>
+            on that machine (Linux, macOS or Windows). It sets up every tool it finds.
+          </p>
+        {/if}
       </Section>
 
       <Section title="Conversations" subtitle="Most recent first">
@@ -136,6 +144,9 @@
   .shell { max-width: 1080px; margin: 0 auto; padding: 44px 42px 56px; }
   .gate { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 20px; color: var(--muted); font-size: 13px; line-height: 1.6; }
   .gate button { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 4px 10px; font-size: 12px; color: var(--text); }
+  .howto { margin-top: 16px; border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 16px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+  .howto button { padding: 0; color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+  .howto button:hover { color: var(--accent); }
   .notice { color: var(--warn); margin: 12px 0; text-align: center; }
   .quota { display: grid; } /* the card fills its grid cell */
   /* A quota card with several pools (Antigravity) takes a whole row. */

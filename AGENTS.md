@@ -23,7 +23,8 @@ current streak; hover shows the split by tool and model, or the longest
 streak), one card per tool in `TOOLS` order (Claude Code, Codex,
 Antigravity on a full row, then OpenCode, which takes 2/3 of the last row,
 next to "Today by tool": today's tokens split by tool), recent conversations (10 + "Show more"). No tool filter:
-every tool is always shown. No cost or subscription tracking (removed on
+every tool is always shown; on your own page, a one-line box under them
+says how to add one (the install command, Settings → Devices). No cost or subscription tracking (removed on
 purpose). Only demo data carries a badge ("Demonstration data"). Palette: the
 original dark theme; type: Geist, with Geist Mono only for ids and model
 names. Quota bars carry a mark for how far into the window we are.
@@ -93,7 +94,8 @@ Web client (Svelte 5 + Vite, in `web/`):
 ```bash
 npm run dev                 # API server on :3000 (watch mode; restart
                             # it after editing .env)
-npm run dev:web             # UI with HMR on :5173, proxies /api → :3000
+npm run dev:web             # UI with HMR on :5173, proxies /api and
+                            # /install.{sh,ps1} → :3000
 npm run build               # → web/dist (the default STATIC_DIR)
 ```
 
@@ -244,7 +246,8 @@ README's statusLine command and
 README's Codex Stop hook; `test/opencode-collector.test.js` runs
 `collectors/opencode.py` through its plugin on a fake OpenCode database;
 `test/antigravity-collector.test.js` runs `collectors/antigravity.py` on
-synthetic Antigravity databases.
+synthetic Antigravity databases; `test/install.test.js` runs `/install.sh`
+(and, on Windows, `/install.ps1`) in a temporary home.
 Types: `npm run typecheck` (tsc for server, svelte-check for web). Node >= 22.18 runs the TypeScript server directly
 (type stripping, no build step), so only erasable TS syntax is allowed (no
 `enum`, no parameter properties) and relative imports keep their `.ts`
@@ -319,6 +322,7 @@ server/
   lib/passwords.ts    scrypt hashing, username/password rules
   lib/setup.ts        one-time setup code for the first account
   lib/avatar.ts       profile picture link allowlist
+  lib/installer.ts    /install.sh, /install.ps1 (collectors/install.py + collectors)
   lib/backup.ts       consistent snapshots, retention, restore
   lib/client.ts       client address + HTTPS behind the tunnel or TRUST_PROXY
   lib/rate-limit.ts   token buckets + LIMITS (ingest, public reads, per user)
@@ -407,6 +411,26 @@ Components never branch on live vs demo: both sources map into the same
   `~/.config/opencode/plugins/ai-activity.js`) runs it detached (with
   `python` on Windows, `python3` elsewhere) at OpenCode start and on every
   `session.idle`, one run at a time.
+- One-command install: `GET /install.sh` and `GET /install.ps1` (no
+  session) are `collectors/install.py` with the four collectors and the
+  OpenCode plugin embedded (`server/lib/installer.ts`, built at start; the
+  Docker image copies `collectors/` for it), wrapped for sh and for
+  PowerShell (base64, ASCII only; run through `iex`, so it throws rather
+  than `exit`s). Run as
+  `curl -fsSL <server>/install.sh | AI_ACTIVITY_URL=… AI_ACTIVITY_KEY=… sh`
+  or `$env:AI_ACTIVITY_URL=…; $env:AI_ACTIVITY_KEY=…; irm <server>/install.ps1 | iex`:
+  the key is never in a URL and ends up only in the installed collectors
+  (mode 600). It installs the tools found (or `AI_ACTIVITY_TOOLS`), copies
+  each collector where the README puts it, writes the README's Linux/macOS
+  commands (on Windows, the installing interpreter's absolute path), merges
+  into `settings.json` / `hooks.json` without touching other entries or
+  another statusLine (unless `AI_ACTIVITY_FORCE=1`), writes only what
+  changed (through symlinks, to their target), reads every config before
+  writing anything (an invalid one changes nothing), checks the key first
+  (a redirect is fatal: the collectors' POSTs never follow one) and refuses root unless
+  `AI_ACTIVITY_ALLOW_ROOT=1` (`test/install.test.js`, on Linux and
+  Windows). Settings → Devices copies both commands per device; the owner's
+  profile links there in a one-line box under the tools.
 - Never transmit prompts, transcripts, or provider keys — metrics only.
 
 ## 4. Data model (SQLite, `data/dashboard.db`)
@@ -907,7 +931,8 @@ reached through Caddy (§2, Deploy). After `npm start` works locally:
 
 Live review (edits show up instantly for the tester): keep the Node API on
 :3000 (collectors post there) and point the tunnel at the Vite dev server
-instead, which proxies `/api` to :3000 and pushes changes over HMR:
+instead, which proxies `/api` (and the install scripts, so the Devices
+panel's commands work there) to :3000 and pushes changes over HMR:
 
 ```bash
 npm run dev                         # API on :3000, restarts on server/ edits
