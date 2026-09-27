@@ -30,7 +30,9 @@ MAX_PAGE_BYTES = 64 * MAX_BLOB
 MAX_DATABASES = 2000
 MAX_RUN_SECONDS = 900
 MAX_SCAN_SECONDS = 30
-MAX_LOCK_SECONDS = 900
+# A bounded pass can finish its last scan/upload, then probe quotas, after
+# reaching the 15-minute run budget. Give the single waiter that headroom.
+MAX_LOCK_SECONDS = 1200
 
 
 def fields(blob):
@@ -148,7 +150,7 @@ def matched_times(db, rows, deadline):
         # same step/bot key on a different page. Check the entire snapshot.
         for (blob,) in db.execute("SELECT CASE WHEN length(data) <= ? THEN data END FROM gen_metadata", (MAX_BLOB,)):
             if time.monotonic() > deadline:
-                return {}
+                return None
             try:
                 root = fields(blob)
                 usage = message(message(root, 1), 4)
@@ -162,7 +164,7 @@ def matched_times(db, rows, deadline):
         # memory. Even very large step tables can be streamed safely.
         for (blob,) in db.execute("SELECT CASE WHEN length(metadata) <= ? THEN metadata END FROM steps", (MAX_BLOB,)):
             if time.monotonic() > deadline:
-                return {}
+                return None
             try:
                 meta = fields(blob)
                 key = (text(meta, 12), text(message(meta, 9), 7))
@@ -175,7 +177,7 @@ def matched_times(db, rows, deadline):
     except sqlite3.OperationalError:
         if time.monotonic() <= deadline:
             raise
-        return {}
+        return None
     return {key: next(iter(times[key])) for key in wanted if len(uses[key]) == 1 and len(times[key]) == 1}
 
 
@@ -221,7 +223,12 @@ def read_database(path, after=None):
             except (ValueError, UnicodeError):
                 skipped += 1
 
+        # Matching must not inherit a deadline already spent reading the page.
+        # An interrupted uniqueness scan is unknown, not an empty result.
+        deadline = time.monotonic() + MAX_SCAN_SECONDS
         times = matched_times(db, rows, deadline)
+        incomplete = times is None
+        times = times or {}
         out = []
         for row in rows:
             when = row["occurred_at"]
@@ -238,7 +245,9 @@ def read_database(path, after=None):
             out.append({"response_id": row["response_id"], "session_id": path.stem,
                         "model": model, "occurred_at": when,
                         "utc_offset_min": int(offset.total_seconds() // 60), "usage": row["usage"]})
-        return out, skipped, last if more else None, more
+        # Native dates can still be uploaded, but unresolved matches must be
+        # revisited before advancing the page, including when later pages exist.
+        return out, skipped, after if incomplete else (last if more else None), more or incomplete
     finally:
         db.close()
 
@@ -258,7 +267,7 @@ def databases():
 
 
 @contextlib.contextmanager
-def locked(path):
+def locked(path, wait=True):
     # Append mode ignores seek() for writes on Windows. Never truncate a
     # lock file another worker may hold. Waiting happens in the detached
     # worker, so an overlapping final-turn hook is not silently discarded.
@@ -279,6 +288,9 @@ def locked(path):
             except OSError as error:
                 if error.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
                     raise
+                if not wait:
+                    yield False
+                    return
                 if time.monotonic() >= deadline:
                     raise RuntimeError("collector lock wait timed out") from None
                 time.sleep(0.1)
@@ -289,7 +301,7 @@ def locked(path):
                 lock.seek(0)
                 lock.write(b"0")
                 lock.flush()
-            yield
+            yield True
         finally:
             if os.name == "nt":
                 lock.seek(0)
@@ -402,11 +414,13 @@ def read_quotas():
         return quota_reports(report, int(time.time()))
 
 
-def collect():
+def collect(on_locked=None):
     import urllib.request
     cache = Path.home() / ".cache" / "ai-activity"
     cache.mkdir(parents=True, exist_ok=True)
     with locked(cache / "antigravity.lock"):
+        if on_locked is not None:
+            on_locked()
         state_path = cache / "antigravity.json"
         try:
             state = json.loads(state_path.read_text())
@@ -436,31 +450,6 @@ def collect():
         sources = sources[start:] + sources[:start]
         failed = False
         deferred = False
-        # Refresh even when there are no new generations. Missing CLI/auth/schema
-        # never prevents token imports; a refused quota upload is retried next run.
-        if os.environ.get("AI_ACTIVITY_ANTIGRAVITY_QUOTAS") != "0" and time.time() - state.get("quota_at", 0) >= 60:
-            try:
-                reports = read_quotas()
-            except Exception:
-                reports = []
-            if not reports:
-                print("ai-activity antigravity: quota report unavailable; usage collection continues", file=sys.stderr)
-            else:
-                try:
-                    for report in reports:
-                        request = urllib.request.Request(SERVER.rstrip("/") + "/api/ingest/antigravity",
-                            data=json.dumps(report).encode(),
-                            headers={"Authorization": "Bearer " + KEY, "Content-Type": "application/json"})
-                        with urllib.request.urlopen(request, timeout=30) as response:
-                            result = json.load(response)
-                        if result.get("ok") is not True or result.get("messages") != 0:
-                            raise ValueError("quota upload refused")
-                    state["quota_at"] = reports[0]["occurred_at"]
-                    can_save = True
-                    save_state(state_path, state)
-                except Exception:
-                    print("ai-activity antigravity: quota upload failed; retry on next run", file=sys.stderr)
-                    failed = True
         started = time.monotonic()
         for number, (name, path) in enumerate(sources):
             if number >= MAX_DATABASES or (number and time.monotonic() - started > MAX_RUN_SECONDS):
@@ -531,20 +520,77 @@ def collect():
                 failed = True
                 if can_save:
                     save_state(state_path, state)
+        # Failed probes/uploads back off too, so missing auth or a hung CLI
+        # cannot hold the lock for 95 seconds on every model invocation.
+        # Save before launching: a killed worker must not erase the throttle.
+        tried = state.get("quota_tried_at", state.get("quota_at", 0))
+        if type(tried) not in (int, float) or not 0 <= tried <= time.time():
+            tried = 0
+        interval = 300 if state.get("quota_failed") else 60
+        if os.environ.get("AI_ACTIVITY_ANTIGRAVITY_QUOTAS") != "0" and time.time() - tried >= interval:
+            state.update(quota_tried_at=int(time.time()), quota_failed=True)
+            can_save = True
+            save_state(state_path, state)
+            try:
+                reports = read_quotas()
+            except Exception:
+                reports = []
+            if not reports:
+                print("ai-activity antigravity: quota report unavailable; usage collection continues", file=sys.stderr)
+            else:
+                try:
+                    for report in reports:
+                        request = urllib.request.Request(SERVER.rstrip("/") + "/api/ingest/antigravity",
+                            data=json.dumps(report).encode(),
+                            headers={"Authorization": "Bearer " + KEY, "Content-Type": "application/json"})
+                        with urllib.request.urlopen(request, timeout=30) as response:
+                            result = json.load(response)
+                        if result.get("ok") is not True or result.get("messages") != 0:
+                            raise ValueError("quota upload refused")
+                    state["quota_at"] = reports[0]["occurred_at"]
+                    state["quota_failed"] = False
+                    can_save = True
+                    save_state(state_path, state)
+                except Exception:
+                    print("ai-activity antigravity: quota upload failed; retry on next run", file=sys.stderr)
+                    failed = True
         if deferred:
             print("ai-activity antigravity: scan budget reached; saved progress for next run", file=sys.stderr)
         if failed:
             raise RuntimeError("collection/upload failed")
 
 
+def hook_worker():
+    cache = Path.home() / ".cache" / "ai-activity"
+    cache.mkdir(parents=True, exist_ok=True)
+    # One active worker and at most one waiting worker. A hook coalesced into
+    # a waiter is safe: that waiter has not taken its database snapshot yet.
+    # Release the queue lock only after acquiring the collection lock, so a
+    # hook during collection can schedule the next pass (including Stop).
+    with contextlib.ExitStack() as waiting:
+        if not waiting.enter_context(locked(cache / "antigravity-waiter.lock", wait=False)):
+            return
+        def ready():
+            waiting.close()
+            # Delay after acquiring the main lock, including for a long-lived
+            # waiter, to let the app persist final metadata after its hook.
+            time.sleep(2)
+        collect(on_locked=ready)
+
+
 if __name__ == "__main__":
     if "--hook" in sys.argv or "--post-invocation" in sys.argv:
         # Consume the hook payload locally, never forward transcript/workspace paths.
-        sys.stdin.read()
+        sys.stdin.read(MAX_BLOB)
         options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
         if os.environ.get("AI_ACTIVITY_ANTIGRAVITY_QUOTA_PROBE") != "1":
-            subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--hook-worker"], stdin=subprocess.DEVNULL,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **options)
+            try:
+                subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--hook-worker"], stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **options)
+            except OSError:
+                # A process limit or missing interpreter must not break the
+                # app's hook protocol. A manual/scheduled pass can retry.
+                print("ai-activity antigravity: worker launch failed; retry manually or on next hook", file=sys.stderr)
         # PostInvocation must not inject steps or change execution flow.
         # Antigravity's Stop contract requires a decision; only "continue"
         # re-enters the loop, and every other value permits the normal stop:
@@ -553,10 +599,9 @@ if __name__ == "__main__":
     else:
         try:
             if "--hook-worker" in sys.argv:
-                # Allow the app to persist final generation metadata before
-                # taking the read-only snapshot. The hook itself never waits.
-                time.sleep(2)
-            collect()
+                hook_worker()
+            else:
+                collect()
         except Exception:
             print("ai-activity antigravity: collector did not complete; retry on next run", file=sys.stderr)
             sys.exit(1)
