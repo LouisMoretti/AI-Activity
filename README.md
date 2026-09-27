@@ -413,8 +413,8 @@ What it does:
   Missing/disabled buckets stay unavailable; after reset, the old value
   stays unavailable until a fresh snapshot arrives. Free plans may expose
   only a weekly quota. Context fill remains unavailable.
-  To preview the card, sign in and add `?demo=1` to your own profile URL.
-  The existing **Demonstration data** mode includes fictional Antigravity
+  To preview the card, open `/demo` on your server (no account needed).
+  That **Demonstration data** page includes fictional Antigravity
   quotas, activity and conversations; it never writes them to the server.
 - The quota subprocess runs `/usage` in an empty temporary directory,
   without the Activity URL/key, and cannot recursively trigger this

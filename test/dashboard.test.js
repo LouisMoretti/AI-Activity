@@ -136,25 +136,25 @@ describe("dashboard state", () => {
   });
 
   test("opening a protected page signed out preserves its query for sign-in", async () => {
-    const { stop } = await open("/settings?demo=1", { "/api/auth/status": signedOut });
-    assert.equal(loc.pathname + loc.search, `/?next=${encodeURIComponent("/settings?demo=1")}`);
+    const { stop } = await open("/settings?tab=x", { "/api/auth/status": signedOut });
+    assert.equal(loc.pathname + loc.search, `/?next=${encodeURIComponent("/settings?tab=x")}`);
     stop();
   });
 
   test("a lost session preserves the query through sign-in", async () => {
-    const { dash, stop } = await open("/u/me?demo=1", profileRoutes("me"));
+    const { dash, stop } = await open("/u/me?tab=x", profileRoutes("me"));
     routes["/api/devices"] = 401;
     routes["/api/auth/status"] = signedOut;
     await assert.rejects(api.devices());
     await settle();
-    assert.equal(loc.pathname + loc.search, `/?next=${encodeURIComponent("/u/me?demo=1")}`);
+    assert.equal(loc.pathname + loc.search, `/?next=${encodeURIComponent("/u/me?tab=x")}`);
 
     routes["/api/auth/status"] = signedIn;
     routes["/api/auth/login"] = {};
     assert.equal(await dash.login("me", "secret"), null);
     await settle();
-    assert.equal(loc.pathname + loc.search, "/u/me?demo=1");
-    assert.equal(dash.vm.demo, true);
+    assert.equal(loc.pathname + loc.search, "/u/me?tab=x");
+    assert.equal(dash.vm.demo, false);
     stop();
   });
 
@@ -165,7 +165,7 @@ describe("dashboard state", () => {
     stop();
   });
 
-  test("signing in at /?demo=1 preserves demo through the profile redirect", async () => {
+  test("signing in at /?demo=1 lands on the real profile", async () => {
     const { dash, stop } = await open("/?demo=1", {
       ...profileRoutes("me"),
       "/api/auth/status": signedOut,
@@ -174,16 +174,16 @@ describe("dashboard state", () => {
     routes["/api/auth/status"] = signedIn;
     assert.equal(await dash.login("me", "secret"), null);
     await settle();
-    assert.equal(loc.pathname + loc.search, "/u/me?demo=1");
-    assert.equal(dash.vm.demo, true);
+    assert.equal(loc.pathname + loc.search, "/u/me");
+    assert.equal(dash.vm.demo, false);
     stop();
   });
 
-  test("creating an account preserves the current query and a safe return destination", async () => {
+  test("creating an account returns to a safe destination, else your profile", async () => {
     const account = { username: "me", display_name: "Me", password: "long-enough-password" };
     for (const [start, expected] of [
-      ["/?demo=1", "/u/me?demo=1"],
-      [`/?next=${encodeURIComponent("/settings?demo=1")}`, "/settings?demo=1"],
+      ["/?demo=1", "/u/me"],
+      [`/?next=${encodeURIComponent("/settings?tab=x")}`, "/settings?tab=x"],
     ]) {
       const { dash, stop } = await open(start, {
         ...profileRoutes("me"),
@@ -220,8 +220,53 @@ describe("dashboard state", () => {
     stop();
   });
 
-  test("?demo=1 only lasts while it is in the address", async () => {
+  test("/demo shows the fictional user, signed out, without usage calls or refresh", async () => {
+    const { dash, stop, tick } = await open("/demo", { "/api/auth/status": signedOut });
+    assert.equal(dash.status, "ready");
+    assert.equal(dash.account, null);
+    assert.equal(dash.own, false);
+    assert.deepEqual(dash.shown, { username: "demo", display_name: "Demo preview", avatar_url: null });
+    assert.equal(dash.vm.demo, true);
+    assert.deepEqual(calls, ["/api/auth/status"]);
+    tick();
+    await settle();
+    assert.deepEqual(calls, ["/api/auth/status"], "no refresh");
+    stop();
+  });
+
+  test("/demo stays up when the server is unreachable", async () => {
+    const { dash, stop } = await open("/demo", { "/api/auth/status": new TypeError("network down") });
+    assert.equal(dash.status, "ready");
+    assert.equal(dash.vm.demo, true);
+    stop();
+  });
+
+  test("signing in from /demo lands on your real profile", async () => {
+    const { dash, stop } = await open(`/?next=${encodeURIComponent("/demo")}`, {
+      ...profileRoutes("me"),
+      "/api/auth/status": signedOut,
+      "/api/auth/login": {},
+    });
+    routes["/api/auth/status"] = signedIn;
+    assert.equal(await dash.login("me", "secret"), null);
+    await settle();
+    assert.equal(loc.pathname + loc.search, "/u/me");
+    assert.equal(dash.vm.demo, false);
+    stop();
+  });
+
+  test("?demo=1 has no effect on a real profile", async () => {
     const { dash, stop } = await open("/u/me?demo=1", profileRoutes("me"));
+    assert.equal(loc.pathname + loc.search, "/u/me?demo=1", "the query is ignored, not rewritten");
+    assert.equal(dash.route.page, "profile");
+    assert.equal(dash.vm.demo, false);
+    assert.ok(!dash.vm.sessions.some(s => s.id.startsWith("demo-")));
+    stop();
+  });
+
+  test("/demo is signed in too; leaving it shows live data again", async () => {
+    const { dash, stop } = await open("/demo", profileRoutes("me"));
+    assert.equal(dash.account.username, "me");
     assert.equal(dash.vm.demo, true);
     assert.deepEqual(dash.vm.antigravity.pools.map(p => p.windows.map(w => w.pct)), [[42, 68], [19, 32]]);
     const ids = dash.vm.sessions.map(s => s.id.slice(0, 8));
@@ -239,7 +284,6 @@ describe("dashboard state", () => {
     await settle();
     dash.openProfile("me");
     await settle();
-    assert.equal(dash.demo, false);
     assert.equal(dash.vm.demo, false);
     assert.deepEqual(dash.vm.antigravity.pools.map(p => p.windows.map(w => w.pct)), [[null, null], [null, null]]);
     assert.ok(!dash.vm.sessions.some(s => s.id.startsWith("demo-")));

@@ -31,15 +31,21 @@ names. Quota bars carry a mark for how far into the window we are.
 
 **Pages:** `/` has two tabs, Sign in and Create account (sign-up is open
 unless an admin closed it; or first-account setup while none exists); once signed
-in it redirects to `/u/<you>`, so the address bar is the shareable link.
+in it redirects to `/u/<you>`, so the address bar is the shareable link;
+under the form (and the first-account form), "See a demo" links to `/demo`;
+signing in from `/demo` lands on your profile, not back on the demo.
 `/u/<username>` is **public and read-only**, no account needed: activity,
 stats, tools/quotas and conversations.
+`/demo` is **public** too: the fictional dataset as the profile of a
+fictional user, "Demo preview" (initial only, no picture), built in the
+browser (no usage API call, no refresh). It lives only at `/demo`, never
+under `/u/`, so a real account named `demo` is never mistaken for it.
 `/leaderboard` is **public** too: every enabled account (idle ones last,
 with zeros) ranked by tokens over 7 days / 30 days / all time, with
 server-wide totals, the model split and a global activity calendar. The
 header (`SiteHeader`) is the same on every page: logo, demo badge, and the
 avatar menu (or "Sign in"), plus a breadcrumb of the current page
-(`AI Activity / (picture) @name`, `/ Leaderboard`, `/ Settings`, `/ Admin panel`) that
+(`AI Activity / (picture) @name`, `/ (initial) Demo preview`, `/ Leaderboard`, `/ Settings`, `/ Admin panel`) that
 replaces in-page titles. It never reads the route itself (`App.svelte`
 passes the breadcrumb); site chrome (header and `SiteFooter`) is rendered
 once in `App.svelte`, outside the pages. The footer, like the top of
@@ -50,12 +56,12 @@ them.
 Clicking the avatar opens Your profile / Leaderboard / Settings / Admin
 panel (admins) / Sign out. `/settings` (signed in) holds Account and Devices; `/admin`
 (admins) holds the server overview, the account-creation switch and the
-users (make or remove admin, reset password, disable). The demo (`?demo=1`) needs a sign-in and only replaces your own
-page.
+users (make or remove admin, reset password, disable).
 
-**Hard rule:** the old demo dataset was fictional and deterministic. It is only
-visible via `?demo=1` (once signed in), always labeled "Demonstration data",
-and never presented as a real measurement.
+**Hard rule:** the demo dataset is fictional and deterministic. It is only
+visible at `/demo`, always labeled "Demonstration data" (and ` · Demo` in
+the tab title), and never presented as a real measurement: no real profile
+ever shows it (`?demo=1` is gone and does nothing).
 
 ## 2. Quick start
 
@@ -339,7 +345,7 @@ web/
   src/lib/api.ts          typed fetch client (401 → UnauthorizedError)
   src/lib/view-model.ts   what components render (DashboardVM)
   src/lib/live.ts         API responses → DashboardVM ("Unavailable", never guessed)
-  src/lib/demo.ts         FICTIONAL ?demo=1 dataset → DashboardVM (always labeled)
+  src/lib/demo.ts         FICTIONAL /demo dataset → DashboardVM (always labeled)
   src/lib/series.ts       pure helpers: dense day series, streaks, calendar grid
   src/lib/format.ts       number, day, duration and "ago" formatting
   src/lib/dashboard.svelte.ts  state: provider, auth status, 15 s refresh
@@ -890,8 +896,8 @@ account exists):
 6. Payload after `resets_at` passed → new snapshot replaces the old window.
 7. An event at 23:30 Europe/Paris shows on that local day; "Today" and the
    streak reset at the owner's local midnight.
-8. `?demo=1` still shows labeled fictional data (after sign-in); normal view
-   never does.
+8. `/demo` shows labeled fictional data, signed in or out; real profiles
+   never do (`?demo=1` changes nothing).
 9. `/` signed out: sign-in (or first-account) screen; signed in: redirect
    to `/u/<you>`. `/settings` and `/admin` signed out: sign-in, then back.
    Create account works for anyone (after the first account) until an
@@ -929,8 +935,8 @@ reached through Caddy (§2, Deploy). After `npm start` works locally:
 3. Copy the public URL (`https://<random>.trycloudflare.com`).
 4. **Send that link to the user for testing** and keep the tunnel running
    while they test. Mention which account to sign in with (or the setup code
-   from the server log if none exists yet) and that `?demo=1`
-   shows the labeled fictional dataset.
+   from the server log if none exists yet) and that `/demo`
+   shows the labeled fictional dataset (no account needed).
 5. Revoke/replace device keys if a test key leaks; never put keys in URLs.
 
 Live review (edits show up instantly for the tester): keep the Node API on
