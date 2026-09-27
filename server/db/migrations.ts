@@ -35,11 +35,24 @@ function githubAccounts(db: DB): void {
     DELETE FROM devices;
     DELETE FROM viewer_sessions;
     DELETE FROM settings;
-    DELETE FROM users;
+    -- Empty, so rebuilt strict: every account has a GitHub id and a
+    -- username (no pre-accounts placeholder, no password). The other
+    -- tables' foreign keys name "users" and follow the new table.
+    DROP TABLE users;
+    CREATE TABLE users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      github_id INTEGER NOT NULL,
+      username TEXT NOT NULL,
+      display_name TEXT,
+      avatar_url TEXT,
+      is_admin INTEGER NOT NULL DEFAULT 0,
+      disabled INTEGER NOT NULL DEFAULT 0,
+      activity_cleared_at INTEGER,
+      created_at INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX idx_users_github ON users(github_id);
+    CREATE UNIQUE INDEX idx_users_username ON users(username COLLATE NOCASE);
     DELETE FROM sqlite_sequence; -- ids start at 1 again: the first account is #1
-    ALTER TABLE users ADD COLUMN github_id INTEGER;
-    CREATE UNIQUE INDEX idx_users_github ON users(github_id) WHERE github_id IS NOT NULL;
-    ALTER TABLE users DROP COLUMN password_hash;
   `);
 }
 

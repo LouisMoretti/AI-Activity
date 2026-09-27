@@ -59,11 +59,14 @@ export function hashKey(rawKey: string): string {
 
 export interface UserRow {
   id: number;
-  username: string | null;
+  /** The GitHub login (updated at each sign-in). */
+  username: string;
+  /** GitHub's name; null: the username is shown. */
   display_name: string | null;
+  /** GitHub's picture (allowlisted hosts); null: the initial is shown. */
   avatar_url: string | null;
-  /** The GitHub account's numeric id (issue #127); every account has one. */
-  github_id: number | null;
+  /** The GitHub account's numeric id (issue #127). */
+  github_id: number;
   is_admin: number;
   disabled: number;
 }
@@ -71,8 +74,8 @@ export interface UserRow {
 export function toAccount(u: UserRow): Account {
   return {
     id: u.id,
-    username: u.username ?? "",
-    display_name: u.display_name || u.username || "",
+    username: u.username,
+    display_name: u.display_name || u.username,
     avatar_url: u.avatar_url,
     is_admin: Boolean(u.is_admin),
   };
@@ -85,7 +88,7 @@ export function toProfile(u: UserRow): Profile {
 
 /** True once at least one account exists; before that nothing is viewable (setup). */
 export function accountsExist(db: DB): boolean {
-  return Boolean(db.prepare("SELECT 1 FROM users WHERE username IS NOT NULL LIMIT 1").get());
+  return Boolean(db.prepare("SELECT 1 FROM users LIMIT 1").get());
 }
 
 export function findUserByGithubId(db: DB, githubId: number): UserRow | null {
@@ -98,18 +101,18 @@ export function findUserByUsername(db: DB, username: string): UserRow | null {
 }
 
 export function listUsers(db: DB): UserRow[] {
-  return db.prepare("SELECT * FROM users WHERE username IS NOT NULL ORDER BY id").all() as UserRow[];
+  return db.prepare("SELECT * FROM users ORDER BY id").all() as UserRow[];
 }
 
 /** Accounts that can sign in, i.e. whose profile page exists. */
 export function listProfiles(db: DB): Profile[] {
   return (db
-    .prepare("SELECT * FROM users WHERE username IS NOT NULL AND disabled = 0 ORDER BY username COLLATE NOCASE")
+    .prepare("SELECT * FROM users WHERE disabled = 0 ORDER BY username COLLATE NOCASE")
     .all() as UserRow[]).map(toProfile);
 }
 
 export function getUser(db: DB, id: number): UserRow | null {
-  return (db.prepare("SELECT * FROM users WHERE id = ? AND username IS NOT NULL").get(id) as UserRow | undefined) ?? null;
+  return (db.prepare("SELECT * FROM users WHERE id = ?").get(id) as UserRow | undefined) ?? null;
 }
 
 /** Accounts as the admin panel shows them, with their device count. */
@@ -117,7 +120,7 @@ export function listAdminUsers(db: DB): AdminUser[] {
   const rows = db
     .prepare(
       `SELECT u.*, (SELECT COUNT(*) FROM devices d WHERE d.user_id = u.id AND d.revoked = 0) AS devices
-       FROM users u WHERE u.username IS NOT NULL ORDER BY u.id`
+       FROM users u ORDER BY u.id`
     )
     .all() as (UserRow & { created_at: number; devices: number })[];
   return rows.map((u) => ({ ...toAccount(u), disabled: Boolean(u.disabled), created_at: u.created_at, devices: u.devices }));
@@ -175,8 +178,8 @@ export function setSignupOpen(db: DB, open: boolean): void {
 export function adminOverview(db: DB): AdminOverview {
   const n = (sql: string) => (db.prepare(sql).get() as { n: number | null }).n ?? 0;
   return {
-    accounts: n("SELECT COUNT(*) AS n FROM users WHERE username IS NOT NULL"),
-    disabled_accounts: n("SELECT COUNT(*) AS n FROM users WHERE username IS NOT NULL AND disabled = 1"),
+    accounts: n("SELECT COUNT(*) AS n FROM users"),
+    disabled_accounts: n("SELECT COUNT(*) AS n FROM users WHERE disabled = 1"),
     devices: n("SELECT COUNT(*) AS n FROM devices WHERE revoked = 0"),
     events: n("SELECT COUNT(*) AS n FROM usage_events"),
     sessions: n("SELECT COUNT(DISTINCT session_id) AS n FROM usage_events"),
@@ -250,7 +253,7 @@ export type DeleteAccountResult = { ok: true; deleted: DeletedAccount } | { ok: 
 export function deleteAccount(db: DB, userId: number): DeleteAccountResult {
   return erasing(db, (): DeleteAccountResult => {
     const others = db
-      .prepare("SELECT COUNT(*) AS n FROM users WHERE is_admin = 1 AND disabled = 0 AND username IS NOT NULL AND id != ?")
+      .prepare("SELECT COUNT(*) AS n FROM users WHERE is_admin = 1 AND disabled = 0 AND id != ?")
       .get(userId) as { n: number };
     const user = db.prepare("SELECT is_admin FROM users WHERE id = ?").get(userId) as { is_admin: number } | undefined;
     if (user?.is_admin && others.n === 0) return { ok: false, reason: "last_admin" };
@@ -282,7 +285,7 @@ export function viewerSessionUser(db: DB, tokenHash: string): (UserRow & { sessi
   return (db
     .prepare(
       `SELECT u.*, s.created_at AS session_created_at FROM viewer_sessions s JOIN users u ON u.id = s.user_id
-       WHERE s.token_hash = ? AND s.expires_at > ? AND u.disabled = 0 AND u.username IS NOT NULL`
+       WHERE s.token_hash = ? AND s.expires_at > ? AND u.disabled = 0`
     )
     .get(tokenHash, nowSec()) as (UserRow & { session_created_at: number }) | undefined) ?? null;
 }
@@ -728,16 +731,16 @@ export function leaderboard(
   const users = db
     .prepare(
       `SELECT id, username, display_name, avatar_url FROM users
-       WHERE username IS NOT NULL AND disabled = 0`
+       WHERE disabled = 0`
     )
-    .all() as { id: number; username: string | null; display_name: string | null; avatar_url: string | null }[];
+    .all() as { id: number; username: string; display_name: string | null; avatar_url: string | null }[];
   const today = new Map(users.map((u) => [u.id, dayAt(latestOffset(db, u.id), now)]));
   // The calendar ends on the latest of those days (UTC with no account).
   const lastDay = [...today.values()].reduce((a, d) => (d > a ? d : a), dayAt(null, now));
   const firstDay = addDays(lastDay, -(calendarDays - 1));
   const activitySinceSec = earliestOfDay(firstDay);
   const LISTED_FROM = `usage_events e JOIN users u ON u.id = e.user_id
-    WHERE u.username IS NOT NULL AND u.disabled = 0`;
+    WHERE u.disabled = 0`;
   // The period, per user, session, model and day…
   const groups = db
     .prepare(
@@ -802,8 +805,8 @@ export function leaderboard(
   const entries = users.map((u) => {
     const a = acc.get(u.id)!;
     return {
-      username: u.username ?? "",
-      display_name: u.display_name || u.username || "",
+      username: u.username,
+      display_name: u.display_name || u.username,
       avatar_url: u.avatar_url,
       tokens: a.tokens,
       sessions: a.sessions.size,

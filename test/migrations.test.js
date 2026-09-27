@@ -244,9 +244,18 @@ describe("versioned migrations", () => {
       for (const table of ["users", "devices", "usage_events", "quota_snapshots", "deleted_events", "collector_versions", "viewer_sessions", "settings"]) {
         assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0, table);
       }
-      // One account per GitHub account.
+      // Strict from now on: every account has a GitHub id and a username, one account per GitHub account.
+      const notNull = Object.fromEntries(db.prepare("PRAGMA table_info(users)").all().map((c) => [c.name, c.notnull]));
+      assert.deepEqual([notNull.github_id, notNull.username, notNull.display_name, notNull.avatar_url], [1, 1, 0, 0]);
+      assert.throws(() => db.prepare("INSERT INTO users (username, created_at) VALUES ('nogh', 0)").run(), /NOT NULL/);
+      assert.throws(() => db.prepare("INSERT INTO users (github_id, created_at) VALUES (8, 0)").run(), /NOT NULL/);
       db.prepare("INSERT INTO users (username, github_id, created_at) VALUES ('a', 7, 0)").run();
+      assert.equal(db.prepare("SELECT id FROM users").get().id, 1, "ids start at 1 again");
       assert.throws(() => db.prepare("INSERT INTO users (username, github_id, created_at) VALUES ('b', 7, 0)").run(), /UNIQUE/);
+      assert.throws(() => db.prepare("INSERT INTO users (username, github_id, created_at) VALUES ('A', 9, 0)").run(), /UNIQUE/);
+      // The other tables' foreign keys follow the new table.
+      assert.throws(() => db.prepare("INSERT INTO devices (user_id, name, key_hash, key_prefix, created_at) VALUES (99, 'x', 'h', 'p', 0)").run(), /FOREIGN KEY/);
+      db.prepare("INSERT INTO devices (user_id, name, key_hash, key_prefix, created_at) VALUES (1, 'x', 'h', 'p', 0)").run();
       // Everything from before is in the backup taken first (the only copy left).
       const backups = fs.readdirSync(path.join(t.dir, "backups")).filter((f) => f.endsWith("-pre-v5.db"));
       assert.equal(backups.length, 1);

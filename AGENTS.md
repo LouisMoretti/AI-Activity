@@ -508,8 +508,9 @@ Components never branch on live vs demo: both sources map into the same
 ## 4. Data model (SQLite, `data/dashboard.db`)
 
 - `users` — viewer accounts (`username` unique, case-insensitive: the
-  GitHub login; `github_id` unique, the GitHub numeric id; `display_name`
-  and `avatar_url` from GitHub; `is_admin`, `disabled`,
+  GitHub login, NOT NULL; `github_id` unique and NOT NULL, the GitHub
+  numeric id; `display_name` and `avatar_url` from GitHub, NULL when GitHub
+  has none; `is_admin`, `disabled`,
   `activity_cleared_at`: when the user last deleted their activity, §6).
   `deleted_events` — ids of the messages a user deleted (ids only), so a
   resend is refused (§5). Device, usage, quota and session tables carry
@@ -569,8 +570,10 @@ Components never branch on live vs demo: both sources map into the same
 - Migration 4 adds `collector_versions`.
 - Migration 5 starts the database over for sign in with GitHub: it
   deletes every account and everything tied to them (usage, quotas,
-  deleted ids, devices, collector versions, sessions, settings), then adds
-  `users.github_id` (unique) and drops `users.password_hash`. Accounts
+  deleted ids, devices, collector versions, sessions, settings) and
+  rebuilds the empty `users` table strict (`github_id` and `username` NOT
+  NULL and unique, no `password_hash`; the other tables' foreign keys
+  follow it by name), with the id sequences reset. Accounts
   from before could never sign in again. The `-pre-v5` backup keeps it
   all; people sign in with GitHub, make a device key in Settings, and the
   collectors send their whole local history again (their offsets are
