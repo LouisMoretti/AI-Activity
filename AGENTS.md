@@ -254,7 +254,7 @@ extension.
   `documentation`, `accessibility`), and `needs decision` while a choice
   is open. The forms in `.github/ISSUE_TEMPLATE/` (blank issues are off)
   add the type, and ask for the areas: people who cannot label (not
-  collaborators) pick them there, a maintainer then adds them as labels.
+  maintainers) pick them there, a maintainer then adds them as labels.
   From the CLI:
   `gh issue create --label enhancement --label ui`.
 - Every pull request closes an issue: open the issue first, then put
