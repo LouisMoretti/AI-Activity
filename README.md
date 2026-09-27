@@ -1,5 +1,14 @@
 # AI Activity
 
+> **Not affiliated.** AI Activity is an independent, unofficial project. It
+> is not affiliated with, endorsed or sponsored by Anthropic, OpenAI, Google or the
+> OpenCode project. Claude, Claude Code, Codex, Antigravity, OpenCode and the other
+> product names used here are trademarks of their respective owners, named
+> only to identify the tools whose usage the dashboard measures. It reads
+> the files these tools already write on your own device; it does not call
+> their APIs on your behalf or work around their limits. Using those tools
+> stays subject to their own terms.
+
 ## One-command install
 
 Create a device key (**Settings → Devices**, or `npm run gen-key -- "my-laptop"`),
