@@ -70,14 +70,21 @@ export const profilePath = (username: string) => `/u/${encodeURIComponent(userna
 /** The complete in-app address to return to after signing in. */
 export const currentPath = () => location.pathname + location.search;
 
-/** Where to go after signing in: a same-site path from ?next=, if any. */
+const onSite = (path: string) => /^\/(?![/\\])/.test(path);
+
+/**
+ * Where to go after signing in: a same-site path from ?next=, normalized,
+ * if any. "//host", "/\host", "/<tab>/host" (browsers drop tabs and
+ * newlines) and "/a/..//host" (once resolved) would leave the site; the
+ * server checks it the same way (safeNext). Signing in from /demo lands on
+ * the viewer's real profile, not the fiction.
+ */
 function nextPath(): string | null {
   const next = new URLSearchParams(location.search).get("next");
-  // "//host", "/\host" and "/<tab>/host" (browsers drop tabs and newlines)
-  // would leave the site; the server checks it the same way (safeNext).
-  // Signing in from /demo lands on the viewer's real profile, not the fiction.
-  return next && next.length <= 512 && /^\/(?!\/)/.test(next) && !/[\s\\\x00-\x1f\x7f]/.test(next)
-    && !/^\/demo\/?(?:[?#]|$)/.test(next) ? next : null;
+  if (!next || next.length > 512 || !onSite(next) || /[\s\\\x00-\x1f\x7f]/.test(next)) return null;
+  const url = new URL(next, "http://x");
+  const path = url.pathname + url.search;
+  return url.origin === "http://x" && onSite(path) && !/^\/demo\/?(?:[?#]|$)/.test(path) ? path : null;
 }
 
 const same = (a: string | undefined, b: string | undefined) =>

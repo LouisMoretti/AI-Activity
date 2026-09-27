@@ -894,14 +894,19 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   not set up). `next` is where to come back: a path starting with one `/`,
   with no backslash, whitespace or control character (browsers drop tabs
   and newlines from a `Location`, so `/<tab>/evil.example` would leave the
-  site), else `/`. While no account exists it needs `setup_code` (wrong or
+  site), then resolved (dot segments: `/a/..//evil.example` is
+  `//evil.example`) and checked again; that normalized path is what every
+  redirect uses. Anything else is `/`. While no account exists it needs `setup_code` (wrong or
   missing → `401`, `409` if the server has none; throttled below; the code
   ignores case, spaces and dashes): that sign-in creates the first
   account, admin. `reauth: true` (signed in, else `401`) signs the same
   account in again, for the danger zone.
 - `GET /api/auth/github/callback?code&state` (GitHub sends the browser
-  here) → `302` to `next` with a new session, or to `/?auth_error=<code>`
-  (`<next>?auth_error=` for `reauth`, so Settings says why): `denied`
+  here) → `302` to `next` with a new session. A failure goes to the
+  sign-in page, still headed for `next` (`/?next=<next>&auth_error=<code>`),
+  or back to `<next>?auth_error=` for `reauth`, so Settings says why; with
+  its state gone (a restart, another tab's sign-in), a signed-in viewer
+  lands on `/settings?auth_error=expired`. The codes: `denied`
   (cancelled on GitHub), `expired` (unknown, reused, other-browser or
   10-minute-old state; a state that is not this browser's leaves its
   cookie alone), `github` (the exchange or `/user` failed), `disabled`,

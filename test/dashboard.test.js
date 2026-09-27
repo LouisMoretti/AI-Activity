@@ -182,6 +182,8 @@ describe("dashboard state", () => {
       [`/?next=${encodeURIComponent("https://example.com/away")}`, "/"],
       [`/?next=${encodeURIComponent("//example.com/away")}`, "/"],
       [`/?next=${encodeURIComponent("/\t/example.com/away")}`, "/"],
+      [`/?next=${encodeURIComponent("/a/..//example.com/away")}`, "/"],
+      [`/?next=${encodeURIComponent("/settings/../settings?tab=x")}`, "/settings?tab=x"],
     ]) {
       const { dash, stop } = await open(start, { "/api/auth/status": signedOut, "/api/auth/github": { url: AUTHORIZE } });
       sent.length = 0;

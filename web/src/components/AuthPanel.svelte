@@ -26,6 +26,10 @@
   }
 </script>
 
+<!-- Back from GitHub's page, restored from the back/forward cache: the
+     page never left, so the button works again. -->
+<svelte:window onpageshow={(e) => { if (e.persisted) busy = false; }} />
+
 <form class="card" onsubmit={submit}>
   <h2>{setup ? "Create the first account" : "Sign in"}</h2>
   {#if setup}

@@ -33,6 +33,10 @@
   }
 </script>
 
+<!-- Back from GitHub's page, restored from the back/forward cache: the
+     page never left, so the button works again. -->
+<svelte:window onpageshow={(e) => { if (e.persisted) leaving = false; }} />
+
 <div class="box">
   <div class="text">
     <h3>{title}</h3>

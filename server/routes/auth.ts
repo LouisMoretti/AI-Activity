@@ -41,20 +41,36 @@ type Pending = { next: string; redirectUri: string; expires: number } & (
   | { mode: "reauth"; userId: number }
 );
 
+/** A path of this site (one leading "/"): "//host" or "/\\host" would leave it. */
+const onSite = (path: string) => /^\/(?![/\\])/.test(path);
+
 /**
- * A same-site path to come back to; anything else goes home. No
- * backslash, whitespace or control character anywhere: browsers drop tabs
- * and newlines from a Location, so "/\t/evil.example" would leave the site.
+ * A same-site path to come back to, normalized; anything else goes home.
+ * No backslash, whitespace or control character anywhere (browsers drop
+ * tabs and newlines from a Location: "/\t/evil.example" is "//evil..."),
+ * and checked again once resolved: "/a/..//evil.example" is "//evil...".
+ * The result is what every redirect uses, so it never changes on the way.
  */
 export function safeNext(v: unknown): string {
-  return typeof v === "string" && v.length <= 512 && /^\/(?!\/)/.test(v) && !/[\s\\\x00-\x1f\x7f]/.test(v) ? v : "/";
+  if (typeof v !== "string" || v.length > 512 || !onSite(v) || /[\s\\\x00-\x1f\x7f]/.test(v)) return "/";
+  const url = new URL(v, "http://x");
+  const path = url.pathname + url.search;
+  return url.origin === "http://x" && onSite(path) ? path : "/";
 }
 
-/** `path` with ?auth_error=<error> added to its query. */
-function withError(path: string, error: AuthError): string {
-  const url = new URL(path, "http://x");
+/** `next` (a safeNext path) with ?auth_error=<error> added to its query. */
+function withError(next: string, error: AuthError): string {
+  const url = new URL(next, "http://x");
   url.searchParams.set("auth_error", error);
-  return url.pathname + url.search;
+  const path = url.pathname + url.search;
+  return onSite(path) ? path : `/?auth_error=${error}`;
+}
+
+/** The sign-in page with the error, still going to `next` once signed in. */
+function signInWithError(next: string, error: AuthError): string {
+  const q = new URLSearchParams(next === "/" ? {} : { next });
+  q.set("auth_error", error);
+  return `/?${q}`;
 }
 
 /**
@@ -169,8 +185,15 @@ export function authRoutes(
         pending.delete(state);
         deleteCookie(c, STATE_COOKIE, { httpOnly: true, path: STATE_PATH, sameSite: "Lax", secure: client.isHttps(c) });
       }
-      // Signing in again comes back to where it started (Settings) to say why it failed.
-      const fail = (error: AuthError) => c.redirect(withError(p?.mode === "reauth" ? p.next : "/", error), 302);
+      // Where a failure is told: signing in again comes back to where it
+      // started (Settings); a sign-in goes back to the sign-in page, still
+      // headed for `next`. Without its state (a restart, another tab's
+      // sign-in, too many pending), a signed-in viewer was signing in again.
+      const fail = (error: AuthError) => c.redirect(
+        p?.mode === "reauth" ? withError(p.next, error)
+        : p ? signInWithError(p.next, error)
+        : auth.resolve(c) ? withError("/settings", error)
+        : signInWithError("/", error), 302);
       if (!p || p.expires < Date.now() || !github) return fail("expired");
       const code = c.req.query("code");
       if (!code) return fail(c.req.query("error") === "access_denied" ? "denied" : "github");

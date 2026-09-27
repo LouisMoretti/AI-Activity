@@ -560,11 +560,22 @@ describe("locked server (first account made from the CLI)", () => {
 
   test("it comes back to a same-site page only", async () => {
     assert.equal((await githubSignIn(srv.base, "admin", { next: "/settings?tab=x" })).location, "/settings?tab=x");
+    // Normalized once, then used as is: what was checked is where it goes.
+    assert.equal((await githubSignIn(srv.base, "admin", { next: "/settings/../settings?x=1" })).location, "/settings?x=1");
     // Browsers drop tabs and newlines from a Location: "/<tab>/evil" is "//evil".
     for (const next of ["//evil.example/x", "https://evil.example/", "/\\evil.example", "/\t/evil.example", "/\n/evil.example",
-      "/\r//evil.example", "/ /evil.example", "/x\\y", "/\u0000", 42]) {
+      "/\r//evil.example", "/ /evil.example", "/x\\y", "/\u0000", 42,
+      // Dot segments resolve to "//evil.example".
+      "/a/..//evil.example", "/.//evil.example", "/%2e%2e//evil.example"]) {
       assert.equal((await githubSignIn(srv.base, "admin", { next })).location, "/", String(next));
     }
+  });
+
+  test("a failed sign-in goes back to the sign-in page, still headed for next", async () => {
+    assert.equal((await githubSignIn(srv.base, null, { next: "/settings?tab=x" })).location,
+      `/?next=${encodeURIComponent("/settings?tab=x")}&auth_error=denied`);
+    assert.equal((await githubSignIn(srv.base, null)).location, "/?auth_error=denied");
+    assert.equal((await githubSignIn(srv.base, null, { next: "/a/..//evil.example" })).location, "/?auth_error=denied");
   });
 
   test("session and state cookies are Secure only over HTTPS", async () => {
@@ -1127,6 +1138,12 @@ describe("deleting your own activity", () => {
     // Cancelled on GitHub: said on Settings too.
     assert.equal((await githubSignIn(srv.base, null, { reauth: true, cookie: rea.cookie, next: "/settings?x=1" })).location,
       "/settings?x=1&auth_error=denied");
+    // A next that resolves off the site never becomes one on failure either.
+    assert.equal((await githubSignIn(srv.base, null, { reauth: true, cookie: rea.cookie, next: "/a/..//evil.example" })).location,
+      "/?auth_error=denied");
+    // Its state gone (a restart, another tab's sign-in): still told, on Settings.
+    const lost = await fetch(`${srv.base}/api/auth/github/callback?code=x&state=gone`, { redirect: "manual", headers: { cookie: rea.cookie } });
+    assert.equal(lost.headers.get("location"), "/settings?auth_error=expired");
     // The same account: a fresh session, and deleting works.
     const again = await githubSignIn(srv.base, "rea", { reauth: true, cookie: rea.cookie, next: "/settings" });
     assert.equal(again.location, "/settings");
