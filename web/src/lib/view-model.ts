@@ -80,12 +80,12 @@ export interface DashboardVM {
   sessionsTotal: number;
 }
 
-// color: the tool's design token, set as `--tool` on its elements.
-export const TOOL_META: Record<ToolKey, { name: string; icon: string; color: string }> = {
-  "claude-code": { name: "Claude Code", icon: "✳", color: "var(--claude)" },
-  codex: { name: "Codex", icon: "⌘", color: "var(--codex)" },
-  opencode: { name: "OpenCode", icon: "◇", color: "var(--opencode)" },
-  antigravity: { name: "Antigravity", icon: "△", color: "var(--antigravity)" },
+// Tool colours and meter progressions are design tokens from tokens.css.
+export const TOOL_META: Record<ToolKey, { name: string; icon: string; color: string; meterStart: string; meterLimit: string }> = {
+  "claude-code": { name: "Claude Code", icon: "✳", color: "var(--claude)", meterStart: "var(--claude-meter-start)", meterLimit: "var(--claude-meter-limit)" },
+  codex: { name: "Codex", icon: "⌘", color: "var(--codex)", meterStart: "var(--codex-meter-start)", meterLimit: "var(--codex-meter-limit)" },
+  opencode: { name: "OpenCode", icon: "◇", color: "var(--opencode)", meterStart: "var(--opencode-meter-start)", meterLimit: "var(--opencode-meter-limit)" },
+  antigravity: { name: "Antigravity", icon: "△", color: "var(--antigravity)", meterStart: "var(--antigravity-meter-start)", meterLimit: "var(--antigravity-meter-limit)" },
 };
 
 type PoolId = (typeof QUOTA_POOLS)[keyof typeof QUOTA_POOLS][number];

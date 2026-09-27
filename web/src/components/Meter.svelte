@@ -8,12 +8,15 @@
   <div class="track" aria-hidden="true"></div>
 {:else}
   <div class="track" role="progressbar" aria-label={label} aria-valuemin="0" aria-valuemax="100" aria-valuenow={clamped}>
-    <div class="fill" class:high={clamped >= 85} style:width="{clamped}%"></div>
+    <div class="fill" style:width="{clamped}%" style:--fill-pct="{clamped}%"></div>
   </div>
 {/if}
 
 <style>
   .track { height: 6px; background: var(--track); border-radius: 10px; overflow: hidden; }
-  .fill { height: 100%; border-radius: 10px; background: var(--tool, var(--accent)); }
-  .fill.high { background: var(--warn); }
+  .fill {
+    height: 100%; border-radius: 10px;
+    background: var(--tool-meter-start, var(--tool, var(--accent)));
+    background: color-mix(in srgb, var(--tool-meter-start, var(--tool, var(--accent))), var(--tool-meter-limit, var(--accent-meter-limit)) var(--fill-pct));
+  }
 </style>

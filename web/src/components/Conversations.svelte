@@ -9,7 +9,8 @@
 
 <div class="list">
   {#each sessions as s (s.tool + s.id)}
-    <article class="session" style:--tool={TOOL_META[s.tool].color}>
+    <article class="session" style:--tool={TOOL_META[s.tool].color}
+      style:--tool-meter-start={TOOL_META[s.tool].meterStart} style:--tool-meter-limit={TOOL_META[s.tool].meterLimit}>
       <div class="name">
         <span class="icon" aria-hidden="true">{TOOL_META[s.tool].icon}</span>
         <div>
