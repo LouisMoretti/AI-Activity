@@ -73,7 +73,11 @@ export function demoDashboard(provider: Provider): DashboardVM {
     },
     // The fictional dataset has no OpenCode usage.
     opencode: { recent: [], today: { tokens: 0, sessions: 0, calls: 0, models: 0, providers: 0 } },
-    antigravity: { recent: [], today: { tokens: 0, sessions: 0, calls: 0, models: 0, providers: 0 } },
+    antigravity: { tool: "antigravity", updatedAt: null, windows:
+      ["Gemini", "Claude/GPT"].flatMap((pool) => [
+        { label: `${pool} · 5-hour window`, pct: null, resetsAt: null, spanSec: WINDOW_SPANS.five_hour },
+        { label: `${pool} · This week`, pct: null, resetsAt: null, spanSec: WINDOW_SPANS.seven_day },
+      ]) },
     sessions,
     sessionsTotal: sessions.length,
   };
