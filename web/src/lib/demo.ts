@@ -1,11 +1,18 @@
 // FICTIONAL, deterministic demo dataset. Only shown at /demo, as the profile
 // of a fictional user, and always labeled "Demonstration data". Never presented as a measurement.
 import { QUOTA_WINDOW_SEC } from "../../../shared/quota-pools.ts";
+import type { Profile } from "../../../shared/types.ts";
 import { lastUtcDays, streaks, type DayPoint } from "./series.ts";
 import {
   POOL_LABELS, toolsFor, WINDOW_LABELS, type DashboardVM, type FigureVM, type Provider,
   type QuotaPoolVM, type SessionVM,
 } from "./view-model.ts";
+
+/**
+ * The fictional user whose profile /demo shows. It lives only at /demo, never
+ * under /u/, so no real account can be mistaken for it (or it for one).
+ */
+export const DEMO_PROFILE: Profile = { username: "demo", display_name: "Demo preview", avatar_url: null };
 
 type DemoTool = "claude-code" | "codex" | "antigravity";
 const DEMO_TOOLS: DemoTool[] = ["claude-code", "codex", "antigravity"];

@@ -3,13 +3,11 @@
   import NewAccountForm from "./NewAccountForm.svelte";
   import Segmented from "./Segmented.svelte";
 
-  let { signupOpen, onlogin, oncreate, ondemo }: {
+  let { signupOpen, onlogin, oncreate }: {
     /** An admin allows creating accounts from here. */
     signupOpen: boolean;
     onlogin: (username: string, password: string) => Promise<string | null>;
     oncreate: (a: NewAccount, setupCode: string | null) => Promise<string | null>;
-    /** Open /demo, the fictional profile. */
-    ondemo: () => void;
   } = $props();
 
   let tab = $state<"signin" | "signup">("signin");
@@ -53,9 +51,6 @@
       intro="Your profile page is public: anyone with its link sees your usage, never your devices or settings." />
   {/if}
 </div>
-<p class="demo">
-  No account? <a href="/demo" onclick={(e) => { e.preventDefault(); ondemo(); }}>See a demo</a> with fictional data.
-</p>
 
 <style>
   .card { max-width: 420px; margin: 24px auto 0; border: 1px solid var(--line); border-radius: var(--radius); padding: 20px 22px 22px; display: grid; gap: 16px; }
@@ -68,7 +63,4 @@
   button:disabled { opacity: .5; cursor: default; }
   .error { color: var(--warn); font-size: 13px; }
   .muted { color: var(--muted); font-size: 13px; }
-  .demo { max-width: 420px; margin: 12px auto 0; text-align: center; color: var(--muted); font-size: 13px; }
-  .demo a { color: var(--text); text-underline-offset: 2px; }
-  .demo a:hover { color: var(--accent); }
 </style>

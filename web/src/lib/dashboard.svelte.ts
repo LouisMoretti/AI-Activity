@@ -3,7 +3,7 @@
 // /admin), session paging, and the 15 s auto-refresh
 // (skipped while hidden or already in flight).
 import { api, NotFoundError, onSessionLost, RateLimitedError, UnauthorizedError, type NewAccount } from "./api.ts";
-import { demoDashboard } from "./demo.ts";
+import { DEMO_PROFILE, demoDashboard } from "./demo.ts";
 import { ACTIVITY_DAYS, liveDashboard, type LiveData } from "./live.ts";
 import type { DashboardVM } from "./view-model.ts";
 import type { Account, Profile, SessionsResponse } from "../../../shared/types.ts";
@@ -73,17 +73,12 @@ export const currentPath = () => location.pathname + location.search;
 function nextPath(): string | null {
   const next = new URLSearchParams(location.search).get("next");
   // "//host" and "/\host" would leave the site (pushState then throws).
-  return next && /^\/(?![/\\])/.test(next) ? next : null;
+  // Signing in from /demo lands on the viewer's real profile, not the fiction.
+  return next && /^\/(?![/\\])/.test(next) && !/^\/demo\/?(?:[?#]|$)/.test(next) ? next : null;
 }
 
 const same = (a: string | undefined, b: string | undefined) =>
   a !== undefined && b !== undefined && a.toLowerCase() === b.toLowerCase();
-
-/**
- * The fictional user whose profile /demo shows. It lives only at /demo, never
- * under /u/, so no real account can be mistaken for it (or it for one).
- */
-export const DEMO_PROFILE: Profile = { username: "demo", display_name: "Demo preview", avatar_url: null };
 
 export class Dashboard {
   route = $state<Route>(routeFromPath());
@@ -117,20 +112,18 @@ export class Dashboard {
     }
     this.inFlight = true;
     const route = this.route;
-    if (route.page === "demo") {
-      // Client-side only: a fixed dataset, no usage API call and no refresh.
-      // The sign-in status below only fills the header's account menu.
-      this.shown = DEMO_PROFILE;
-      this.status = "ready";
-    }
     try {
+      if (route.page === "demo") {
+        await this.loadDemo(route);
+        return;
+      }
       const auth = await api.authStatus();
       this.account = auth.user;
       this.signupOpen = auth.signup_open;
       if (!auth.user) {
         if (route.page === "profile") await this.loadProfile(route.username);
         // Public, like profile pages: the page loads its own data.
-        else if (route.page === "leaderboard" || route.page === "demo") this.status = "ready";
+        else if (route.page === "leaderboard") this.status = "ready";
         else if (route.page === "settings" || route.page === "admin") {
           this.go(`/?next=${encodeURIComponent(currentPath())}`, true);
         }
@@ -147,9 +140,7 @@ export class Dashboard {
     } catch (e) {
       // Navigated elsewhere meanwhile: the queued reload decides, not this.
       if (this.route !== route) return;
-      // The demo needs no server: it stays as it is, only signed out.
-      if (route.page === "demo") this.account = null;
-      else if (e instanceof UnauthorizedError) this.signedOut();
+      if (e instanceof UnauthorizedError) this.signedOut();
       else if (e instanceof NotFoundError) {
         this.live = null;
         this.status = "missing";
@@ -162,6 +153,24 @@ export class Dashboard {
         this.reloadQueued = false;
         void this.load();
       }
+    }
+  }
+
+  /**
+   * /demo is client-side only: a fixed dataset, no usage API call and no
+   * refresh. The sign-in status only fills the header's account menu; the
+   * page needs no server and stays up (signed out) without one.
+   */
+  private async loadDemo(route: Route): Promise<void> {
+    this.shown = DEMO_PROFILE;
+    this.status = "ready";
+    try {
+      const auth = await api.authStatus();
+      if (this.route !== route) return;
+      this.account = auth.user;
+      this.signupOpen = auth.signup_open;
+    } catch {
+      if (this.route === route) this.account = null;
     }
   }
 

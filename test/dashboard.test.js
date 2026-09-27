@@ -241,8 +241,24 @@ describe("dashboard state", () => {
     stop();
   });
 
+  test("signing in from /demo lands on your real profile", async () => {
+    const { dash, stop } = await open(`/?next=${encodeURIComponent("/demo")}`, {
+      ...profileRoutes("me"),
+      "/api/auth/status": signedOut,
+      "/api/auth/login": {},
+    });
+    routes["/api/auth/status"] = signedIn;
+    assert.equal(await dash.login("me", "secret"), null);
+    await settle();
+    assert.equal(loc.pathname + loc.search, "/u/me");
+    assert.equal(dash.vm.demo, false);
+    stop();
+  });
+
   test("?demo=1 has no effect on a real profile", async () => {
     const { dash, stop } = await open("/u/me?demo=1", profileRoutes("me"));
+    assert.equal(loc.pathname + loc.search, "/u/me?demo=1", "the query is ignored, not rewritten");
+    assert.equal(dash.route.page, "profile");
     assert.equal(dash.vm.demo, false);
     assert.ok(!dash.vm.sessions.some(s => s.id.startsWith("demo-")));
     stop();

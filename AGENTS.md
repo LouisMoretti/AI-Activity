@@ -32,7 +32,8 @@ names. Quota bars carry a mark for how far into the window we are.
 **Pages:** `/` has two tabs, Sign in and Create account (sign-up is open
 unless an admin closed it; or first-account setup while none exists); once signed
 in it redirects to `/u/<you>`, so the address bar is the shareable link;
-under the form, "See a demo" links to `/demo`.
+under the form (and the first-account form), "See a demo" links to `/demo`;
+signing in from `/demo` lands on your profile, not back on the demo.
 `/u/<username>` is **public and read-only**, no account needed: activity,
 stats, tools/quotas and conversations.
 `/demo` is **public** too: the fictional dataset as the profile of a
