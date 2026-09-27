@@ -622,8 +622,7 @@ Same batch shape (`messages`, `rate_limits`, `context`, `occurred_at`,
 usage blobs; only metadata tables are read. The collector uses a shared
 PostInvocation and Stop hooks (`~/.gemini/config/hooks.json`) or can run
 periodically by hand. One detached hook worker collects and at most one waits
-for the lock (20-minute timeout, allowing a 15-minute pass plus its final
-scan/upload and quota probe). Further hooks coalesce into that waiting pass.
+for the lock. Further hooks coalesce into that waiting pass.
 Its two-second flush delay starts after acquiring the collection lock; hooks
 during collection can queue a fresh pass, preserving overlapping final turns.
 Each entry carries `response_id`, `session_id`, `model`, `occurred_at`,
@@ -632,24 +631,22 @@ Each entry carries `response_id`, `session_id`, `model`, `occurred_at`,
 are not exposed by this collector. Model and timestamp are never inferred
 from the current hook, file mtime, or import time. Standard generation
 timestamps or unique step UUID/bot-id timestamp matches are supported;
-unsupported layouts report incomplete collection and remain retryable.
+unsupported rows are skipped with a warning, and a database in an
+unsupported format is skipped until its stamp changes (never a failed run).
 Server keys are `antigravity:<session>:<response>`; session keys also have
 an `antigravity:` prefix to avoid collisions with other tools. The usual
 partial/final upsert and replay rules apply. Subagents count separately
 because the local format does not establish parent sessions. Checkpoints
-store DB/WAL stamps and accepted ranks only for unfinished scans, scoped to server/device key,
-and never contain credentials. Rotating source cursors (hashed paths) and
-generation page positions allow bounded passes to resume after successful
-uploads. Completed scans skip unchanged DB/WAL stamps; changed stamps restart
-from the beginning to discover edits to old rows. A write during a scan cannot
-mark the snapshot complete. Deleted sources are pruned; state is saved once
-per pass (and before quota probing to retain its throttle). Network/HTTP failures
-stop the pass; HTTP 429/503 honor bounded Retry-After. Discovery is restricted
-to recognized app conversations/ directories. Unconfigured placeholders exit
-before discovery, and bearer keys cannot follow HTTP redirects.
-Timestamp matching has its own scan deadline, streams full metadata scans,
-and cannot resolve a date from a truncated ambiguity check. An interrupted
-match never advances the generation page; native timestamps can still upload.
+hold one DB/WAL stamp per conversation (hashed path), scoped to server/device
+key, and never contain credentials. A stamp is taken before the read and
+stored once the whole database is accepted, so unchanged conversations are
+never read again, and any change (old rows, or a write during the read) makes
+the next run read and resend the whole database (the server dedups).
+Deleted sources are pruned; state is saved once per run (and before quota
+probing to retain its throttle). Network/HTTP failures stop the run; HTTP
+429/503 honor bounded Retry-After. Discovery is restricted to the apps'
+`conversations/` directories. Unconfigured placeholders exit before
+discovery, and bearer keys cannot follow HTTP redirects.
 See README.md for setup, evidence and limits.
 Measured quotas use the signed-in `agy` CLI's JSON `/usage` report, gated
 on a plain version >= 1.1.11 to avoid older versions interpreting it as a

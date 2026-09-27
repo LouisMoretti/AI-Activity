@@ -25,14 +25,6 @@ SERVER = os.environ.get("AI_ACTIVITY_URL", "<server>")
 KEY = os.environ.get("AI_ACTIVITY_KEY", "<device key>")
 ID = re.compile(r"^[A-Za-z0-9_-]{1,200}$")
 MAX_BLOB = 1024 * 1024
-MAX_ROWS = 100000
-MAX_PAGE_BYTES = 64 * MAX_BLOB
-MAX_DATABASES = 2000
-MAX_RUN_SECONDS = 900
-MAX_SCAN_SECONDS = 30
-# A bounded pass can finish its last scan/upload, then probe quotas, after
-# reaching the 15-minute run budget. Give the single waiter that headroom.
-MAX_LOCK_SECONDS = 1200
 
 
 def fields(blob):
@@ -134,120 +126,65 @@ def schema(db, table, columns):
     return True
 
 
-def matched_times(db, rows, deadline):
-    """Stream full metadata scans; retain only the current page's keys.
-
-    A truncated scan cannot prove uniqueness, so it resolves no timestamps.
-    Native generation timestamps remain usable even if this scan times out.
-    """
-    wanted = {(r["step"], r["bot"]) for r in rows if r["occurred_at"] is None and r["step"] and r["bot"]}
+def step_times(db, wanted):
+    """Dates of generations without their own: their step's, if unique."""
     if not wanted or not schema(db, "steps", ("idx", "metadata")):
         return {}
-    uses = {key: set() for key in wanted}
     times = {key: set() for key in wanted}
-    try:
-        # The generation page alone cannot detect another response with the
-        # same step/bot key on a different page. Check the entire snapshot.
-        for (blob,) in db.execute("SELECT CASE WHEN length(data) <= ? THEN data END FROM gen_metadata", (MAX_BLOB,)):
-            if time.monotonic() > deadline:
-                return None
-            try:
-                root = fields(blob)
-                usage = message(message(root, 1), 4)
-                key = (text(root, 4), text(usage, 7))
-                response = text(usage, 11)
-                if key in uses and response and ID.fullmatch(response) and len(uses[key]) < 2:
-                    uses[key].add(response)
-            except (ValueError, UnicodeError):
-                pass
-        # Each blob is bounded, but aggregate bytes do not accumulate in
-        # memory. Even very large step tables can be streamed safely.
-        for (blob,) in db.execute("SELECT CASE WHEN length(metadata) <= ? THEN metadata END FROM steps", (MAX_BLOB,)):
-            if time.monotonic() > deadline:
-                return None
-            try:
-                meta = fields(blob)
-                key = (text(meta, 12), text(message(meta, 9), 7))
-                if key in times and len(times[key]) < 2:
-                    when = stamp(message(meta, 1))
-                    if when:
-                        times[key].add(when)
-            except (ValueError, UnicodeError):
-                pass
-    except sqlite3.OperationalError:
-        if time.monotonic() <= deadline:
-            raise
-        return None
-    return {key: next(iter(times[key])) for key in wanted if len(uses[key]) == 1 and len(times[key]) == 1}
+    for (blob,) in db.execute("SELECT CASE WHEN length(metadata) <= ? THEN metadata END FROM steps", (MAX_BLOB,)):
+        try:
+            meta = fields(blob)
+            key = (text(meta, 12), text(message(meta, 9), 7))
+            if key in times:
+                when = stamp(message(meta, 1))
+                if when:
+                    times[key].add(when)
+        except (ValueError, UnicodeError):
+            pass
+    return {key: next(iter(v)) for key, v in times.items() if len(v) == 1}
 
 
-def read_database(path, after=None):
-    """Read one bounded generation page from a consistent metadata snapshot."""
+def read_database(path):
+    """Read every generation of one conversation from a consistent snapshot."""
     db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
-    deadline = time.monotonic() + MAX_SCAN_SECONDS
-    db.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
-    skipped = 0
     try:
         db.execute("PRAGMA query_only = ON")
         db.execute("BEGIN")
         if not schema(db, "gen_metadata", ("idx", "data")):
-            return [], 0, None, False
-        rows = []
-        total_bytes = 0
-        last = after
-        more = False
-        sql = "SELECT idx, CASE WHEN length(data) <= ? THEN data END FROM gen_metadata"
-        args = [MAX_BLOB]
-        if after is not None:
-            sql += " WHERE idx > ?"
-            args.append(after)
-        sql += " ORDER BY idx LIMIT ?"
-        args.append(MAX_ROWS + 1)
-        for n, (idx, blob) in enumerate(db.execute(sql, args)):
-            size = len(blob) if isinstance(blob, bytes) else 0
-            if n >= MAX_ROWS or (n and (total_bytes + size > MAX_PAGE_BYTES or time.monotonic() > deadline)):
-                more = True
-                break
-            if not isinstance(idx, int):
-                raise ValueError("unsupported generation index")
-            total_bytes += size
-            last = idx
+            return [], 0
+        rows, skipped, uses = [], 0, {}
+        for (blob,) in db.execute("SELECT CASE WHEN length(data) <= ? THEN data END FROM gen_metadata", (MAX_BLOB,)):
             try:
                 row = parse(blob)
-                if not any(row["usage"].values()):
-                    continue
-                if not row["response_id"] or not ID.fullmatch(row["response_id"]):
-                    skipped += 1
-                    continue
-                rows.append(row)
             except (ValueError, UnicodeError):
                 skipped += 1
-
-        # Matching must not inherit a deadline already spent reading the page.
-        # An interrupted uniqueness scan is unknown, not an empty result.
-        deadline = time.monotonic() + MAX_SCAN_SECONDS
-        times = matched_times(db, rows, deadline)
-        incomplete = times is None
-        times = times or {}
+                continue
+            valid = row["response_id"] and ID.fullmatch(row["response_id"])
+            if valid:
+                uses.setdefault((row["step"], row["bot"]), set()).add(row["response_id"])
+            if not any(row["usage"].values()):
+                continue
+            if not valid:
+                skipped += 1
+                continue
+            rows.append(row)
+        # A step/bot key shared by two responses cannot tell which one a
+        # step's timestamp belongs to: those stay undated (skipped).
+        times = step_times(db, {(r["step"], r["bot"]) for r in rows if r["occurred_at"] is None
+                                and r["step"] and r["bot"] and len(uses[(r["step"], r["bot"])]) == 1})
         out = []
         for row in rows:
-            when = row["occurred_at"]
-            if when is None:
-                when = times.get((row["step"], row["bot"]))
+            when = row["occurred_at"] or times.get((row["step"], row["bot"]))
             if when is None:
                 skipped += 1
                 continue
             # Never substitute a hook's current model for historical model IDs.
-            model = row["model"]
-            if model == "gemini-default":
-                model = None
+            model = None if row["model"] == "gemini-default" else row["model"]
             offset = datetime.datetime.fromtimestamp(when).astimezone().utcoffset()
             out.append({"response_id": row["response_id"], "session_id": path.stem,
                         "model": model, "occurred_at": when,
                         "utc_offset_min": int(offset.total_seconds() // 60), "usage": row["usage"]})
-        # Native dates can still be uploaded, but unresolved matches must be
-        # revisited before advancing the page, including when later pages exist.
-        return out, skipped, after if incomplete else (last if more else None), more or incomplete
+        return out, skipped
     finally:
         db.close()
 
@@ -263,7 +200,6 @@ def databases():
                 yield path
 
 
-
 @contextlib.contextmanager
 def locked(path, wait=True):
     # Append mode ignores seek() for writes on Windows. Never truncate a
@@ -274,7 +210,6 @@ def locked(path, wait=True):
             import msvcrt
         else:
             import fcntl
-        deadline = time.monotonic() + MAX_LOCK_SECONDS
         while True:
             try:
                 if os.name == "nt":
@@ -289,8 +224,6 @@ def locked(path, wait=True):
                 if not wait:
                     yield False
                     return
-                if time.monotonic() >= deadline:
-                    raise RuntimeError("collector lock wait timed out") from None
                 time.sleep(0.1)
         try:
             # Windows permits locking beyond EOF; initialize only while
@@ -449,10 +382,8 @@ def collect(on_locked=None):
         can_save = isinstance(state, dict) and state.get("scope") == scope
         if not can_save:
             state = {"scope": scope}
-        files = state.setdefault("files", {})
-        positions = state.setdefault("positions", {})
-        sent = state.setdefault("sent", {})  # ranks only for unfinished scans
-        if any(not isinstance(v, dict) for v in (files, positions, sent)):
+        files = state.setdefault("files", {})  # hashed path -> stamp of the last complete upload
+        if not isinstance(files, dict):
             raise ValueError("invalid collector state; remove antigravity.json to replay")
         retry = state.get("upload_retry_at", 0)
         if type(retry) in (int, float) and time.time() < retry <= time.time() + 86400:
@@ -491,83 +422,48 @@ def collect(on_locked=None):
             state.pop("upload_retry_at", None)
             can_save = True
 
-        paths = list(databases())
-        sources = [(hashlib.sha256(str(p.resolve()).encode()).hexdigest(), p) for p in paths]
-        names = [n for n, _ in sources]
+        sources = [(hashlib.sha256(str(p.resolve()).encode()).hexdigest(), p) for p in databases()]
         # Deleted sources must not retain checkpoints indefinitely.
-        for mapping in (files, positions, sent):
-            for name in list(mapping):
-                if name not in names:
-                    del mapping[name]
-        cursor = state.get("cursor")
-        start = names.index(cursor) + 1 if cursor in names else 0
-        sources = sources[start:] + sources[:start]
-        failed = deferred = False
-        started = time.monotonic()
+        for name in set(files) - {n for n, _ in sources}:
+            del files[name]
+        failed = False
         try:
-            for number, (name, path) in enumerate(sources):
-                if number >= MAX_DATABASES or (number and time.monotonic() - started > MAX_RUN_SECONDS):
-                    deferred = True
-                    break
-                state["cursor"] = name
+            for name, path in sources:
+                # Most conversations are dormant: an unchanged database and WAL
+                # were uploaded in full already. Any write (old rows included)
+                # changes the stamp; one during the read leaves the stamp taken
+                # before it stale, so the next run reads the database again.
+                before = file_stamp(path)
+                if files.get(name) == before:
+                    continue
                 try:
-                    before = file_stamp(path)
-                    checkpoint = files.get(name, {})
-                    if checkpoint.get("stamp") == before and checkpoint.get("complete") is True:
-                        continue
-                    if checkpoint.get("stamp") != before:
-                        positions.pop(name, None)
-                        sent.pop(name, None)
-                    after = positions.get(name)
-                    if after is not None and type(after) is not int:
-                        raise ValueError("invalid generation position")
-                    entries, skipped, next_after, more = read_database(path, after)
-                    stable = before == file_stamp(path)
-                    if skipped:
-                        print("ai-activity antigravity: %d metadata rows unavailable; skipped (unsupported or incomplete)" % skipped, file=sys.stderr)
-                except Exception:
-                    # A corrupt/unsupported source must not block other sources.
-                    print("ai-activity antigravity: collection/upload failed; retry on next run", file=sys.stderr)
+                    entries, skipped = read_database(path)
+                except sqlite3.OperationalError:
+                    # Busy or unreadable right now: retried on the next run.
+                    print("ai-activity antigravity: conversation database unreadable; retry on next run", file=sys.stderr)
                     failed = True
                     continue
-                files[name] = {"stamp": before, "complete": False}
-                ranks = sent.setdefault(name, {})
+                except (sqlite3.DatabaseError, ValueError, UnicodeError):
+                    # Not a supported conversation database: retrying cannot
+                    # help, so skip it until it changes instead of failing forever.
+                    print("ai-activity antigravity: unsupported conversation database skipped", file=sys.stderr)
+                    files[name] = before
+                    continue
+                if skipped:
+                    print("ai-activity antigravity: %d metadata rows unavailable; skipped (unsupported or incomplete)" % skipped, file=sys.stderr)
+                # A response written twice (partial, then final) is sent once, with its final counts.
                 best = {}
                 for entry in entries:
-                    ident = entry["response_id"]
                     digest = hashlib.sha256(json.dumps(entry, sort_keys=True).encode()).hexdigest()
                     rank = (entry["usage"]["output_tokens"], sum(entry["usage"].values()), entry["occurred_at"], digest)
-                    if ident not in best or rank > best[ident][0]:
-                        best[ident] = (rank, entry)
-                pending = [(ident, rank, entry) for ident, (rank, entry) in best.items()
-                           if tuple(ranks.get(ident, ())) < rank]
-                page_complete = True
+                    if entry["response_id"] not in best or rank > best[entry["response_id"]][0]:
+                        best[entry["response_id"]] = (rank, entry)
+                pending = [entry for _, entry in best.values()]
                 for i in range(0, len(pending), 200):
-                    if (number or i) and time.monotonic() - started > MAX_RUN_SECONDS:
-                        deferred = True
-                        page_complete = False
-                        break
-                    chunk = pending[i:i + 200]
-                    # Network/HTTP/acceptance errors escape the pass immediately.
-                    upload({"messages": [e for _, _, e in chunk]})
-                    ranks.update({ident: rank for ident, rank, _ in chunk})
-                files[name] = {"stamp": before, "complete": stable and page_complete and not more}
-                can_save = True
-                if not stable:
-                    positions.pop(name, None)
-                    sent.pop(name, None)
-                elif page_complete:
-                    if next_after is None:
-                        positions.pop(name, None)
-                    else:
-                        positions[name] = next_after
-                    if not more:
-                        sent.pop(name, None)
-                deferred |= more or not stable
-                if not page_complete:
-                    break
-            # Persist once per pass, not once per batch/database. Accepted ranks
-            # on an interrupted scan are retryable; completed files need only stamps.
+                    # Network/HTTP/acceptance errors end the pass; the database
+                    # is read and sent again next run (the server dedups).
+                    upload({"messages": pending[i:i + 200]})
+                files[name] = before
             tried = state.get("quota_tried_at", 0)
             if type(tried) not in (int, float) or not 0 <= tried <= time.time():
                 tried = 0
@@ -586,10 +482,8 @@ def collect(on_locked=None):
                     for report in reports:
                         upload(report)
                     state["quota_failed"] = False
-            if deferred:
-                print("ai-activity antigravity: scan budget reached; saved progress for next run", file=sys.stderr)
             if failed:
-                raise RuntimeError("collection/upload failed")
+                raise RuntimeError("collection failed")
         finally:
             if can_save:
                 save_state(state_path, state)

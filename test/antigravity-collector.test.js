@@ -129,15 +129,21 @@ describe("Antigravity collector", () => {
     assert.equal((await run(env)).code, 0); assert.equal((await summary()).events, 4);
   });
 
-  test("unreadable databases still report failure without discarding accepted checkpoints", async () => {
-    const broken = path.join(home, ".gemini", "antigravity-cli", "conversations", "broken.db");
-    const prior = fs.readFileSync(statePath(), "utf8");
+  test("unsupported databases are skipped until they change instead of failing every run", async () => {
+    const dir = path.join(home, ".gemini", "antigravity-cli", "conversations");
+    const broken = path.join(dir, "broken.db"), layout = path.join(dir, "layout.db");
     fs.writeFileSync(broken, "not a SQLite database");
+    const other = new Database(layout); other.exec("CREATE TABLE gen_metadata(idx INTEGER PRIMARY KEY, other BLOB)"); other.close();
     try {
-      const r = await run(env); assert.equal(r.code, 1); assert.match(r.err, /collection\/upload failed/);
-      assert.deepEqual(JSON.parse(fs.readFileSync(statePath(), "utf8")).sent, JSON.parse(prior).sent);
-    } finally { fs.unlinkSync(broken); }
+      const first = await run(env); assert.equal(first.code, 0, first.err);
+      assert.equal(first.err.match(/unsupported conversation database skipped/g).length, 2);
+      const again = await run(env); assert.equal(again.code, 0); assert.doesNotMatch(again.err, /unsupported/);
+      fs.appendFileSync(broken, "changed");
+      assert.match((await run(env)).err, /unsupported conversation database skipped/);
+      assert.equal((await summary()).events, 4);
+    } finally { fs.unlinkSync(broken); fs.unlinkSync(layout); }
     assert.equal((await run(env)).code, 0);
+    assert.equal(Object.keys(JSON.parse(fs.readFileSync(statePath(), "utf8")).files).length, 1);
   });
 
   test("API separates Antigravity ids from other tools and rejects unsupported identities", async () => {
@@ -302,7 +308,6 @@ describe("Antigravity collector", () => {
   });
 });
 
-// Exercise real scan/upload/checkpoint logic with smaller resource budgets.
 describe("Antigravity quota reports", () => {
   let srv, home, env, key;
   const calls = () => JSON.parse(fs.readFileSync(path.join(home, "calls.json"), "utf8"));
@@ -448,8 +453,7 @@ describe("Antigravity quota reports", () => {
   });
 });
 
-// Exercise real scan/upload/checkpoint logic with smaller resource budgets.
-// No production environment variables can weaken the collector's limits.
+// Scan/upload/checkpoint scenarios against a fake ingest server.
 async function scanFixture() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "ai-activity-antigravity-budget-"));
   const dir = path.join(home, ".gemini", "antigravity-cli", "conversations");
@@ -475,11 +479,9 @@ async function scanFixture() {
     db.close();
   };
   const state = () => JSON.parse(fs.readFileSync(path.join(home, ".cache", "ai-activity", "antigravity.json"), "utf8"));
-  const collect = async (limits, slow = false, setup = "") => {
-    const script = path.join(home, "bounded-test.py");
+  const collect = async (setup = "") => {
+    const script = path.join(home, "scan-test.py");
     fs.writeFileSync(script, `import importlib.util, time\nspec = importlib.util.spec_from_file_location('collector', ${JSON.stringify(SCRIPT)})\nm = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(m)\n` +
-      Object.entries(limits).map(([key, value]) => `m.${key} = ${value}\n`).join("") +
-      (slow ? "original = m.read_database\ndef slow(*args):\n time.sleep(0.03)\n return original(*args)\nm.read_database = slow\n" : "") +
       setup + "try:\n m.collect()\nexcept Exception:\n import traceback\n traceback.print_exc()\n raise SystemExit(1)\n");
     return run(env, [], "", null, script);
   };
@@ -487,153 +489,65 @@ async function scanFixture() {
     close: async () => { await new Promise(resolve => proxy.close(resolve)); fs.rmSync(home, { recursive: true, force: true }); } };
 }
 
-test("source-count budgets resume past the previous cursor instead of starving later databases", async () => {
+test("large step tables are streamed and date generations without their own timestamp", async () => {
   const f = await scanFixture();
   try {
-    for (let i = 0; i < 7; i++) f.add(`conversation${i}`, [generation(`response${i}`)]);
-    for (let i = 0; i < 3; i++) {
-      const result = await f.collect({ MAX_DATABASES: 3 }); assert.equal(result.code, 0, result.err);
-    }
-    assert.equal(f.accepted.size, 7);
-    const calls = f.batches.length;
-    assert.equal((await f.collect({ MAX_DATABASES: 3 })).code, 0); assert.equal(f.batches.length, calls);
-  } finally { await f.close(); }
-});
-
-test("elapsed-time budgets preserve source progress and eventually import the entire history", async () => {
-  const f = await scanFixture();
-  try {
-    for (let i = 0; i < 3; i++) f.add(`conversation${i}`, [generation(`response${i}`)]);
-    for (let i = 0; i < 3; i++) assert.equal((await f.collect({ MAX_RUN_SECONDS: 0.02 }, true)).code, 0);
-    assert.equal(f.accepted.size, 3);
-  } finally { await f.close(); }
-});
-
-test("generation byte pages and streamed step metadata import a large conversation without losing progress", async () => {
-  const f = await scanFixture();
-  try {
-    const padding = bytes(127, Buffer.alloc(400));
-    f.add("large", [Buffer.concat([generation("first"), padding]),
-      Buffer.concat([generation("matched", { when: null, step: "unique", bot: "unique" }), padding]),
-      Buffer.concat([generation("last"), padding])],
-    [...Array.from({ length: 20 }, () => bytes(127, Buffer.alloc(1000))),
-      Buffer.concat([bytes(1, stamp(WHEN + 60)), bytes(12, "unique"), bytes(9, bytes(7, "unique"))])]);
-    const limits = { MAX_PAGE_BYTES: 512 };
-    f.refuse(true); assert.equal((await f.collect(limits)).code, 1);
-    assert.equal(f.accepted.size, 0); // Refusal cannot advance the page cursor.
-    f.refuse(false);
-    for (let i = 0; i < 3; i++) assert.equal((await f.collect(limits)).code, 0);
-    assert.equal(f.accepted.size, 3);
+    f.add("large", [generation("first"), generation("matched", { when: null, step: "unique", bot: "unique" })],
+      [...Array.from({ length: 20 }, () => bytes(127, Buffer.alloc(1000))),
+        Buffer.concat([bytes(1, stamp(WHEN + 60)), bytes(12, "unique"), bytes(9, bytes(7, "unique"))])]);
+    f.refuse(true); assert.equal((await f.collect()).code, 1);
+    assert.equal(f.accepted.size, 0);
+    f.refuse(false); assert.equal((await f.collect()).code, 0);
+    assert.equal(f.accepted.size, 2);
     assert.equal(f.accepted.get("large:matched").occurred_at, WHEN + 60);
-    assert.deepEqual(f.state().positions, {});
     const calls = f.batches.length;
-    for (let i = 0; i < 3; i++) assert.equal((await f.collect(limits)).code, 0);
-    assert.equal(f.batches.length, calls);
+    assert.equal((await f.collect()).code, 0); assert.equal(f.batches.length, calls);
   } finally { await f.close(); }
 });
 
-test("row pages neither misdate cross-page ambiguity nor repeatedly replay older duplicate responses", async () => {
+test("ambiguous step keys stay undated and duplicate responses upload once with final counts", async () => {
   const f = await scanFixture();
   try {
-    f.add("paged", [generation("final", { output: 80 }),
+    f.add("dupes", [generation("final", { output: 80 }),
       generation("ambiguousA", { when: null, step: "shared", bot: "shared" }),
       generation("final", { output: 20 }),
       generation("ambiguousB", { when: null, step: "shared", bot: "shared" })],
     [Buffer.concat([bytes(1, stamp(WHEN + 60)), bytes(12, "shared"), bytes(9, bytes(7, "shared"))])]);
-    const limits = { MAX_ROWS: 2 };
-    for (let i = 0; i < 4; i++) assert.equal((await f.collect(limits)).code, 0);
+    for (let i = 0; i < 2; i++) assert.equal((await f.collect()).code, 0);
     assert.equal(f.accepted.size, 1); assert.equal(f.batches.length, 1);
-    assert.equal(f.accepted.get("paged:final").usage.output_tokens, 110);
+    assert.equal(f.accepted.get("dupes:final").usage.output_tokens, 110);
   } finally { await f.close(); }
 });
 
-test("a time limit between upload batches keeps accepted ranks but does not advance past unsent entries", async () => {
-  const f = await scanFixture();
-  try {
-    f.add("batched", Array.from({ length: 250 }, (_, i) => generation(`response${i}`)));
-    const limits = { MAX_RUN_SECONDS: 0 };
-    assert.equal((await f.collect(limits)).code, 0); assert.equal(f.accepted.size, 200);
-    assert.deepEqual(f.state().positions, {});
-    assert.equal((await f.collect(limits)).code, 0); assert.equal(f.accepted.size, 250);
-    assert.equal(f.batches.length, 2); assert.equal(f.batches[1].length, 50);
-    assert.equal((await f.collect(limits)).code, 0); assert.equal(f.batches.length, 2);
-  } finally { await f.close(); }
-});
-
-test("an incomplete timestamp scan preserves native dates and retries unresolved matches on a complete scan", async () => {
-  const f = await scanFixture();
-  try {
-    f.add("limited", [generation("native"), generation("matched", { when: null, step: "unique", bot: "unique" })],
-      [Buffer.concat([bytes(1, stamp(WHEN + 60)), bytes(12, "unique"), bytes(9, bytes(7, "unique"))])]);
-    for (let i = 0; i < 2; i++) assert.equal((await f.collect({ MAX_SCAN_SECONDS: 0 })).code, 0);
-    assert.equal(f.accepted.size, 1); assert.equal(f.accepted.get("limited:native").occurred_at, WHEN);
-    assert.equal((await f.collect({})).code, 0); assert.equal(f.accepted.size, 2);
-    assert.equal(f.accepted.get("limited:matched").occurred_at, WHEN + 60);
-  } finally { await f.close(); }
-});
-
-test("timestamp matching gets its own deadline after generation page reading exhausts its budget", async () => {
-  const f = await scanFixture();
-  try {
-    f.add("deadline", [generation("matched", { when: null, step: "unique", bot: "unique" }), generation("native")],
-      [Buffer.concat([bytes(1, stamp(WHEN + 60)), bytes(12, "unique"), bytes(9, bytes(7, "unique"))])]);
-    const setup = "original_parse = m.parse\ndef delayed(blob):\n time.sleep(0.06)\n return original_parse(blob)\nm.parse = delayed\n";
-    assert.equal((await f.collect({ MAX_SCAN_SECONDS: 0.03 }, false, setup)).code, 0);
-    assert.equal(f.accepted.get("deadline:matched").occurred_at, WHEN + 60);
-    assert.equal(Object.values(f.state().positions)[0], 1);
-    assert.equal((await f.collect({})).code, 0); assert.equal(f.accepted.size, 2);
-  } finally { await f.close(); }
-});
-
-test("an interrupted match on a middle page cannot advance past unresolved generations", async () => {
-  const f = await scanFixture();
-  try {
-    f.add("retry", [generation("first"), generation("matched", { when: null, step: "unique", bot: "unique" }), generation("last")],
-      [Buffer.concat([bytes(1, stamp(WHEN + 60)), bytes(12, "unique"), bytes(9, bytes(7, "unique"))])]);
-    assert.equal((await f.collect({ MAX_ROWS: 1 })).code, 0);
-    const originalPosition = f.state().positions;
-    const setup = "m.matched_times = lambda *args: None\n";
-    for (let i = 0; i < 2; i++) assert.equal((await f.collect({ MAX_ROWS: 1 }, false, setup)).code, 0);
-    assert.deepEqual(f.state().positions, originalPosition);
-    assert.equal(f.accepted.size, 1);
-    for (let i = 0; i < 2; i++) assert.equal((await f.collect({ MAX_ROWS: 1 })).code, 0);
-    assert.equal(f.accepted.size, 3);
-  } finally { await f.close(); }
-});
-
-
-test("unchanged completed sources skip SQLite scans; old-row WAL edits invalidate stamps and completed ranks are discarded", async () => {
+test("unchanged sources skip SQLite scans; old-row WAL edits invalidate stamps", async () => {
   const f = await scanFixture();
   let db;
   try {
     f.add("wal", [generation("old")]);
     db = new Database(path.join(f.dir, "wal.db")); db.pragma("journal_mode = WAL");
     db.prepare("UPDATE gen_metadata SET data=? WHERE idx=1").run(generation("old"));
-    assert.equal((await f.collect({})).code, 0);
-    assert.deepEqual(f.state().sent, {});
-    assert.ok(Object.values(f.state().files).every(x => x.complete));
+    assert.equal((await f.collect()).code, 0);
+    assert.equal(Object.keys(f.state().files).length, 1);
     const noScan = "m.read_database = lambda *args: (_ for _ in ()).throw(AssertionError('unchanged source scanned'))\n";
-    assert.equal((await f.collect({}, false, noScan)).code, 0);
+    assert.equal((await f.collect(noScan)).code, 0);
     const before = fs.statSync(path.join(f.dir, "wal.db")).mtimeMs;
     db.prepare("UPDATE gen_metadata SET data=? WHERE idx=1").run(generation("old", { output: 80 }));
     assert.equal(fs.statSync(path.join(f.dir, "wal.db")).mtimeMs, before, "change is in WAL only");
-    assert.equal((await f.collect({})).code, 0);
+    assert.equal((await f.collect()).code, 0);
     assert.equal(f.accepted.get("wal:old").usage.output_tokens, 110);
-    assert.deepEqual(f.state().sent, {});
     db.close(); db = null;
-    assert.equal((await f.collect({})).code, 0, "WAL disappearance also invalidates stamp");
+    assert.equal((await f.collect()).code, 0, "WAL disappearance also invalidates stamp");
   } finally { db?.close(); await f.close(); }
 });
 
-test("writes during a read cannot certify an unchanged snapshot or retain a stale page cursor", async () => {
+test("writes during a read cannot certify an unchanged snapshot", async () => {
   const f = await scanFixture();
   try {
     f.add("racing", [generation("first")]);
-    const setup = `original = m.read_database\ndef racing(path, after=None):\n result = original(path, after)\n import sqlite3\n with sqlite3.connect(path) as db:\n  db.execute('INSERT INTO gen_metadata VALUES (2, ?)', (bytes.fromhex('${generation("second").toString("hex")}'),))\n return result\nm.read_database = racing\n`;
-    assert.equal((await f.collect({}, false, setup)).code, 0);
-    assert.ok(Object.values(f.state().files).every(x => !x.complete));
-    assert.deepEqual(f.state().positions, {});
-    assert.equal((await f.collect({})).code, 0);
+    const setup = `original = m.read_database\ndef racing(path):\n result = original(path)\n import sqlite3\n with sqlite3.connect(path) as db:\n  db.execute('INSERT INTO gen_metadata VALUES (2, ?)', (bytes.fromhex('${generation("second").toString("hex")}'),))\n return result\nm.read_database = racing\n`;
+    assert.equal((await f.collect(setup)).code, 0);
+    assert.equal(f.accepted.size, 1);
+    assert.equal((await f.collect()).code, 0);
     assert.equal(f.accepted.size, 2);
   } finally { await f.close(); }
 });
@@ -643,12 +557,11 @@ test("discovery excludes app-root databases and prunes checkpoints for deleted c
   try {
     f.add("valid", [generation("valid")]);
     fs.copyFileSync(path.join(f.dir, "valid.db"), path.join(f.dir, "..", "decoy.db"));
-    assert.equal((await f.collect({})).code, 0);
+    assert.equal((await f.collect()).code, 0);
     assert.equal(f.accepted.size, 1);
     fs.unlinkSync(path.join(f.dir, "valid.db"));
-    assert.equal((await f.collect({})).code, 0);
+    assert.equal((await f.collect()).code, 0);
     assert.deepEqual(f.state().files, {});
-    assert.deepEqual(f.state().sent, {});
   } finally { await f.close(); }
 });
 
@@ -663,23 +576,22 @@ test("unconfigured placeholders fail before database discovery or cache creation
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
-test("first HTTP failure stops sources and quota probing; Retry-After delays retries without losing accepted batches", async () => {
+test("first HTTP failure stops sources and quota probing; Retry-After delays retries", async () => {
   const f = await scanFixture();
   try {
     f.add("first", Array.from({ length: 250 }, (_, i) => generation(`response${i}`)));
     f.add("second", [generation("other")]);
     const setup = `import urllib.error\nimport urllib.request\nopen_original = urllib.request.OpenerDirector.open\ncalls = 0\ndef fail_second(self, *args, **kwargs):\n global calls\n calls += 1\n if calls == 2:\n  raise urllib.error.HTTPError('redacted', 429, 'limited', {'Retry-After': '120'}, None)\n return open_original(self, *args, **kwargs)\nurllib.request.OpenerDirector.open = fail_second\nm.os.environ['AI_ACTIVITY_ANTIGRAVITY_QUOTAS'] = '1'\nm.read_quotas = lambda: (_ for _ in ()).throw(AssertionError('quota probe after upload failure'))\n`;
-    assert.equal((await f.collect({}, false, setup)).code, 1);
+    assert.equal((await f.collect(setup)).code, 1);
     assert.equal(f.accepted.size, 200);
     assert.equal(f.batches.length, 1);
-    assert.ok(Object.values(f.state().files).every(x => !x.complete));
-    assert.equal((await f.collect({})).code, 1);
+    assert.deepEqual(f.state().files, {});
+    assert.equal((await f.collect()).code, 1);
     assert.equal(f.batches.length, 1, "Retry-After suppresses every upload");
     const noWait = "import time\noriginal_time = time.time\ntime.time = lambda: original_time() + 121\n";
-    assert.equal((await f.collect({}, false, noWait)).code, 0);
+    assert.equal((await f.collect(noWait)).code, 0);
     assert.equal(f.accepted.size, 251);
-    assert.equal(f.batches.flat().filter(e => e.session_id === 'first').length, 250);
-    assert.deepEqual(f.state().sent, {});
+    assert.equal(Object.keys(f.state().files).length, 2);
   } finally { await f.close(); }
 });
 
@@ -700,11 +612,11 @@ test("HTTP-date retry delays and malformed Retry-After use bounded persistent ba
     f.add("retrydate", [generation("one")]);
     for (const [header, seconds] of [[new Date(Date.now() + 120000).toUTCString(), 120], ["nonsense", 60], ["999999999", 86400]]) {
       const setup = `import urllib.request, urllib.error\ndef fail(*args, **kwargs):\n raise urllib.error.HTTPError('redacted', 503, 'unavailable', {'Retry-After': ${JSON.stringify(header)}}, None)\nurllib.request.OpenerDirector.open = fail\n`;
-      // Expire the previous delay while retaining the source's incomplete checkpoint.
+      // Expire the previous delay before the next attempt.
       const stateFile = path.join(f.dir, "..", "..", "..", ".cache", "ai-activity", "antigravity.json");
       if (fs.existsSync(stateFile)) { const v = JSON.parse(fs.readFileSync(stateFile)); delete v.upload_retry_at; fs.writeFileSync(stateFile, JSON.stringify(v)); }
       const before = Date.now() / 1000;
-      assert.equal((await f.collect({}, false, setup)).code, 1);
+      assert.equal((await f.collect(setup)).code, 1);
       const delay = f.state().upload_retry_at - before;
       assert.ok(delay > seconds - 3 && delay <= seconds + 3, `${header}: ${delay}`);
     }
@@ -718,7 +630,7 @@ test("network failures and rejected redirects stop the pass without sending a se
     f.add("first", [generation("one")]); f.add("second", [generation("two")]);
     for (const failure of ["urllib.error.URLError('offline')", "urllib.error.HTTPError('redacted', 302, 'redirect', {}, None)"]) {
       const setup = `import urllib.request, urllib.error\ndef fail(*args, **kwargs):\n raise ${failure}\nurllib.request.OpenerDirector.open = fail\n`;
-      const result = await f.collect({}, false, setup);
+      const result = await f.collect(setup);
       assert.equal(result.code, 1);
       assert.equal(f.batches.length, 0);
     }
@@ -738,7 +650,7 @@ test("an actual HTTP redirect cannot forward the device bearer key", async () =>
   try {
     f.add("redirect", [generation("one")]);
     const setup = `m.SERVER = 'http://127.0.0.1:${source.address().port}'\n`;
-    assert.equal((await f.collect({}, false, setup)).code, 1);
+    assert.equal((await f.collect(setup)).code, 1);
     assert.equal(received, 0);
   } finally {
     await new Promise(resolve => source.close(resolve));
