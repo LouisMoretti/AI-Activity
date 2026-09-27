@@ -17,10 +17,13 @@ today unless a day is hovered; the Weekly and Cumulative tabs likewise show
 the last 7 days or the running total unless a week is hovered, focused or
 tapped), four stats (all-time tokens, today, sessions,
 current streak; hover shows the split by tool and model, or the longest
-streak), one card per tool (Claude Code, Codex, OpenCode are separate
-components; OpenCode takes 2/3 of its row, next to "Today by tool": today's
-tokens split by tool), recent conversations (10 + "Show more"). No tool filter:
-every tool is always shown. No cost or subscription tracking (removed on
+streak), one card per tool the profile ever used (usage or a quota
+posted; Claude Code, Codex, OpenCode are separate components; OpenCode takes
+2/3 of its row, next to "Today by tool": today's tokens split by tool),
+recent conversations (10 + "Show more"). No tool filter. On your own page,
+tools never used are offered in "Add a tool" (`AddTools`: what each one
+shows and the one-command install, copied with a device's key); visitors
+never see it. No cost or subscription tracking (removed on
 purpose). Only demo data carries a badge ("Demonstration data"). Palette: the
 original dark theme; type: Geist, with Geist Mono only for ids and model
 names. Quota bars carry a mark for how far into the window we are.
@@ -236,7 +239,8 @@ browser and fetch; `test/live.test.js` covers the API → view-model mapping;
 `test/collector.test.js` runs the README collector and
 `test/codex-collector.test.js` runs `collectors/codex.py` through the
 README's Codex Stop hook; `test/opencode-collector.test.js` runs
-`collectors/opencode.py` through its plugin on a fake OpenCode database.
+`collectors/opencode.py` through its plugin on a fake OpenCode database;
+`test/install.test.js` runs `/install.sh` in a temporary home.
 Types: `npm run typecheck` (tsc for server, svelte-check for web). Node >= 22.18 runs the TypeScript server directly
 (type stripping, no build step), so only erasable TS syntax is allowed (no
 `enum`, no parameter properties) and relative imports keep their `.ts`
@@ -269,6 +273,7 @@ server/
   lib/passwords.ts    scrypt hashing, username/password rules
   lib/setup.ts        one-time setup code for the first account
   lib/avatar.ts       profile picture link allowlist
+  lib/installer.ts    /install.sh (collectors/install.py + collectors)
   lib/backup.ts       consistent snapshots, retention, restore
   lib/client.ts       client address + HTTPS behind the tunnel or TRUST_PROXY
   lib/rate-limit.ts   token buckets + LIMITS (ingest, public reads, per user)
@@ -288,7 +293,7 @@ web/
   src/components/         StatsRow (StatCard), ActivityChart (Heatmap,
                           TrendChart), ClaudeCodeCard / CodexCard /
                           OpenCodeCard (ToolHeader, QuotaWindow, Meter),
-                          TodayByTool,
+                          TodayByTool, AddTools,
                           Conversations, DevicesPanel, AccountMenu,
                           SiteHeader, ProfilePanel, UsersPanel,
                           NewAccountForm, AuthPanel, Leaderboard,
@@ -336,6 +341,17 @@ Components never branch on live vs demo: both sources map into the same
   The plugin (`collectors/opencode-plugin.js` →
   `~/.config/opencode/plugins/ai-activity.js`) runs it detached at
   OpenCode start and on every `session.idle`, one run at a time.
+- One-command install: `GET /install.sh` (no session) is
+  `collectors/install.py` with the collectors and the README's statusLine
+  embedded (`server/lib/installer.ts`, built at start; the Docker image
+  copies `collectors/` and `README.md` for it). Run as
+  `curl -fsSL <server>/install.sh | AI_ACTIVITY_URL=… AI_ACTIVITY_KEY=… sh`:
+  the key is never in a URL. It installs the tools found (or
+  `AI_ACTIVITY_TOOLS`), merges into `settings.json` / `hooks.json` without
+  touching other entries or another statusLine (unless
+  `AI_ACTIVITY_FORCE=1`), writes only what changed, checks the key first
+  and refuses root unless `AI_ACTIVITY_ALLOW_ROOT=1`
+  (`test/install.test.js`). Settings → Devices copies the command per device.
 - Never transmit prompts, transcripts, or provider keys — metrics only.
 
 ## 4. Data model (SQLite, `data/dashboard.db`)

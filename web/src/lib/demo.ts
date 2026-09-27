@@ -54,7 +54,7 @@ export function demoDashboard(provider: Provider): DashboardVM {
       sessions: figure(tools, (t) => (t === "codex" ? 38 : 64)),
       streak: streaks(series),
     },
-    tools: visible,
+    tools: tools, // no OpenCode in the fictional dataset
     claude: {
       tool: "claude-code",
       updatedAt: now - 40,

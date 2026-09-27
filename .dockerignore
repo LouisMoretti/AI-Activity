@@ -9,6 +9,5 @@ web/dist
 .github
 logs
 test
-collectors
 **/__pycache__
 web/src/lib/.dashboard.test-build.js

@@ -24,6 +24,9 @@ RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 COPY server server
 COPY shared shared
 COPY scripts scripts
+# /install.sh embeds the collectors and the README's statusLine.
+COPY collectors collectors
+COPY README.md README.md
 COPY --from=build /app/web/dist web/dist
 # The database, its -wal/-shm files and the backups live in /data: mount the
 # directory (a volume), never the database file alone.

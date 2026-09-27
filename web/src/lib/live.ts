@@ -70,6 +70,15 @@ function openCode(d: LiveData["opencode"]): OpenCodeVM {
   };
 }
 
+/** Tools with any usage stored, or a quota posted (a collector that has not sent a message yet). */
+function usedTools(d: LiveData, provider: Provider): ToolKey[] {
+  const seen = new Set<string>([
+    ...d.summary.total.by_tool.filter((r) => r.events > 0).map((r) => r.name),
+    ...d.quotas.quotas.map((q) => q.tool),
+  ]);
+  return toolsFor(provider).filter((t) => seen.has(t));
+}
+
 export function liveDashboard(d: LiveData, provider: Provider): DashboardVM {
   const series = denseSeries(d.activity.days, ACTIVITY_DAYS, d.summary.day);
   const hasActivity = d.summary.total.events > 0;
@@ -85,7 +94,7 @@ export function liveDashboard(d: LiveData, provider: Provider): DashboardVM {
       sessions: figure(d.summary.total, "sessions"),
       streak: hasActivity ? streaks(series) : null,
     },
-    tools: toolsFor(provider),
+    tools: usedTools(d, provider),
     claude: toolQuotas(d.quotas, "claude-code"),
     codex: toolQuotas(d.quotas, "codex"),
     opencode: openCode(d.opencode),

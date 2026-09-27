@@ -1,5 +1,34 @@
 # AI Activity
 
+## One-command install
+
+Create a device key (**Settings → Devices**, or `npm run gen-key -- "my-laptop"`),
+then on that machine, as the user who runs the tools (no `sudo`):
+
+```sh
+curl -fsSL <server>/install.sh | AI_ACTIVITY_URL=<server> AI_ACTIVITY_KEY=<device key> sh
+```
+
+**Copy install command** in Settings → Devices (or "Add a tool" on your
+profile) copies it with the key filled in. The key is passed in the
+environment, never in a URL. The script needs `python3` and installs the
+collectors of the tools it finds (`claude` / `codex` / `opencode` on the
+`PATH`, or their config folders), as the sections below describe:
+
+- Claude Code: the `statusLine` in `~/.claude/settings.json`. Another
+  status line already set is left alone (`AI_ACTIVITY_FORCE=1` replaces it:
+  Claude Code runs only one).
+- Codex: `~/.codex/ai-activity-codex.py` and its two hooks in
+  `~/.codex/hooks.json`, next to your other hooks. Review them once with
+  `/hooks`.
+- OpenCode: the collector and plugin in `~/.config/opencode`. Restart it.
+
+Other entries of those files are kept. `AI_ACTIVITY_TOOLS=claude-code,codex`
+picks the tools instead. Running it again only updates what changed (a new
+key or server URL), never duplicates a hook. It checks that the server
+takes the key first, and refuses to run as root unless
+`AI_ACTIVITY_ALLOW_ROOT=1`.
+
 ## Send Claude Code usage from a device
 
 1. Create a device key on the server: `npm run gen-key -- "my-laptop"`, or
