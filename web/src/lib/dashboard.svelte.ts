@@ -1,9 +1,9 @@
 // App state: sign-in, the current page (sign-in at /, a public profile at
-// /u/<username>, /leaderboard, /settings, /admin), data source (live or
-// ?demo=1), session paging, and the 15 s auto-refresh
+// /u/<username>, the fictional profile at /demo, /leaderboard, /settings,
+// /admin), session paging, and the 15 s auto-refresh
 // (skipped while hidden or already in flight).
 import { api, NotFoundError, onSessionLost, RateLimitedError, UnauthorizedError, type NewAccount } from "./api.ts";
-import { demoDashboard } from "./demo.ts";
+import { DEMO_PROFILE, demoDashboard } from "./demo.ts";
 import { ACTIVITY_DAYS, liveDashboard, type LiveData } from "./live.ts";
 import type { DashboardVM } from "./view-model.ts";
 import type { Account, Profile, SessionsResponse } from "../../../shared/types.ts";
@@ -11,6 +11,7 @@ import type { Account, Profile, SessionsResponse } from "../../../shared/types.t
 export type Route =
   | { page: "home" }
   | { page: "profile"; username: string }
+  | { page: "demo" }
   | { page: "leaderboard" }
   | { page: "settings" }
   | { page: "admin" };
@@ -59,6 +60,7 @@ function routeFromPath(): Route {
   if (/^\/settings\/?$/.test(path)) return { page: "settings" };
   if (/^\/admin\/?$/.test(path)) return { page: "admin" };
   if (/^\/leaderboard\/?$/.test(path)) return { page: "leaderboard" };
+  if (/^\/demo\/?$/.test(path)) return { page: "demo" };
   return { page: "home" };
 }
 
@@ -71,17 +73,14 @@ export const currentPath = () => location.pathname + location.search;
 function nextPath(): string | null {
   const next = new URLSearchParams(location.search).get("next");
   // "//host" and "/\host" would leave the site (pushState then throws).
-  return next && /^\/(?![/\\])/.test(next) ? next : null;
+  // Signing in from /demo lands on the viewer's real profile, not the fiction.
+  return next && /^\/(?![/\\])/.test(next) && !/^\/demo\/?(?:[?#]|$)/.test(next) ? next : null;
 }
 
 const same = (a: string | undefined, b: string | undefined) =>
   a !== undefined && b !== undefined && a.toLowerCase() === b.toLowerCase();
 
-const demoInUrl = () => new URLSearchParams(location.search).get("demo") === "1";
-
 export class Dashboard {
-  /** ?demo=1 in the current address (in-app navigation drops it). */
-  demo = $state(demoInUrl());
   route = $state<Route>(routeFromPath());
   status = $state<Status>("loading");
   sessionsLimit = $state(SESSIONS_PAGE);
@@ -99,11 +98,10 @@ export class Dashboard {
   own = $derived(this.route.page === "profile" && same(this.route.username, this.account?.username));
 
   vm = $derived<DashboardVM | null>(
-    this.route.page !== "profile" ? null
-      // Demo data only on the viewer's own page, and only once signed in.
-      : this.demo && this.own ? demoDashboard("all")
-        : this.live ? liveDashboard(this.live, "all")
-          : null
+    // Fictional data only at /demo (always labeled); real profiles are always live.
+    this.route.page === "demo" ? demoDashboard("all")
+      : this.route.page === "profile" && this.live ? liveDashboard(this.live, "all")
+        : null
   );
 
   async load(): Promise<void> {
@@ -115,6 +113,10 @@ export class Dashboard {
     this.inFlight = true;
     const route = this.route;
     try {
+      if (route.page === "demo") {
+        await this.loadDemo(route);
+        return;
+      }
       const auth = await api.authStatus();
       this.account = auth.user;
       this.signupOpen = auth.signup_open;
@@ -130,7 +132,7 @@ export class Dashboard {
       }
       if (route.page === "home") {
         // Signed in: the address bar shows the shareable profile link.
-        this.go(nextPath() ?? profilePath(auth.user.username) + (this.demo ? "?demo=1" : ""), true);
+        this.go(nextPath() ?? profilePath(auth.user.username), true);
         return;
       }
       if (route.page === "profile") await this.loadProfile(route.username);
@@ -151,6 +153,24 @@ export class Dashboard {
         this.reloadQueued = false;
         void this.load();
       }
+    }
+  }
+
+  /**
+   * /demo is client-side only: a fixed dataset, no usage API call and no
+   * refresh. The sign-in status only fills the header's account menu; the
+   * page needs no server and stays up (signed out) without one.
+   */
+  private async loadDemo(route: Route): Promise<void> {
+    this.shown = DEMO_PROFILE;
+    this.status = "ready";
+    try {
+      const auth = await api.authStatus();
+      if (this.route !== route) return;
+      this.account = auth.user;
+      this.signupOpen = auth.signup_open;
+    } catch {
+      if (this.route === route) this.account = null;
     }
   }
 
@@ -199,7 +219,6 @@ export class Dashboard {
   /** Sync with the URL (after go(), or back/forward). */
   private showPath(): void {
     this.route = routeFromPath();
-    this.demo = demoInUrl();
     this.live = null;
     this.shown = null;
     this.sessionsLimit = SESSIONS_PAGE;
@@ -214,8 +233,7 @@ export class Dashboard {
     } catch (e) {
       return e instanceof UnauthorizedError ? "Wrong username or password." : (e as Error).message;
     }
-    // Keep the current query while the authenticated home route resolves to
-    // the viewer's profile (notably /?demo=1 -> /u/<name>?demo=1).
+    // Back to ?next= if any; else "/", which now resolves to the viewer's profile.
     this.go(nextPath() ?? currentPath(), true);
     return null;
   }
@@ -260,11 +278,11 @@ export class Dashboard {
     const onPop = () => this.showPath();
     window.addEventListener("popstate", onPop);
     onSessionLost(() => this.sessionLost());
-    // Profile pages refresh their live data (not the fixed demo); any page
+    // Profile pages refresh their live data (/demo is fixed); any page
     // that could not reach the server retries.
     const tick = () => {
       if (document.hidden) return;
-      if (this.status === "error" || (this.route.page === "profile" && !this.vm?.demo)) void this.load();
+      if (this.status === "error" || this.route.page === "profile") void this.load();
     };
     const id = setInterval(tick, REFRESH_MS);
     document.addEventListener("visibilitychange", tick);

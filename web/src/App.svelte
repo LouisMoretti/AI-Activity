@@ -3,6 +3,7 @@
   import AuthPanel from "./components/AuthPanel.svelte";
   import ActivityChart from "./components/ActivityChart.svelte";
   import Conversations from "./components/Conversations.svelte";
+  import DangerZone from "./components/DangerZone.svelte";
   import DevicesPanel from "./components/DevicesPanel.svelte";
   import Leaderboard from "./components/Leaderboard.svelte";
   import NewAccountForm from "./components/NewAccountForm.svelte";
@@ -19,12 +20,14 @@
   import { untrack } from "svelte";
   import { clock } from "./lib/clock.svelte.ts";
   import { Dashboard } from "./lib/dashboard.svelte.ts";
+  import { DEMO_PROFILE } from "./lib/demo.ts";
   import { hasLiveWindow } from "./lib/view-model.ts";
 
   const dash = new Dashboard();
   // Breadcrumb after "AI Activity" in the header: where you are.
   const crumb = $derived(
-    dash.route.page === "profile" ? (dash.shown ? { label: `@${dash.shown.username}`, mono: true, picture: { name: dash.shown.display_name, url: dash.shown.avatar_url } } : null)
+    dash.route.page === "demo" ? { label: DEMO_PROFILE.display_name, picture: { name: DEMO_PROFILE.display_name, url: null } }
+    : dash.route.page === "profile" ? (dash.shown ? { label: `@${dash.shown.username}`, mono: true, picture: { name: dash.shown.display_name, url: dash.shown.avatar_url } } : null)
     : dash.route.page === "leaderboard" ? { label: "Leaderboard" }
     : dash.route.page === "settings" && dash.account ? { label: "Settings" }
     : dash.route.page === "admin" && dash.account ? { label: "Admin panel" }
@@ -37,7 +40,7 @@
     document.title = page === "settings" ? "Settings · AI Activity"
       : page === "admin" ? "Admin panel · AI Activity"
       : page === "leaderboard" ? "Leaderboard · AI Activity"
-      : page === "profile" && dash.shown ? `${dash.shown.display_name} · AI Activity${dash.vm?.demo ? " · Demo" : ""}`
+      : (page === "profile" || page === "demo") && dash.shown ? `${dash.shown.display_name} · AI Activity${dash.vm?.demo ? " · Demo" : ""}`
         : "AI Activity";
   });
 </script>
@@ -57,6 +60,11 @@
       <NewAccountForm withSetupCode title="Create the first account"
         intro="No account exists yet. The setup code is printed in the server log. This account becomes the admin and keeps the data collected so far."
         submitLabel="Create admin account" oncreate={(a, c) => dash.createAccount(a, c)} />
+    {/if}
+    {#if dash.status === "signed-out" || dash.status === "setup"}
+      <p class="demo-link">
+        No account? <a href="/demo" onclick={(e) => { e.preventDefault(); dash.go("/demo"); }}>See a demo</a> with fictional data.
+      </p>
     {/if}
 
     {#if dash.status === "missing"}
@@ -79,6 +87,12 @@
 
       <Section title="Devices" subtitle="One ingestion key per machine">
         <DevicesPanel />
+      </Section>
+
+      <Section title="Danger zone" subtitle="Cannot be undone">
+        {#key dash.account.id}
+          <DangerZone username={dash.account.username} ondeletedactivity={() => dash.load()} onsignout={() => dash.logout()} />
+        {/key}
       </Section>
 
     {/if}
@@ -150,6 +164,9 @@
   .howto { margin-top: 16px; border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 16px; color: var(--muted); font-size: 13px; line-height: 1.6; }
   .howto button { padding: 0; color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
   .howto button:hover { color: var(--accent); }
+  .demo-link { max-width: 420px; margin: 12px auto 0; text-align: center; color: var(--muted); font-size: 13px; }
+  .demo-link a { color: var(--text); text-underline-offset: 2px; }
+  .demo-link a:hover { color: var(--accent); }
   .notice { color: var(--warn); margin: 12px 0; text-align: center; }
   .quota { display: grid; } /* the card fills its grid cell */
   /* A quota card with several pools (Antigravity) takes a whole row. */
