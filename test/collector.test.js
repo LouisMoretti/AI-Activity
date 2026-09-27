@@ -147,6 +147,8 @@ describe("collector one-liner from README.md", () => {
     await run(cmd(srv.base), { env });
     assert.ok(await waitFor(async () => (await stats()).events === before.events + 2));
     assert.equal((await stats()).total_tokens - before.total_tokens, 2 * PER_MESSAGE + 1 + 5);
+    // It saves its offsets after the server answered: the next test snapshots them.
+    await collectorsDone(key);
   });
 
   test("nothing is lost while the server is down", async () => {

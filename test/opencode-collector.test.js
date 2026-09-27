@@ -119,15 +119,21 @@ describe("OpenCode collector (plugin from README.md)", () => {
   });
 
   test("nothing is lost while the server is down", async () => {
-    await sleep(500);
+    // The collector saves its state after the server answered: wait for the
+    // last message sent before snapshotting it.
+    const latest = db.prepare("SELECT MAX(time_updated) AS t FROM message").get().t;
+    assert.ok(await waitFor(() => Object.values(state()).includes(latest)), "the state reaches the last message sent");
     const before = await summary();
     const saved = state();
     message("msg_a6", "ses_other", tok(100, 5));
     install("http://127.0.0.1:9");
-    await idle();
-    await sleep(1500);
-    assert.deepEqual(state(), saved);
-    install(srv.base);
+    try {
+      await idle();
+      await sleep(1500);
+      assert.deepEqual(state(), saved);
+    } finally {
+      install(srv.base); // a failure here must not leave later runs on a dead server
+    }
     // Idle twice at once: the plugin runs the collector again after, nothing is sent twice.
     await Promise.all([idle(), idle()]);
     assert.ok(await waitFor(async () => (await summary()).events === before.events + 1));

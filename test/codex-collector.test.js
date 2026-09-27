@@ -143,6 +143,8 @@ describe("Codex collector (Stop hook from README.md)", () => {
     await run(hookCommand, env);
     assert.ok(await waitFor(async () => (await summary()).events === before.events + 1));
     assert.equal((await summary()).tokens - before.tokens, 3010);
+    // The detached collector saves its offsets after the server answered.
+    assert.ok(await waitFor(() => state()[current]?.[0] === fs.statSync(current).size), "the offset moves past resp_3");
   });
 
   test("nothing is lost while the server is down", async () => {
@@ -150,10 +152,13 @@ describe("Codex collector (Stop hook from README.md)", () => {
     const saved = state();
     fs.appendFileSync(current, response("resp_4", S1, usage(100, 0, 5), 6265));
     install("http://127.0.0.1:9");
-    await run(hookCommand, env);
-    await sleep(1500);
-    assert.deepEqual(state(), saved);
-    install(srv.base);
+    try {
+      await run(hookCommand, env);
+      await sleep(1500);
+      assert.deepEqual(state(), saved);
+    } finally {
+      install(srv.base); // a failure here must not leave the next tests on a dead server
+    }
     // Two runs at once: the second waits for the lock, nothing is sent twice.
     await Promise.all([run(hookCommand, env), run(hookCommand, env)]);
     assert.ok(await waitFor(async () => (await summary()).events === before.events + 1));
