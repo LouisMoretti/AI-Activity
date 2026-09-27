@@ -70,7 +70,7 @@ const CACHE_MAX = 500;
  * as "today" and "last 30 days" move on their own). Every open dashboard
  * polls every 15 s, so an idle server answers from memory. "Changed" is
  * total_changes() for this server's own writes and PRAGMA data_version for
- * writes from another connection (the npm run user / gen-key CLI).
+ * writes from another connection (a restore, or a tool opening the file).
  */
 export function readCache(db: DB): MiddlewareHandler {
   const cache = new Map<string, { version: string; at: number; body: string }>();

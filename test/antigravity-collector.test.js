@@ -9,7 +9,8 @@ import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import http from "node:http";
-import { startServer, req, newDevice, isLocked } from "./helpers.js";
+import { createHash } from "node:crypto";
+import { startServer, req, newDevice, isLocked, collectorTarget, targetOffsets } from "./helpers.js";
 
 const SCRIPT = fileURLToPath(new URL("../collectors/antigravity.py", import.meta.url));
 // Absolute interpreter, so tests can run the collector with a PATH of their own.
@@ -149,7 +150,7 @@ describe("Antigravity collector", () => {
       assert.equal((await summary()).events, 4);
     } finally { fs.unlinkSync(broken); fs.unlinkSync(layout); }
     assert.equal((await run(env)).code, 0);
-    assert.equal(Object.keys(JSON.parse(fs.readFileSync(statePath(), "utf8")).files).length, 1);
+    assert.equal(Object.keys(targetOffsets(statePath(), srv.base, key).files).length, 1);
   });
 
   test("API separates Antigravity ids from other tools and rejects unsupported identities", async () => {
@@ -578,7 +579,7 @@ describe("Antigravity quota reports", () => {
       const before = Date.now() / 1000;
       assert.equal((await run(local)).code, 1, "a refused quota upload is reported");
       assert.deepEqual(bodies.map(b => b.messages.length), [1, 0]);
-      assert.equal(JSON.parse(fs.readFileSync(path.join(cache, "antigravity.json"), "utf8")).upload_retry_at, undefined);
+      assert.equal(targetOffsets(path.join(cache, "antigravity.json"), local.AI_ACTIVITY_URL, "test-key").upload_retry_at, undefined);
       const retry = JSON.parse(fs.readFileSync(path.join(cache, "antigravity-quota.json"), "utf8")).retry_at - before;
       assert.ok(retry > 3597 && retry <= 3603, String(retry));
       db.prepare("INSERT INTO gen_metadata VALUES (2, ?)").run(generation("t2"));
@@ -617,15 +618,18 @@ async function scanFixture() {
     db.close();
   };
   const statePath = path.join(home, ".cache", "ai-activity", "antigravity.json");
-  const state = () => JSON.parse(fs.readFileSync(statePath, "utf8"));
-  const writeState = (value) => fs.writeFileSync(statePath, JSON.stringify(value));
+  /** This target's checkpoints; the whole file (raw); replacing the file. */
+  const state = () => targetOffsets(statePath, env.AI_ACTIVITY_URL, env.AI_ACTIVITY_KEY);
+  const raw = () => fs.readFileSync(statePath, "utf8");
+  const writeFile = (value) => fs.writeFileSync(statePath, JSON.stringify(value));
+  const writeState = (value) => writeFile({ targets: { [collectorTarget(env.AI_ACTIVITY_URL, env.AI_ACTIVITY_KEY)]: value } });
   const collect = async (setup = "") => {
     const script = path.join(home, "scan-test.py");
     fs.writeFileSync(script, `import importlib.util, time\nspec = importlib.util.spec_from_file_location('collector', ${JSON.stringify(SCRIPT)})\nm = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(m)\n` +
       setup + "try:\n m.collect()\nexcept Exception:\n import traceback\n traceback.print_exc()\n raise SystemExit(1)\n");
     return run(env, [], "", null, script);
   };
-  return { add, state, writeState, collect, accepted, batches, dir, home, refuse: value => refuse = value,
+  return { add, state, raw, writeFile, writeState, env, collect, accepted, batches, dir, home, refuse: value => refuse = value,
     close: async () => { await new Promise(resolve => proxy.close(resolve)); fs.rmSync(home, { recursive: true, force: true }); } };
 }
 
@@ -755,7 +759,7 @@ test("HTTP-date retry delays and malformed Retry-After use bounded persistent ba
       const setup = `import urllib.request, urllib.error\ndef fail(*args, **kwargs):\n raise urllib.error.HTTPError('redacted', 503, 'unavailable', {'Retry-After': ${JSON.stringify(header)}}, None)\nurllib.request.OpenerDirector.open = fail\n`;
       // Expire the previous delay before the next attempt.
       const stateFile = path.join(f.dir, "..", "..", "..", ".cache", "ai-activity", "antigravity.json");
-      if (fs.existsSync(stateFile)) { const v = JSON.parse(fs.readFileSync(stateFile)); delete v.upload_retry_at; fs.writeFileSync(stateFile, JSON.stringify(v)); }
+      if (fs.existsSync(stateFile)) { const v = f.state(); delete v.upload_retry_at; f.writeState(v); }
       const before = Date.now() / 1000;
       assert.equal((await f.collect(setup)).code, 1);
       const delay = f.state().upload_retry_at - before;
@@ -836,6 +840,28 @@ test("malformed checkpoints start over instead of failing every run", async () =
       assert.equal(f.batches.at(-1)[0].response_id, "one", "the conversation is replayed");
       assert.deepEqual(Object.values(f.state().files)[0].sent, { one: 50 });
     }
+  } finally { await f.close(); }
+});
+
+test("checkpoints are kept per server and key; the single-target shape of this target carries over", async () => {
+  const f = await scanFixture();
+  const sent = () => f.batches.splice(0).flat().map(e => e.response_id).sort();
+  const collect = async (setup) => { const r = await f.collect(setup); assert.equal(r.code, 0, r.err); return sent(); };
+  try {
+    f.add("conv", [generation("one"), generation("two")]);
+    assert.deepEqual(await collect(), ["one", "two"]);
+    assert.deepEqual(await collect(), [], "an unchanged target sends nothing again");
+    assert.deepEqual(await collect("m.KEY = 'other-key'\n"), ["one", "two"], "a new key gets the whole history");
+    assert.deepEqual(await collect(`m.SERVER = ${JSON.stringify(f.env.AI_ACTIVITY_URL + "/")}\n`), [],
+      "switching back resumes, whatever the trailing slash");
+    assert.ok(!f.raw().includes("test-key") && !f.raw().includes("other-key"), "never the key");
+    // Before targets, the file held one target: {"scope": sha256(url + "\n" + key), ...checkpoints}.
+    const scope = createHash("sha256").update(`${f.env.AI_ACTIVITY_URL}\ntest-key`).digest("hex");
+    f.writeFile({ scope, ...f.state() });
+    assert.deepEqual(await collect(), [], "this target's checkpoints carry over");
+    assert.deepEqual(Object.keys(JSON.parse(f.raw())), ["targets"]);
+    f.writeFile({ scope: "0".repeat(64), ...f.state() });
+    assert.deepEqual(await collect(), ["one", "two"], "another target's are dropped");
   } finally { await f.close(); }
 });
 

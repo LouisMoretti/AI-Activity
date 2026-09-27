@@ -170,6 +170,8 @@ export interface AuthStatus {
   setup_required: boolean;
   /** Anyone may create an account from the sign-in page (an admin setting). */
   signup_open: boolean;
+  /** Sign in with GitHub is set up on this server (GITHUB_CLIENT_ID / _SECRET); else nobody can sign in. */
+  github_sign_in: boolean;
 }
 
 /** Server settings an admin changes from the admin panel. */

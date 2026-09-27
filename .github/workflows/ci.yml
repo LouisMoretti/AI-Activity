@@ -85,8 +85,6 @@ jobs:
           done
           docker inspect -f '{{.State.Health.Status}}' app | grep -qx healthy
           docker logs app | grep -q "Setup code:"
-          echo "ci-password-123" | docker exec -i app node scripts/user.ts add ci
-          docker exec app node scripts/gen-key.ts ci-device | grep -q "ak_"
           docker exec app node scripts/backup.ts | grep -q "integrity ok"
           docker stop app
           # A clean stop checkpoints the WAL: no -wal left with data in it.

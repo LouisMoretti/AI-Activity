@@ -6,7 +6,6 @@
   import DangerZone from "./components/DangerZone.svelte";
   import DevicesPanel from "./components/DevicesPanel.svelte";
   import Leaderboard from "./components/Leaderboard.svelte";
-  import NewAccountForm from "./components/NewAccountForm.svelte";
   import OpenCodeCard from "./components/OpenCodeCard.svelte";
   import ActivityToolCard from "./components/ActivityToolCard.svelte";
   import ProfilePanel from "./components/ProfilePanel.svelte";
@@ -54,12 +53,9 @@
     onnavigate={(p) => dash.go(p)} onlogout={() => dash.logout()} />
 
   <main>
-    {#if dash.status === "signed-out"}
-      <AuthPanel signupOpen={dash.signupOpen} onlogin={(u, p) => dash.login(u, p)} oncreate={(a, c) => dash.createAccount(a, c)} />
-    {:else if dash.status === "setup"}
-      <NewAccountForm withSetupCode title="Create the first account"
-        intro="No account exists yet. The setup code is printed in the server log. This account becomes the admin and keeps the data collected so far."
-        submitLabel="Create admin account" oncreate={(a, c) => dash.createAccount(a, c)} />
+    {#if dash.status === "signed-out" || dash.status === "setup"}
+      <AuthPanel setup={dash.status === "setup"} signupOpen={dash.signupOpen} github={dash.github}
+        error={dash.authError} onsignin={(code) => dash.signIn(code)} />
     {/if}
     {#if dash.status === "signed-out" || dash.status === "setup"}
       <p class="demo-link">
@@ -79,9 +75,10 @@
     {/if}
 
     {#if dash.route.page === "settings" && dash.account && dash.status === "ready"}
-      <Section title="Account" subtitle="Your profile and password">
+      {#if dash.authError}<p class="notice" role="alert">{dash.authError}</p>{/if}
+      <Section title="Account" subtitle="Your profile, from GitHub">
         {#key dash.account.id}
-          <ProfilePanel account={dash.account} onchange={() => dash.load()} />
+          <ProfilePanel account={dash.account} />
         {/key}
       </Section>
 
@@ -91,7 +88,7 @@
 
       <Section title="Danger zone" subtitle="Cannot be undone">
         {#key dash.account.id}
-          <DangerZone username={dash.account.username} ondeletedactivity={() => dash.load()} onsignout={() => dash.logout()} />
+          <DangerZone ondeletedactivity={() => dash.load()} onsignout={() => dash.logout()} onreauth={() => dash.signInAgain()} />
         {/key}
       </Section>
 

@@ -1,82 +1,47 @@
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import {
-  DELETE_ACCOUNT_PHRASE, DELETE_ACTIVITY_PHRASE, type Account, type AdminOverview, type AdminSettings, type AdminUser, type DeletedAccount, type DeletedActivity,
+  DELETE_ACCOUNT_PHRASE, DELETE_ACTIVITY_PHRASE, type AdminOverview, type AdminSettings, type AdminUser, type DeletedAccount, type DeletedActivity,
 } from "../../shared/types.ts";
 import {
-  adminOverview, deleteAccount, deleteUserActivity, deleteUserSessions, getUser, listAdminUsers, setAvatarUrl, setDisplayName, setPasswordHash, setUserAdmin,
-  setSignupOpen, setUserDisabled, signupOpen, toAccount, type UserRow,
+  adminOverview, deleteAccount, deleteUserActivity, deleteUserSessions, getUser, listAdminUsers, setUserAdmin,
+  setSignupOpen, setUserDisabled, signupOpen, type UserRow,
 } from "../db/queries.ts";
-import type { DB } from "../db/schema.ts";
-import { parseAvatarUrl } from "../lib/avatar.ts";
+import { nowSec, type DB } from "../db/schema.ts";
 import { readJson } from "../lib/http.ts";
-import { hashPassword, passwordProblem, verifyPassword } from "../lib/passwords.ts";
-import type { ViewerAuth, ViewerEnv } from "../lib/viewer-auth.ts";
+import type { ViewerEnv } from "../lib/viewer-auth.ts";
 
-const DISPLAY_NAME_MAX = 60;
-
-/** Trimmed display name, or null to fall back to the username. */
-const displayName = (v: unknown) =>
-  typeof v === "string" && v.trim() ? v.trim().slice(0, DISPLAY_NAME_MAX) : null;
+/**
+ * Destructive actions need a session opened this recently: a stolen
+ * session cookie cannot sign in with GitHub again.
+ */
+export const RECENT_SIGN_IN_SEC = 10 * 60;
 
 const requireAdmin: MiddlewareHandler<ViewerEnv> = async (c, next) => {
   if (!c.get("account").is_admin) return c.json({ error: "admin only" }, 403);
   await next();
 };
 
-/** The signed-in user's own profile. */
-export function accountRoutes(db: DB, auth: ViewerAuth) {
+/**
+ * The signed-in user's own account. The profile (username, name, picture)
+ * comes from GitHub at each sign-in: nothing to edit here.
+ */
+export function accountRoutes(db: DB) {
   /**
-   * A destructive action on the signed-in user's own data: the typed phrase
-   * (checked first, before any hashing), then the password, throttled like a
-   * login so a stolen session cannot guess it. The user, or the error answer.
+   * A destructive action on the signed-in user's own data: the typed phrase,
+   * and a sign-in within RECENT_SIGN_IN_SEC (403 with `reauth: true`
+   * otherwise: the client signs in with GitHub again, then retries). The
+   * user, or the error answer.
    */
   async function confirmed(c: Context<ViewerEnv>, phrase: string): Promise<UserRow | Response> {
     const body = await readJson(c);
     if (body.confirm !== phrase) return c.json({ error: `type "${phrase}" to confirm` }, 400);
-    const wait = auth.attempt(c);
-    if (wait) {
-      c.header("retry-after", String(wait));
-      return c.json({ error: "too many failed attempts, try again later" }, 429);
+    if (nowSec() - c.get("signedInAt") > RECENT_SIGN_IN_SEC) {
+      return c.json({ error: "sign in with GitHub again to confirm", reauth: true }, 403);
     }
-    const user = getUser(db, c.get("userId"))!;
-    const password = typeof body.password === "string" ? body.password : "";
-    if (!(await verifyPassword(password, user.password_hash))) return c.json({ error: "password is wrong" }, 400);
-    auth.succeeded(c);
-    return user;
+    return getUser(db, c.get("userId"))!;
   }
 
   return new Hono<ViewerEnv>()
-    .post("/", async (c) => {
-      const body = await readJson(c);
-      const id = c.get("userId");
-      // Each field is optional: only the ones sent are changed.
-      if ("avatar_url" in body) {
-        const avatar = parseAvatarUrl(body.avatar_url);
-        if ("error" in avatar) return c.json({ error: avatar.error }, 400);
-        setAvatarUrl(db, id, avatar.url);
-      }
-      if ("display_name" in body) setDisplayName(db, id, displayName(body.display_name));
-      return c.json<{ user: Account }>({ user: toAccount(getUser(db, id)!) });
-    })
-    .post("/password", async (c) => {
-      const body = await readJson(c);
-      const wait = auth.attempt(c);
-      if (wait) {
-        c.header("retry-after", String(wait));
-        return c.json({ error: "too many failed attempts, try again later" }, 429);
-      }
-      const user = getUser(db, c.get("userId"))!;
-      const current = typeof body.current_password === "string" ? body.current_password : "";
-      // Guessing the current password from a stolen session is throttled like a login.
-      if (!(await verifyPassword(current, user.password_hash))) return c.json({ error: "current password is wrong" }, 400);
-      auth.succeeded(c);
-      const problem = passwordProblem(body.new_password);
-      if (problem) return c.json({ error: problem }, 400);
-      setPasswordHash(db, user.id, await hashPassword(body.new_password as string));
-      // Other browsers are signed out; this one stays signed in.
-      deleteUserSessions(db, user.id, auth.sessionHash(c));
-      return c.json({ ok: true });
-    })
     // Deletes the signed-in user's own usage and quotas; the account,
     // profile, devices and sessions stay.
     .post("/delete-activity", async (c) => {
@@ -101,19 +66,6 @@ export function userRoutes(db: DB) {
   return new Hono<ViewerEnv>()
     .use(requireAdmin)
     .get("/", (c) => c.json<{ users: AdminUser[] }>({ users: listAdminUsers(db) }))
-    .post("/:id{[0-9]+}/password", async (c) => {
-      const user = target(c.req.param("id"));
-      if (!user) return c.json({ error: "user not found" }, 404);
-      // Own password goes through /api/account/password, which needs the
-      // current one: a stolen admin session must not be able to take over.
-      if (user.id === c.get("userId")) return c.json({ error: "change your own password from your account" }, 400);
-      const body = await readJson(c);
-      const problem = passwordProblem(body.password);
-      if (problem) return c.json({ error: problem }, 400);
-      setPasswordHash(db, user.id, await hashPassword(body.password as string));
-      deleteUserSessions(db, user.id);
-      return c.json({ ok: true });
-    })
     // Grant or remove admin rights. Nobody changes their own role, so the
     // admin making the request always remains: there is never zero admins.
     .post("/:id{[0-9]+}/admin", async (c) => {

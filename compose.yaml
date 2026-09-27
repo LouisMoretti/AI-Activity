@@ -21,6 +21,10 @@ services:
       # Only Caddy shares this network with the app: trust its forwarding
       # headers, so the login throttle sees real client addresses.
       TRUST_PROXY: ${PROXY_SUBNET:-172.29.94.0/24}
+      # Sign in with GitHub (an OAuth app; AGENTS.md §2), from .env.
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      PUBLIC_URL: ${PUBLIC_URL:-}
     volumes:
       - data:/data
     networks:

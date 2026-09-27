@@ -1,103 +1,29 @@
 <script lang="ts">
-  import { untrack } from "svelte";
   import type { Account } from "../../../shared/types.ts";
-  import { api } from "../lib/api.ts";
   import Avatar from "./Avatar.svelte";
 
-  let { account, onchange }: { account: Account; onchange: () => void } = $props();
-
-  // Seeded once from the account; the field is then the user's to edit.
-  let name = $state(untrack(() => (account.display_name === account.username ? "" : account.display_name)));
-  let avatar = $state(untrack(() => account.avatar_url ?? ""));
-  let nameMsg = $state<{ ok: boolean; text: string } | null>(null);
-  let current = $state("");
-  let next = $state("");
-  let repeat = $state("");
-  let pwMsg = $state<{ ok: boolean; text: string } | null>(null);
-  let busy = $state(false);
-
-  async function saveName(e: SubmitEvent) {
-    e.preventDefault();
-    try {
-      await api.updateProfile({ display_name: name, avatar_url: avatar.trim() });
-      nameMsg = { ok: true, text: "Saved." };
-      onchange();
-    } catch (err) {
-      nameMsg = { ok: false, text: (err as Error).message };
-    }
-  }
-
-  async function savePassword(e: SubmitEvent) {
-    e.preventDefault();
-    if (next !== repeat) {
-      pwMsg = { ok: false, text: "The new passwords do not match." };
-      return;
-    }
-    busy = true;
-    try {
-      await api.changePassword(current, next);
-      pwMsg = { ok: true, text: "Password changed. Other browsers were signed out." };
-      current = next = repeat = "";
-    } catch (err) {
-      pwMsg = { ok: false, text: (err as Error).message };
-    } finally {
-      busy = false;
-    }
-  }
+  let { account }: { account: Account } = $props();
 </script>
 
-<div class="grid">
-  <form onsubmit={saveName}>
-    <h3>Profile</h3>
-    <p class="muted">Signed in as <span class="mono">@{account.username}</span>{account.is_admin ? " · admin" : ""}</p>
-    <label>Display name
-      <input maxlength="60" placeholder={account.username} bind:value={name} />
-    </label>
-    <label>Profile picture link
-      <span class="pic">
-        <Avatar name={name.trim() || account.username} url={avatar.trim() || null} size={36} />
-        <input type="url" inputmode="url" maxlength="500" placeholder="https://github.com/{account.username}.png" bind:value={avatar} />
-      </span>
-      <small>An image from GitHub, Gravatar or Imgur. Anyone can see it.</small>
-    </label>
-    <div class="actions">
-      <button type="submit">Save</button>
-      {#if nameMsg}<span class:ok={nameMsg.ok} class:error={!nameMsg.ok} role="status">{nameMsg.text}</span>{/if}
+<div class="box">
+  <div class="who">
+    <Avatar name={account.display_name} url={account.avatar_url} size={40} />
+    <div>
+      <strong>{account.display_name}</strong>
+      <small><span class="mono">@{account.username}</span>{account.is_admin ? " · admin" : ""}</small>
     </div>
-  </form>
-
-  <form onsubmit={savePassword}>
-    <h3>Password</h3>
-    <!-- Lets password managers pair the new password with this account. -->
-    <input type="text" autocomplete="username" value={account.username} hidden readonly />
-    <label>Current password
-      <input type="password" autocomplete="current-password" required bind:value={current} />
-    </label>
-    <label>New password
-      <input type="password" autocomplete="new-password" minlength="8" required bind:value={next} />
-    </label>
-    <label>Repeat new password
-      <input type="password" autocomplete="new-password" minlength="8" required bind:value={repeat} />
-    </label>
-    <div class="actions">
-      <button type="submit" disabled={busy}>Change password</button>
-      {#if pwMsg}<span class:ok={pwMsg.ok} class:error={!pwMsg.ok} role="status">{pwMsg.text}</span>{/if}
-    </div>
-  </form>
+  </div>
+  <p class="muted">
+    You sign in with GitHub. Your username, name and picture follow your GitHub profile: they are updated each
+    time you sign in.
+  </p>
 </div>
 
 <style>
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 16px; align-items: start; }
-  form { border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 20px 18px; display: grid; gap: 12px; align-content: start; }
-  h3 { font-size: 14px; font-weight: 500; }
-  label { display: grid; gap: 5px; font-size: 12px; color: var(--muted); }
-  .pic { display: flex; align-items: center; gap: 10px; }
-  .pic input { flex: 1; min-width: 0; }
-  small { font-size: 12px; }
-  input { background: var(--bg); border: 1px solid var(--line); color: var(--text); border-radius: var(--radius-sm); padding: 6px 10px; font: inherit; font-size: 14px; }
-  .actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-  button { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 6px 12px; }
-  button:disabled { opacity: .5; cursor: default; }
-  .ok { color: var(--ok); font-size: 13px; }
-  .error { color: var(--warn); font-size: 13px; }
+  .box { border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 20px 18px; display: grid; gap: 12px; max-width: 640px; }
+  .who { display: flex; align-items: center; gap: 12px; }
+  strong { font-weight: 500; display: block; }
+  small { color: var(--muted); font-size: 12px; }
+  p { font-size: 13px; line-height: 1.5; }
+  .muted { color: var(--muted); }
 </style>

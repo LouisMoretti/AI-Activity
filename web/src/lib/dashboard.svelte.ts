@@ -2,7 +2,8 @@
 // /u/<username>, the fictional profile at /demo, /leaderboard, /settings,
 // /admin), session paging, and the 15 s auto-refresh
 // (skipped while hidden or already in flight).
-import { api, NotFoundError, onSessionLost, RateLimitedError, UnauthorizedError, type NewAccount } from "./api.ts";
+import { api, NotFoundError, onSessionLost, RateLimitedError, UnauthorizedError } from "./api.ts";
+import { authErrorMessage } from "./auth-errors.ts";
 import { DEMO_PROFILE, demoDashboard } from "./demo.ts";
 import { ACTIVITY_DAYS, liveDashboard, type LiveData } from "./live.ts";
 import type { DashboardVM } from "./view-model.ts";
@@ -69,12 +70,21 @@ export const profilePath = (username: string) => `/u/${encodeURIComponent(userna
 /** The complete in-app address to return to after signing in. */
 export const currentPath = () => location.pathname + location.search;
 
-/** Where to go after signing in: a same-site path from ?next=, if any. */
+const onSite = (path: string) => /^\/(?![/\\])/.test(path);
+
+/**
+ * Where to go after signing in: a same-site path from ?next=, normalized,
+ * if any. "//host", "/\host", "/<tab>/host" (browsers drop tabs and
+ * newlines) and "/a/..//host" (once resolved) would leave the site; the
+ * server checks it the same way (safeNext). Signing in from /demo lands on
+ * the viewer's real profile, not the fiction.
+ */
 function nextPath(): string | null {
   const next = new URLSearchParams(location.search).get("next");
-  // "//host" and "/\host" would leave the site (pushState then throws).
-  // Signing in from /demo lands on the viewer's real profile, not the fiction.
-  return next && /^\/(?![/\\])/.test(next) && !/^\/demo\/?(?:[?#]|$)/.test(next) ? next : null;
+  if (!next || next.length > 512 || !onSite(next) || /[\s\\\x00-\x1f\x7f]/.test(next)) return null;
+  const url = new URL(next, "http://x");
+  const path = url.pathname + url.search;
+  return url.origin === "http://x" && onSite(path) && !/^\/demo\/?(?:[?#]|$)/.test(path) ? path : null;
 }
 
 const same = (a: string | undefined, b: string | undefined) =>
@@ -88,6 +98,10 @@ export class Dashboard {
   account = $state<Account | null>(null);
   /** Anyone may create an account from the sign-in page (an admin setting). */
   signupOpen = $state(true);
+  /** Sign in with GitHub is set up on the server. */
+  github = $state(true);
+  /** Why the last GitHub sign-in (or linking) failed, in words; null if it did not. */
+  authError = $state<string | null>(null);
   /** The profile on screen. */
   shown = $state<Profile | null>(null);
   private live = $state<LiveData | null>(null);
@@ -120,6 +134,7 @@ export class Dashboard {
       const auth = await api.authStatus();
       this.account = auth.user;
       this.signupOpen = auth.signup_open;
+      this.github = auth.github_sign_in;
       if (!auth.user) {
         if (route.page === "profile") await this.loadProfile(route.username);
         // Public, like profile pages: the page loads its own data.
@@ -204,6 +219,7 @@ export class Dashboard {
 
   /** Navigate within the app (path may carry a query string). */
   go(path: string, replace = false): void {
+    this.authError = null; // said once, on the page GitHub sent the browser back to
     // "/" only redirects a signed-in viewer to their profile: go there
     // directly, so Back does not land on the same page again.
     if (path === "/" && this.account) path = profilePath(this.account.username);
@@ -226,29 +242,35 @@ export class Dashboard {
     void this.load();
   }
 
-  /** An error message, or null once signed in. */
-  async login(username: string, password: string): Promise<string | null> {
-    try {
-      await api.login(username, password);
-    } catch (e) {
-      return e instanceof UnauthorizedError ? "Wrong username or password." : (e as Error).message;
-    }
-    // Back to ?next= if any; else "/", which now resolves to the viewer's profile.
-    this.go(nextPath() ?? currentPath(), true);
-    return null;
+  /**
+   * Sign in (or sign up) with GitHub: the browser leaves for GitHub and
+   * comes back signed in, to ?next= if any, else "/" (the viewer's profile).
+   * The first account also gives the setup code. An error message, or null
+   * once on the way.
+   */
+  async signIn(setupCode: string | null = null): Promise<string | null> {
+    return this.toGithub({ next: nextPath() ?? "/", ...(setupCode !== null ? { setup_code: setupCode } : {}) });
   }
 
-  /** Create an account and sign in: the first one (setup code), or a sign-up. */
-  async createAccount(a: NewAccount, setupCode: string | null): Promise<string | null> {
+  /**
+   * Sign the signed-in account in again with GitHub (a destructive action
+   * needs a recent sign-in), then back to `next`, where a failure is told.
+   */
+  async signInAgain(next = currentPath()): Promise<string | null> {
+    return this.toGithub({ next, reauth: true });
+  }
+
+  private async toGithub(start: Parameters<typeof api.startGithub>[0]): Promise<string | null> {
     try {
-      if (setupCode !== null) await api.setup(setupCode, a);
-      else await api.register(a);
+      const { url } = await api.startGithub(start);
+      location.assign(url);
+      return null;
     } catch (e) {
-      // The only 401 here is a wrong setup code.
-      return e instanceof UnauthorizedError ? "Wrong setup code: copy it from the server log." : (e as Error).message;
+      if (e instanceof UnauthorizedError) {
+        return start.setup_code !== undefined ? "Wrong setup code: copy it from the server log." : "Sign in first.";
+      }
+      return (e as Error).message;
     }
-    this.go(nextPath() ?? currentPath(), true);
-    return null;
   }
 
   async logout(): Promise<void> {
@@ -274,6 +296,15 @@ export class Dashboard {
 
   /** Starts polling; returns a cleanup function. */
   start(): () => void {
+    // Back from a failed GitHub sign-in: say why, once (not kept in the address).
+    const params = new URLSearchParams(location.search);
+    if (params.has("auth_error")) {
+      this.authError = authErrorMessage(params.get("auth_error"));
+      params.delete("auth_error");
+      const query = params.toString();
+      history.replaceState(null, "", location.pathname + (query ? `?${query}` : ""));
+      this.route = routeFromPath();
+    }
     void this.load();
     const onPop = () => this.showPath();
     window.addEventListener("popstate", onPop);

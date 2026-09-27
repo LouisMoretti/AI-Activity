@@ -13,17 +13,18 @@ Anthropic message id with its token counts, plus the status line's quotas
 and context fill. Prompts and replies never leave the device: only ids,
 model, time and counts.
 
-How far each file was sent is kept in ~/.cache/ai-activity/offsets.json (the
-file and lock of the former statusLine one-liner, so replacing it sends
-nothing twice) and only moves forward once the server accepted everything,
-so nothing is lost while the server is down. Delete that file to send
-everything again (the server stores each message id once).
+How far each file was sent is kept in ~/.cache/ai-activity/offsets.json, per
+server and device key (a new one gets the whole history), and only moves
+forward once the server accepted everything, so nothing is lost while the
+server is down. Delete that file to send everything again (the server
+stores each message id once).
 """
 import _thread
 import contextlib
 import datetime
 import errno
 import glob
+import hashlib
 import json
 import os
 import signal
@@ -32,6 +33,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 if os.name == "nt":
@@ -41,7 +43,7 @@ else:
 
 # Bump on every change to this file, with COLLECTOR_VERSIONS in
 # shared/collectors.ts: the server flags older copies as outdated.
-VERSION = 1
+VERSION = 2
 COLLECTOR = {"name": "claude-code", "version": VERSION}
 SERVER = os.environ.get("AI_ACTIVITY_URL", "<server>")
 KEY = os.environ.get("AI_ACTIVITY_KEY", "<device key>")
@@ -158,6 +160,41 @@ def report_update(answer):
         with contextlib.suppress(FileNotFoundError):
             os.remove(path)
 
+KEPT_TARGETS = 8  # most recently used servers / keys whose offsets are kept
+
+
+def target():
+    """Which server and key the offsets belong to, as a fingerprint: the
+    offsets file is not secret, so it never holds the key or a part of it."""
+    url = urllib.parse.urlsplit(SERVER.strip())
+    scheme = url.scheme.lower()
+    try:
+        port = url.port
+    except ValueError:
+        port = None
+    host = url.hostname or ""
+    host = "[%s]" % host if ":" in host else host
+    # The default port is the same server: https://h and https://h:443 are one target.
+    if port is not None and (scheme, port) not in (("http", 80), ("https", 443)):
+        host += ":%d" % port
+    server = urllib.parse.urlunsplit((scheme, host, url.path.rstrip("/"), url.query, ""))
+    return hashlib.sha256((server + "\n" + KEY.strip()).encode()).hexdigest()[:16]
+
+
+def for_target(saved):
+    """The offsets file to write back, and in it this target's offsets.
+
+    Offsets are kept per server and key: a new one starts empty, so its first
+    run sends the whole local history (the server stores each message once),
+    and switching back to an earlier one resumes where it was. Offsets from
+    before targets (at the top level) are dropped: one full resend."""
+    targets = saved.get("targets") if isinstance(saved, dict) else None
+    targets = {k: v for k, v in targets.items() if isinstance(v, dict)} if isinstance(targets, dict) else {}
+    fp = target()
+    offsets = targets.pop(fp, {})
+    targets[fp] = offsets  # most recently used last
+    return {"targets": dict(list(targets.items())[-KEPT_TARGETS:])}, offsets
+
 
 def timeout(signum, frame):
     raise TimeoutError("time limit reached; resumes next run")
@@ -245,16 +282,16 @@ def send(status):
     path = os.path.join(CACHE, "offsets.json")
     try:
         with open(path) as f:
-            state = first_dict(f.read())
+            state, offsets = for_target(first_dict(f.read()))
     except OSError:
-        state = {}
-    found, offsets = [], {}
+        state, offsets = for_target({})
+    found, moved = [], {}
     for f in glob.glob(os.path.join(HOME, ".claude", "projects", "**", "*.jsonl"), recursive=True):
         size = os.path.getsize(f)
-        if size == state.get(f):
+        if size == offsets.get(f):
             continue
-        saved = state.get(f, 0)
-        messages, offsets[f] = read(f, saved if isinstance(saved, int) and saved <= size else 0)
+        saved = offsets.get(f, 0)
+        messages, moved[f] = read(f, saved if isinstance(saved, int) and saved <= size else 0)
         found += messages
     # One entry per message id: the last of its entries sorted by rank.
     messages = list({mid: e for mid, _, e in sorted(found, key=lambda x: x[1])}.values())
@@ -267,7 +304,7 @@ def send(status):
     }
     for i in range(0, max(len(messages), 1), BATCH):
         post(dict(base, messages=messages[i:i + BATCH]))
-    state.update(offsets)
+    offsets.update(moved)
     with open(path + ".tmp", "w") as out:
         json.dump(state, out)
     os.replace(path + ".tmp", path)

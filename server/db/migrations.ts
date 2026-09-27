@@ -14,7 +14,47 @@ export const MIGRATIONS: ((db: DB) => void)[] = [
   cleanupCoveredSnapshots,
   activityClearedAt,
   collectorVersions,
+  githubAccounts,
 ];
+
+/**
+ * 5: sign in with GitHub only (issue #127). `users.github_id` is the GitHub
+ * account's numeric id (stable across login renames). Accounts from before
+ * could never sign in again, so the database starts over: every account,
+ * its usage, quotas, devices and sessions go (the `-pre-v5` backup keeps
+ * them). People sign in with GitHub, make a device key in Settings, and
+ * the collectors send their whole local history again (their offsets are
+ * kept per server and key).
+ */
+function githubAccounts(db: DB): void {
+  db.exec(`
+    DELETE FROM collector_versions;
+    DELETE FROM deleted_events;
+    DELETE FROM usage_events;
+    DELETE FROM quota_snapshots;
+    DELETE FROM devices;
+    DELETE FROM viewer_sessions;
+    DELETE FROM settings;
+    -- Empty, so rebuilt strict: every account has a GitHub id and a
+    -- username (no pre-accounts placeholder, no password). The other
+    -- tables' foreign keys name "users" and follow the new table.
+    DROP TABLE users;
+    CREATE TABLE users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      github_id INTEGER NOT NULL,
+      username TEXT NOT NULL,
+      display_name TEXT,
+      avatar_url TEXT,
+      is_admin INTEGER NOT NULL DEFAULT 0,
+      disabled INTEGER NOT NULL DEFAULT 0,
+      activity_cleared_at INTEGER,
+      created_at INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX idx_users_github ON users(github_id);
+    CREATE UNIQUE INDEX idx_users_username ON users(username COLLATE NOCASE);
+    DELETE FROM sqlite_sequence; -- ids start at 1 again: the first account is #1
+  `);
+}
 
 /**
  * 3: deleting your own activity. `users.activity_cleared_at` is when the

@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { startServer, req, newDevice, asNewClient, isLocked, processesGone, PYTHON, tempHome } from "./helpers.js";
+import { startServer, req, newDevice, asNewClient, isLocked, processesGone, PYTHON, tempHome, targetOffsets, recordingServer } from "./helpers.js";
 
 const WINDOWS = process.platform === "win32";
 const README = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8").replaceAll("\r\n", "\n");
@@ -88,10 +88,12 @@ describe("Codex collector (Stop hook from README.md)", () => {
   const S1 = "01a0b861-4cf4-7f10-8e5b-8d110992ee04";
   const S0 = "019e0073-fee0-7000-8000-000000000000";
   const summary = async () => (await req(srv.base, "GET", "/api/u/admin/summary?tool=codex", { headers: asNewClient() })).json.total;
-  const install = (server) => fs.writeFileSync(path.join(home, ".codex", "ai-activity-codex.py"),
-    SCRIPT.replace("<server>", server).replace("<device key>", key));
+  const install = (server, k = key) => fs.writeFileSync(path.join(home, ".codex", "ai-activity-codex.py"),
+    SCRIPT.replace("<server>", server).replace("<device key>", k));
   const cacheFile = () => path.join(home, ".cache", "ai-activity", "codex.json");
-  const state = () => JSON.parse(fs.readFileSync(cacheFile(), "utf8"));
+  /** The offsets of the test server and key, and the whole file. */
+  const state = () => targetOffsets(cacheFile(), srv.base, key) ?? {};
+  const saved = () => fs.readFileSync(cacheFile(), "utf8");
 
   /**
    * Collectors run detached (setsid -f), so a hook's command returns before
@@ -197,7 +199,7 @@ describe("Codex collector (Stop hook from README.md)", () => {
 
   test("nothing is lost while the server is down", async () => {
     const before = await summary();
-    const saved = state();
+    const file = saved();
     fs.appendFileSync(current, response("resp_4", S1, usage(100, 0, 5), 6265));
     install("http://127.0.0.1:9");
     try {
@@ -205,7 +207,7 @@ describe("Codex collector (Stop hook from README.md)", () => {
       // The failed run saves nothing: wait until it is gone, then the
       // unchanged state means something.
       await collectorsDone();
-      assert.deepEqual(state(), saved);
+      assert.equal(saved(), file);
     } finally {
       install(srv.base); // a failure here must not leave the next tests on a dead server
     }
@@ -219,7 +221,7 @@ describe("Codex collector (Stop hook from README.md)", () => {
 
   test("a redirect cannot forward the device bearer key", async () => {
     const before = await summary();
-    const saved = state();
+    const file = saved();
     fs.appendFileSync(current, response("resp_redirect", S1, usage(20, 0, 2), 6287));
     let received = 0;
     const destination = http.createServer((request, response) => {
@@ -239,7 +241,7 @@ describe("Codex collector (Stop hook from README.md)", () => {
         await run(hookCommand, env);
         await collectorsDone();
         assert.equal(received, 0, `${redirectStatus} must not forward the key`);
-        assert.deepEqual(state(), saved, `${redirectStatus} must not advance offsets`);
+        assert.equal(saved(), file, `${redirectStatus} must not advance offsets`);
       }
     } finally {
       install(srv.base);
@@ -354,6 +356,31 @@ describe("Codex collector (Stop hook from README.md)", () => {
       assert.equal((await summary()).tokens - before.tokens, 51, "the waiting run sends what was added");
     } finally {
       holder.kill();
+    }
+  });
+
+  test("offsets are kept per server and key: a new one gets the whole history, an earlier one resumes", async () => {
+    const rec = await recordingServer();
+    const refresh = async (base, k) => {
+      install(base, k);
+      await run(hookCommand, env);
+      await collectorsDone();
+      return new Set(rec.take().map((m) => m.response_id ?? m.event_id));
+    };
+    try {
+      const all = await refresh(rec.base);
+      assert.ok(all.has("resp_1") && all.has("resp_9") && [...all].some((id) => id.startsWith("tc_")), "a new server gets the whole history");
+      assert.equal((await refresh(rec.base)).size, 0, "an unchanged target sends nothing again");
+      assert.deepEqual(await refresh(rec.base, "ak_other"), all, "a new key gets the whole history");
+      assert.equal((await refresh(rec.base)).size, 0, "switching back resumes where it was");
+      assert.ok(!saved().includes(key) && !saved().includes("ak_other"), "never the key");
+      // Offsets from before targets belong to an unknown server: all is sent again.
+      fs.writeFileSync(cacheFile(), JSON.stringify(state()));
+      assert.deepEqual(await refresh(rec.base), all, "the old shape is dropped");
+      assert.deepEqual(Object.keys(JSON.parse(saved())), ["targets"]);
+    } finally {
+      install(srv.base);
+      await rec.close();
     }
   });
 });

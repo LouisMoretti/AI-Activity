@@ -9,9 +9,6 @@
   let error = $state("");
   let notice = $state("");
   let busy = $state(false);
-  /** Row whose password is being reset, and the new value. */
-  let resetting = $state<number | null>(null);
-  let resetValue = $state("");
 
   const fmtDate = (sec: number) =>
     new Date(sec * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
@@ -52,14 +49,6 @@
     if (!u.disabled && !confirm(`Disable "${u.username}"? They are signed out and their devices stop being accepted.`)) return;
     void act(() => api.setUserDisabled(u.id, !u.disabled), u.disabled ? `"${u.username}" enabled.` : `"${u.username}" disabled.`);
   }
-
-  async function reset(e: SubmitEvent, u: AdminUser) {
-    e.preventDefault();
-    if (await act(() => api.resetPassword(u.id, resetValue), `Password reset for "${u.username}"; they were signed out.`)) {
-      resetting = null;
-      resetValue = "";
-    }
-  }
 </script>
 
 <div class="panel">
@@ -81,21 +70,11 @@
               <button type="button" disabled={busy} onclick={() => toggleAdmin(u)}>
                 {u.is_admin ? "Remove admin" : "Make admin"}
               </button>
-              <button type="button" disabled={busy} onclick={() => { resetting = resetting === u.id ? null : u.id; resetValue = ""; }}>
-                Reset password
-              </button>
               <button type="button" class:danger={!u.disabled} disabled={busy} onclick={() => toggle(u)}>
                 {u.disabled ? "Enable" : "Disable"}
               </button>
             {/if}
           </div>
-          {#if resetting === u.id}
-            <form class="reset" onsubmit={(e) => reset(e, u)}>
-              <input type="text" autocomplete="username" value={u.username} hidden readonly />
-              <input type="password" autocomplete="new-password" minlength="8" required placeholder="New password" aria-label={`New password for ${u.username}`} bind:value={resetValue} />
-              <button type="submit" disabled={busy}>Save</button>
-            </form>
-          {/if}
         </li>
       {/each}
     </ul>
@@ -115,8 +94,6 @@
   strong { font-weight: 500; display: block; }
   small { color: var(--muted); font-size: 12px; }
   .row-actions { display: flex; gap: 8px; }
-  .reset { flex-basis: 100%; display: flex; gap: 8px; flex-wrap: wrap; }
-  input { flex: 1; min-width: 150px; background: var(--bg); border: 1px solid var(--line); color: var(--text); border-radius: var(--radius-sm); padding: 6px 10px; font: inherit; }
   button { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 6px 12px; }
   button:disabled { opacity: .5; cursor: default; }
   .danger:hover { color: var(--warn); border-color: var(--warn); }

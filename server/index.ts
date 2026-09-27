@@ -15,9 +15,11 @@ const server = serve({ fetch: createApp(db, config, setupCode).fetch, port: conf
   console.log(`AI Activity listening on http://localhost:${config.port}`);
   console.log(`DB: ${config.dbPath}`);
   if (setupCode) {
-    console.log("No account yet. Create the first one in the browser with this setup code:");
+    console.log("No account yet. Sign in with GitHub in the browser with this setup code:");
     console.log(`  Setup code: ${setupCode}`);
-    console.log("(or run npm run user -- add <username>)");
+  }
+  if (!config.github) {
+    console.log("Sign in with GitHub is not set up: set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET (.env.example).");
   }
 });
 

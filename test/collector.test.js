@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { startServer, req, newDevice, asNewClient, running, PYTHON, tempHome } from "./helpers.js";
+import { startServer, req, newDevice, asNewClient, running, PYTHON, tempHome, targetOffsets, recordingServer } from "./helpers.js";
 
 const WINDOWS = process.platform === "win32";
 const README = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8").replaceAll("\r\n", "\n");
@@ -99,16 +99,19 @@ describe("Claude Code collector (statusLine from README.md)", () => {
   let srv, key, home, env, proxy, project, transcript, marker, installed;
   const stats = async () => (await req(srv.base, "GET", "/api/u/admin/stats?days=730", { headers: asNewClient() })).json;
   const scriptPath = () => path.join(home, ".claude", "ai-activity-claude-code.py");
-  /** The statusLine command, with the installed copy posting to `base`. */
-  const cmd = (base) => {
-    // Rewritten only when the server changes: never under a run starting.
-    if (installed !== base) fs.writeFileSync(scriptPath(), SCRIPT.replace("<server>", base).replace("<device key>", key));
-    installed = base;
+  /** The statusLine command, with the installed copy posting to `base` with `k`. */
+  const cmd = (base, k = key) => {
+    // Rewritten only when the server or key changes: never under a run starting.
+    if (installed !== `${base}\n${k}`) fs.writeFileSync(scriptPath(), SCRIPT.replace("<server>", base).replace("<device key>", k));
+    installed = `${base}\n${k}`;
     assert.ok(statusLine.startsWith(PREFIX));
     return statusLine.replace(PREFIX, `"${PYTHON}" "${scriptPath()}"`);
   };
   const viaProxy = () => cmd(`http://127.0.0.1:${proxy.address().port}`);
-  const offsets = () => JSON.parse(fs.readFileSync(path.join(home, ".cache", "ai-activity", "offsets.json"), "utf8"));
+  const offsetsFile = () => path.join(home, ".cache", "ai-activity", "offsets.json");
+  /** The whole offsets file, and the offsets of one server and key in it. */
+  const saved = () => fs.readFileSync(offsetsFile(), "utf8");
+  const offsets = (base = srv.base, k = key) => targetOffsets(offsetsFile(), base, k);
 
   before(async () => {
     srv = await startServer();
@@ -168,7 +171,7 @@ describe("Claude Code collector (statusLine from README.md)", () => {
     // Offsets stop before the half-written line. They are saved after the
     // server answered, so the events can show up first.
     await collectorsDone(marker);
-    assert.equal(offsets()[transcript], fs.readFileSync(transcript).lastIndexOf(10) + 1);
+    assert.equal(offsets(`http://127.0.0.1:${proxy.address().port}`)[transcript], fs.readFileSync(transcript).lastIndexOf(10) + 1);
   });
 
   test("later refreshes send only what was added, however long", async () => {
@@ -187,13 +190,13 @@ describe("Claude Code collector (statusLine from README.md)", () => {
 
   test("nothing is lost while the server is down", async () => {
     const before = await stats();
-    const saved = offsets();
+    const file = saved();
     fs.appendFileSync(transcript, entry("msg_offline", 7) + "\n");
     await run(cmd("http://127.0.0.1:9"), { env });
     // The failed run saves nothing: wait until it is gone, then the
     // unchanged offsets mean something.
     await collectorsDone(marker);
-    assert.deepEqual(offsets(), saved);
+    assert.equal(saved(), file);
     // Two refreshes at once: the second waits for the lock, nothing is sent twice.
     await Promise.all([run(cmd(srv.base), { env }), run(cmd(srv.base), { env })]);
     assert.ok(await waitFor(async () => (await stats()).events === before.events + 1));
@@ -219,7 +222,7 @@ describe("Claude Code collector (statusLine from README.md)", () => {
 
   test("a redirect cannot forward the device bearer key", async () => {
     const before = await stats();
-    const saved = offsets();
+    const file = saved();
     fs.appendFileSync(transcript, entry("msg_redirect", 9) + "\n");
     let received = 0;
     const destination = http.createServer((request, response) => {
@@ -238,7 +241,7 @@ describe("Claude Code collector (statusLine from README.md)", () => {
         await run(cmd(`http://127.0.0.1:${source.address().port}`), { env });
         await collectorsDone(marker);
         assert.equal(received, 0, `${redirectStatus} must not forward the key`);
-        assert.deepEqual(offsets(), saved, `${redirectStatus} must not advance offsets`);
+        assert.equal(saved(), file, `${redirectStatus} must not advance offsets`);
       }
     } finally {
       await new Promise((resolve) => source.close(resolve));
@@ -249,5 +252,33 @@ describe("Claude Code collector (statusLine from README.md)", () => {
     await collectorsDone(marker);
     assert.equal(offsets()[transcript], fs.statSync(transcript).size);
     assert.equal((await stats()).total_tokens - before.total_tokens, PER_MESSAGE + 9);
+  });
+
+  test("offsets are kept per server and key: a new one gets the whole history, an earlier one resumes", async () => {
+    const local = new Set(fs.readdirSync(project, { recursive: true }).filter((f) => f.endsWith(".jsonl"))
+      .flatMap((f) => [...fs.readFileSync(path.join(project, f), "utf8").matchAll(/"id":"(msg_\w+)"/g)].map((m) => m[1])));
+    const rec = await recordingServer();
+    const refresh = async (base, k) => {
+      await run(cmd(base, k), { env });
+      await collectorsDone(marker);
+      return new Set(rec.take().map((m) => m.message_id));
+    };
+    try {
+      assert.deepEqual(await refresh(rec.base), local, "a new server gets the whole history");
+      assert.equal((await refresh(rec.base)).size, 0, "an unchanged target sends nothing again");
+      assert.deepEqual(await refresh(rec.base, "ak_other"), local, "a new key gets the whole history");
+      assert.equal((await refresh(rec.base)).size, 0, "switching back resumes where it was");
+      assert.equal((await refresh(rec.base.replace("http", "HTTP") + "/")).size, 0, "the same URL, written differently");
+      assert.ok(!saved().includes(key) && !saved().includes("ak_other"), "never the key");
+      // Offsets from before targets belong to an unknown server: all is sent again.
+      fs.writeFileSync(offsetsFile(), JSON.stringify(Object.fromEntries(
+        fs.readdirSync(project, { recursive: true }).filter((f) => f.endsWith(".jsonl"))
+          .map((f) => [path.join(project, f), fs.statSync(path.join(project, f)).size]))));
+      assert.deepEqual(await refresh(rec.base), local, "the old shape is dropped");
+      assert.deepEqual(Object.keys(JSON.parse(saved())), ["targets"]);
+    } finally {
+      cmd(srv.base);
+      await rec.close();
+    }
   });
 });

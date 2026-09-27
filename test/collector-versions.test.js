@@ -5,14 +5,14 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { COLLECTOR_VERSIONS, MIN_COLLECTOR_VERSIONS } from "../shared/collectors.ts";
 import { TOOLS } from "../shared/types.ts";
 import { checkCollector } from "../server/lib/ingest.ts";
-import { PYTHON, tempHome } from "./helpers.js";
+import { PYTHON, tempHome, collectorTarget } from "./helpers.js";
 
 const dir = new URL("../collectors/", import.meta.url);
 const read = (file) => fs.readFileSync(new URL(file, dir), "utf8").replaceAll("\r\n", "\n");
@@ -29,10 +29,10 @@ const FILES = {
  * shared/collectors.ts, then record the new version and hash here.
  */
 const RECORDED = {
-  "claude-code": { version: 1, sha256: "8dc605a02e223ce4c5a0a09a8f08c4a5c517ab8868f375ce22d954d48d058071" },
-  codex: { version: 1, sha256: "8070f18df1d917281bd7cdaae60a731de84ec6649164a89ab5d1b04e4d366507" },
-  antigravity: { version: 1, sha256: "39834b447be8b4f29c32c65424e7af0212d5eac2cfd6b31ae1f848a82d571d09" },
-  opencode: { version: 1, sha256: "20d01f4309613c798461a07baa5b944854dedb0c3cf11d8ed5bd3163068e394f" },
+  "claude-code": { version: 2, sha256: "9de10fbba04acd8f9c2ff4f4a32dc9b23c735f2d9ac75def91f76cde95b25ccc" },
+  codex: { version: 2, sha256: "a48e3cf19fdff5ae3cd0b9d29f029bf760b49ddf7ff74a444948f67335320c6a" },
+  antigravity: { version: 2, sha256: "f04fda24e6effa071a1eb609a97bd1f224d7bf6892fc02e47e099c2379e64c83" },
+  opencode: { version: 2, sha256: "e9a6b9c8b2b3ca16364657a72058d2b18268d0738efef4f2af1e8f61fd2ca47d" },
 };
 const digest = (tool) => createHash("sha256").update(FILES[tool].map(read).join("\0")).digest("hex");
 const scriptOf = (tool) => FILES[tool].find((f) => f.endsWith(".py"));
@@ -147,6 +147,73 @@ describe("collectors send their version and surface update hints", () => {
       } finally {
         fs.rmSync(home, { recursive: true, force: true });
       }
+    });
+  }
+});
+
+// Offsets are kept per server and key (issue #127): every collector must
+// fingerprint a target the same way, and the tests compute it like them.
+describe("collectors fingerprint their target the same way", () => {
+  const CASES = [
+    ["https://ai.example.com", "ak_one"],
+    ["HTTPS://AI.Example.com/", "ak_one"],
+    ["https://ai.example.com//", "ak_one"],
+    ["https://ai.example.com:443/", "ak_one"],
+    ["https://ai.example.com/sub/path/", "ak_one"],
+    ["http://127.0.0.1:3000", "ak_two"],
+    ["https://ai.example.com", "ak_two"],
+    ["http://127.0.0.1:80", "ak_two"],
+    ["http://[::1]:3000/", "ak_two"],
+    ["ai.example.com", "ak_two"],
+  ];
+  const PRINT = `
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("collector", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+out = []
+for server, key in json.loads(sys.argv[2]):
+    m.SERVER, m.KEY = server, key
+    out.append(m.target())
+print(json.dumps(out))
+`;
+  const expected = CASES.map(([url, key]) => collectorTarget(url, key));
+
+  test("the same server written differently is one target; another key or server is another", () => {
+    assert.equal(new Set(expected.slice(0, 4)).size, 1);
+    assert.equal(new Set(expected).size, 7);
+    assert.ok(expected.every((fp) => /^[0-9a-f]{16}$/.test(fp)));
+  });
+
+  // The 8 most recently used targets are kept: the one in use goes last.
+  const KEEP = `
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("collector", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+m.SERVER, m.KEY = "https://ai.example.com", "ak_one"
+saved = {"targets": {"old%d" % i: {"n": i} for i in range(9)}}
+saved["targets"][m.target()] = {"mine": 1}
+saved["targets"]["old9"] = {"n": 9}
+kept = m.for_target(saved)
+print(json.dumps([list(kept[0]["targets"]), kept[1]]))
+`;
+
+  for (const tool of TOOLS) {
+    test(`${tool}: keeps the 8 most recent targets`, () => {
+      const [kept, mine] = JSON.parse(execFileSync(PYTHON, ["-c", KEEP, fileURLToPath(new URL(scriptOf(tool), dir))],
+        { encoding: "utf8", windowsHide: true }));
+      const fp = collectorTarget("https://ai.example.com", "ak_one");
+      assert.deepEqual(kept, ["old3", "old4", "old5", "old6", "old7", "old8", "old9", fp]);
+      assert.deepEqual(mine, { mine: 1 });
+    });
+  }
+
+  for (const tool of TOOLS) {
+    test(tool, () => {
+      const out = execFileSync(PYTHON, ["-c", PRINT, fileURLToPath(new URL(scriptOf(tool), dir)), JSON.stringify(CASES)],
+        { encoding: "utf8", windowsHide: true });
+      assert.deepEqual(JSON.parse(out), expected);
     });
   }
 });
