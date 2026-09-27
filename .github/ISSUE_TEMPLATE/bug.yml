@@ -2,6 +2,22 @@ name: Bug report
 description: Something shows the wrong value, breaks or fails.
 labels: [bug]
 body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which parts of the project this touches (a maintainer adds the matching labels).
+      multiple: true
+      options:
+        - ui
+        - server
+        - collectors
+        - infra
+        - security
+        - documentation
+        - accessibility
+    validations:
+      required: true
   - type: textarea
     id: problem
     attributes:

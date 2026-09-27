@@ -253,7 +253,9 @@ extension.
   least one area (`ui`, `server`, `collectors`, `infra`, `security`,
   `documentation`, `accessibility`), and `needs decision` while a choice
   is open. The forms in `.github/ISSUE_TEMPLATE/` (blank issues are off)
-  add the type; add the areas by hand. From the CLI:
+  add the type, and ask for the areas: people who cannot label (not
+  collaborators) pick them there, a maintainer then adds them as labels.
+  From the CLI:
   `gh issue create --label enhancement --label ui`.
 - Every pull request closes an issue: open the issue first, then put
   `Closes #<issue>` in the description (`.github/pull_request_template.md`).
