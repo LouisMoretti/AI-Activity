@@ -255,7 +255,7 @@ export function isLocked(file) {
       .some((l) => /^\d+:\s+FLOCK\s+\S+\s+WRITE\s/.test(l) && l.split(/\s+/)[5]?.split(":")[2] === ino);
   }
   if (process.platform === "win32") {
-    return spawnSync(process.env.PYTHON || "python", ["-c",
+    return spawnSync(PYTHON, ["-c",
       "import msvcrt, sys\nf = open(sys.argv[1], 'r+b')\ntry: msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)\nexcept OSError: sys.exit(1)\nmsvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)",
       file]).status === 1;
   }
@@ -264,8 +264,22 @@ export function isLocked(file) {
     file]).status === 1;
 }
 
-/** Whether a process has that text on its command line (e.g. a temp HOME in the script path). */
-export const running = (text) => execFileSync("ps", ["-Aww", "-o", "args="], { encoding: "utf8" }).includes(text);
+/** Whether a process has that text on its command line (e.g. a temp HOME in the script path; any case on Windows). */
+export const running = (text) => process.platform === "win32"
+  ? execFileSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", "(Get-CimInstance Win32_Process).CommandLine"],
+    { encoding: "utf8", windowsHide: true }).toLowerCase().includes(text.toLowerCase())
+  : execFileSync("ps", ["-Aww", "-o", "args="], { encoding: "utf8" }).includes(text);
+
+/** The Python interpreter the collector tests run: PYTHON, else python3 (python on Windows). */
+export const PYTHON = process.env.PYTHON || (process.platform === "win32" ? "python" : "python3");
+
+/**
+ * A temp directory for a test's HOME. On Windows, its long path: TEMP can
+ * be a short 8.3 name (RUNNER~1), which Python may expand in the paths it
+ * reports or runs.
+ */
+export const tempHome = (prefix) =>
+  fs.mkdtempSync(path.join(process.platform === "win32" ? fs.realpathSync.native(os.tmpdir()) : os.tmpdir(), prefix));
 
 /**
  * Resolves once no process has that text on its command line, seen twice

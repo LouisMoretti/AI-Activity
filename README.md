@@ -20,6 +20,27 @@ It needs `python3` and `setsid` (util-linux), both standard on Linux, and
 runs as your user: no root, no script to install, nothing printed in the
 status line.
 
+On Windows (no `setsid` there), or wherever you prefer a script to the
+one-liner: copy `collectors/claude-code.py` to
+`~/.claude/ai-activity-claude-code.py`, replace `<server>` and
+`<device key>` at its top (or set `AI_ACTIVITY_URL` / `AI_ACTIVITY_KEY` in
+the environment Claude Code runs in), and use this instead, replacing
+`<user>` with your Windows user directory name (on Linux/macOS:
+`python3 ~/.claude/ai-activity-claude-code.py`):
+
+```json
+"statusLine": {
+  "type": "command",
+  "command": "python \"C:\\Users\\<user>\\.claude\\ai-activity-claude-code.py\""
+}
+```
+
+It does the same as the one-liner (same offsets file and lock) and starts
+the upload detached from Claude Code: on Windows it leaves the console, its
+process group and, when Windows permits it, the parent job. Use the
+absolute path of `python.exe` if it is not on Claude Code's PATH (`python -c
+"import sys; print(sys.executable)"`, JSON-escaped like the script path).
+
 What it does on every status line refresh:
 
 - Reads what was added to every transcript under `~/.claude/projects`
@@ -79,6 +100,29 @@ a bare `/api/ingest` answers `404`. See `AGENTS.md` §5 for the payload contract
     ],
     "PostToolUse": [
       { "hooks": [{ "type": "command", "command": "setsid -f python3 ~/.codex/ai-activity-codex.py >/dev/null 2>&1 </dev/null; echo '{}'", "timeout": 10 }] }
+    ]
+  }
+}
+```
+
+On Windows, use this instead, replacing `<user>` with your Windows user
+directory name (`--hook` answers Codex and starts the upload detached, in
+any shell; use the absolute path of `python.exe` if it is not on Codex's
+PATH):
+
+`%USERPROFILE%\.codex\hooks.json`:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "python \"C:\\Users\\<user>\\.codex\\ai-activity-codex.py\" --hook", "timeout": 10 }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "python \"C:\\Users\\<user>\\.codex\\ai-activity-codex.py\" --hook", "timeout": 10 }] }
+    ],
+    "PostToolUse": [
+      { "hooks": [{ "type": "command", "command": "python \"C:\\Users\\<user>\\.codex\\ai-activity-codex.py\" --hook", "timeout": 10 }] }
     ]
   }
 }
@@ -341,6 +385,10 @@ use synthetic SQLite/protobuf fixtures.
    `AI_ACTIVITY_URL` / `AI_ACTIVITY_KEY` in the environment OpenCode runs in).
 3. Copy `collectors/opencode-plugin.js` to
    `~/.config/opencode/plugins/ai-activity.js`. OpenCode loads it at start.
+
+On Windows, `~` is your user directory (`C:\Users\<user>`), for OpenCode's
+folders too, and the plugin runs `python` instead of `python3`: it must be
+on OpenCode's PATH.
 
 What it does:
 

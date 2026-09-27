@@ -101,7 +101,9 @@ CI (`.github/workflows/ci.yml`) runs typecheck, the web build and tests
 (tests serve `web/dist`, so the build comes first) on
 every PR and push to main, on x64 and ARM64 runners (`better-sqlite3` is
 native). It also builds the Docker image on both and smoke-tests it
-(healthy, setup code, first account, device key, backup, clean stop).
+(healthy, setup code, first account, device key, backup, clean stop), and
+runs every collector test on Windows (`collectors (windows)`, through the
+README's Windows commands).
 
 ### Deploy (Docker + Caddy)
 
@@ -236,7 +238,8 @@ restores; `test/client.test.js` covers client addresses behind proxies;
 client; `test/dashboard.test.js` runs the client's state class
 (`dashboard.svelte.ts`, compiled with `svelte/compiler`) against a fake
 browser and fetch; `test/live.test.js` covers the API → view-model mapping;
-`test/collector.test.js` runs the README collector and
+`test/collector.test.js` runs the README collector (the one-liner, and
+`collectors/claude-code.py` through its statusLine command) and
 `test/codex-collector.test.js` runs `collectors/codex.py` through the
 README's Codex Stop hook; `test/opencode-collector.test.js` runs
 `collectors/opencode.py` through its plugin on a fake OpenCode database;
@@ -290,7 +293,8 @@ git worktree prune
 ## 3. Architecture
 
 ```
-Claude Code statusLine one-liner    Codex Stop hook → collectors/codex.py
+Claude Code statusLine one-liner (or collectors/claude-code.py)
+Codex Stop hook → collectors/codex.py
 OpenCode plugin → collectors/opencode.py
 Antigravity hooks → collectors/antigravity.py
 (python3, detached, on the user's device; README.md)
@@ -363,6 +367,16 @@ Components never branch on live vs demo: both sources map into the same
   `~/.cache/ai-activity/offsets.json`; the first run imports all history)
   and posts one entry per Anthropic message id, detached with `setsid -f`
   so Claude Code cancelling the status line does not kill it.
+  `collectors/claude-code.py` is the same collector as a script (same
+  offsets and lock), for Windows, where there is no `setsid` or `fcntl`: it
+  runs itself again detached (`--worker`) and hands it the status line's
+  JSON.
+- The collectors run on Windows too: locks are `msvcrt.locking` on the
+  lock file's first byte there (`fcntl.flock` elsewhere), the 15-minute
+  limit a timer instead of `SIGALRM`, and detached runs leave the console,
+  the process group and, when allowed, the parent job. Hook commands on
+  Windows are `python "<script>" --hook` (Codex, Antigravity) or the
+  script alone (Claude Code): they work in any shell.
 - The Codex collector (`collectors/codex.py`, copied to
   `~/.codex/ai-activity-codex.py`, run detached by `PostToolUse`, `Stop`
   and `UserPromptSubmit` hooks in `~/.codex/hooks.json`) works the same way on
@@ -376,7 +390,8 @@ Components never branch on live vs demo: both sources map into the same
   active one (`codex-waiter.lock`) and any other exits at once. Every Codex front end writes those
   files (CLI, `codex exec`, IDE extension, desktop app), so desktop tasks
   are counted without subscribing to its App Server: a separate App Server
-  only streams the threads it runs itself. Codex runs a new user hook only
+  only streams the threads it runs itself. On Windows the hooks run
+  `codex.py --hook`, which answers `{}` and starts itself detached. Codex runs a new user hook only
   after it was trusted once (`/hooks`); until then the script can run by
   hand or from cron (idempotent).
 - The OpenCode collector (`collectors/opencode.py`, copied to
@@ -386,8 +401,9 @@ Components never branch on live vs demo: both sources map into the same
   assistant messages changed since the last accepted `time_updated`
   (`~/.cache/ai-activity/opencode.json`), so the database is the queue.
   The plugin (`collectors/opencode-plugin.js` →
-  `~/.config/opencode/plugins/ai-activity.js`) runs it detached at
-  OpenCode start and on every `session.idle`, one run at a time.
+  `~/.config/opencode/plugins/ai-activity.js`) runs it detached (with
+  `python` on Windows, `python3` elsewhere) at OpenCode start and on every
+  `session.idle`, one run at a time.
 - Never transmit prompts, transcripts, or provider keys — metrics only.
 
 ## 4. Data model (SQLite, `data/dashboard.db`)

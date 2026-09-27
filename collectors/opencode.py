@@ -18,15 +18,22 @@ while the server is down: the next run sends the backlog with its original
 times. Delete that file to send everything again (the server stores each
 message once).
 """
-import fcntl
+import _thread
+import errno
 import json
 import os
 import signal
 import sqlite3
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 SERVER = os.environ.get("AI_ACTIVITY_URL", "<server>")
 KEY = os.environ.get("AI_ACTIVITY_KEY", "<device key>")
@@ -118,14 +125,43 @@ def timeout(signum, frame):
     raise TimeoutError("time limit reached; resumes next run")
 
 
+def time_limit(seconds):
+    """TimeoutError in the main thread after that long."""
+    if hasattr(signal, "SIGALRM"):
+        signal.signal(signal.SIGALRM, timeout)
+        signal.alarm(seconds)
+    else:  # Windows: no SIGALRM, a timer raises it through the SIGINT handler
+        signal.signal(signal.SIGINT, timeout)
+        timer = threading.Timer(seconds, _thread.interrupt_main)
+        timer.daemon = True
+        timer.start()
+
+
+def lock(path):
+    """The file, once holding an exclusive lock on it (released when the run
+    exits). flock, or on Windows msvcrt on its first byte (never truncated:
+    another run may hold it)."""
+    f = os.fdopen(os.open(path, os.O_RDWR | os.O_CREAT, 0o600), "r+b")
+    if os.name != "nt":
+        fcntl.flock(f, fcntl.LOCK_EX)
+        return f
+    while True:
+        try:
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            return f
+        except OSError as error:
+            if error.errno not in (errno.EACCES, errno.EDEADLK):
+                raise
+            time.sleep(0.1)
+
+
 def main():
-    signal.signal(signal.SIGALRM, timeout)
-    signal.alarm(900)
+    time_limit(900)
     if not os.path.exists(DB):
         return
     os.makedirs(CACHE, exist_ok=True)
-    lock = open(os.path.join(CACHE, "opencode.lock"), "w")
-    fcntl.flock(lock, fcntl.LOCK_EX)  # runs wait for each other
+    held = lock(os.path.join(CACHE, "opencode.lock"))  # runs wait for each other
     path = os.path.join(CACHE, "opencode.json")
     try:
         state = json.load(open(path))

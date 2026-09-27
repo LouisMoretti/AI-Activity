@@ -38,9 +38,9 @@ jobs:
       - run: npm test
 
   windows:
-    # Collector code that only runs on Windows (msvcrt locks, detached
-    # workers, agy.cmd, the documented hook commands). The other collectors
-    # are POSIX-only (sh, setsid) and stay on the Linux jobs.
+    # Every collector through its documented Windows command: msvcrt locks,
+    # detached workers, agy.cmd, python instead of python3. The server and
+    # its other tests stay on the Linux jobs.
     name: collectors (windows)
     runs-on: windows-latest
     timeout-minutes: 15
@@ -55,7 +55,7 @@ jobs:
           python-version: "3.x"
       - run: npm ci
       - run: npm run build
-      - run: node --test test/antigravity-collector.test.js
+      - run: node --test test/collector.test.js test/codex-collector.test.js test/opencode-collector.test.js test/antigravity-collector.test.js
         env:
           PYTHON: python
 

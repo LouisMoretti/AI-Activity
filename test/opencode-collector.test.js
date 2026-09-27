@@ -2,12 +2,12 @@
 // (collectors/opencode-plugin.js), installed as README.md says, against a
 // real server, with a fake OpenCode database in a temporary HOME.
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { test, describe, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { startServer, req, newDevice, asNewClient, processesGone } from "./helpers.js";
+import { startServer, req, newDevice, asNewClient, processesGone, tempHome } from "./helpers.js";
 
 const SCRIPT = fs.readFileSync(new URL("../collectors/opencode.py", import.meta.url), "utf8");
 const PLUGIN = fs.readFileSync(new URL("../collectors/opencode-plugin.js", import.meta.url), "utf8");
@@ -66,9 +66,13 @@ describe("OpenCode collector (plugin from README.md)", () => {
   before(async () => {
     srv = await startServer();
     key = (await newDevice(srv.base, "opencode-collector")).key;
-    home = fs.mkdtempSync(path.join(os.tmpdir(), "ai-activity-opencode-"));
-    // The plugin runs inside OpenCode and spawns the collector with its environment.
-    Object.assign(process.env, { HOME: home, XDG_DATA_HOME: "", OPENCODE_DB: "", TZ: "IST-5:30" }); // POSIX TZ: UTC+5:30
+    home = tempHome("ai-activity-opencode-");
+    // The plugin runs inside OpenCode and spawns the collector with its
+    // environment. POSIX TZ (Windows reads it too): UTC+5:30. The installed
+    // copy says where to send.
+    Object.assign(process.env, { HOME: home, USERPROFILE: home, XDG_DATA_HOME: "", OPENCODE_DB: "", TZ: "IST-5:30" });
+    delete process.env.AI_ACTIVITY_URL;
+    delete process.env.AI_ACTIVITY_KEY;
     fs.mkdirSync(path.join(configDir(), "plugins"), { recursive: true });
     fs.mkdirSync(path.join(home, ".local", "share", "opencode"), { recursive: true });
     db = new Database(path.join(home, ".local", "share", "opencode", "opencode.db"));
@@ -108,7 +112,7 @@ describe("OpenCode collector (plugin from README.md)", () => {
     install(srv.base);
     const plugin = path.join(configDir(), "plugins", "ai-activity.js");
     fs.writeFileSync(plugin, PLUGIN);
-    hooks = await (await import(plugin)).AIActivity({});
+    hooks = await (await import(pathToFileURL(plugin).href)).AIActivity({});
     assert.ok(await waitFor(async () => (await summary()).events === 4), "4 messages stored");
     const t = await summary();
     assert.equal(t.tokens, 27929 + 1070 + 15 + 10);
