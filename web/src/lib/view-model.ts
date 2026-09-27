@@ -36,10 +36,11 @@ export interface QuotaToolVM {
   windows: QuotaWindowVM[];
 }
 
-/** OpenCode has no quota of its own: its card shows what is going on now. */
-export interface OpenCodeVM {
-  recent: SessionVM[]; // the latest OpenCode conversations, newest first; empty → no usage yet
-  today: { tokens: number; sessions: number; calls: number; models: number; providers: number };
+/** A tool without quota windows (OpenCode): its card shows what is going on now. */
+export interface ActivityToolVM {
+  recent: SessionVM[]; // the tool's latest conversations, newest first; empty → no usage yet
+  // providers: null for tools whose models are not stored as provider/model.
+  today: { tokens: number; sessions: number; calls: number; models: number; providers: number | null };
 }
 
 export interface SessionVM {
@@ -62,7 +63,7 @@ export interface DashboardVM {
   tools: ToolKey[]; // cards to show for the current filter
   claude: QuotaToolVM;
   codex: QuotaToolVM;
-  opencode: OpenCodeVM;
+  opencode: ActivityToolVM;
   sessions: SessionVM[];
   sessionsTotal: number;
 }
