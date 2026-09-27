@@ -7,7 +7,7 @@ import type {
 import { denseSeries, streaks } from "./series.ts";
 import {
   toolsFor, WINDOW_SPANS, type DashboardVM, type FigureVM, type Provider,
-  type ActivityToolVM, type QuotaToolVM, type SessionVM, type ToolKey,
+  type OpenCodeVM, type QuotaToolVM, type SessionVM, type ToolKey,
 } from "./view-model.ts";
 
 export interface LiveData {
@@ -59,14 +59,14 @@ const toSession = (s: Session): SessionVM => ({
   context: s.context_used_pct === null ? null : { pct: s.context_used_pct, size: s.context_window_size },
 });
 
-/** providers: the tool stores its models as provider/model (OpenCode). */
-function activityTool(d: LiveData["opencode"], providers: boolean): ActivityToolVM {
+function openCode(d: LiveData["opencode"]): OpenCodeVM {
   const t = d.summary.today;
   return {
     recent: d.latest.sessions.map(toSession),
     today: {
       tokens: t.tokens, sessions: t.sessions, calls: t.events, models: t.by_model.length,
-      providers: providers ? new Set(t.by_model.map((m) => m.name.split("/")[0])).size : null,
+      // Models are stored as provider/model.
+      providers: new Set(t.by_model.map((m) => m.name.split("/")[0])).size,
     },
   };
 }
@@ -89,7 +89,7 @@ export function liveDashboard(d: LiveData, provider: Provider): DashboardVM {
     tools: toolsFor(provider),
     claude: toolQuotas(d.quotas, "claude-code"),
     codex: toolQuotas(d.quotas, "codex"),
-    opencode: activityTool(d.opencode, true),
+    opencode: openCode(d.opencode),
     antigravity: toolQuotas(d.quotas, "antigravity"),
     sessions,
     sessionsTotal: d.sessions.total,
