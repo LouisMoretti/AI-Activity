@@ -247,6 +247,21 @@ Types: `npm run typecheck` (tsc for server, svelte-check for web). Node >= 22.18
 `enum`, no parameter properties) and relative imports keep their `.ts`
 extension.
 
+### Issues and pull requests
+
+- Every issue is labeled: a type (`bug`, `enhancement`, `question`), at
+  least one area (`ui`, `server`, `collectors`, `infra`, `security`,
+  `documentation`, `accessibility`), and `needs decision` while a choice
+  is open. The forms in `.github/ISSUE_TEMPLATE/` (blank issues are off)
+  add the type, and ask for the areas: people who cannot label (not
+  maintainers) pick them there, a maintainer then adds them as labels.
+  From the CLI:
+  `gh issue create --label enhancement --label ui`.
+- Every pull request closes an issue: open the issue first, then put
+  `Closes #<issue>` in the description (`.github/pull_request_template.md`).
+  Give the PR the issue's labels and assign it to its author:
+  `gh pr create --assignee @me --label enhancement --label ui`.
+
 ## 3. Architecture
 
 ```
