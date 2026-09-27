@@ -30,6 +30,7 @@ function figure(b: Breakdown, metric: "tokens" | "sessions"): FigureVM {
     value: has ? b[metric] : null,
     byTool: b.by_tool.map((r) => ({ name: r.name, value: r[metric] })),
     byModel: b.by_model.map((r) => ({ name: r.name, value: r[metric] })),
+    byModelOthers: metric === "sessions" ? (b.by_model_others_sessions ?? null) : null,
   };
 }
 

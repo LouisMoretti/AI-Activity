@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { liveDashboard } from "../web/src/lib/live.ts";
 import { hasLiveWindow } from "../web/src/lib/view-model.ts";
 
-const breakdown = { tokens: 0, sessions: 0, events: 0, by_model: [], by_tool: [] };
+const breakdown = { tokens: 0, sessions: 0, events: 0, by_model: [], by_model_others_sessions: 0, by_tool: [] };
 const data = (quotas) => ({
   summary: { day: "2026-09-25", total: breakdown, today: breakdown },
   activity: { days: [] },
@@ -43,6 +43,22 @@ test("the OpenCode card gets its latest conversations and today; none yet is emp
   const vm = liveDashboard(d, "all").opencode;
   assert.deepEqual(vm.today, { tokens: 5500, sessions: 4, calls: 9, models: 3, providers: 2 });
   assert.deepEqual(vm.recent[0], { tool: "opencode", id: "ses_1", model: "opencode/muse", calls: 42, tokens: 1200, lastActive: 1790000000, context: null });
+});
+
+test("the sessions figure keeps the server's exact folded-model session count", () => {
+  const d = data([]);
+  d.summary = {
+    day: "2026-09-25",
+    total: {
+      ...breakdown,
+      sessions: 24,
+      events: 1,
+      by_model_others_sessions: 3,
+      by_model: Array.from({ length: 9 }, (_, i) => ({ name: `model-${i}`, tokens: 9 - i, sessions: 3, events: 1 })),
+    },
+    today: breakdown,
+  };
+  assert.equal(liveDashboard(d, "all").stats.sessions.byModelOthers, 3);
 });
 
 

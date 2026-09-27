@@ -16,6 +16,8 @@ export interface FigureVM {
   value: number | null; // null → "—" (no data), never guessed
   byTool: ShareRow[];
   byModel: ShareRow[];
+  /** Exact union for model rows folded into "others"; sessions only. */
+  byModelOthers: number | null;
 }
 
 export interface StatsVM {

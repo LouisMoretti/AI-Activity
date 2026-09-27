@@ -3,6 +3,7 @@ import type {
   Account, ActivityDay, AdminOverview, AdminUser, Profile, Breakdown, BreakdownRow, Device, LeaderboardEntry,
   LeaderboardResponse, Quota, Session,
 } from "../../shared/types.ts";
+import { BREAKDOWN_DISPLAY_ROWS } from "../../shared/types.ts";
 import { nowSec, type DB } from "./schema.ts";
 
 export interface DeviceRow extends Omit<Device, "has_key"> {
@@ -578,11 +579,24 @@ export function breakdown(
     if (!byTool.has(g.tool)) byTool.set(g.tool, tally());
     add(byTool.get(g.tool)!, g.tokens, g.events, g.session_id);
   }
+  const byModelRows = ranked(byModel);
+  // ShareList orders the Sessions rows by their session count. Its folded
+  // models can overlap, so sum their session sets as a union, not their row
+  // counts. The grouped query already returned model + session from the
+  // covering read index; this needs no second database pass.
+  const foldedModels = byModelRows.length > BREAKDOWN_DISPLAY_ROWS
+    ? [...byModelRows].sort((a, b) => b.sessions - a.sessions || (a.name < b.name ? -1 : 1)).slice(BREAKDOWN_DISPLAY_ROWS - 1)
+    : [];
+  const foldedSessions = new Set<string>();
+  for (const row of foldedModels) {
+    for (const session of byModel.get(row.name)?.sessions ?? []) foldedSessions.add(session);
+  }
   return {
     tokens: total.tokens,
     sessions: total.sessions.size,
     events: total.events,
-    by_model: ranked(byModel),
+    by_model: byModelRows,
+    by_model_others_sessions: foldedSessions.size,
     by_tool: ranked(byTool),
   };
 }
