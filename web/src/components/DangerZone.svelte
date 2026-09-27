@@ -3,16 +3,16 @@
   import { fmtNum } from "../lib/format.ts";
   import DangerAction from "./DangerAction.svelte";
 
-  let { username, ondeletedactivity, ondeletedaccount }: {
+  let { username, ondeletedactivity, onsignout }: {
     username: string;
     /** Reload: totals, calendar, quotas and conversations are now empty. */
     ondeletedactivity: () => void;
     /** Sign out: the account and its sessions are gone. */
-    ondeletedaccount: () => void;
+    onsignout: () => void;
   } = $props();
 
   const activity = new DeleteActivity(() => ondeletedactivity());
-  const account = new DeleteAccount(() => ondeletedaccount());
+  const account = new DeleteAccount(() => onsignout());
 </script>
 
 <div class="grid">

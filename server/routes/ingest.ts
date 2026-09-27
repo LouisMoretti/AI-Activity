@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { IngestBatchResult, IngestResult } from "../../shared/types.ts";
 import {
-  activityClearedAt, dropSnapshotRows, isDeletedEvent, findDeviceByKey, insertQuotaSnapshot, setSessionContext, upsertUsageEvent, type UpsertResult,
+  activityClearedAt, deletedEventCheck, dropSnapshotRows, findDeviceByKey, insertQuotaSnapshot, setSessionContext, upsertUsageEvent, type UpsertResult,
 } from "../db/queries.ts";
 import { nowSec, type DB } from "../db/schema.ts";
 import { readJson } from "../lib/http.ts";
@@ -55,6 +55,7 @@ export function ingestRoutes(db: DB) {
     // awaits in between (better-sqlite3 is synchronous).
     const clearedAt = activityClearedAt(db, device.user_id);
     const deleted = (at: number) => clearedAt !== null && at <= clearedAt;
+    const deletedId = clearedAt === null ? () => false : deletedEventCheck(db, device.user_id);
     let single: UpsertResult | null = null;
 
     const overBudget = new Error("over the row budget");
@@ -63,7 +64,7 @@ export function ingestRoutes(db: DB) {
       db.transaction(() => {
         const sessions = new Map<string, number>(); // session → oldest message time
         for (const m of batch.messages) {
-          if (deleted(m.occurred_at) || (clearedAt !== null && isDeletedEvent(db, device.user_id, m.event_id))) {
+          if (deleted(m.occurred_at) || deletedId(m.event_id)) {
             counts.deduped += 1;
             single = "deduped";
             continue;

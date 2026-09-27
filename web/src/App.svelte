@@ -84,7 +84,7 @@
 
       <Section title="Danger zone" subtitle="Cannot be undone">
         {#key dash.account.id}
-          <DangerZone username={dash.account.username} ondeletedactivity={() => dash.load()} ondeletedaccount={() => dash.logout()} />
+          <DangerZone username={dash.account.username} ondeletedactivity={() => dash.load()} onsignout={() => dash.logout()} />
         {/key}
       </Section>
 

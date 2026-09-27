@@ -236,9 +236,10 @@ export function activityClearedAt(db: DB, userId: number): number | null {
   return row?.at ?? null;
 }
 
-/** Whether the user deleted this message before (deleteUserActivity). */
-export function isDeletedEvent(db: DB, userId: number, eventId: string): boolean {
-  return db.prepare("SELECT 1 FROM deleted_events WHERE user_id = ? AND event_id = ?").get(userId, eventId) !== undefined;
+/** Whether the user deleted a message before (deleteUserActivity); prepared once per batch. */
+export function deletedEventCheck(db: DB, userId: number): (eventId: string) => boolean {
+  const stmt = db.prepare("SELECT 1 FROM deleted_events WHERE user_id = ? AND event_id = ?");
+  return (eventId) => stmt.get(userId, eventId) !== undefined;
 }
 
 export type DeleteAccountResult = { ok: true; deleted: DeletedAccount } | { ok: false; reason: "last_admin" };

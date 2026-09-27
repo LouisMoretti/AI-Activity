@@ -651,9 +651,11 @@ Notes:
   dated up to then (`occurred_at <= users.activity_cleared_at`) stores
   nothing and counts as `deduped` (the collector moves on); quotas and the
   context gauge measured up to then are dropped. Resending local history
-  never brings deleted data back. The cutoff only moves forward: a device
+  never brings deleted messages back. The cutoff only moves forward: a device
   whose clock runs behind loses what it measured in the gap, even once
-  its clock is right again.
+  its clock is right again. Quotas and context have no id: a device whose
+  clock runs ahead (its times are capped at now) can replay one measured
+  before the deletion; it is replaced within its window.
 - `utc_offset_min` (minutes east of UTC, −720..840, quarter hours; else
   dropped → UTC) dates the event's local day (§4). A replay that carries
   one fills it on a row stored without (resending the history fixes old
@@ -853,10 +855,16 @@ account exists):
   `409` (checked inside the transaction): make another account admin
   first. The client then signs out.
   Both erase for real: `secure_delete` zeroes the freed pages and the WAL
-  is truncated after (`erasing` in `queries.ts`); backups made before
+  is truncated after (`erasing` in `queries.ts`; best effort: a reader
+  holding an old snapshot keeps the WAL until the next checkpoint
+  overwrites it); backups made before
   keep the data until pruned (`-pre-v<N>` ones until an admin deletes
   them), and the panel says so. Nobody can delete another user's activity
-  or account (admins included).
+  or account (admins included). Both run synchronously and hold up every
+  other request while they work (seconds for hundreds of thousands of
+  events), and `deleted_events` keeps one id per deleted message until
+  the account goes: fine for a personal instance, to bound if it ever
+  serves many accounts.
 - Admin only (`403` otherwise): `GET /api/users`, `POST /api/users/:id/password
   {password}` (signs that user out; not for the admin's own account, which
   goes through `/api/account/password` so a stolen session cannot take it

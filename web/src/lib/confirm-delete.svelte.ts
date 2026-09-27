@@ -75,9 +75,9 @@ export class DeleteActivity extends ConfirmDelete<DeletedActivity> {
   }
 }
 
-/** Deletes the signed-in user's account; `ondeleted` signs out (the session is gone). */
+/** Deletes the signed-in user's account; `onsignout` follows (the session is gone). */
 export class DeleteAccount extends ConfirmDelete<DeletedAccount> {
-  constructor(ondeleted: () => void) {
-    super(DELETE_ACCOUNT_PHRASE, async (p, c) => (await api.deleteAccount(p, c)).deleted, ondeleted);
+  constructor(onsignout: () => void) {
+    super(DELETE_ACCOUNT_PHRASE, async (p, c) => (await api.deleteAccount(p, c)).deleted, onsignout);
   }
 }
