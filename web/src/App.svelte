@@ -4,6 +4,7 @@
   import ActivityChart from "./components/ActivityChart.svelte";
   import ClaudeCodeCard from "./components/ClaudeCodeCard.svelte";
   import CodexCard from "./components/CodexCard.svelte";
+  import AntigravityCard from "./components/AntigravityCard.svelte";
   import Conversations from "./components/Conversations.svelte";
   import DevicesPanel from "./components/DevicesPanel.svelte";
   import Leaderboard from "./components/Leaderboard.svelte";
@@ -107,7 +108,7 @@
           {#if vm.tools.includes("claude-code")}<ClaudeCodeCard vm={vm.claude} />{/if}
           {#if vm.tools.includes("codex")}<CodexCard vm={vm.codex} />{/if}
           {#if vm.tools.includes("antigravity")}
-            <div class="full"><ActivityToolCard vm={vm.antigravity} tool="antigravity" /></div>
+            <div class="full"><AntigravityCard vm={vm.antigravity} /></div>
           {/if}
           {#if vm.tools.includes("opencode")}
             <div class="wide">
