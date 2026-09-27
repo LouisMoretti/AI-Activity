@@ -68,3 +68,14 @@ test("Antigravity quota pools keep their own usage, resets and missing windows",
   assert.match(vm.antigravity.windows[0].label, /Gemini/);
   assert.match(vm.antigravity.windows[2].label, /Claude\/GPT/);
 });
+
+
+test("quota card update time ignores unrendered pools and limit types", () => {
+  const vm = liveDashboard(data([
+    { ...q("antigravity", "five_hour", 25, 500), account_ref: "gemini" },
+    { ...q("antigravity", "five_hour", 80, 999), account_ref: "default" },
+    { ...q("antigravity", "custom", 80, 999), account_ref: "gemini" },
+  ]), "all");
+  assert.equal(vm.antigravity.updatedAt, 500);
+  assert.deepEqual(vm.antigravity.windows.map(w => w.pct), [25, null, null, null]);
+});

@@ -287,7 +287,9 @@ web/
   src/App.svelte          routes the pages; renders the site chrome once
   src/components/         StatsRow (StatCard), ActivityChart (Heatmap,
                           TrendChart), ClaudeCodeCard / CodexCard /
-                          ActivityToolCard (ToolHeader, QuotaWindow, Meter),
+                          OpenCodeCard (ToolHeader, QuotaWindow, Meter;
+                          OpenCodeCard wraps ActivityToolCard, the card
+                          of a tool without quota windows), AntigravityCard,
                           TodayByTool,
                           Conversations, DevicesPanel, AccountMenu,
                           SiteHeader, ProfilePanel, UsersPanel,
@@ -635,10 +637,16 @@ Server keys are `antigravity:<session>:<response>`; session keys also have
 an `antigravity:` prefix to avoid collisions with other tools. The usual
 partial/final upsert and replay rules apply. Subagents count separately
 because the local format does not establish parent sessions. Checkpoints
-store accepted metadata hashes/count ranks, scoped to server/device key,
+store DB/WAL stamps and accepted ranks only for unfinished scans, scoped to server/device key,
 and never contain credentials. Rotating source cursors (hashed paths) and
 generation page positions allow bounded passes to resume after successful
-uploads. Completed generation scans restart to discover edits to old rows.
+uploads. Completed scans skip unchanged DB/WAL stamps; changed stamps restart
+from the beginning to discover edits to old rows. A write during a scan cannot
+mark the snapshot complete. Deleted sources are pruned; state is saved once
+per pass (and before quota probing to retain its throttle). Network/HTTP failures
+stop the pass; HTTP 429/503 honor bounded Retry-After. Discovery is restricted
+to recognized app conversations/ directories. Unconfigured placeholders exit
+before discovery, and bearer keys cannot follow HTTP redirects.
 Timestamp matching has its own scan deadline, streams full metadata scans,
 and cannot resolve a date from a truncated ambiguity check. An interrupted
 match never advances the generation page; native timestamps can still upload.

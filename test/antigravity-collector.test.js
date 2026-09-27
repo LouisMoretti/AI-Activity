@@ -281,7 +281,7 @@ describe("Antigravity collector", () => {
       assert.equal(batches[1].find(e => e.response_id === "response1").usage.output_tokens, 250);
       // Released queue locks remain reusable on the next hook.
       assert.equal((await run(destination, [], "", null, script)).code, 0);
-      assert.equal(fs.readFileSync(scans, "utf8").replaceAll("\r\n", "\n"), "scan\nscan\n");
+      assert.equal(fs.readFileSync(scans, "utf8").replaceAll("\r\n", "\n"), "scan\n", "an unchanged hook reuses the completed stamp");
     } finally {
       release(); await first; await Promise.all(workers);
       await new Promise(resolve => proxy.close(resolve));
@@ -310,7 +310,7 @@ describe("Antigravity quota reports", () => {
   const clearThrottle = () => {
     if (!fs.existsSync(statePath())) return;
     const state = JSON.parse(fs.readFileSync(statePath(), "utf8"));
-    delete state.quota_at; delete state.quota_tried_at; delete state.quota_failed;
+    delete state.quota_tried_at; delete state.quota_failed;
     fs.writeFileSync(statePath(), JSON.stringify(state));
   };
   const sample = () => {
@@ -341,7 +341,7 @@ describe("Antigravity quota reports", () => {
       ` if args[1:] == ['--version']:\n  options['stdout'].write(${JSON.stringify(version)}.encode())\n` +
       ` else:\n  assert args[1:] == ['-p', '/usage', '--output-format', 'json', '--print-timeout', '90s']\n` +
       (timeout ? `  raise subprocess.TimeoutExpired(args, options['timeout'])\n` : `  options['stdout'].write(json.dumps(report).encode())\n`) +
-      ` return types.SimpleNamespace(returncode=0)\nm.subprocess.run = command\ntry:\n m.collect()\nexcept Exception:\n raise SystemExit(1)\n`);
+      ` return types.SimpleNamespace(returncode=0)\nm.subprocess.run = command\ntry:\n m.collect()\nexcept Exception:\n import traceback\n traceback.print_exc()\n raise SystemExit(1)\n`);
     return run({ ...env, AI_ACTIVITY_KEY: uploadKey, AI_ACTIVITY_ANTIGRAVITY_QUOTAS: "1" }, [], "", null, script);
   };
   const quotas = async () => (await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas;
@@ -377,7 +377,7 @@ describe("Antigravity quota reports", () => {
       assert.deepEqual(calls(), [["--version"]]);
     }
     clearThrottle();
-    assert.equal((await collect(sample(), { timeout: true })).code, 0);
+    const timed = await collect(sample(), { timeout: true }); assert.equal(timed.code, 0, timed.err);
     fs.unlinkSync(path.join(home, "calls.json"));
     assert.equal((await collect(sample(), { timeout: true })).code, 0);
     assert.ok(!fs.existsSync(path.join(home, "calls.json")), "failed probes back off across processes");
@@ -386,9 +386,9 @@ describe("Antigravity quota reports", () => {
     saved.quota_tried_at -= 301; fs.writeFileSync(statePath(), JSON.stringify(saved));
     assert.equal((await collect(sample())).code, 0, "retry succeeds after five-minute backoff");
     assert.equal((await collect(sample(), { key: "invalid-device-key" })).code, 1);
-    assert.ok(!JSON.parse(fs.readFileSync(statePath(), "utf8")).quota_at);
+    assert.equal(JSON.parse(fs.readFileSync(statePath(), "utf8")).quota_failed, true);
     assert.equal((await collect(sample())).code, 0);
-    assert.ok(JSON.parse(fs.readFileSync(statePath(), "utf8")).quota_at);
+    assert.equal(JSON.parse(fs.readFileSync(statePath(), "utf8")).quota_failed, false);
   });
 
   test("unknown, disabled, duplicate, invalid and expired buckets cannot produce quota measurements", async () => {
@@ -415,6 +415,12 @@ describe("Antigravity quota reports", () => {
       five_hour: { used_percentage: 101 }, seven_day: { used_percentage: -1 }, custom: { used_percentage: 10 },
     } } });
     assert.deepEqual(await quotas(), before);
+    for (const ref of [undefined, "default", "unknown", "Gemini", "gemini "]) {
+      await req(srv.base, "POST", "/api/ingest/antigravity", { key, body: {
+        messages: [], account_ref: ref, rate_limits: { five_hour: { used_percentage: 25 } },
+      } });
+      assert.deepEqual(await quotas(), before, "unknown pools must not store invisible quota rows");
+    }
   });
 
   test("quota subprocess hooks return normally without spawning recursive collectors", async () => {
@@ -454,7 +460,7 @@ async function scanFixture() {
     let body = ""; for await (const b of request) body += b;
     const payload = JSON.parse(body); batches.push(payload.messages);
     response.setHeader("content-type", "application/json");
-    if (refuse) { response.statusCode = 503; response.end("{}"); return; }
+    if (refuse) { response.statusCode = 400; response.end("{}"); return; }
     for (const e of payload.messages) accepted.set(e.session_id + ":" + e.response_id, e);
     response.end(JSON.stringify({ ok: true, messages: payload.messages.length }));
   });
@@ -593,4 +599,150 @@ test("an interrupted match on a middle page cannot advance past unresolved gener
     for (let i = 0; i < 2; i++) assert.equal((await f.collect({ MAX_ROWS: 1 })).code, 0);
     assert.equal(f.accepted.size, 3);
   } finally { await f.close(); }
+});
+
+
+test("unchanged completed sources skip SQLite scans; old-row WAL edits invalidate stamps and completed ranks are discarded", async () => {
+  const f = await scanFixture();
+  let db;
+  try {
+    f.add("wal", [generation("old")]);
+    db = new Database(path.join(f.dir, "wal.db")); db.pragma("journal_mode = WAL");
+    db.prepare("UPDATE gen_metadata SET data=? WHERE idx=1").run(generation("old"));
+    assert.equal((await f.collect({})).code, 0);
+    assert.deepEqual(f.state().sent, {});
+    assert.ok(Object.values(f.state().files).every(x => x.complete));
+    const noScan = "m.read_database = lambda *args: (_ for _ in ()).throw(AssertionError('unchanged source scanned'))\n";
+    assert.equal((await f.collect({}, false, noScan)).code, 0);
+    const before = fs.statSync(path.join(f.dir, "wal.db")).mtimeMs;
+    db.prepare("UPDATE gen_metadata SET data=? WHERE idx=1").run(generation("old", { output: 80 }));
+    assert.equal(fs.statSync(path.join(f.dir, "wal.db")).mtimeMs, before, "change is in WAL only");
+    assert.equal((await f.collect({})).code, 0);
+    assert.equal(f.accepted.get("wal:old").usage.output_tokens, 110);
+    assert.deepEqual(f.state().sent, {});
+    db.close(); db = null;
+    assert.equal((await f.collect({})).code, 0, "WAL disappearance also invalidates stamp");
+  } finally { db?.close(); await f.close(); }
+});
+
+test("writes during a read cannot certify an unchanged snapshot or retain a stale page cursor", async () => {
+  const f = await scanFixture();
+  try {
+    f.add("racing", [generation("first")]);
+    const setup = `original = m.read_database\ndef racing(path, after=None):\n result = original(path, after)\n import sqlite3\n with sqlite3.connect(path) as db:\n  db.execute('INSERT INTO gen_metadata VALUES (2, ?)', (bytes.fromhex('${generation("second").toString("hex")}'),))\n return result\nm.read_database = racing\n`;
+    assert.equal((await f.collect({}, false, setup)).code, 0);
+    assert.ok(Object.values(f.state().files).every(x => !x.complete));
+    assert.deepEqual(f.state().positions, {});
+    assert.equal((await f.collect({})).code, 0);
+    assert.equal(f.accepted.size, 2);
+  } finally { await f.close(); }
+});
+
+test("discovery excludes app-root databases and prunes checkpoints for deleted conversations", async () => {
+  const f = await scanFixture();
+  try {
+    f.add("valid", [generation("valid")]);
+    fs.copyFileSync(path.join(f.dir, "valid.db"), path.join(f.dir, "..", "decoy.db"));
+    assert.equal((await f.collect({})).code, 0);
+    assert.equal(f.accepted.size, 1);
+    fs.unlinkSync(path.join(f.dir, "valid.db"));
+    assert.equal((await f.collect({})).code, 0);
+    assert.deepEqual(f.state().files, {});
+    assert.deepEqual(f.state().sent, {});
+  } finally { await f.close(); }
+});
+
+test("unconfigured placeholders fail before database discovery or cache creation", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "ai-activity-unconfigured-"));
+  try {
+    for (const config of [{ AI_ACTIVITY_URL: "<server>", AI_ACTIVITY_KEY: "test" },
+      { AI_ACTIVITY_URL: "http://localhost", AI_ACTIVITY_KEY: "<device key>" }]) {
+      assert.equal((await run({ HOME: home, USERPROFILE: home, ...config })).code, 1);
+      assert.ok(!fs.existsSync(path.join(home, ".cache")));
+    }
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test("first HTTP failure stops sources and quota probing; Retry-After delays retries without losing accepted batches", async () => {
+  const f = await scanFixture();
+  try {
+    f.add("first", Array.from({ length: 250 }, (_, i) => generation(`response${i}`)));
+    f.add("second", [generation("other")]);
+    const setup = `import urllib.error\nimport urllib.request\nopen_original = urllib.request.OpenerDirector.open\ncalls = 0\ndef fail_second(self, *args, **kwargs):\n global calls\n calls += 1\n if calls == 2:\n  raise urllib.error.HTTPError('redacted', 429, 'limited', {'Retry-After': '120'}, None)\n return open_original(self, *args, **kwargs)\nurllib.request.OpenerDirector.open = fail_second\nm.os.environ['AI_ACTIVITY_ANTIGRAVITY_QUOTAS'] = '1'\nm.read_quotas = lambda: (_ for _ in ()).throw(AssertionError('quota probe after upload failure'))\n`;
+    assert.equal((await f.collect({}, false, setup)).code, 1);
+    assert.equal(f.accepted.size, 200);
+    assert.equal(f.batches.length, 1);
+    assert.ok(Object.values(f.state().files).every(x => !x.complete));
+    assert.equal((await f.collect({})).code, 1);
+    assert.equal(f.batches.length, 1, "Retry-After suppresses every upload");
+    const noWait = "import time\noriginal_time = time.time\ntime.time = lambda: original_time() + 121\n";
+    assert.equal((await f.collect({}, false, noWait)).code, 0);
+    assert.equal(f.accepted.size, 251);
+    assert.equal(f.batches.flat().filter(e => e.session_id === 'first').length, 250);
+    assert.deepEqual(f.state().sent, {});
+  } finally { await f.close(); }
+});
+
+test("Windows detach requests console/group/job independence and falls back only for denied breakaway", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "ai-activity-detach-"));
+  try {
+    const script = path.join(home, "detach.py");
+    fs.writeFileSync(script, `import importlib.util, types\nspec = importlib.util.spec_from_file_location('collector', ${JSON.stringify(SCRIPT)})\nm = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(m)\nm.os = types.SimpleNamespace(name='nt')\nm.subprocess.DETACHED_PROCESS = 8\nm.subprocess.CREATE_NEW_PROCESS_GROUP = 512\nm.subprocess.CREATE_BREAKAWAY_FROM_JOB = 16777216\ncalls = []\ndef popen(*args, **kwargs):\n calls.append(kwargs['creationflags'])\n if len(calls) == 1:\n  e = OSError('denied'); e.winerror = 5; raise e\nm.subprocess.Popen = popen\nm.launch_worker()\nassert calls == [8 | 512 | 16777216, 8 | 512]\n`);
+    const result = await run({}, [], "", null, script);
+    assert.equal(result.code, 0, result.err);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+
+test("HTTP-date retry delays and malformed Retry-After use bounded persistent backoff", async () => {
+  const f = await scanFixture();
+  try {
+    f.add("retrydate", [generation("one")]);
+    for (const [header, seconds] of [[new Date(Date.now() + 120000).toUTCString(), 120], ["nonsense", 60], ["999999999", 86400]]) {
+      const setup = `import urllib.request, urllib.error\ndef fail(*args, **kwargs):\n raise urllib.error.HTTPError('redacted', 503, 'unavailable', {'Retry-After': ${JSON.stringify(header)}}, None)\nurllib.request.OpenerDirector.open = fail\n`;
+      // Expire the previous delay while retaining the source's incomplete checkpoint.
+      const stateFile = path.join(f.dir, "..", "..", "..", ".cache", "ai-activity", "antigravity.json");
+      if (fs.existsSync(stateFile)) { const v = JSON.parse(fs.readFileSync(stateFile)); delete v.upload_retry_at; fs.writeFileSync(stateFile, JSON.stringify(v)); }
+      const before = Date.now() / 1000;
+      assert.equal((await f.collect({}, false, setup)).code, 1);
+      const delay = f.state().upload_retry_at - before;
+      assert.ok(delay > seconds - 3 && delay <= seconds + 3, `${header}: ${delay}`);
+    }
+    assert.equal(f.batches.length, 0);
+  } finally { await f.close(); }
+});
+
+test("network failures and rejected redirects stop the pass without sending a second source", async () => {
+  const f = await scanFixture();
+  try {
+    f.add("first", [generation("one")]); f.add("second", [generation("two")]);
+    for (const failure of ["urllib.error.URLError('offline')", "urllib.error.HTTPError('redacted', 302, 'redirect', {}, None)"]) {
+      const setup = `import urllib.request, urllib.error\ndef fail(*args, **kwargs):\n raise ${failure}\nurllib.request.OpenerDirector.open = fail\n`;
+      const result = await f.collect({}, false, setup);
+      assert.equal(result.code, 1);
+      assert.equal(f.batches.length, 0);
+    }
+  } finally { await f.close(); }
+});
+
+
+test("an actual HTTP redirect cannot forward the device bearer key", async () => {
+  const f = await scanFixture();
+  let received = 0;
+  const destination = http.createServer((request, response) => { received++; response.end('{}'); });
+  await new Promise(resolve => destination.listen(0, "127.0.0.1", resolve));
+  const source = http.createServer((request, response) => {
+    response.writeHead(307, { Location: `http://127.0.0.1:${destination.address().port}/ingest` }); response.end();
+  });
+  await new Promise(resolve => source.listen(0, "127.0.0.1", resolve));
+  try {
+    f.add("redirect", [generation("one")]);
+    const setup = `m.SERVER = 'http://127.0.0.1:${source.address().port}'\n`;
+    assert.equal((await f.collect({}, false, setup)).code, 1);
+    assert.equal(received, 0);
+  } finally {
+    await new Promise(resolve => source.close(resolve));
+    await new Promise(resolve => destination.close(resolve));
+    await f.close();
+  }
 });

@@ -1,11 +1,11 @@
 <script lang="ts">
   import { clock } from "../lib/clock.svelte.ts";
   import { fmtAgo, fmtCompact, plural, RECENT_SEC } from "../lib/format.ts";
-  import type { ActivityToolVM, SessionVM } from "../lib/view-model.ts";
+  import type { ActivityToolVM, SessionVM, ToolKey } from "../lib/view-model.ts";
   import ToolHeader from "./ToolHeader.svelte";
 
   const SHOWN = 3;
-  let { vm, tool = "opencode" }: { vm: ActivityToolVM; tool?: "opencode" | "antigravity" } = $props();
+  let { tool, vm }: { tool: ToolKey; vm: ActivityToolVM } = $props();
 
   // Active: a reply in the last few minutes (the green dot's rule). Listed by
   // session id (creation order), not by latest reply, so parallel
@@ -20,7 +20,8 @@
     active.length >= vm.recent.length && vm.recent.length >= 10 ? `${active.length}+ active conversations` : plural(active.length, "active conversation"),
   );
 
-  // provider/model: the provider is dimmed so the model reads first.
+  // provider/model: the provider is dimmed so the model reads first (a model
+  // without a provider shows whole).
   function modelOf(s: SessionVM) {
     const m = s.model;
     if (!m) return { provider: "", name: "model not reported" };
@@ -29,17 +30,17 @@
   }
 </script>
 
-<!-- Activity cards show measured usage when quota data is not collected. -->
+<!-- The card of a tool without quota windows: what is going on now (today on
+     the left, active conversations, else the last one, on the right). -->
 <article class="card">
   <section class="today">
     <ToolHeader {tool} note={last ? "" : "No usage yet"} />
-    {#if tool === "antigravity"}<div class="meta">Quota and context unavailable</div>{/if}
     {#if last}
       <div class="label">Today</div>
       <div class="value">{fmtCompact(vm.today.tokens)}<small> tokens</small></div>
       <div class="meta">{plural(vm.today.sessions, "conversation")} · {plural(vm.today.calls, "call")}</div>
       {#if vm.today.models}
-        <div class="meta">{plural(vm.today.models, "model")}{#if tool === "opencode"} · {plural(vm.today.providers, "provider")}{/if}</div>
+        <div class="meta">{plural(vm.today.models, "model")}{#if vm.today.providers !== null} · {plural(vm.today.providers, "provider")}{/if}</div>
       {/if}
     {/if}
   </section>

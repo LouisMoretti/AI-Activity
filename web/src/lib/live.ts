@@ -1,3 +1,4 @@
+import { QUOTA_POOLS } from "../../../shared/quota-pools.ts";
 // Maps measured API responses into the view model. Missing data stays
 // null ("—" / "Unavailable"); nothing is interpolated.
 import type {
@@ -29,34 +30,20 @@ function figure(b: Breakdown, metric: "tokens" | "sessions"): FigureVM {
   };
 }
 
+const WINDOWS = [["five_hour", "5-hour window"], ["seven_day", "This week"]] as const;
+
 function toolQuotas(q: QuotasResponse, tool: QuotaToolVM["tool"]): QuotaToolVM {
-  if (tool === "antigravity") {
-    // These are independent quota pools, not separate subscriptions. Never
-    // add their percentages or pair one pool's usage with another's reset.
-    const pools = ["gemini", "claude-gpt"];
-    const rows = q.quotas.filter((x) => x.tool === tool && pools.includes(x.account_ref));
-    const windows = pools.flatMap((pool) => ["five_hour", "seven_day"].map((type) => {
-      const row = rows.find((x) => x.account_ref === pool && x.limit_type === type);
-      const name = pool === "gemini" ? "Gemini" : "Claude/GPT";
-      return { label: `${name} · ${type === "five_hour" ? "5-hour window" : "This week"}`,
-        pct: row?.used_pct ?? null, resetsAt: row?.resets_at ?? null,
-        spanSec: type === "five_hour" ? WINDOW_SPANS.five_hour : WINDOW_SPANS.seven_day };
-    }));
-    return { tool, updatedAt: Math.max(0, ...rows.map((x) => x.measured_at)) || null, windows };
-  }
-  const find = (type: keyof typeof WINDOW_SPANS) =>
-    q.quotas.find((x) => x.tool === tool && x.limit_type === type);
-  const five = find("five_hour");
-  const week = find("seven_day");
-  const updated = Math.max(five?.measured_at ?? 0, week?.measured_at ?? 0);
-  return {
-    tool,
-    updatedAt: updated || null,
-    windows: [
-      { label: "5-hour window", pct: five?.used_pct ?? null, resetsAt: five?.resets_at ?? null, spanSec: WINDOW_SPANS.five_hour },
-      { label: "This week", pct: week?.used_pct ?? null, resetsAt: week?.resets_at ?? null, spanSec: WINDOW_SPANS.seven_day },
-    ],
-  };
+  const pools: readonly { ref: string | null; label: string }[] =
+    tool in QUOTA_POOLS ? QUOTA_POOLS[tool as keyof typeof QUOTA_POOLS] : [{ ref: null, label: "" }];
+  const rows = q.quotas.filter((x) => x.tool === tool);
+  const used: typeof rows = [];
+  const windows = pools.flatMap((pool) => WINDOWS.map(([type, label]) => {
+    const row = rows.find((x) => x.limit_type === type && (pool.ref === null || x.account_ref === pool.ref));
+    if (row) used.push(row);
+    return { label: pool.label + label, pct: row?.used_pct ?? null,
+      resetsAt: row?.resets_at ?? null, spanSec: WINDOW_SPANS[type] };
+  }));
+  return { tool, updatedAt: Math.max(0, ...used.map((x) => x.measured_at)) || null, windows };
 }
 
 const asTool = (t: string): ToolKey =>
@@ -72,14 +59,14 @@ const toSession = (s: Session): SessionVM => ({
   context: s.context_used_pct === null ? null : { pct: s.context_used_pct, size: s.context_window_size },
 });
 
-function activityTool(d: LiveData["opencode"]): ActivityToolVM {
+/** providers: the tool stores its models as provider/model (OpenCode). */
+function activityTool(d: LiveData["opencode"], providers: boolean): ActivityToolVM {
   const t = d.summary.today;
   return {
     recent: d.latest.sessions.map(toSession),
     today: {
       tokens: t.tokens, sessions: t.sessions, calls: t.events, models: t.by_model.length,
-      // Models are stored as provider/model.
-      providers: new Set(t.by_model.map((m) => m.name.split("/")[0])).size,
+      providers: providers ? new Set(t.by_model.map((m) => m.name.split("/")[0])).size : null,
     },
   };
 }
@@ -102,7 +89,7 @@ export function liveDashboard(d: LiveData, provider: Provider): DashboardVM {
     tools: toolsFor(provider),
     claude: toolQuotas(d.quotas, "claude-code"),
     codex: toolQuotas(d.quotas, "codex"),
-    opencode: activityTool(d.opencode),
+    opencode: activityTool(d.opencode, true),
     antigravity: toolQuotas(d.quotas, "antigravity"),
     sessions,
     sessionsTotal: d.sessions.total,

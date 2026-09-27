@@ -256,14 +256,12 @@ def databases():
     home = Path(os.environ.get("GEMINI_CLI_HOME") or Path.home() / ".gemini")
     seen = set()
     for app in ("antigravity", "antigravity-cli", "antigravity-ide"):
-        for root in (home / app, home / app / "conversations"):
-            if not root.exists():
-                continue
-            for path in sorted(root.glob("*.db")):
-                resolved = path.resolve()
-                if resolved not in seen and ID.fullmatch(path.stem):
-                    seen.add(resolved)
-                    yield path
+        for path in sorted((home / app / "conversations").glob("*.db")):
+            resolved = path.resolve()
+            if resolved not in seen and ID.fullmatch(path.stem):
+                seen.add(resolved)
+                yield path
+
 
 
 @contextlib.contextmanager
@@ -414,8 +412,29 @@ def read_quotas():
         return quota_reports(report, int(time.time()))
 
 
+def file_stamp(path):
+    # WAL-only commits and edits to old rows invalidate the whole snapshot.
+    # Include identity/ctime to detect replacements, not just appended bytes.
+    def stat(p):
+        try:
+            v = p.stat()
+            return [v.st_mtime_ns, v.st_size, v.st_ctime_ns, v.st_ino]
+        except FileNotFoundError:
+            return None
+    return [stat(path), stat(Path(str(path) + "-wal"))]
+
+
 def collect(on_locked=None):
     import urllib.request
+    import urllib.error
+    import urllib.parse
+    from email.utils import parsedate_to_datetime
+    url = urllib.parse.urlsplit(SERVER)
+    url.port  # validate malformed ports before opening history
+    if url.scheme not in ("http", "https") or not url.hostname or url.username or url.password or url.query or url.fragment or "<" in SERVER:
+        raise ValueError("configure AI_ACTIVITY_URL before collecting")
+    if not KEY.strip() or "<" in KEY or any(ord(c) < 32 for c in KEY):
+        raise ValueError("configure AI_ACTIVITY_KEY before collecting")
     cache = Path.home() / ".cache" / "ai-activity"
     cache.mkdir(parents=True, exist_ok=True)
     with locked(cache / "antigravity.lock"):
@@ -424,140 +443,156 @@ def collect(on_locked=None):
         state_path = cache / "antigravity.json"
         try:
             state = json.loads(state_path.read_text())
-            if not isinstance(state, dict):
-                state = {}
         except (OSError, ValueError):
             state = {}
-        # Scope checkpoints to destination + device key; switching servers
-        # or accounts must import history again. Credentials are never saved.
         scope = hashlib.sha256((SERVER.rstrip("/") + "\n" + KEY).encode()).hexdigest()
-        can_save = state.get("scope") == scope
-        if state.get("scope") != scope:
-            state = {"scope": scope, "sent": {}}
-        sent = state.setdefault("sent", {})
-        if not isinstance(sent, dict):
-            raise ValueError("invalid collector state; remove antigravity.json to replay")
+        can_save = isinstance(state, dict) and state.get("scope") == scope
+        if not can_save:
+            state = {"scope": scope}
+        files = state.setdefault("files", {})
         positions = state.setdefault("positions", {})
-        if not isinstance(positions, dict):
-            raise ValueError("invalid collector positions; remove antigravity.json to replay")
-        # Rotate after the last attempted source. Even a failing source must
-        # not starve every database that follows it. Never persist raw paths.
+        sent = state.setdefault("sent", {})  # ranks only for unfinished scans
+        if any(not isinstance(v, dict) for v in (files, positions, sent)):
+            raise ValueError("invalid collector state; remove antigravity.json to replay")
+        retry = state.get("upload_retry_at", 0)
+        if type(retry) in (int, float) and time.time() < retry <= time.time() + 86400:
+            raise RuntimeError("upload retry deferred by server")
+
+        def upload(payload):
+            nonlocal can_save
+            # Never redirect a device bearer key to a different destination.
+            class NoRedirect(urllib.request.HTTPRedirectHandler):
+                def redirect_request(self, *args, **kwargs):
+                    return None
+            request = urllib.request.Request(SERVER.rstrip("/") + "/api/ingest/antigravity",
+                data=json.dumps(payload).encode(),
+                headers={"Authorization": "Bearer " + KEY, "Content-Type": "application/json"})
+            try:
+                with urllib.request.build_opener(NoRedirect).open(request, timeout=30) as response:
+                    result = json.loads(response.read(MAX_BLOB + 1))
+                if not isinstance(result, dict) or result.get("ok") is not True or result.get("messages") != len(payload["messages"]):
+                    raise ValueError("server did not accept every metadata entry")
+            except urllib.error.HTTPError as error:
+                if error.code in (429, 503):
+                    headers = getattr(error, "headers", None) or {}
+                    header = headers.get("Retry-After", "") if hasattr(headers, "get") else ""
+                    try:
+                        delay = float(header) if str(header).strip().isdigit() else parsedate_to_datetime(str(header)).timestamp() - time.time()
+                    except (ValueError, TypeError, OverflowError):
+                        delay = 60
+                    state["upload_retry_at"] = int(time.time() + min(86400, max(1, delay)))
+                    can_save = True
+                if hasattr(error, "close"):
+                    try:
+                        error.close()
+                    except Exception:
+                        pass
+                raise
+            state.pop("upload_retry_at", None)
+            can_save = True
+
         paths = list(databases())
-        names = [hashlib.sha256(str(p.resolve()).encode()).hexdigest() for p in paths]
+        sources = [(hashlib.sha256(str(p.resolve()).encode()).hexdigest(), p) for p in paths]
+        names = [n for n, _ in sources]
+        # Deleted sources must not retain checkpoints indefinitely.
+        for mapping in (files, positions, sent):
+            for name in list(mapping):
+                if name not in names:
+                    del mapping[name]
         cursor = state.get("cursor")
         start = names.index(cursor) + 1 if cursor in names else 0
-        sources = list(zip(names, paths))
         sources = sources[start:] + sources[:start]
-        failed = False
-        deferred = False
+        failed = deferred = False
         started = time.monotonic()
-        for number, (name, path) in enumerate(sources):
-            if number >= MAX_DATABASES or (number and time.monotonic() - started > MAX_RUN_SECONDS):
-                deferred = True
-                break
-            state["cursor"] = name
-            try:
-                after = positions.get(name)
-                if after is not None and not isinstance(after, int):
-                    raise ValueError("invalid generation position")
-                entries, skipped, next_after, more = read_database(path, after)
-                deferred |= more
-                if skipped:
-                    print("ai-activity antigravity: %d metadata rows unavailable; skipped (unsupported or incomplete)" % skipped, file=sys.stderr)
-                # A database can retain partial and final rows for the same
-                # response. Select one stable version before comparing the
-                # checkpoint, so older rows cannot cause endless replays.
+        try:
+            for number, (name, path) in enumerate(sources):
+                if number >= MAX_DATABASES or (number and time.monotonic() - started > MAX_RUN_SECONDS):
+                    deferred = True
+                    break
+                state["cursor"] = name
+                try:
+                    before = file_stamp(path)
+                    checkpoint = files.get(name, {})
+                    if checkpoint.get("stamp") == before and checkpoint.get("complete") is True:
+                        continue
+                    if checkpoint.get("stamp") != before:
+                        positions.pop(name, None)
+                        sent.pop(name, None)
+                    after = positions.get(name)
+                    if after is not None and type(after) is not int:
+                        raise ValueError("invalid generation position")
+                    entries, skipped, next_after, more = read_database(path, after)
+                    stable = before == file_stamp(path)
+                    if skipped:
+                        print("ai-activity antigravity: %d metadata rows unavailable; skipped (unsupported or incomplete)" % skipped, file=sys.stderr)
+                except Exception:
+                    # A corrupt/unsupported source must not block other sources.
+                    print("ai-activity antigravity: collection/upload failed; retry on next run", file=sys.stderr)
+                    failed = True
+                    continue
+                files[name] = {"stamp": before, "complete": False}
+                ranks = sent.setdefault(name, {})
                 best = {}
                 for entry in entries:
-                    ident = entry["session_id"] + ":" + entry["response_id"]
+                    ident = entry["response_id"]
                     digest = hashlib.sha256(json.dumps(entry, sort_keys=True).encode()).hexdigest()
                     rank = (entry["usage"]["output_tokens"], sum(entry["usage"].values()), entry["occurred_at"], digest)
                     if ident not in best or rank > best[ident][0]:
                         best[ident] = (rank, entry)
-                pending = []
-                for ident, (rank, entry) in best.items():
-                    prior = sent.get(ident)
-                    # Old checkpoints stored only the digest. Migrate them
-                    # without replaying entries already accepted by the server.
-                    if prior == rank[-1]:
-                        sent[ident] = {"rank": rank}
-                    elif not isinstance(prior, dict) or tuple(prior.get("rank", ())) < rank:
-                        pending.append((ident, rank, entry))
+                pending = [(ident, rank, entry) for ident, (rank, entry) in best.items()
+                           if tuple(ranks.get(ident, ())) < rank]
                 page_complete = True
                 for i in range(0, len(pending), 200):
-                    # Permit one first batch so a slow first snapshot still
-                    # makes forward progress; check the budget between batches.
                     if (number or i) and time.monotonic() - started > MAX_RUN_SECONDS:
                         deferred = True
                         page_complete = False
-                        if can_save:
-                            save_state(state_path, state)
                         break
                     chunk = pending[i:i + 200]
-                    request = urllib.request.Request(SERVER.rstrip("/") + "/api/ingest/antigravity",
-                        data=json.dumps({"messages": [e for _, _, e in chunk]}).encode(),
-                        headers={"Authorization": "Bearer " + KEY, "Content-Type": "application/json"})
-                    with urllib.request.urlopen(request, timeout=30) as response:
-                        result = json.load(response)
-                    if result.get("ok") is not True or result.get("messages") != len(chunk):
-                        raise ValueError("server did not accept every metadata entry")
-                    sent.update({ident: {"rank": rank} for ident, rank, _ in chunk})
-                    can_save = True
-                    save_state(state_path, state)
+                    # Network/HTTP/acceptance errors escape the pass immediately.
+                    upload({"messages": [e for _, _, e in chunk]})
+                    ranks.update({ident: rank for ident, rank, _ in chunk})
+                files[name] = {"stamp": before, "complete": stable and page_complete and not more}
+                can_save = True
+                if not stable:
+                    positions.pop(name, None)
+                    sent.pop(name, None)
+                elif page_complete:
+                    if next_after is None:
+                        positions.pop(name, None)
+                    else:
+                        positions[name] = next_after
+                    if not more:
+                        sent.pop(name, None)
+                deferred |= more or not stable
                 if not page_complete:
                     break
-                # A page only advances once all its uploads succeeded. Finishing
-                # the scan resets it so later edits to old rows are revisited.
-                if next_after is None:
-                    positions.pop(name, None)
-                else:
-                    positions[name] = next_after
+            # Persist once per pass, not once per batch/database. Accepted ranks
+            # on an interrupted scan are retryable; completed files need only stamps.
+            tried = state.get("quota_tried_at", 0)
+            if type(tried) not in (int, float) or not 0 <= tried <= time.time():
+                tried = 0
+            interval = 300 if state.get("quota_failed") else 60
+            if os.environ.get("AI_ACTIVITY_ANTIGRAVITY_QUOTAS") != "0" and time.time() - tried >= interval:
+                state.update(quota_tried_at=int(time.time()), quota_failed=True)
                 can_save = True
-                save_state(state_path, state)
-            except Exception:
-                # Do not print paths, response bodies, credentials or raw DB data.
-                print("ai-activity antigravity: collection/upload failed; retry on next run", file=sys.stderr)
-                failed = True
-                if can_save:
-                    save_state(state_path, state)
-        # Failed probes/uploads back off too, so missing auth or a hung CLI
-        # cannot hold the lock for 95 seconds on every model invocation.
-        # Save before launching: a killed worker must not erase the throttle.
-        tried = state.get("quota_tried_at", state.get("quota_at", 0))
-        if type(tried) not in (int, float) or not 0 <= tried <= time.time():
-            tried = 0
-        interval = 300 if state.get("quota_failed") else 60
-        if os.environ.get("AI_ACTIVITY_ANTIGRAVITY_QUOTAS") != "0" and time.time() - tried >= interval:
-            state.update(quota_tried_at=int(time.time()), quota_failed=True)
-            can_save = True
-            save_state(state_path, state)
-            try:
-                reports = read_quotas()
-            except Exception:
-                reports = []
-            if not reports:
-                print("ai-activity antigravity: quota report unavailable; usage collection continues", file=sys.stderr)
-            else:
+                save_state(state_path, state)  # a killed probe retains its throttle
                 try:
-                    for report in reports:
-                        request = urllib.request.Request(SERVER.rstrip("/") + "/api/ingest/antigravity",
-                            data=json.dumps(report).encode(),
-                            headers={"Authorization": "Bearer " + KEY, "Content-Type": "application/json"})
-                        with urllib.request.urlopen(request, timeout=30) as response:
-                            result = json.load(response)
-                        if result.get("ok") is not True or result.get("messages") != 0:
-                            raise ValueError("quota upload refused")
-                    state["quota_at"] = reports[0]["occurred_at"]
-                    state["quota_failed"] = False
-                    can_save = True
-                    save_state(state_path, state)
+                    reports = read_quotas()
                 except Exception:
-                    print("ai-activity antigravity: quota upload failed; retry on next run", file=sys.stderr)
-                    failed = True
-        if deferred:
-            print("ai-activity antigravity: scan budget reached; saved progress for next run", file=sys.stderr)
-        if failed:
-            raise RuntimeError("collection/upload failed")
+                    reports = []
+                if not reports:
+                    print("ai-activity antigravity: quota report unavailable; usage collection continues", file=sys.stderr)
+                else:
+                    for report in reports:
+                        upload(report)
+                    state["quota_failed"] = False
+            if deferred:
+                print("ai-activity antigravity: scan budget reached; saved progress for next run", file=sys.stderr)
+            if failed:
+                raise RuntimeError("collection/upload failed")
+        finally:
+            if can_save:
+                save_state(state_path, state)
 
 
 def hook_worker():
@@ -578,15 +613,33 @@ def hook_worker():
         collect(on_locked=ready)
 
 
+def launch_worker():
+    options = {"start_new_session": True}
+    if os.name == "nt":
+        options = {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_BREAKAWAY_FROM_JOB}
+    args = [sys.executable, str(Path(__file__).resolve()), "--hook-worker"]
+    streams = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        subprocess.Popen(args, **streams, **options)
+    except OSError as error:
+        # Some Windows jobs forbid breakaway. Keep console/group detachment;
+        # scheduled/manual retries cover hosts that terminate their entire job.
+        if os.name != "nt" or getattr(error, "winerror", None) != 5:
+            raise
+        options["creationflags"] &= ~subprocess.CREATE_BREAKAWAY_FROM_JOB
+        subprocess.Popen(args, **streams, **options)
+
+
 if __name__ == "__main__":
     if "--hook" in sys.argv or "--post-invocation" in sys.argv:
         # Consume the hook payload locally, never forward transcript/workspace paths.
-        sys.stdin.read(MAX_BLOB)
-        options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
+        try:
+            sys.stdin.read(MAX_BLOB)
+        except Exception:
+            pass
         if os.environ.get("AI_ACTIVITY_ANTIGRAVITY_QUOTA_PROBE") != "1":
             try:
-                subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--hook-worker"], stdin=subprocess.DEVNULL,
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **options)
+                launch_worker()
             except OSError:
                 # A process limit or missing interpreter must not break the
                 # app's hook protocol. A manual/scheduled pass can retry.

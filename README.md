@@ -206,12 +206,15 @@ hook flags every minute (cron on Linux/macOS or Task Scheduler on Windows).
 Use the same user, configured script, and absolute interpreter/script paths;
 on Windows set the task not to start another instance if already running.
 Hooks and scheduled runs share checkpoints and safely deduplicate uploads.
+On Windows, workers detach from the console and create a new process group.
+They also break away from the parent job when Windows permits it; jobs that
+forbid breakaway fall back to console/group detachment. If the host kills its
+entire job, use the scheduled retry above to cover that restriction.
 
 What it does:
 
-- Reads existing SQLite databases directly under
-  `~/.gemini/{antigravity,antigravity-cli,antigravity-ide}` and their
-  `conversations/` directories. `GEMINI_CLI_HOME` can replace `~/.gemini`.
+- Reads existing SQLite databases only under
+  `~/.gemini/{antigravity,antigravity-cli,antigravity-ide}/conversations/`. `GEMINI_CLI_HOME` can replace `~/.gemini`.
   Support depends on a database containing the recognized `gen_metadata`
   table; encrypted/legacy conversation files and transcript-only versions
   are not supported.
@@ -224,9 +227,10 @@ What it does:
   separate; text and thinking output are added once. Subagent databases
   count as separate conversations because parent attribution is unavailable.
 - Imports supported history (over multiple passes for large archives),
-  then uploads only new or changed entries. Checkpoints in
-  `~/.cache/ai-activity/antigravity.json`
-  advance after each accepted batch. Failed batches retry on the next run;
+  then skips completed databases while both their database and WAL stamps
+  are unchanged. Changed files are rescanned, including edits to older rows.
+  Checkpoints in `~/.cache/ai-activity/antigravity.json` are saved once per pass;
+  only unfinished scans retain accepted response ranks. Failed batches retry;
   repeated uploads and copied databases do not add duplicate usage. Remove
   the checkpoint file to replay history. Switching server or device key
   automatically starts a new import.
@@ -235,8 +239,14 @@ What it does:
   of restarting at the beginning. Large conversations are read in pages
   of at most 100,000 generation rows / 64 MiB of generation metadata (each
   blob is limited to 1 MiB). Page positions advance only after uploads
-  succeed; accepted entries are not resent on a retry. A completed scan
-  starts over later so edits to older partial generations are discovered.
+  succeed; accepted entries are not resent on a retry of an unchanged source.
+  Completed scans retain only file stamps, so checkpoint size does not grow
+  with the complete message history. Source changes may replay earlier entries;
+  the server deduplicates them. Deleted sources lose their checkpoints.
+- Unconfigured URL/key placeholders exit before reading history. The first
+  HTTP/network failure stops the pass, including quota probing. HTTP 429/503
+  honor `Retry-After` (seconds or HTTP date; bounded to one day, with a
+  one-minute fallback). Device keys are never forwarded through redirects.
 - Step timestamp recovery streams the full metadata snapshot with bounded
   memory; step bytes do not consume the generation page budget. It checks
   ambiguity against all generation rows, including those on other pages.

@@ -1,3 +1,4 @@
+import { QUOTA_POOLS } from "../../shared/quota-pools.ts";
 import { nowSec } from "../db/schema.ts";
 
 export interface NormalizedQuota {
@@ -347,10 +348,6 @@ function normalizeOpenCode(body: unknown): NormalizedBatch {
   };
 }
 
-/**
- * One normalizer per tool slug, picked by the ingest URL
- * (/api/ingest/<slug>). A tool is ingestable once it has an entry here.
- */
 /** Antigravity collector sends disjoint input, output (including thinking), and cache counts. */
 function normalizeAntigravity(body: unknown): NormalizedBatch {
   const src: Obj = isObj(body) ? body : {};
@@ -372,15 +369,20 @@ function normalizeAntigravity(body: unknown): NormalizedBatch {
   }
   const measuredAt = eventTime(src.occurred_at, now);
   const limits: Obj = isObj(src.rate_limits) ? src.rate_limits : {};
-  const quotas = keepCurrent(Object.keys(QUOTA_WINDOW_SEC).map((key) => {
+  const ref = accountRef(src);
+  const quotas = QUOTA_POOLS.antigravity.some((pool) => pool.ref === ref) ? keepCurrent(Object.keys(QUOTA_WINDOW_SEC).map((key) => {
     const w = limits[key];
     return isObj(w) && typeof w.used_percentage === "number" && w.used_percentage <= 100
       ? { limit_type: key, pct: w.used_percentage, resets: w.resets_at } : null;
-  }), measuredAt);
-  return { tool: "antigravity", messages, quotas, account_ref: accountRef(src),
+  }), measuredAt) : [];
+  return { tool: "antigravity", messages, quotas, account_ref: ref,
     measured_at: measuredAt, context: null, single };
 }
 
+/**
+ * One normalizer per tool slug, picked by the ingest URL
+ * (/api/ingest/<slug>). A tool is ingestable once it has an entry here.
+ */
 const normalizers = new Map<string, (body: unknown) => NormalizedBatch>([
   ["claude-code", normalizeClaudeCode],
   ["codex", normalizeCodex],

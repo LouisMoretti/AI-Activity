@@ -9,7 +9,7 @@
   import DevicesPanel from "./components/DevicesPanel.svelte";
   import Leaderboard from "./components/Leaderboard.svelte";
   import NewAccountForm from "./components/NewAccountForm.svelte";
-  import ActivityToolCard from "./components/ActivityToolCard.svelte";
+  import OpenCodeCard from "./components/OpenCodeCard.svelte";
   import ProfilePanel from "./components/ProfilePanel.svelte";
   import SiteHeader from "./components/SiteHeader.svelte";
   import Section from "./components/Section.svelte";
@@ -112,7 +112,7 @@
           {/if}
           {#if vm.tools.includes("opencode")}
             <div class="wide">
-              <ActivityToolCard vm={vm.opencode} />
+              <OpenCodeCard vm={vm.opencode} />
               <TodayByTool today={vm.stats.today} />
             </div>
           {/if}
