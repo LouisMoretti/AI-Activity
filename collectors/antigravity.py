@@ -550,7 +550,9 @@ def collect(on_locked=None):
         failed = collect_tokens(cache / "antigravity.json")
     # Probe after releasing the collection lock, so a queued hook worker never
     # waits for agy; a probe already running elsewhere makes this one skip.
-    if os.environ.get("AI_ACTIVITY_ANTIGRAVITY_QUOTAS") != "0":
+    # Opt-in: the probe drives the signed-in agy CLI, which contacts Google's
+    # backend; Antigravity's terms restrict third-party tools using the service.
+    if os.environ.get("AI_ACTIVITY_ANTIGRAVITY_QUOTAS") == "1":
         with locked(cache / "antigravity-quota.lock", wait=False) as mine:
             if mine:
                 collect_quotas(cache / "antigravity-quota.json")

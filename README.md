@@ -260,8 +260,14 @@ What it does:
   the same snapshot, only when its step/bot key belongs to one response;
   otherwise it is skipped with a warning, never dated by import time.
   Metadata blobs over 1 MiB are skipped.
-- Collects measured five-hour and weekly quota snapshots using the signed-in
-  Antigravity CLI's `/usage` JSON report. Install **agy 1.1.11 or later**, sign
+- **Quotas are off by default.** With `AI_ACTIVITY_ANTIGRAVITY_QUOTAS=1` in
+  the environment the hooks run in, it collects measured five-hour and weekly
+  quota snapshots using the signed-in Antigravity CLI's `/usage` JSON report.
+  That runs `agy` automatically, and each probe reaches Google's backend.
+  [Antigravity's terms](https://antigravity.google/terms) forbid using
+  third-party tools to access the service and allow suspending the account;
+  the probe uses Google's own CLI and sign-in, but enable it at your own
+  risk. Without it the card shows **Unavailable** quotas. Install **agy 1.1.11 or later**, sign
   in with the same Google account you use in Antigravity, and make `agy`
   available on the collector's PATH (including hooks and scheduled tasks).
   Verify `agy --version` (its output must contain the version) and
@@ -296,7 +302,8 @@ What it does:
   without the Activity URL/key, and cannot recursively trigger this
   collector's hooks. Versions older than 1.1.11 or an unrecognized version
   never receive `/usage`, since older print modes may treat it as a prompt.
-  Set `AI_ACTIVITY_ANTIGRAVITY_QUOTAS=0` to disable quota probing.
+  Leave `AI_ACTIVITY_ANTIGRAVITY_QUOTAS` unset (or anything but `1`) to keep
+  quota probing off.
 
 Quota command/schema evidence comes from [CodexBar's Antigravity implementation](https://github.com/steipete/CodexBar/tree/main/Sources/CodexBarCore/Providers/Antigravity).
 Google documents [the quota command](https://antigravity.google/docs/cli/commands/usage)
