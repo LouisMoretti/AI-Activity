@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { liveDashboard } from "../web/src/lib/live.ts";
+import { hasLiveWindow } from "../web/src/lib/view-model.ts";
 
 const breakdown = { tokens: 0, sessions: 0, events: 0, by_model: [], by_tool: [] };
 const data = (quotas) => ({
@@ -9,6 +10,7 @@ const data = (quotas) => ({
   quotas: { quotas },
   sessions: { sessions: [], total: 0 },
   opencode: { summary: { day: "2026-09-25", total: breakdown, today: breakdown }, latest: { sessions: [], total: 0 } },
+  antigravity: { summary: { day: "2026-09-25", total: breakdown, today: breakdown }, latest: { sessions: [], total: 0 } },
 });
 const q = (tool, limit_type, used_pct, measured_at) =>
   ({ account_ref: "default", tool, limit_type, used_pct, resets_at: measured_at + 3600, measured_at });
@@ -79,4 +81,21 @@ test("quota card update time ignores unrendered pools and limit types", () => {
   ]), "all");
   assert.equal(vm.antigravity.updatedAt, 500);
   assert.deepEqual(vm.antigravity.pools.map((p) => p.windows.map((w) => w.pct)), [[25, null], [null, null]]);
+});
+
+test("Antigravity falls back to its activity card while no quota window is running", () => {
+  const d = data([]);
+  d.antigravity = {
+    summary: { day: "2026-09-25", total: breakdown,
+      today: { tokens: 900, sessions: 1, events: 3, by_model: [{ name: "gemini-3.5-flash", tokens: 900 }], by_tool: [] } },
+    latest: { total: 1, sessions: [{ tool: "antigravity", session_id: "antigravity:abc", model: "gemini-3.5-flash", events: 3,
+      tokens: 900, first_seen: 1790000000, last_seen: 1790000100, context_used_pct: null, context_window_size: null }] },
+  };
+  const vm = liveDashboard(d, "all");
+  assert.equal(hasLiveWindow(vm.antigravity, 1790000000), false);
+  assert.deepEqual(vm.antigravityActivity.today, { tokens: 900, sessions: 1, calls: 3, models: 1, providers: null });
+  assert.equal(vm.antigravityActivity.recent[0].id, "abc");
+  const withQuota = liveDashboard(data([{ ...q("antigravity", "five_hour", 25, 500), account_ref: "gemini" }]), "all");
+  assert.equal(hasLiveWindow(withQuota.antigravity, 600), true);
+  assert.equal(hasLiveWindow(withQuota.antigravity, 500 + 3600), false, "an expired window no longer counts");
 });

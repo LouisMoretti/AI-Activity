@@ -7,6 +7,7 @@
   import Leaderboard from "./components/Leaderboard.svelte";
   import NewAccountForm from "./components/NewAccountForm.svelte";
   import OpenCodeCard from "./components/OpenCodeCard.svelte";
+  import ActivityToolCard from "./components/ActivityToolCard.svelte";
   import ProfilePanel from "./components/ProfilePanel.svelte";
   import QuotaCard from "./components/QuotaCard.svelte";
   import SiteHeader from "./components/SiteHeader.svelte";
@@ -15,7 +16,9 @@
   import StatsRow from "./components/StatsRow.svelte";
   import UsersPanel from "./components/UsersPanel.svelte";
   import { untrack } from "svelte";
+  import { clock } from "./lib/clock.svelte.ts";
   import { Dashboard } from "./lib/dashboard.svelte.ts";
+  import { hasLiveWindow } from "./lib/view-model.ts";
 
   const dash = new Dashboard();
   // Breadcrumb after "AI Activity" in the header: where you are.
@@ -111,6 +114,9 @@
                 <OpenCodeCard vm={vm.opencode} />
                 <TodayByTool today={vm.stats.today} />
               </div>
+            {:else if tool === "antigravity" && !hasLiveWindow(vm.antigravity, clock.now)}
+              <!-- No quota window running (quotas are optional): what is going on now. -->
+              <div class="full"><ActivityToolCard tool="antigravity" vm={vm.antigravityActivity} /></div>
             {:else}
               {@const q = quotaCards[tool]}
               <div class="quota" class:full={q.pools.length > 1}><QuotaCard vm={q} /></div>

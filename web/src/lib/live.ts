@@ -18,6 +18,8 @@ export interface LiveData {
   sessions: SessionsResponse;
   /** OpenCode's card: its summary (today) and its latest sessions. */
   opencode: { summary: SummaryResponse; latest: SessionsResponse };
+  /** Antigravity's card without quota windows: the same as OpenCode's. */
+  antigravity: { summary: SummaryResponse; latest: SessionsResponse };
 }
 
 export const ACTIVITY_DAYS = 364;
@@ -108,6 +110,7 @@ export function liveDashboard(d: LiveData, provider: Provider): DashboardVM {
     codex: toolQuotas(d.quotas, "codex"),
     opencode: activityTool(d.opencode, true),
     antigravity: toolQuotas(d.quotas, "antigravity"),
+    antigravityActivity: activityTool(d.antigravity, false),
     sessions,
     sessionsTotal: d.sessions.total,
   };

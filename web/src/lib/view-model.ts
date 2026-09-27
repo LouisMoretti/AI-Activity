@@ -73,6 +73,9 @@ export interface DashboardVM {
   codex: QuotaToolVM;
   opencode: ActivityToolVM;
   antigravity: QuotaToolVM;
+  // Shown instead of the quota windows while none is running (quotas are
+  // optional for Antigravity: they need the signed-in agy CLI).
+  antigravityActivity: ActivityToolVM;
   sessions: SessionVM[];
   sessionsTotal: number;
 }
@@ -97,3 +100,7 @@ export const toolsFor = (p: Provider): ToolKey[] =>
 
 /** Labels of the quota windows, in display order (spans: QUOTA_WINDOW_SEC). */
 export const WINDOW_LABELS: Record<QuotaWindowType, string> = { five_hour: "5-hour window", seven_day: "This week" };
+
+/** Whether a quota card has a measured window still running at `now`. */
+export const hasLiveWindow = (q: QuotaToolVM, now: number): boolean =>
+  q.pools.some((p) => p.windows.some((w) => w.pct !== null && (w.resetsAt === null || w.resetsAt > now)));
