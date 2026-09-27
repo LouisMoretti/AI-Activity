@@ -521,7 +521,7 @@ describe("locked server (first account made from the CLI)", () => {
     assert.equal((await req(srv.base, "POST", "/api/devices", { body: { name: "x" } })).status, 401);
     assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { body: event(), key: "ak_nope" })).status, 401);
     const st = (await req(srv.base, "GET", "/api/auth/status")).json;
-    assert.deepEqual(st, { authenticated: false, user: null, setup_required: false, signup_open: true, github: true });
+    assert.deepEqual(st, { authenticated: false, user: null, setup_required: false, signup_open: true, github_sign_in: true });
   });
 
   test("sign in with GitHub / sign out cycle", async () => {
@@ -531,7 +531,7 @@ describe("locked server (first account made from the CLI)", () => {
     const cookie = r.cookie;
     assert.equal((await req(srv.base, "GET", "/api/devices", { cookie })).status, 200);
     const me = (await req(srv.base, "GET", "/api/auth/status", { cookie })).json;
-    assert.deepEqual(me.user, { id: 1, username: "admin", display_name: "admin", avatar_url: null, is_admin: true, github: true });
+    assert.deepEqual(me.user, { id: 1, username: "admin", display_name: "admin", avatar_url: null, is_admin: true, github_linked: true });
     const d = await newDevice(srv.base, "locked-dev", cookie);
     assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { body: event(), key: d.key })).json.stored, true);
     await req(srv.base, "POST", "/api/auth/logout", { cookie });
@@ -560,8 +560,11 @@ describe("locked server (first account made from the CLI)", () => {
     const noCookie = await fetch(`${srv.base}/api/auth/github/callback?code=x&state=${state}`, { redirect: "manual" });
     assert.equal(noCookie.headers.get("location"), "/?auth_error=expired");
     assert.equal(noCookie.headers.getSetCookie().some((c) => c.startsWith("dash_session=")), false);
-    // A state that is not the one in this browser's cookie.
-    assert.equal((await githubSignIn(srv.base, "admin", { state: "forged" })).error, "expired");
+    // A state that is not the one in this browser's cookie; the sign-in in
+    // progress (its cookie) is left alone.
+    const forged = await githubSignIn(srv.base, "admin", { state: "forged" });
+    assert.equal(forged.error, "expired");
+    assert.equal(forged.headers.getSetCookie().some((c) => c.startsWith("gh_oauth=")), false);
     // The same state twice: the second is refused (the code is single-use too).
     const first = await req(srv.base, "POST", "/api/auth/github", { body: {}, anon: true, headers: { "cf-connecting-ip": "198.51.100.77" } });
     const s = new URL(first.json.url).searchParams.get("state");
@@ -575,7 +578,9 @@ describe("locked server (first account made from the CLI)", () => {
 
   test("it comes back to a same-site page only", async () => {
     assert.equal((await githubSignIn(srv.base, "admin", { next: "/settings?tab=x" })).location, "/settings?tab=x");
-    for (const next of ["//evil.example/x", "https://evil.example/", "/\\evil.example", 42]) {
+    // Browsers drop tabs and newlines from a Location: "/<tab>/evil" is "//evil".
+    for (const next of ["//evil.example/x", "https://evil.example/", "/\\evil.example", "/\t/evil.example", "/\n/evil.example",
+      "/\r//evil.example", "/ /evil.example", "/x\\y", "/\u0000", 42]) {
       assert.equal((await githubSignIn(srv.base, "admin", { next })).location, "/", String(next));
     }
   });
@@ -634,9 +639,9 @@ describe("locked server (first account made from the CLI)", () => {
 
 describe("a server without GitHub sign-in set up", () => {
   test("says so, and nobody can start a sign-in", async () => {
-    const srv = await startServer({ signedIn: false, env: { GITHUB_CLIENT_ID: "", GITHUB_CLIENT_SECRET: "" } });
+    const srv = await startServer({ autoLogin: false, env: { GITHUB_CLIENT_ID: "", GITHUB_CLIENT_SECRET: "" } });
     try {
-      assert.equal((await req(srv.base, "GET", "/api/auth/status")).json.github, false);
+      assert.equal((await req(srv.base, "GET", "/api/auth/status")).json.github_sign_in, false);
       assert.equal((await req(srv.base, "POST", "/api/auth/github", { body: {} })).status, 503);
     } finally {
       await srv.stop();
@@ -682,7 +687,7 @@ describe("accounts", () => {
     const srv = await startServer({ autoLogin: false });
     try {
       assert.deepEqual((await req(srv.base, "GET", "/api/auth/status")).json,
-        { authenticated: false, user: null, setup_required: true, signup_open: true, github: true });
+        { authenticated: false, user: null, setup_required: true, signup_open: true, github_sign_in: true });
       for (const p of ["/api/devices", "/api/users", "/api/admin/overview"]) {
         assert.equal((await req(srv.base, "GET", p)).status, 401, p);
       }
@@ -693,15 +698,13 @@ describe("accounts", () => {
       const key = await genKey(srv.dbPath, "pre-accounts");
       assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event() })).json.stored, true);
 
-      // The CLI looks the GitHub account up by login (GitHub's public API).
+      // The first account: the setup code from the server log, then GitHub.
       githubUser("louis", { name: "Louis", avatar_url: "https://avatars.githubusercontent.com/u/77?v=4" });
-      const add = await userCli(srv.dbPath, ["add", "louis"]);
-      assert.equal(add.code, 0, add.out);
-      const cookie = await login(srv.base, "louis");
+      const { cookie } = await githubSignIn(srv.base, "louis", { setup_code: srv.setupCode() });
       const st = (await req(srv.base, "GET", "/api/auth/status", { cookie })).json;
       assert.deepEqual(st, {
-        authenticated: true, setup_required: false, signup_open: true, github: true,
-        user: { id: 1, username: "louis", display_name: "Louis", avatar_url: "https://avatars.githubusercontent.com/u/77?v=4", is_admin: true, github: true },
+        authenticated: true, setup_required: false, signup_open: true, github_sign_in: true,
+        user: { id: 1, username: "louis", display_name: "Louis", avatar_url: "https://avatars.githubusercontent.com/u/77?v=4", is_admin: true, github_linked: true },
       });
       assert.equal((await req(srv.base, "GET", "/api/u/louis/stats?days=730", { cookie })).json.events, 1);
       assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event() })).json.stored, true);
@@ -710,37 +713,38 @@ describe("accounts", () => {
     }
   });
 
-  test("CLI: add, link and list by GitHub login", async () => {
+  test("CLI: link and list; accounts are never created from it", async () => {
     const srv = await startServer();
     try {
-      assert.notEqual((await userCli(srv.dbPath, ["add", "no spaces"])).code, 0);
-      assert.notEqual((await userCli(srv.dbPath, ["add", "-dash"])).code, 0);
-      const unknown = await userCli(srv.dbPath, ["add", "nobody-on-github"]);
-      assert.notEqual(unknown.code, 0);
-      assert.match(unknown.out, /no GitHub account "nobody-on-github"/);
-      githubUser("carol");
-      assert.equal((await userCli(srv.dbPath, ["add", "carol"])).code, 0);
-      assert.notEqual((await userCli(srv.dbPath, ["add", "CAROL"])).code, 0, "same GitHub account twice");
-      // --id: no GitHub call at all (offline servers).
-      assert.equal((await userCli(srv.dbPath, ["add", "dora", "--id", "4242", "--admin"])).code, 0);
-      assert.notEqual((await userCli(srv.dbPath, ["add", "dora2", "--id", "4242"])).code, 0);
-      assert.notEqual((await userCli(srv.dbPath, ["add", "x", "--id", "0"])).code, 0);
+      await register(srv.base, "carol");
       // Linking an account from before GitHub sign-in.
       legacyAccount(srv, "oldtimer");
       githubUser("newtimer");
       assert.notEqual((await userCli(srv.dbPath, ["link", "nobody", "newtimer"])).code, 0);
-      assert.notEqual((await userCli(srv.dbPath, ["link", "oldtimer", "carol"])).code, 0, "carol's GitHub is linked already");
+      assert.notEqual((await userCli(srv.dbPath, ["link", "oldtimer", "no spaces"])).code, 0);
+      const unknown = await userCli(srv.dbPath, ["link", "oldtimer", "nobody-on-github"]);
+      assert.notEqual(unknown.code, 0);
+      assert.match(unknown.out, /no GitHub account "nobody-on-github"/);
+      assert.notEqual((await userCli(srv.dbPath, ["link", "oldtimer", "CAROL"])).code, 0, "carol's GitHub is linked already");
+      assert.notEqual((await userCli(srv.dbPath, ["link", "oldtimer", "x", "--id", "0"])).code, 0);
       let list = (await userCli(srv.dbPath, ["list"])).out;
       assert.match(list, /#\d+ oldtimer \[not linked to GitHub\]/);
       assert.match(list, /#1 admin \[admin\]\n/);
-      assert.match(list, /#\d+ dora \[admin\]\n/);
+      assert.match(list, /#\d+ carol\n/);
       assert.equal((await userCli(srv.dbPath, ["link", "oldtimer", "newtimer"])).code, 0);
       list = (await userCli(srv.dbPath, ["list"])).out;
       assert.doesNotMatch(list, /not linked/);
       // Its username follows the GitHub login from its next sign-in on.
       const cookie = await login(srv.base, "newtimer");
       assert.equal((await req(srv.base, "GET", "/api/auth/status", { cookie })).json.user.username, "newtimer");
-      assert.notEqual((await userCli(srv.dbPath, ["passwd", "admin"])).code, 0);
+      // --id: no GitHub call at all (offline servers).
+      legacyAccount(srv, "offline");
+      assert.equal((await userCli(srv.dbPath, ["link", "offline", "offline-gh", "--id", "4242"])).code, 0);
+      githubUser("offline-gh", { id: 4242 });
+      assert.equal((await githubSignIn(srv.base, "offline-gh")).error, null);
+      for (const gone of [["add", "dora"], ["passwd", "admin"]]) {
+        assert.notEqual((await userCli(srv.dbPath, gone)).code, 0, gone[0]);
+      }
     } finally {
       await srv.stop();
     }
@@ -749,8 +753,7 @@ describe("accounts", () => {
   test("usage lands on the device owner; devices stay private", async () => {
     const srv = await startServer({ signedIn: false });
     try {
-      githubUser("bob");
-      assert.equal((await userCli(srv.dbPath, ["add", "bob"])).code, 0);
+      await register(srv.base, "bob");
       const admin = await login(srv.base, "admin");
       const bob = await login(srv.base, "bob");
       const adminDev = await newDevice(srv.base, "admin-laptop", admin);
@@ -820,13 +823,13 @@ describe("profiles from GitHub and user management", () => {
   test("admins list accounts; others cannot", async () => {
     const carol = (await register(srv.base, "carol", { over: { name: " Carol " } })).cookie;
     const me = (await req(srv.base, "GET", "/api/auth/status", { cookie: carol })).json.user;
-    assert.deepEqual(me, { id: me.id, username: "carol", display_name: "Carol", avatar_url: null, is_admin: false, github: true });
+    assert.deepEqual(me, { id: me.id, username: "carol", display_name: "Carol", avatar_url: null, is_admin: false, github_linked: true });
     assert.equal((await req(srv.base, "GET", "/api/users", { cookie: carol })).status, 403);
     assert.equal((await req(srv.base, "GET", "/api/admin/overview", { cookie: carol })).status, 403);
     // Accounts are only created by signing up: there is no admin creation route.
     assert.equal((await post("/api/users", { username: "eve" }, admin)).status, 404);
     const list = (await req(srv.base, "GET", "/api/users", { cookie: admin })).json.users;
-    assert.deepEqual(list.map((u) => [u.username, u.is_admin, u.disabled, u.github]),
+    assert.deepEqual(list.map((u) => [u.username, u.is_admin, u.disabled, u.github_linked]),
       [["admin", true, false, true], ["carol", false, false, true]]);
   });
 
@@ -895,27 +898,50 @@ describe("profiles from GitHub and user management", () => {
     assert.ok(ok.cookie);
   });
 
-  test("an account from before GitHub sign-in links itself from a session still open", async () => {
+  test("an account from before GitHub sign-in is linked from the server CLI only, which ends its sessions", async () => {
     const legacy = legacyAccount(srv, "Old.Name");
-    const me = () => req(srv.base, "GET", "/api/auth/status", { cookie: legacy.cookie });
-    assert.equal((await me()).json.user.github, false);
-    // Not signed in: nothing to link.
-    assert.equal((await githubSignIn(srv.base, "linker", { link: true })).start.status, 401);
-    const r = await githubSignIn(srv.base, "linker", { link: true, cookie: legacy.cookie, next: "/settings" });
-    assert.deepEqual([r.location, r.cookie], ["/settings", null]);
-    const user = (await me()).json.user;
-    assert.deepEqual([user.id, user.username, user.github], [legacy.id, "linker", true]);
-    // It signs in with GitHub from now on.
+    const me = (cookie = legacy.cookie) => req(srv.base, "GET", "/api/auth/status", { cookie });
+    assert.equal((await me()).json.user.github_linked, false);
+    const githubId = () => withDb(srv, (db) => db.prepare("SELECT github_id FROM users WHERE id = ?").get(legacy.id).github_id);
+    // Its session (maybe a stolen one) cannot sign in again with GitHub
+    // (what deleting needs), nor tie it to a GitHub account: a sign-in from
+    // it is someone signing in (replacing that session), and "link" means nothing.
+    const reauth = await req(srv.base, "POST", "/api/auth/github", { body: { reauth: true }, cookie: legacy.cookie });
+    assert.equal(reauth.status, 409);
+    const stolen = legacyAccount(srv, "Old.Name2");
+    const other = await githubSignIn(srv.base, "stealer", { link: true, cookie: stolen.cookie });
+    assert.equal(other.error, null);
+    assert.notEqual((await me(other.cookie)).json.user.id, stolen.id);
+    assert.equal(withDb(srv, (db) => db.prepare("SELECT github_id FROM users WHERE id = ?").get(stolen.id).github_id), null);
+    assert.equal(githubId(), null);
+
+    githubUser("linker", { name: "Linker" });
+    const linked = await userCli(srv.dbPath, ["link", "Old.Name", "linker"]);
+    assert.equal(linked.code, 0, linked.out);
+    // Every session from before ends; it signs in with GitHub, as "linker".
+    assert.equal((await me()).json.authenticated, false);
+    assert.equal(withDb(srv, (db) => db.prepare("SELECT username, display_name FROM users WHERE id = ?").get(legacy.id)).username, "linker");
     const cookie = await login(srv.base, "linker");
-    assert.equal((await req(srv.base, "GET", "/api/auth/status", { cookie })).json.user.id, legacy.id);
-    // Linking again to another GitHub account, or someone else's, is refused.
-    assert.equal((await githubSignIn(srv.base, "other-gh", { link: true, cookie })).location, "/settings?auth_error=already_linked");
-    const second = legacyAccount(srv, "second");
-    assert.equal((await githubSignIn(srv.base, "linker", { link: true, cookie: second.cookie })).location,
-      "/settings?auth_error=linked_elsewhere");
-    // A session that does not exist cannot start linking.
-    const third = legacyAccount(srv, "third");
-    assert.equal((await githubSignIn(srv.base, "third-gh", { link: true, cookie: `${third.cookie}x` })).start.status, 401);
+    const user = (await me(cookie)).json.user;
+    assert.deepEqual([user.id, user.username, user.display_name, user.github_linked], [legacy.id, "linker", "Linker", true]);
+    // Relinking to another GitHub account needs --force; someone else's is refused.
+    githubUser("linker2");
+    assert.notEqual((await userCli(srv.dbPath, ["link", "linker", "linker2"])).code, 0);
+    assert.notEqual((await userCli(srv.dbPath, ["link", "linker", "stealer"])).code, 0);
+    assert.equal((await userCli(srv.dbPath, ["link", "linker", "linker2", "--force"])).code, 0);
+    assert.equal((await me(cookie)).json.authenticated, false);
+    assert.equal((await me(await login(srv.base, "linker2"))).json.user.id, legacy.id);
+  });
+
+  test("a stale username moves to a free name, even when <name>-<id> is taken", async () => {
+    await register(srv.base, "dup");
+    const id = await userId(srv.base, "dup", admin);
+    legacyAccount(srv, `dup-${id}`);
+    renameGithubUser("dup", "dup-renamed");
+    assert.equal((await register(srv.base, "dup")).error, null);
+    const names = (await req(srv.base, "GET", "/api/users", { cookie: admin })).json.users.map((u) => [u.id, u.username]);
+    assert.ok(names.some(([i, n]) => i === id && n === `dup-${id}-2`), JSON.stringify(names));
+    assert.equal((await githubSignIn(srv.base, "dup-renamed")).error, null);
   });
 
   test("an unknown GitHub user signing in gets a new account; a disabled one cannot sign in", async () => {
@@ -970,7 +996,7 @@ describe("creating accounts from the site", () => {
       const first = await githubSignIn(srv.base, "founder", { setup_code: ` ${code.toLowerCase().replace(/-/g, "")} ` });
       assert.equal(first.location, "/");
       const st = (await req(srv.base, "GET", "/api/auth/status", { cookie: first.cookie })).json;
-      assert.deepEqual(st.user, { id: 1, username: "founder", display_name: "Founder", avatar_url: null, is_admin: true, github: true });
+      assert.deepEqual(st.user, { id: 1, username: "founder", display_name: "Founder", avatar_url: null, is_admin: true, github_linked: true });
       assert.equal((await req(srv.base, "GET", "/api/u/founder/stats?days=730", { cookie: first.cookie })).json.events, 1);
       // ...then the setup code means nothing: new GitHub users sign up (not admin).
       const second = await githubSignIn(srv.base, "second", { setup_code: code });
@@ -1018,11 +1044,22 @@ describe("creating accounts from the site", () => {
   });
 
   test("a server that already has accounts prints no setup code", async () => {
-    const srv = await startServer();
+    const dir = fs.mkdtempSync(`${os.tmpdir()}/ai-usage-setup-`);
+    const env = { DB_PATH: `${dir}/t.db` };
     try {
-      assert.equal(srv.setupCode(), null);
+      const first = await startServer({ env });
+      assert.ok(first.setupCode(), "the first start had one");
+      await first.stop();
+      const again = await startServer({ env, autoLogin: false });
+      try {
+        assert.equal(again.setupCode(), null);
+        assert.equal((await req(again.base, "POST", "/api/auth/github", { body: { setup_code: "x" }, anon: true })).status, 200,
+          "a normal sign-in: the code means nothing any more");
+      } finally {
+        await again.stop();
+      }
     } finally {
-      await srv.stop();
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });
@@ -1035,7 +1072,7 @@ describe("open sign-up and admin panel", () => {
       const r = await register(srv.base, "neo", { over: { name: "Neo", avatar_url: pic } });
       assert.deepEqual([r.location, r.error], ["/", null]);
       const me = (await req(srv.base, "GET", "/api/auth/status", { cookie: r.cookie })).json.user;
-      assert.deepEqual(me, { id: me.id, username: "neo", display_name: "Neo", avatar_url: pic, is_admin: false, github: true });
+      assert.deepEqual(me, { id: me.id, username: "neo", display_name: "Neo", avatar_url: pic, is_admin: false, github_linked: true });
       assert.equal((await req(srv.base, "GET", "/api/admin/overview", { cookie: r.cookie })).status, 403);
       assert.equal((await req(srv.base, "GET", "/api/u/neo", { anon: true })).json.display_name, "Neo");
     } finally {
@@ -1055,11 +1092,8 @@ describe("open sign-up and admin panel", () => {
       assert.equal((await req(srv.base, "GET", "/api/auth/status", { anon: true })).json.signup_open, false);
       const refused = await register(srv.base, "trinity");
       assert.deepEqual([refused.error, refused.cookie], ["closed", null]);
-      // Existing accounts still sign in, and the CLI still creates accounts.
+      // Existing accounts still sign in.
       await login(srv.base, "neo");
-      githubUser("morpheus");
-      assert.equal((await userCli(srv.dbPath, ["add", "morpheus"])).code, 0);
-      await login(srv.base, "morpheus");
       assert.deepEqual((await settings({ signup_open: true })).json, { signup_open: true });
       assert.equal((await register(srv.base, "trinity")).error, null);
     } finally {
@@ -1172,6 +1206,27 @@ describe("deleting your own activity", () => {
     assert.equal((await ingest(annDev.key, withQuota({ session_id: "ann-new" }))).json.stored, true);
     assert.equal((await summary("ann")).events, 1);
     assert.equal((await quotas("ann")).length, 1);
+  });
+
+  test("signing in again for it: the same GitHub account only, back to where it started", async () => {
+    const rea = await register(srv.base, "rea");
+    const reaId = await userId(srv.base, "rea");
+    ageSessions(srv, reaId, 3600);
+    const status = (cookie) => req(srv.base, "GET", "/api/auth/status", { cookie });
+    assert.equal((await githubSignIn(srv.base, "rea", { reauth: true })).start.status, 401, "no session");
+    // Another GitHub account: refused, back to Settings, still signed in as before.
+    const other = await githubSignIn(srv.base, "someone-else", { reauth: true, cookie: rea.cookie, next: "/settings" });
+    assert.deepEqual([other.location, other.cookie], ["/settings?auth_error=other_account", null]);
+    assert.equal((await status(rea.cookie)).json.user.username, "rea");
+    // Cancelled on GitHub: said on Settings too.
+    assert.equal((await githubSignIn(srv.base, null, { reauth: true, cookie: rea.cookie, next: "/settings?x=1" })).location,
+      "/settings?x=1&auth_error=denied");
+    // The same account: a fresh session, and deleting works.
+    const again = await githubSignIn(srv.base, "rea", { reauth: true, cookie: rea.cookie, next: "/settings" });
+    assert.equal(again.location, "/settings");
+    const del = await req(srv.base, "POST", "/api/account/delete-activity", { body: { confirm: CONFIRM }, cookie: again.cookie });
+    assert.equal(del.status, 200);
+    assert.equal((await status(rea.cookie)).json.authenticated, false, "signing in again replaced the old session");
   });
 
   test("a clock running ahead or a missing time cannot bring deleted messages back", async () => {
@@ -1347,10 +1402,9 @@ describe("read cache", () => {
     await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: event({ usage: { input_tokens: 5 } }) });
     assert.equal((await board()).totals.tokens, before.totals.tokens + 5);
     assert.equal(await tokens(), before.totals.tokens + 5);
-    // Another connection (the CLI) writing to the same DB.
-    githubUser("cliuser");
-    assert.equal((await userCli(srv.dbPath, ["add", "cliuser"])).code, 0);
-    assert.ok((await board()).entries.some((e) => e.username === "cliuser"));
+    // Another connection (the CLI, a restore) writing to the same DB.
+    withDb(srv, (db) => db.prepare("UPDATE users SET display_name = 'Written elsewhere' WHERE id = 1").run());
+    assert.equal((await board()).entries.find((e) => e.username === "admin").display_name, "Written elsewhere");
   });
 
   test("read indexes replace the old ones", async () => {
@@ -1635,8 +1689,7 @@ describe("limits, bounds and admin edge cases", () => {
   test("CLI: user list and gen-key --user", async () => {
     const srv = await startServer();
     try {
-      githubUser("carol");
-      assert.equal((await userCli(srv.dbPath, ["add", "carol"])).code, 0);
+      await register(srv.base, "carol");
       const list = await userCli(srv.dbPath, ["list"]);
       assert.equal(list.code, 0);
       assert.match(list.out, /#1 admin \[admin\]/);

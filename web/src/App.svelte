@@ -75,9 +75,10 @@
     {/if}
 
     {#if dash.route.page === "settings" && dash.account && dash.status === "ready"}
+      {#if dash.authError}<p class="notice" role="alert">{dash.authError}</p>{/if}
       <Section title="Account" subtitle="Your profile, from GitHub">
         {#key dash.account.id}
-          <ProfilePanel account={dash.account} error={dash.authError} onlink={() => dash.linkGithub()} />
+          <ProfilePanel account={dash.account} />
         {/key}
       </Section>
 
@@ -87,7 +88,8 @@
 
       <Section title="Danger zone" subtitle="Cannot be undone">
         {#key dash.account.id}
-          <DangerZone ondeletedactivity={() => dash.load()} onsignout={() => dash.logout()} onreauth={() => dash.signInAgain()} />
+          <DangerZone linked={dash.account.github_linked} ondeletedactivity={() => dash.load()} onsignout={() => dash.logout()}
+            onreauth={() => dash.signInAgain()} />
         {/key}
       </Section>
 

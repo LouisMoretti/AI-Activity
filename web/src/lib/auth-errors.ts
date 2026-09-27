@@ -10,9 +10,8 @@ const MESSAGES: Record<string, string> = {
   exists: "An account already exists: sign in instead.",
   closed: "Account creation is closed on this server: only existing accounts can sign in.",
   too_many: "Too many accounts were created from here. Try again later.",
-  taken: "Your GitHub login is the username of an account not linked to GitHub yet. Its owner links it from Settings, or an admin with npm run user -- link.",
-  linked_elsewhere: "This GitHub account is already linked to another account.",
-  already_linked: "This account is already linked to another GitHub account.",
+  taken: "Your GitHub login is the username of an account not linked to GitHub yet: an admin links it (npm run user -- link).",
+  other_account: "That GitHub account is not the one signed in here: sign in again with this account's GitHub account.",
 };
 
 /** The message for an auth_error code, or null for an unknown one. */

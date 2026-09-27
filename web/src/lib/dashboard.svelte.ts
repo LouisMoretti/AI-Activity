@@ -73,9 +73,11 @@ export const currentPath = () => location.pathname + location.search;
 /** Where to go after signing in: a same-site path from ?next=, if any. */
 function nextPath(): string | null {
   const next = new URLSearchParams(location.search).get("next");
-  // "//host" and "/\host" would leave the site (pushState then throws).
+  // "//host", "/\host" and "/<tab>/host" (browsers drop tabs and newlines)
+  // would leave the site; the server checks it the same way (safeNext).
   // Signing in from /demo lands on the viewer's real profile, not the fiction.
-  return next && /^\/(?![/\\])/.test(next) && !/^\/demo\/?(?:[?#]|$)/.test(next) ? next : null;
+  return next && next.length <= 512 && /^\/(?!\/)/.test(next) && !/[\s\\\x00-\x1f\x7f]/.test(next)
+    && !/^\/demo\/?(?:[?#]|$)/.test(next) ? next : null;
 }
 
 const same = (a: string | undefined, b: string | undefined) =>
@@ -125,7 +127,7 @@ export class Dashboard {
       const auth = await api.authStatus();
       this.account = auth.user;
       this.signupOpen = auth.signup_open;
-      this.github = auth.github;
+      this.github = auth.github_sign_in;
       if (!auth.user) {
         if (route.page === "profile") await this.loadProfile(route.username);
         // Public, like profile pages: the page loads its own data.
@@ -243,14 +245,12 @@ export class Dashboard {
     return this.toGithub({ next: nextPath() ?? "/", ...(setupCode !== null ? { setup_code: setupCode } : {}) });
   }
 
-  /** Link the signed-in account to a GitHub account, then back to `next` (Settings). */
-  async linkGithub(next = currentPath()): Promise<string | null> {
-    return this.toGithub({ next, link: true });
-  }
-
-  /** Sign in again (a destructive action needs a recent sign-in), then back to `next`. */
+  /**
+   * Sign the signed-in account in again with GitHub (a destructive action
+   * needs a recent sign-in), then back to `next`, where a failure is told.
+   */
   async signInAgain(next = currentPath()): Promise<string | null> {
-    return this.toGithub({ next });
+    return this.toGithub({ next, reauth: true });
   }
 
   private async toGithub(start: Parameters<typeof api.startGithub>[0]): Promise<string | null> {
@@ -259,8 +259,10 @@ export class Dashboard {
       location.assign(url);
       return null;
     } catch (e) {
-      // The only 401 here is a wrong setup code.
-      return e instanceof UnauthorizedError ? "Wrong setup code: copy it from the server log." : (e as Error).message;
+      if (e instanceof UnauthorizedError) {
+        return start.setup_code !== undefined ? "Wrong setup code: copy it from the server log." : "Sign in first.";
+      }
+      return (e as Error).message;
     }
   }
 

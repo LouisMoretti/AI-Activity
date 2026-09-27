@@ -2,11 +2,9 @@ import { randomBytes } from "node:crypto";
 import { Hono, type Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import type { AuthStatus } from "../../shared/types.ts";
-import {
-  accountsExist, createAccount, createFirstAccount, findUserByGithubId, findUserByUsername, getUser, setGithubId,
-  setGithubProfile, setUsername, signupOpen,
-} from "../db/queries.ts";
+import { accountsExist, createAccount, createFirstAccount, findUserByGithubId, signupOpen } from "../db/queries.ts";
 import type { DB } from "../db/schema.ts";
+import { applyGithubProfile, claimLogin } from "../lib/accounts.ts";
 import type { ClientInfo } from "../lib/client.ts";
 import { authorizeUrl, signedInUser, type GithubConfig, type GithubUser } from "../lib/github.ts";
 import { readJson } from "../lib/http.ts";
@@ -30,21 +28,34 @@ const STATE_PATH = "/api/auth/github";
  */
 export type AuthError =
   | "denied" | "expired" | "github" | "disabled" | "setup" | "exists" | "closed" | "too_many" | "taken"
-  | "linked_elsewhere" | "already_linked";
+  | "other_account";
 
 /**
  * What a sign-in started with POST /api/auth/github does once GitHub sends
  * the browser back: sign in (or sign up), create the first account (the
- * setup code was checked), or link the signed-in account.
+ * setup code was checked), or sign the signed-in account in again (a
+ * destructive action wants a recent sign-in: it must be the same account).
  */
-type Pending =
-  | { mode: "login"; next: string; redirectUri: string; expires: number }
-  | { mode: "setup"; next: string; redirectUri: string; expires: number }
-  | { mode: "link"; next: string; redirectUri: string; expires: number; userId: number };
+type Pending = { next: string; redirectUri: string; expires: number } & (
+  | { mode: "login" }
+  | { mode: "setup" }
+  | { mode: "reauth"; userId: number }
+);
 
-/** A same-site path to come back to; anything else goes home. */
+/**
+ * A same-site path to come back to; anything else goes home. No
+ * backslash, whitespace or control character anywhere: browsers drop tabs
+ * and newlines from a Location, so "/\t/evil.example" would leave the site.
+ */
 export function safeNext(v: unknown): string {
-  return typeof v === "string" && v.length <= 512 && /^\/(?![/\\])/.test(v) ? v : "/";
+  return typeof v === "string" && v.length <= 512 && /^\/(?!\/)/.test(v) && !/[\s\\\x00-\x1f\x7f]/.test(v) ? v : "/";
+}
+
+/** `path` with ?auth_error=<error> added to its query. */
+function withError(path: string, error: AuthError): string {
+  const url = new URL(path, "http://x");
+  url.searchParams.set("auth_error", error);
+  return url.pathname + url.search;
 }
 
 /**
@@ -65,65 +76,35 @@ export function authRoutes(
     return `${origin}/api/auth/github/callback`;
   };
 
-  /** One more account from this client, or false over the cap. */
-  const signupAllowed = (c: Context) => {
+  /** Accounts this client made in the current window (a new window starts from zero). */
+  const signupsBy = (c: Context) => {
     if (Date.now() - signupWindow > SIGNUP_WINDOW_MS) {
       signups = new Map();
       signupWindow = Date.now();
     }
-    const id = auth.clientId(c);
-    if ((signups.get(id) ?? 0) >= SIGNUPS_PER_CLIENT) return false;
-    signups.set(id, (signups.get(id) ?? 0) + 1);
-    return true;
+    return signups.get(auth.clientId(c)) ?? 0;
   };
 
-  /**
-   * Give the account its GitHub login as username, unless an account not
-   * linked to GitHub holds that name (then it keeps the one it has; false).
-   * A linked account holding it is stale (that GitHub user was renamed and
-   * the login reused): it becomes "<name>-<id>" until it signs in again.
-   */
-  const claimLogin = (login: string, self: number | null): boolean => {
-    const holder = findUserByUsername(db, login);
-    if (!holder || holder.id === self) return true;
-    if (holder.github_id === null) return false;
-    setUsername(db, holder.id, `${holder.username}-${holder.id}`);
-    return true;
+  /** A new account for this GitHub user, or why not. Counted against the client only once made. */
+  const signUp = (c: Context, gh: GithubUser, admin: boolean): number | AuthError => {
+    if (!admin && signupsBy(c) >= SIGNUPS_PER_CLIENT) return "too_many";
+    const id = db.transaction(() => {
+      if (!claimLogin(db, gh.login, null)) return "taken" as const;
+      const a = { username: gh.login, display_name: gh.name, avatar_url: gh.avatar_url, github_id: gh.id, is_admin: admin };
+      return admin ? createFirstAccount(db, a) ?? ("exists" as const) : createAccount(db, a);
+    })();
+    if (typeof id === "number" && !admin) signups.set(auth.clientId(c), signupsBy(c) + 1);
+    return id;
   };
-
-  /** The profile follows GitHub on every sign-in (and on linking). */
-  const syncProfile = (userId: number, gh: GithubUser) => db.transaction(() => {
-    const user = getUser(db, userId)!;
-    const username = claimLogin(gh.login, userId) ? gh.login : user.username!;
-    setGithubProfile(db, userId, { username, display_name: gh.name, avatar_url: gh.avatar_url });
-  })();
-
-  /** A new account for this GitHub user, or why not. */
-  const signUp = (c: Context, gh: GithubUser, admin: boolean): number | AuthError => db.transaction(() => {
-    if (!claimLogin(gh.login, null)) return "taken" as const;
-    const a = { username: gh.login, display_name: gh.name, avatar_url: gh.avatar_url, github_id: gh.id, is_admin: admin };
-    if (admin) return createFirstAccount(db, a) ?? ("exists" as const);
-    if (!signupAllowed(c)) return "too_many" as const;
-    return createAccount(db, a);
-  })();
 
   /** What the callback does for each kind of sign-in: the account to sign in, or why not. */
   const complete = (c: Context, p: Pending, gh: GithubUser): number | AuthError => {
-    const known = findUserByGithubId(db, gh.id);
-    if (p.mode === "link") {
-      if (auth.resolve(c)?.userId !== p.userId) return "expired";
-      if (known && known.id !== p.userId) return "linked_elsewhere";
-      const self = getUser(db, p.userId);
-      if (!self) return "expired";
-      if (self.github_id !== null && self.github_id !== gh.id) return "already_linked";
-      setGithubId(db, p.userId, gh.id);
-      syncProfile(p.userId, gh);
-      return p.userId;
-    }
     if (p.mode === "setup") return accountsExist(db) ? "exists" : signUp(c, gh, true);
+    const known = findUserByGithubId(db, gh.id);
+    if (p.mode === "reauth" && known?.id !== p.userId) return "other_account";
     if (known) {
       if (known.disabled) return "disabled";
-      syncProfile(known.id, gh);
+      applyGithubProfile(db, known.id, gh);
       return known.id;
     }
     if (!accountsExist(db)) return "setup";
@@ -139,24 +120,25 @@ export function authRoutes(
         user: who?.account ?? null,
         setup_required: !accountsExist(db),
         signup_open: signupOpen(db),
-        github: github !== null,
+        github_sign_in: github !== null,
       });
     })
-    // Starts a GitHub sign-in: {next?, setup_code?, link?} → {url} to send
+    // Starts a GitHub sign-in: {next?, setup_code?, reauth?} → {url} to send
     // the browser to. The state ties the callback to this browser (cookie).
     .post("/github", async (c) => {
       if (!github) return c.json({ error: "Sign in with GitHub is not set up on this server" }, 503);
       const body = await readJson(c);
-      const next = safeNext(body.next);
-      const redirectUri = callbackUrl(c);
-      const expires = Date.now() + PENDING_MS;
+      const base = { next: safeNext(body.next), redirectUri: callbackUrl(c), expires: Date.now() + PENDING_MS };
       let p: Pending;
-      if (body.link === true) {
+      if (body.reauth === true) {
         const who = auth.resolve(c);
         if (!who) return c.json({ error: "sign in first" }, 401);
-        p = { mode: "link", next, redirectUri, expires, userId: who.userId };
+        if (!who.account.github_linked) {
+          return c.json({ error: "this account is not linked to GitHub yet: ask an admin to link it" }, 409);
+        }
+        p = { ...base, mode: "reauth", userId: who.userId };
       } else if (!accountsExist(db)) {
-        if (!setupCode) return c.json({ error: "no setup code: restart the server or use npm run user -- add" }, 409);
+        if (!setupCode) return c.json({ error: "no setup code: restart the server for a new one" }, 409);
         const wait = auth.attempt(c);
         if (wait) {
           c.header("retry-after", String(wait));
@@ -166,9 +148,9 @@ export function authRoutes(
           return c.json({ error: "wrong setup code: copy it from the server log" }, 401);
         }
         auth.succeeded(c);
-        p = { mode: "setup", next, redirectUri, expires };
+        p = { ...base, mode: "setup" };
       } else {
-        p = { mode: "login", next, redirectUri, expires };
+        p = { ...base, mode: "login" };
       }
       for (const [key, old] of pending) {
         if (old.expires < Date.now() || pending.size >= PENDING_MAX) pending.delete(key);
@@ -179,17 +161,20 @@ export function authRoutes(
       setCookie(c, STATE_COOKIE, state, {
         httpOnly: true, path: STATE_PATH, sameSite: "Lax", maxAge: PENDING_MS / 1000, secure: client.isHttps(c),
       });
-      return c.json({ url: authorizeUrl(github, redirectUri, state) });
+      return c.json({ url: authorizeUrl(github, p.redirectUri, state) });
     })
     // GitHub sends the browser back here, with a code to exchange.
     .get("/github/callback", async (c) => {
       const state = c.req.query("state") ?? "";
-      const cookie = getCookie(c, STATE_COOKIE);
-      deleteCookie(c, STATE_COOKIE, { httpOnly: true, path: STATE_PATH, sameSite: "Lax", secure: client.isHttps(c) });
-      const p = state && cookie === state ? pending.get(state) : undefined;
-      if (p) pending.delete(state); // once only
-      const fail = (error: AuthError) =>
-        c.redirect(p?.mode === "link" ? `/settings?auth_error=${error}` : `/?auth_error=${error}`, 302);
+      const p = state && getCookie(c, STATE_COOKIE) === state ? pending.get(state) : undefined;
+      if (p) {
+        // Once only. A forged or foreign state leaves the cookie alone: a
+        // cross-site link must not cancel a sign-in in progress.
+        pending.delete(state);
+        deleteCookie(c, STATE_COOKIE, { httpOnly: true, path: STATE_PATH, sameSite: "Lax", secure: client.isHttps(c) });
+      }
+      // Signing in again comes back to where it started (Settings) to say why it failed.
+      const fail = (error: AuthError) => c.redirect(withError(p?.mode === "reauth" ? p.next : "/", error), 302);
       if (!p || p.expires < Date.now() || !github) return fail("expired");
       const code = c.req.query("code");
       if (!code) return fail(c.req.query("error") === "access_denied" ? "denied" : "github");
@@ -204,13 +189,13 @@ export function authRoutes(
       try {
         result = complete(c, p, gh);
       } catch (err) {
-        // Two sign-ins racing for the same GitHub account or username: the
-        // unique indexes let one through; the other tries again.
+        // Two sign-ins of the same new GitHub user racing: the unique
+        // indexes let one through; the other tries again (then signs in).
         if ((err as { code?: string }).code !== "SQLITE_CONSTRAINT_UNIQUE") throw err;
         result = "expired";
       }
       if (typeof result !== "number") return fail(result);
-      if (p.mode !== "link") auth.login(c, result);
+      auth.login(c, result);
       return c.redirect(p.next, 302);
     })
     .post("/logout", (c) => {

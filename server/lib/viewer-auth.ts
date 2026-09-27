@@ -30,8 +30,8 @@ const tokenHash = (token: string) => createHash("sha256").update(token).digest("
 /**
  * Per-user viewer sessions, stored hashed in SQLite so they survive a
  * restart. Every viewer API needs one: with no account yet, nothing is
- * readable until the first account is created (setup code, or
- * npm run user -- add). Accounts sign in with GitHub (routes/auth.ts).
+ * readable until the first account is created (with the setup code).
+ * Accounts sign in with GitHub (routes/auth.ts).
  */
 export function createViewerAuth(db: DB, { clientId, isHttps }: ClientInfo) {
   let fails = new Map<string, number>(); // client → failures in window

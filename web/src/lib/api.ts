@@ -59,11 +59,11 @@ async function post<T>(path: string, body: unknown = {}): Promise<T> {
   return json as T;
 }
 
-/** A GitHub sign-in: where to come back, the setup code (first account), or linking the signed-in account. */
+/** A GitHub sign-in: where to come back, the setup code (first account), or signing the signed-in account in again. */
 export interface GithubStart {
   next: string;
   setup_code?: string;
-  link?: boolean;
+  reauth?: boolean;
 }
 
 const toolQuery = (tool: string | null) => (tool ? `&tool=${encodeURIComponent(tool)}` : "");

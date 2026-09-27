@@ -270,7 +270,17 @@ def target():
     """Which server and key the checkpoints belong to, as a fingerprint: the
     state file is not secret, so it never holds the key or a part of it."""
     url = urllib.parse.urlsplit(SERVER.strip())
-    server = urllib.parse.urlunsplit((url.scheme.lower(), url.netloc.lower(), url.path.rstrip("/"), url.query, ""))
+    scheme = url.scheme.lower()
+    try:
+        port = url.port
+    except ValueError:
+        port = None
+    host = url.hostname or ""
+    host = "[%s]" % host if ":" in host else host
+    # The default port is the same server: https://h and https://h:443 are one target.
+    if port is not None and (scheme, port) not in (("http", 80), ("https", 443)):
+        host += ":%d" % port
+    server = urllib.parse.urlunsplit((scheme, host, url.path.rstrip("/"), url.query, ""))
     return hashlib.sha256((server + "\n" + KEY.strip()).encode()).hexdigest()[:16]
 
 

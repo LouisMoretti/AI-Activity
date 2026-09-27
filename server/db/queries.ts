@@ -79,7 +79,7 @@ export function toAccount(u: UserRow): Account {
     display_name: u.display_name || u.username || "",
     avatar_url: u.avatar_url,
     is_admin: Boolean(u.is_admin),
-    github: u.github_id !== null,
+    github_linked: u.github_id !== null,
   };
 }
 

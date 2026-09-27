@@ -58,9 +58,9 @@ const settle = async (ms = 5000) => {
     assert.ok(Date.now() <= end, "fetches never settled");
   }
 };
-const me = { id: 1, username: "me", display_name: "Me", avatar_url: null, is_admin: false, github: true };
-const signedIn = { authenticated: true, user: me, setup_required: false, signup_open: true, github: true };
-const signedOut = { authenticated: false, user: null, setup_required: false, signup_open: true, github: true };
+const me = { id: 1, username: "me", display_name: "Me", avatar_url: null, is_admin: false, github_linked: true };
+const signedIn = { authenticated: true, user: me, setup_required: false, signup_open: true, github_sign_in: true };
+const signedOut = { authenticated: false, user: null, setup_required: false, signup_open: true, github_sign_in: true };
 const AUTHORIZE = "https://github.com/login/oauth/authorize?state=s";
 const emptySummary = { tool: null, day: "2026-09-25", total: { tokens: 0, sessions: 0, events: 0, by_model: [], by_model_others_sessions: 0, by_tool: [] }, today: { tokens: 0, sessions: 0, events: 0, by_model: [], by_model_others_sessions: 0, by_tool: [] }, provenance: "" };
 const profileRoutes = (name, sessions = { sessions: [], total: 0, provenance: "" }) => ({
@@ -181,6 +181,7 @@ describe("dashboard state", () => {
       [`/?next=${encodeURIComponent("/settings?tab=x")}`, "/settings?tab=x"],
       [`/?next=${encodeURIComponent("https://example.com/away")}`, "/"],
       [`/?next=${encodeURIComponent("//example.com/away")}`, "/"],
+      [`/?next=${encodeURIComponent("/\t/example.com/away")}`, "/"],
     ]) {
       const { dash, stop } = await open(start, { "/api/auth/status": signedOut, "/api/auth/github": { url: AUTHORIZE } });
       sent.length = 0;
@@ -203,12 +204,17 @@ describe("dashboard state", () => {
     other.stop();
   });
 
-  test("linking GitHub from Settings comes back to Settings", async () => {
+  test("signing in again from Settings comes back to Settings, where a failure is told", async () => {
     const { dash, stop } = await open("/settings", { "/api/auth/github": { url: AUTHORIZE } });
-    assert.equal(await dash.linkGithub(), null);
-    assert.deepEqual(sent, [{ path: "/api/auth/github", body: { next: "/settings", link: true } }]);
+    assert.equal(await dash.signInAgain(), null);
+    assert.deepEqual(sent, [{ path: "/api/auth/github", body: { next: "/settings", reauth: true } }]);
     assert.deepEqual(assigned, [AUTHORIZE]);
     stop();
+    const back = await open("/settings?auth_error=other_account");
+    assert.equal(back.dash.status, "ready");
+    assert.match(back.dash.authError, /not the one signed in here/);
+    assert.equal(loc.pathname + loc.search, "/settings");
+    back.stop();
   });
 
   test("the home link goes straight to your profile when signed in", async () => {

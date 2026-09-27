@@ -3,7 +3,12 @@
   import { fmtNum } from "../lib/format.ts";
   import DangerAction from "./DangerAction.svelte";
 
-  let { ondeletedactivity, onsignout, onreauth }: {
+  let { linked, ondeletedactivity, onsignout, onreauth }: {
+    /**
+     * Linked to GitHub. Deleting needs a recent GitHub sign-in, which an
+     * account not linked yet cannot do (an admin links it first).
+     */
+    linked: boolean;
     /** Reload: totals, calendar, quotas and conversations are now empty. */
     ondeletedactivity: () => void;
     /** Sign out: the account and its sessions are gone. */
@@ -16,6 +21,12 @@
   const account = new DeleteAccount(() => onsignout());
 </script>
 
+{#if !linked}
+  <p class="warn">
+    Deleting needs a recent sign-in with GitHub, and this account is not linked to GitHub yet: an admin links it
+    first (see Account above).
+  </p>
+{:else}
 <div class="grid">
   <DangerAction title="Delete activity" flow={activity} {onreauth}
     actionLabel="Delete activity…" confirmLabel="Delete all my activity"
@@ -34,7 +45,9 @@
     four weeks) or an admin deletes them. The last admin cannot leave: make another account admin first.
   </DangerAction>
 </div>
+{/if}
 
 <style>
   .grid { display: grid; gap: 16px; }
+  .warn { color: var(--warn); font-size: 13px; border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 20px; }
 </style>

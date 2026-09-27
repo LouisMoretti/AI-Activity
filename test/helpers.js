@@ -116,28 +116,22 @@ function freePort() {
 
 /**
  * Boot the server on a temp DB, with Sign in with GitHub against the fake
- * GitHub. By default an admin account (GitHub "admin") is created and
- * signed in, and req() uses that session by default (pass `anon: true` for
- * an anonymous call). `signedIn: false` creates it without signing in;
- * `autoLogin: false` boots with no account at all.
+ * GitHub. By default the first account (GitHub "admin", an admin) is made
+ * like on a real server, with the setup code, and signed in: req() uses
+ * that session by default (pass `anon: true` for an anonymous call).
+ * `signedIn: false` makes it without keeping the session; `autoLogin:
+ * false` boots with no account at all.
  */
 export async function startServer({ signedIn = true, env = {}, autoLogin = true } = {}) {
-  const auto = autoLogin && signedIn;
   env = { ...(await githubEnv()), ...env };
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ai-usage-test-"));
   const dbPath = env.DB_PATH ?? path.join(dir, "t.db");
   try {
-    // The first account, made from the CLI like on a real server. Once
-    // only: a retry below reuses the same database.
-    if (autoLogin) {
-      const add = await userCli(dbPath, ["add", TEST_ADMIN.username, "--id", String(githubUser(TEST_ADMIN.username).id)]);
-      if (add.code !== 0) throw new Error(`admin create failed: ${add.out}`);
-    }
     // node --test runs test files in parallel: another file can bind a freed
     // port between freePort() and listen(), so retry once with a fresh port.
     for (let attempt = 0; ; attempt++) {
       try {
-        return await bootServer({ dir, dbPath, env, auto });
+        return await bootServer({ dir, dbPath, env, admin: autoLogin, auto: autoLogin && signedIn });
       } catch (e) {
         if (attempt >= 1 || !/EADDRINUSE/.test(String(e && e.message))) throw e;
       }
@@ -148,7 +142,7 @@ export async function startServer({ signedIn = true, env = {}, autoLogin = true 
   }
 }
 
-async function bootServer({ dir, dbPath, env, auto }) {
+async function bootServer({ dir, dbPath, env, admin, auto }) {
   const port = await freePort();
   const proc = spawn(process.execPath, [SERVER_ENTRY], {
     env: { ...process.env, PORT: String(port), DB_PATH: dbPath, ...env },
@@ -175,7 +169,13 @@ async function bootServer({ dir, dbPath, env, auto }) {
     }
     await new Promise((r) => setTimeout(r, 50));
   }
-  if (auto) defaultCookies.set(base, await login(base, TEST_ADMIN.username));
+  if (admin) {
+    // The first account: the setup code from this server's log, then GitHub.
+    const setup_code = stdout.match(/Setup code: (\S+)/)?.[1];
+    const first = setup_code ? await githubSignIn(base, TEST_ADMIN.username, { setup_code }) : null;
+    if (setup_code && !first.cookie) throw new Error(`first account failed: ${first.start.status} → ${first.location}`);
+    if (auto) defaultCookies.set(base, first?.cookie ?? await login(base, TEST_ADMIN.username));
+  }
   return {
     base,
     dbPath,
@@ -285,18 +285,18 @@ export async function userCli(dbPath, args) {
 let signInIp = 0;
 /**
  * A whole GitHub sign-in in one browser: POST /api/auth/github ({next,
- * setup_code, link}), then GitHub's redirect back to the callback with a
+ * setup_code, reauth; link, which the server ignores}), then GitHub's redirect back to the callback with a
  * code for that GitHub login (`login: null`: the user cancelled). Each call
  * comes from its own client address (the OAuth and sign-up limits are per
  * client) unless `ip` says. Resolves with the start answer (`start`), where
  * the callback sent the browser (`location`), its `auth_error`, and the
  * session cookie it set (null if none).
  */
-export async function githubSignIn(base, login, { next, setup_code, link, cookie, ip, state: forged, headers: extra = {} } = {}) {
+export async function githubSignIn(base, login, { next, setup_code, link, reauth, cookie, ip, state: forged, headers: extra = {} } = {}) {
   ip ??= `198.17.${Math.floor(++signInIp / 250) % 250}.${signInIp % 250}`;
   const headers = { "content-type": "application/json", "cf-connecting-ip": ip, ...(cookie ? { cookie } : {}), ...extra };
   const start = await fetch(`${base}/api/auth/github`, {
-    method: "POST", headers, body: JSON.stringify({ next, setup_code, link }),
+    method: "POST", headers, body: JSON.stringify({ next, setup_code, link, reauth }),
   });
   const startJson = await start.json().catch(() => null);
   if (start.status !== 200) return { start: { status: start.status, json: startJson }, location: null, error: null, cookie: null };
@@ -435,8 +435,19 @@ export async function awayFromMidnight(margin = 15) {
  * collectors/*.py): their offsets are kept per fingerprint (issue #127).
  */
 export function collectorTarget(url, key) {
-  const [, scheme, host, rest = "", query = ""] = url.trim().match(/^([^:/?#]+):\/\/([^/?#]*)([^?#]*)(?:\?([^#]*))?/);
-  const server = `${scheme.toLowerCase()}://${host.toLowerCase()}${rest.replace(/\/+$/, "")}${query ? "?" + query : ""}`;
+  // Like Python's urlsplit / urlunsplit: scheme, host (lowercased, default
+  // port dropped), path without trailing "/", query; no scheme is all path.
+  const [, scheme = "", netloc, path = "", query = ""] =
+    url.trim().match(/^(?:([A-Za-z][A-Za-z0-9+.-]*):)?(?:\/\/([^/?#]*))?([^?#]*)(?:\?([^#]*))?/);
+  const s = scheme.toLowerCase();
+  let host = "";
+  if (netloc !== undefined) {
+    const [, h = "", port] = netloc.replace(/^.*@/, "").match(/^(\[[^\]]*\]|[^:]*)(?::(\d*))?$/) ?? [];
+    host = h.toLowerCase();
+    const p = port ? Number(port) : null;
+    if (p !== null && !((s === "http" && p === 80) || (s === "https" && p === 443))) host += `:${p}`;
+  }
+  const server = (s ? `${s}:` : "") + (host ? `//${host}` : "") + path.replace(/\/+$/, "") + (query ? `?${query}` : "");
   return createHash("sha256").update(`${server}\n${key.trim()}`).digest("hex").slice(0, 16);
 }
 

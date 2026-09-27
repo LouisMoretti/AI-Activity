@@ -62,7 +62,7 @@
             <strong>{u.display_name}{u.id === selfId ? " (you)" : ""}</strong>
             <small>
               <span class="mono">@{u.username}</span>{u.is_admin ? " · admin" : ""}
-              · {u.devices} device{u.devices === 1 ? "" : "s"} · since {fmtDate(u.created_at)}{u.disabled ? " · disabled" : ""}{u.github ? "" : " · not linked to GitHub"}
+              · {u.devices} device{u.devices === 1 ? "" : "s"} · since {fmtDate(u.created_at)}{u.disabled ? " · disabled" : ""}{u.github_linked ? "" : " · not linked to GitHub"}
             </small>
           </div>
           <div class="row-actions">

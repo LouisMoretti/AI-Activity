@@ -85,8 +85,7 @@ jobs:
           done
           docker inspect -f '{{.State.Health.Status}}' app | grep -qx healthy
           docker logs app | grep -q "Setup code:"
-          # --id: no call to GitHub from CI.
-          docker exec app node scripts/user.ts add ci --id 1 | grep -q 'Account "ci" created'
+          docker exec app node scripts/user.ts list
           docker exec app node scripts/gen-key.ts ci-device | grep -q "ak_"
           docker exec app node scripts/backup.ts | grep -q "integrity ok"
           docker stop app
