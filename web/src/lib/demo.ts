@@ -1,5 +1,5 @@
-// FICTIONAL, deterministic demo dataset. Only reachable via ?demo=1 and
-// always labeled "Demonstration data". Never presented as a measurement.
+// FICTIONAL, deterministic demo dataset. Only shown at /demo, as the profile
+// of a fictional user, and always labeled "Demonstration data". Never presented as a measurement.
 import { QUOTA_WINDOW_SEC } from "../../../shared/quota-pools.ts";
 import { lastUtcDays, streaks, type DayPoint } from "./series.ts";
 import {

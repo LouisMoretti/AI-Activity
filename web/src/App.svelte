@@ -18,13 +18,14 @@
   import UsersPanel from "./components/UsersPanel.svelte";
   import { untrack } from "svelte";
   import { clock } from "./lib/clock.svelte.ts";
-  import { Dashboard } from "./lib/dashboard.svelte.ts";
+  import { Dashboard, DEMO_PROFILE } from "./lib/dashboard.svelte.ts";
   import { hasLiveWindow } from "./lib/view-model.ts";
 
   const dash = new Dashboard();
   // Breadcrumb after "AI Activity" in the header: where you are.
   const crumb = $derived(
-    dash.route.page === "profile" ? (dash.shown ? { label: `@${dash.shown.username}`, mono: true, picture: { name: dash.shown.display_name, url: dash.shown.avatar_url } } : null)
+    dash.route.page === "demo" ? { label: DEMO_PROFILE.display_name, picture: { name: DEMO_PROFILE.display_name, url: null } }
+    : dash.route.page === "profile" ? (dash.shown ? { label: `@${dash.shown.username}`, mono: true, picture: { name: dash.shown.display_name, url: dash.shown.avatar_url } } : null)
     : dash.route.page === "leaderboard" ? { label: "Leaderboard" }
     : dash.route.page === "settings" && dash.account ? { label: "Settings" }
     : dash.route.page === "admin" && dash.account ? { label: "Admin panel" }
@@ -37,7 +38,7 @@
     document.title = page === "settings" ? "Settings · AI Activity"
       : page === "admin" ? "Admin panel · AI Activity"
       : page === "leaderboard" ? "Leaderboard · AI Activity"
-      : page === "profile" && dash.shown ? `${dash.shown.display_name} · AI Activity${dash.vm?.demo ? " · Demo" : ""}`
+      : (page === "profile" || page === "demo") && dash.shown ? `${dash.shown.display_name} · AI Activity${dash.vm?.demo ? " · Demo" : ""}`
         : "AI Activity";
   });
 </script>
@@ -52,7 +53,7 @@
 
   <main>
     {#if dash.status === "signed-out"}
-      <AuthPanel signupOpen={dash.signupOpen} onlogin={(u, p) => dash.login(u, p)} oncreate={(a, c) => dash.createAccount(a, c)} />
+      <AuthPanel ondemo={() => dash.go("/demo")} signupOpen={dash.signupOpen} onlogin={(u, p) => dash.login(u, p)} oncreate={(a, c) => dash.createAccount(a, c)} />
     {:else if dash.status === "setup"}
       <NewAccountForm withSetupCode title="Create the first account"
         intro="No account exists yet. The setup code is printed in the server log. This account becomes the admin and keeps the data collected so far."
