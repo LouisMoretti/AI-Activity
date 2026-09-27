@@ -360,24 +360,37 @@ export function listDevices(db: DB, userId: number): Device[] {
     ...d,
     has_key: Boolean(d.has_key),
     collectors: TOOLS.flatMap((tool) => {
-      const c = seen.find((s) => s.device_id === d.id && s.tool === tool);
-      if (!c) return [];
+      const mine = seen.filter((s) => s.device_id === d.id && s.tool === tool);
+      if (!mine.length) return [];
+      const last = mine.reduce((a, b) => (b.seen_at > a.seen_at || (b.seen_at === a.seen_at && b.version > a.version) ? b : a));
+      // The lowest version still posting: a copy seen within a day of the
+      // tool's last post. An old copy left next to an updated one (a hook
+      // running a stale script) stays flagged; one replaced stops a day later.
+      const shown = mine
+        .filter((s) => s.seen_at >= last.seen_at - COLLECTOR_STILL_POSTING_SEC)
+        .reduce((a, b) => (b.version < a.version ? b : a));
       const latest = COLLECTOR_VERSIONS[tool];
-      return [{ tool, version: c.version, latest, outdated: c.version < latest, seen_at: c.seen_at }];
+      return [{
+        tool, version: shown.version, seen_at: shown.seen_at, newest: last.version, latest,
+        outdated: shown.version < latest,
+      }];
     }),
   }));
 }
 
+/** How long after a tool's last post an older collector copy still counts as posting. */
+const COLLECTOR_STILL_POSTING_SEC = 86400;
+
 /**
- * The collector version a device posted with, per tool. Written when it
- * changes, else at most hourly (seen_at): every post comes here, and a
- * write would also empty the public read cache.
+ * A device posted with this collector version. Written when the version is
+ * new for the device and tool, else at most hourly (seen_at): every post
+ * comes here, and a write would also empty the public read cache.
  */
 export function recordCollectorVersion(db: DB, deviceId: number, tool: string, version: number, now: number): void {
   db.prepare(
     `INSERT INTO collector_versions (device_id, tool, version, seen_at) VALUES (?, ?, ?, ?)
-     ON CONFLICT (device_id, tool) DO UPDATE SET version = excluded.version, seen_at = excluded.seen_at
-     WHERE version != excluded.version OR seen_at < excluded.seen_at - 3600`
+     ON CONFLICT (device_id, tool, version) DO UPDATE SET seen_at = excluded.seen_at
+     WHERE seen_at < excluded.seen_at - 3600`
   ).run(deviceId, tool, version, now);
 }
 

@@ -3,6 +3,7 @@
   import type { Device } from "../../../shared/types.ts";
   import { api } from "../lib/api.ts";
   import { copyPending, installCommand, type Platform } from "../lib/clipboard.ts";
+  import { fmtAgo } from "../lib/format.ts";
   import { TOOL_META } from "../lib/view-model.ts";
 
   let devices = $state<Device[] | null>(null);
@@ -14,6 +15,9 @@
   let copied = $state(false);
   // Row and button just copied, for the "Copied" feedback.
   let copiedId = $state.raw<{ id: number; what: "key" | Platform } | null>(null);
+
+  // `?? []`: a client newer than the server (mid-deploy) still renders.
+  const collectors = (d: Device) => d.collectors ?? [];
 
   const fmtDate = (sec: number) =>
     new Date(sec * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
@@ -116,12 +120,18 @@
         <li class:revoked={d.revoked}>
           <div>
             <strong>{d.name}</strong>
-            <small><span class="mono">{d.key_prefix}…</span> · added {fmtDate(d.created_at)}{#each d.collectors.filter((c) => !c.outdated) as c (c.tool)}{" · "}{TOOL_META[c.tool].name} v{c.version}{/each}</small>
+            <small><span class="mono">{d.key_prefix}…</span> · added {fmtDate(d.created_at)}{#if !d.revoked}{#each collectors(d).filter((c) => !c.outdated) as c (c.tool)}{" · "}{TOOL_META[c.tool].name} v{c.version}{/each}{/if}</small>
             {#if !d.revoked}
-              {#each d.collectors.filter((c) => c.outdated) as c (c.tool)}
+              {#each collectors(d).filter((c) => c.outdated) as c (c.tool)}
+                {@const old = `${c.version ? `v${c.version}` : "a version from before versions"}, posted ${fmtAgo(c.seen_at, Date.now() / 1000)}`}
                 <p class="outdated">
-                  {TOOL_META[c.tool].name} collector outdated ({c.version ? `v${c.version}` : "from before versions"}, latest v{c.latest}).
-                  Run this device's install command again to update it.
+                  {#if c.newest >= c.latest}
+                    An old {TOOL_META[c.tool].name} collector still posts from this device ({old}; latest v{c.latest}).
+                    Run the install command again, and remove any other copy of it.
+                  {:else}
+                    {TOOL_META[c.tool].name} collector outdated ({old}; latest v{c.latest}).
+                    Run this device's install command again to update it.
+                  {/if}
                 </p>
               {/each}
             {/if}

@@ -120,17 +120,22 @@ export interface Device {
   collectors: DeviceCollector[];
 }
 
-/** The collector version a device last posted with, for one tool. */
+/** The collector versions a device posts with, for one tool. */
 export interface DeviceCollector {
   tool: Tool;
-  /** 0: a collector from before versions. */
+  /**
+   * The lowest version still posting (seen within a day of the tool's last
+   * post), so an old copy next to an updated one shows. 0: from before versions.
+   */
   version: number;
+  /** When `version` last posted (at most an hour stale: refreshed hourly). */
+  seen_at: number;
+  /** The version of the tool's last post. */
+  newest: number;
   /** The version in this server's collectors/ (COLLECTOR_VERSIONS). */
   latest: number;
-  /** Behind `latest`: update it (run the install command again). */
+  /** `version` is behind `latest`: update it (run the install command again). */
   outdated: boolean;
-  /** When it last posted (at most an hour stale: refreshed hourly). */
-  seen_at: number;
 }
 
 /** In an ingest answer when the collector is behind this server's. */

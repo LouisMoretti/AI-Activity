@@ -46,9 +46,10 @@ export function ingestRoutes(db: DB) {
       return c.json({ error: `payload tool "${String(body.tool)}" does not match /api/ingest/${tool}` }, 400);
     }
 
+    const batch = normalize(body);
     // Every post says which collector version sent it (0: from before
-    // versions). The device's latest one is what Settings → Devices shows.
-    // An empty body is the installer's key check, not a collector.
+    // versions), recorded per device and tool for Settings → Devices. An
+    // empty body is the installer's key check, not a collector.
     const keyCheck = Object.keys(body).length === 0;
     const version = collectorVersion(body, tool);
     const check = checkCollector(tool as Tool, version);
@@ -60,8 +61,6 @@ export function ingestRoutes(db: DB) {
         ...update,
       }, 426);
     }
-
-    const batch = normalize(body);
     const received = nowSec();
     const counts = { stored: 0, updated: 0, deduped: 0 };
     // Activity the user deleted stays deleted: messages they deleted (by id,

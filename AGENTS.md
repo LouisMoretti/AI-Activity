@@ -473,10 +473,12 @@ Components never branch on live vs demo: both sources map into the same
   `user_id`. `viewer_sessions` holds hashed session tokens with expiry.
 - `settings` — server-wide key/value settings set from the admin panel
   (`signup_open`: `0` closes account creation; absent means open).
-- `collector_versions` — per device and tool, the collector version of its
-  last post (`0`: from before versions) and `seen_at`. Written when the
-  version changes, else at most hourly (every post comes here, and a write
-  empties the public read cache).
+- `collector_versions` — per device, tool and collector version (`0`: from
+  before versions), when it last posted (`seen_at`). Written for a new
+  version, else at most hourly (every post comes here, and a write empties
+  the public read cache). Settings → Devices shows the lowest version seen
+  within a day of the tool's last post, so an old copy still posting next
+  to an updated one stays flagged.
 
 - `usage_events` — one row per **Anthropic message id** (`event_id`,
   `source = 'message'`): that API response's tokens, model, session,
@@ -623,7 +625,7 @@ is recorded per device and tool (`collector_versions`, §4). Behind the
 latest, the answer carries `"update": {"latest": N, "minimum": M}` (the
 post is still accepted). Below `MIN_COLLECTOR_VERSIONS` (0 for every tool
 until a breaking change needs one), the post is refused with `426` (same
-`update`, nothing stored): the collectors keep their offsets, so the
+`update`, no usage stored; its version is recorded): the collectors keep their offsets, so the
 backlog goes out once updated. An empty body (`{}`, the installer's key
 check) is neither recorded nor refused.
 
@@ -948,9 +950,10 @@ account exists):
     with latest `context_used_pct` / `context_window_size`, plus `total`
     for paging)
 - `GET /api/devices` (never the keys, only `key_prefix` and `has_key`;
-  `collectors`: per tool it posted for, `{tool, version, latest, outdated,
-  seen_at}`, which Settings → Devices shows, outdated ones in warning
-  color with how to update),
+  `collectors`: per tool it posted for, `{tool, version, seen_at, newest,
+  latest, outdated}` (`version`: the lowest still posting, §4; `newest`:
+  that of the last post), which Settings → Devices shows, outdated ones
+  in warning color with how to update),
   `POST /api/devices {name}` (returns the key), `GET /api/devices/:id/key`
   → `{key}` (one key per request, own live devices only, `404` otherwise),
   `POST /api/devices/:id/revoke` (also forgets the key). A device is a

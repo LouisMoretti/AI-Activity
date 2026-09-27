@@ -35,9 +35,10 @@ function activityClearedAt(db: DB): void {
 }
 
 /**
- * 4: The collector version each device last posted with, per tool (issue
- * #125), so Settings → Devices can flag outdated copies. Deleting an
- * account deletes its devices' rows first.
+ * 4: The collector versions each device posted with, per tool, and when
+ * each last did (issue #125), so Settings → Devices can flag outdated
+ * copies, including an old one still posting next to an updated one.
+ * Deleting an account deletes its devices' rows first.
  */
 function collectorVersions(db: DB): void {
   db.exec(`
@@ -46,8 +47,8 @@ function collectorVersions(db: DB): void {
       tool TEXT NOT NULL,
       version INTEGER NOT NULL,
       seen_at INTEGER NOT NULL,
-      PRIMARY KEY (device_id, tool)
-    )
+      PRIMARY KEY (device_id, tool, version)
+    ) WITHOUT ROWID
   `);
 }
 
