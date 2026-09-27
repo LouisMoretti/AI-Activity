@@ -31,7 +31,7 @@ export interface QuotaWindowVM {
 }
 
 export interface QuotaToolVM {
-  tool: "claude-code" | "codex";
+  tool: "claude-code" | "codex" | "antigravity";
   updatedAt: number | null; // latest snapshot time
   windows: QuotaWindowVM[];
 }
@@ -63,7 +63,7 @@ export interface DashboardVM {
   claude: QuotaToolVM;
   codex: QuotaToolVM;
   opencode: ActivityToolVM;
-  antigravity: ActivityToolVM;
+  antigravity: QuotaToolVM;
   sessions: SessionVM[];
   sessionsTotal: number;
 }
