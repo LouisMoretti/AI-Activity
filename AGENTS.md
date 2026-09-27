@@ -287,7 +287,9 @@ web/
   src/App.svelte          routes the pages; renders the site chrome once
   src/components/         StatsRow (StatCard), ActivityChart (Heatmap,
                           TrendChart), ClaudeCodeCard / CodexCard /
-                          OpenCodeCard (ToolHeader, QuotaWindow, Meter),
+                          OpenCodeCard (ToolHeader, QuotaWindow, Meter;
+                          OpenCodeCard wraps ActivityToolCard, the card
+                          of a tool without quota windows),
                           TodayByTool,
                           Conversations, DevicesPanel, AccountMenu,
                           SiteHeader, ProfilePanel, UsersPanel,
