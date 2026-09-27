@@ -19,7 +19,11 @@
 
 <style>
   .card { border: 1px solid var(--line); background: var(--surface); border-radius: var(--radius); padding: 22px; }
-  .pools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 32px; margin-top: 22px; }
+  .pools { position: relative; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 32px; margin-top: 22px; }
+  .pools::before { content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background: var(--line); pointer-events: none; }
   .windows { display: grid; gap: 22px; }
-  @media (max-width: 640px) { .pools { grid-template-columns: 1fr; } }
+  @media (max-width: 640px) {
+    .pools { grid-template-columns: 1fr; }
+    .pools::before { display: none; }
+  }
 </style>
