@@ -270,7 +270,9 @@ What it does:
   provider credential files. Desktop/IDE history still imports without the
   CLI; a missing CLI, an old or unrecognized version, a failed probe or an
   unsupported report leave quota windows **Unavailable**, with a diagnostic
-  naming which.
+  naming which. A window `agy` reports untouched (100% left, resetting a full
+  window length from now, or no reset time) has not started yet: it stays
+  **Unavailable** rather than showing 0%.
 - Quotas refresh on hooks/manual/scheduled runs, at most once per minute
   after a successful upload, including runs with no new token activity.
   Failed probes or uploads back off for five minutes (or the server's

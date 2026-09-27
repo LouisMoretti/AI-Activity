@@ -34,6 +34,9 @@ MIN_AGY = (1, 1, 11)  # first agy with a print-mode /usage command
 # suffix -> limit type and window length in seconds (QUOTA_WINDOW_SEC).
 POOLS = {"gemini": "gemini", "3p": "claude-gpt"}
 WINDOWS = {"5h": ("five_hour", 5 * 3600), "weekly": ("seven_day", 7 * 86400)}
+# An unused window resets a full window length after the probe; allow for the
+# probe's own duration (up to 95 s) and clock skew.
+NOT_STARTED_SLACK = 300
 
 
 def fields(blob):
@@ -319,6 +322,12 @@ def quota_reports(report, measured_at):
                 except (AttributeError, ValueError, OverflowError):
                     continue
             if reset is not None and not measured_at < reset <= measured_at + span + 600:
+                continue
+            # A window nobody has used yet: agy reports it untouched, resetting
+            # a full window length from now (or never). That is not a measured
+            # window, so the pool stays Unavailable instead of showing a window
+            # that has not started.
+            if fraction == 1 and (reset is None or reset >= measured_at + span - NOT_STARTED_SLACK):
                 continue
             pools.setdefault(pool, {})[limit] = {
                 "used_percentage": round((1 - fraction) * 100, 8), "resets_at": reset}

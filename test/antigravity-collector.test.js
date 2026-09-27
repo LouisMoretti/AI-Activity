@@ -463,6 +463,17 @@ describe("Antigravity quota reports", () => {
     clearThrottle();
     assert.match((await collect(invalid)).err, /quota report unavailable/);
     assert.deepEqual(await quotas(), before);
+    // Untouched windows (full, resetting a whole window from now, or never)
+    // were not started: they stay unavailable rather than showing 0%.
+    const unused = sample(), now = Math.floor(Date.now() / 1000);
+    unused.command.data.groups = [{ buckets: [
+      { id: "gemini-5h", window: "5h", remaining_fraction: 1, reset_time: new Date((now + 18000) * 1000).toISOString() },
+      { id: "gemini-weekly", window: "weekly", remaining_fraction: 1, reset_time: new Date((now + 604800 - 60) * 1000).toISOString() },
+      { id: "3p-5h", window: "5h", remaining_fraction: 1 },
+    ] }];
+    clearThrottle();
+    assert.match((await collect(unused)).err, /quota report unavailable/);
+    assert.deepEqual(await quotas(), before);
     // The real API also rejects percentages outside the measured range and
     // implausible resets even if a client bypasses the Python parser.
     await req(srv.base, "POST", "/api/ingest/antigravity", { key, body: { messages: [], account_ref: "invalid", rate_limits: {
