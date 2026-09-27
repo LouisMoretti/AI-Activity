@@ -41,11 +41,3 @@ test("the OpenCode card gets its latest conversations and today; none yet is emp
   assert.deepEqual(vm.today, { tokens: 5500, sessions: 4, calls: 9, models: 3, providers: 2 });
   assert.deepEqual(vm.recent[0], { tool: "opencode", id: "ses_1", model: "opencode/muse", calls: 42, tokens: 1200, lastActive: 1790000000, context: null });
 });
-
-test("only tools that ever sent usage or a quota get a card", () => {
-  assert.deepEqual(liveDashboard(data([]), "all").tools, []);
-  const d = data([q("codex", "five_hour", 17, 200)]);
-  d.summary.total = { ...breakdown, events: 3, by_tool: [{ name: "opencode", tokens: 10, sessions: 1, events: 3 }] };
-  // Listed in card order, whatever the order of the sources.
-  assert.deepEqual(liveDashboard(d, "all").tools, ["codex", "opencode"]);
-});

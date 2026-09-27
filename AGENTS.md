@@ -17,13 +17,10 @@ today unless a day is hovered; the Weekly and Cumulative tabs likewise show
 the last 7 days or the running total unless a week is hovered, focused or
 tapped), four stats (all-time tokens, today, sessions,
 current streak; hover shows the split by tool and model, or the longest
-streak), one card per tool the profile ever used (usage or a quota
-posted; Claude Code, Codex, OpenCode are separate components; OpenCode takes
-2/3 of its row, next to "Today by tool": today's tokens split by tool),
-recent conversations (10 + "Show more"). No tool filter. On your own page,
-tools never used are offered in "Add a tool" (`AddTools`: what each one
-shows and the one-command install, copied with a device's key); visitors
-never see it. No cost or subscription tracking (removed on
+streak), one card per tool (Claude Code, Codex, OpenCode are separate
+components; OpenCode takes 2/3 of its row, next to "Today by tool": today's
+tokens split by tool), recent conversations (10 + "Show more"). No tool filter:
+every tool is always shown. No cost or subscription tracking (removed on
 purpose). Only demo data carries a badge ("Demonstration data"). Palette: the
 original dark theme; type: Geist, with Geist Mono only for ids and model
 names. Quota bars carry a mark for how far into the window we are.
@@ -293,7 +290,7 @@ web/
   src/components/         StatsRow (StatCard), ActivityChart (Heatmap,
                           TrendChart), ClaudeCodeCard / CodexCard /
                           OpenCodeCard (ToolHeader, QuotaWindow, Meter),
-                          TodayByTool, AddTools,
+                          TodayByTool,
                           Conversations, DevicesPanel, AccountMenu,
                           SiteHeader, ProfilePanel, UsersPanel,
                           NewAccountForm, AuthPanel, Leaderboard,

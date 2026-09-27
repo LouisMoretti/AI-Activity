@@ -1,5 +1,4 @@
 <script lang="ts">
-  import AddTools from "./components/AddTools.svelte";
   import AdminOverview from "./components/AdminOverview.svelte";
   import AuthPanel from "./components/AuthPanel.svelte";
   import ActivityChart from "./components/ActivityChart.svelte";
@@ -18,7 +17,6 @@
   import UsersPanel from "./components/UsersPanel.svelte";
   import { untrack } from "svelte";
   import { Dashboard } from "./lib/dashboard.svelte.ts";
-  import { ALL_TOOLS } from "./lib/view-model.ts";
 
   const dash = new Dashboard();
   // Breadcrumb after "AI Activity" in the header: where you are.
@@ -104,33 +102,18 @@
       <ActivityChart series={vm.series} today={vm.today} demo={vm.demo} hasActivity={vm.hasActivity} />
       <StatsRow stats={vm.stats} />
 
-      {@const used = vm.tools}
-      <!-- Only tools that ever sent something get a card. On your own page
-           the others are offered in "Add a tool", which takes a free half
-           slot, else the 2/3 slot next to "Today by tool", else a full row. -->
-      {@const missing = dash.own ? ALL_TOOLS.filter((t) => !used.includes(t)) : []}
-      {@const oc = used.includes("opencode")}
-      {@const boxHalf = missing.length > 0 && used.filter((t) => t !== "opencode").length % 2 === 1}
-      {@const boxWide = missing.length > 0 && !boxHalf && !oc && used.length > 0}
-      {@const boxFull = missing.length > 0 && !boxHalf && !boxWide}
-      {#if used.length || missing.length}
-        <Section title="Tools" subtitle="Limits are per account, latest snapshot">
-          <div class="tools">
-            {#if used.includes("claude-code")}<ClaudeCodeCard vm={vm.claude} />{/if}
-            {#if used.includes("codex")}<CodexCard vm={vm.codex} />{/if}
-            {#if boxHalf}<AddTools {missing} onsettings={() => dash.go("/settings")} />{/if}
-            {#if oc || boxWide}
-              <div class="wide">
-                {#if oc}<OpenCodeCard vm={vm.opencode} />{:else}<AddTools {missing} onsettings={() => dash.go("/settings")} />{/if}
-                <TodayByTool today={vm.stats.today} />
-              </div>
-            {:else if used.length > 1}
+      <Section title="Tools" subtitle="Limits are per account, latest snapshot">
+        <div class="tools">
+          {#if vm.tools.includes("claude-code")}<ClaudeCodeCard vm={vm.claude} />{/if}
+          {#if vm.tools.includes("codex")}<CodexCard vm={vm.codex} />{/if}
+          {#if vm.tools.includes("opencode")}
+            <div class="wide">
+              <OpenCodeCard vm={vm.opencode} />
               <TodayByTool today={vm.stats.today} />
-            {/if}
-            {#if boxFull}<div class="full"><AddTools {missing} onsettings={() => dash.go("/settings")} /></div>{/if}
-          </div>
-        </Section>
-      {/if}
+            </div>
+          {/if}
+        </div>
+      </Section>
 
       <Section title="Conversations" subtitle="Most recent first">
         <Conversations sessions={vm.sessions} total={vm.sessionsTotal} onmore={() => dash.showMoreSessions()} />
@@ -147,7 +130,6 @@
   /* OpenCode (2/3) and today's split by tool (1/3) share the last row. */
   .wide { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; }
   @media (max-width: 720px) { .wide { grid-template-columns: 1fr; } }
-  .full { grid-column: 1 / -1; display: grid; }
   .tools { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr)); gap: 16px; }
   @media (max-width: 720px) {
     .shell { padding: 24px 16px 40px; }

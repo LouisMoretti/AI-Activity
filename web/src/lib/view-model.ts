@@ -59,7 +59,7 @@ export interface DashboardVM {
   series: DayPoint[];
   hasActivity: boolean;
   stats: StatsVM;
-  tools: ToolKey[]; // tools this profile has ever used: only these get a card
+  tools: ToolKey[]; // cards to show for the current filter
   claude: QuotaToolVM;
   codex: QuotaToolVM;
   opencode: OpenCodeVM;
@@ -76,8 +76,7 @@ export const TOOL_META: Record<ToolKey, { name: string; icon: string }> = {
 export const toolName = (key: string) =>
   key in TOOL_META ? TOOL_META[key as ToolKey].name : key;
 
-export const ALL_TOOLS: ToolKey[] = ["claude-code", "codex", "opencode"];
-
-export const toolsFor = (p: Provider): ToolKey[] => (p === "all" ? ALL_TOOLS : [p]);
+export const toolsFor = (p: Provider): ToolKey[] =>
+  p === "all" ? ["claude-code", "codex", "opencode"] : [p];
 
 export const WINDOW_SPANS = { five_hour: 5 * 3600, seven_day: 7 * 86400 } as const;
