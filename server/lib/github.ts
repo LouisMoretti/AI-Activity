@@ -34,6 +34,20 @@ export const GITHUB_LOGIN = /^[A-Za-z0-9-]{1,39}$/;
 const NAME_MAX = 60;
 const TIMEOUT_MS = 10_000;
 
+/**
+ * ALLOWED_GITHUB_LOGINS: comma-separated GitHub logins, the only accounts
+ * that may sign in (a pull request preview: its participants), lowercased;
+ * null when unset (anyone). Throws on anything that is not a login, so a
+ * typo stops the server at start.
+ */
+export function parseAllowedLogins(spec: string | undefined): ReadonlySet<string> | null {
+  const logins = (spec ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  for (const login of logins) {
+    if (!GITHUB_LOGIN.test(login)) throw new Error(`ALLOWED_GITHUB_LOGINS: "${login}" is not a GitHub login`);
+  }
+  return logins.length ? new Set(logins.map((l) => l.toLowerCase())) : null;
+}
+
 /** The account fields from a GitHub user object, or null when it is not one. */
 export function githubUser(v: unknown): GithubUser | null {
   const u = v as { id?: unknown; login?: unknown; name?: unknown; avatar_url?: unknown } | null;

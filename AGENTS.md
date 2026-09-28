@@ -97,6 +97,12 @@ still sign in). Everything happens on the site: accounts are only ever
 created by signing in with GitHub, device keys only in Settings →
 Devices (copyable again there). There is no account or key CLI.
 
+`ALLOWED_GITHUB_LOGINS` (comma-separated logins; unset: anyone) limits
+sign-in to those GitHub accounts: anyone else gets `not_allowed`, and a
+login taken off the list is signed out. With a list there is no setup
+code: the first of them to sign in becomes the admin. Pull request
+previews set it to the PR's participants.
+
 Username = the GitHub login, name and picture = GitHub's, updated at each
 sign-in (a login rename moves `/u/<login>`; the account, keyed by the
 GitHub numeric id, keeps its data).
@@ -344,7 +350,8 @@ Browser dashboard (web/: Svelte 5 + TypeScript, built by Vite)
 server/
   index.ts          boot: config, DB, listen
   app.ts            Hono app: /api mount, viewer-auth gate, static + SPA fallback
-  config.ts         env → Config (PORT, DB_PATH, STATIC_DIR, BACKUP_DIR, GITHUB_*, PUBLIC_URL)
+  config.ts         env → Config (PORT, DB_PATH, STATIC_DIR, BACKUP_DIR, GITHUB_*, PUBLIC_URL,
+                    ALLOWED_GITHUB_LOGINS)
   db/schema.ts      open + migrate (runs pending migrations)
   db/migrations.ts  ordered schema migrations (PRAGMA user_version)
   db/queries.ts     every SQL statement lives here
@@ -887,7 +894,8 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
 
 - `GET /api/auth/status` → `{authenticated, user, setup_required, signup_open, github_sign_in}`
   (`user` is `{id, username, display_name, avatar_url, is_admin}` or null;
-  `setup_required` while no account exists; `github_sign_in`: sign-in is
+  `setup_required` while no account exists, unless `ALLOWED_GITHUB_LOGINS`
+  is set; `github_sign_in`: sign-in is
   set up, else nobody can sign in), `POST /api/auth/logout`
 - `POST /api/auth/github {next?, setup_code?, reauth?}` → `{url}`: the
   GitHub authorize page to send the browser to (`503` if GitHub sign-in is
@@ -899,8 +907,9 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   redirect uses. Anything else is `/`. While no account exists it needs `setup_code` (wrong or
   missing → `401`, `409` if the server has none; throttled below; the code
   ignores case, spaces and dashes): that sign-in creates the first
-  account, admin. `reauth: true` (signed in, else `401`) signs the same
-  account in again, for the danger zone.
+  account, admin. With `ALLOWED_GITHUB_LOGINS` (§2) there is no code: the
+  first listed login to sign in gets it. `reauth: true` (signed in, else
+  `401`) signs the same account in again, for the danger zone.
 - `GET /api/auth/github/callback?code&state` (GitHub sends the browser
   here) → `302` to `next` with a new session. A failure goes to the
   sign-in page, still headed for `next` (`/?next=<next>&auth_error=<code>`),
@@ -913,7 +922,8 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   `setup`, `exists` (a first-account sign-in after one was made), `closed`
   (sign-up closed, new GitHub user), `too_many` (5 new accounts from one
   client in an hour, counted once made), `other_account` (`reauth`
-  with another GitHub account: the session stays as it was). The web
+  with another GitHub account: the session stays as it was), `not_allowed`
+  (a GitHub account not in `ALLOWED_GITHUB_LOGINS`). The web
   client shows a fixed message per code.
 - `GET /api/profiles` → enabled accounts `{username, display_name, avatar_url}`,
   **no session needed** (the public leaderboard lists them too).
