@@ -61,6 +61,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - uses: actions/cache@v4
+        if: runner.os == 'Linux'
         id: cli-cache
         with:
           path: ${{ runner.temp }}/collector-clis
