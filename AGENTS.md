@@ -371,7 +371,7 @@ web/
   src/lib/demo.ts         FICTIONAL /demo dataset → DashboardVM (always labeled)
   src/lib/series.ts       pure helpers: dense day series, streaks, calendar grid
   src/lib/format.ts       number, day, duration and "ago" formatting
-  src/lib/dashboard.svelte.ts  state: provider, auth status, GitHub sign-in, 15 s refresh
+  src/lib/dashboard.svelte.ts  state: provider, auth status, GitHub sign-in, 5 s refresh
   src/lib/auth-errors.ts  ?auth_error=<code> → message (known codes only)
   src/lib/confirm-delete.svelte.ts  danger zone flows (typed phrase; sign in again if too old)
   src/App.svelte          routes the pages; renders the site chrome once
@@ -988,7 +988,7 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   `Retry-After`:
   - public reads (`/api/u/…`, `/api/leaderboard`, `/api/profiles`): 300
     per client (the client address above), refill 5/s. A dashboard polls
-    9 of them every 15 s, so about eight tabs fit behind one address. A
+    9 of them every 5 s, so about two tabs fit behind one address. A
     rate-limited refresh keeps the page as it was (the web client does
     not show it as "Could not reach the server");
   - signed-in routes (`/api/devices`, `/api/account`, `/api/users`,

@@ -12,9 +12,8 @@ import type { Context, MiddlewareHandler } from "hono";
  *   - rows written (stored or updated). The burst covers a first import of
  *     a month of history; past it, a batch that would write is rolled back
  *     (its quotas and context are still kept) until the budget refills;
- * - public reads, per client: a dashboard polls 7 routes every 15 s
- *   (28/min); 300 with 5/s leaves room for about ten tabs behind one
- *   address;
+ * - public reads, per client: a profile polls 9 routes every 5 s
+ *   (108/min); 300 with 5/s leaves room for two tabs behind one address;
  * - signed-in routes (devices, account, users, admin), per user;
  * - starting a GitHub sign-in, per client: 60, then one every 2 s, so
  *   visitors sharing one address (IPv6 behind Caddy, issue #102) still

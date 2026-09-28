@@ -21,7 +21,7 @@
   const PERIODS: { value: Period; label: string }[] = [
     { value: "7", label: "7 days" }, { value: "30", label: "30 days" }, { value: "all", label: "All time" },
   ];
-  const REFRESH_MS = 15000;
+  const REFRESH_MS = 5000;
 
   let period = $state<Period>("30");
   let data = $state<LeaderboardResponse | null>(null);

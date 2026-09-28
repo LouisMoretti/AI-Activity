@@ -372,7 +372,7 @@ command after setup, while Antigravity is running and these hooks are enabled.
    unavailable quota report (with its reason). Exit code 1 means a busy
    database or an upload failure; fix it and run again.
 6. Complete a new Antigravity turn and leave the dashboard open. Its existing
-   15-second refresh should show supported persisted usage after collection.
+   5-second refresh should show supported persisted usage after collection.
    If it does not, check the hook is loaded, Python and script paths resolve
    in Antigravity, the configured URL/key are correct, and a manual run works.
    Unsupported database formats may still produce no usage; see below.

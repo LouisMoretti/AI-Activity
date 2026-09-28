@@ -1,6 +1,6 @@
 // App state: sign-in, the current page (sign-in at /, a public profile at
 // /u/<username>, the fictional profile at /demo, /leaderboard, /settings,
-// /admin), session paging, and the 15 s auto-refresh
+// /admin), session paging, and the 5 s auto-refresh
 // (skipped while hidden or already in flight).
 import { api, NotFoundError, onSessionLost, RateLimitedError, UnauthorizedError } from "./api.ts";
 import { authErrorMessage } from "./auth-errors.ts";
@@ -23,7 +23,7 @@ export type Route =
  */
 export type Status = "loading" | "ready" | "signed-out" | "setup" | "missing" | "error";
 
-const REFRESH_MS = 15000;
+const REFRESH_MS = 5000;
 /** Server-side cap on one sessions page (/api/u/<name>/sessions). */
 const SESSIONS_MAX_PAGE = 200;
 export const SESSIONS_PAGE = 10;
