@@ -66,11 +66,13 @@ jobs:
               @anthropic-ai/claude-code@2.1.283 @openai/codex@0.157.1 \
               opencode-ai@1.18.33
       - name: Report CLI cache
-        run: echo "CLI cache hit (warm run): ${{ steps.cli-cache.outputs.cache-hit }}"
+        run: |
+          echo "CLI cache hit (warm run): ${{ steps.cli-cache.outputs.cache-hit }}"
       - name: Chat with local model APIs and verify installed collectors
         env:
           CLAUDE_CLI: ${{ runner.temp }}/collector-clis/node_modules/.bin/claude
           CODEX_CLI: ${{ runner.temp }}/collector-clis/node_modules/.bin/codex
           OPENCODE_CLI: ${{ runner.temp }}/collector-clis/node_modules/.bin/opencode
           PYTHON: python
-        run: /usr/bin/time -f "CLI smoke elapsed: %e seconds" node --test test/real-cli-smoke.mjs
+        run: |
+          /usr/bin/time -f "CLI smoke elapsed: %e seconds" node --test test/real-cli-smoke.mjs
