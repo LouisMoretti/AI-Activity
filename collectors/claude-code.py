@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """AI Activity collector for Claude Code (see README.md, "Send Claude Code usage").
 
-Run as the statusLine command (Linux, macOS, Windows): it reads the status
-line's JSON, answers at once (it prints nothing) and runs itself again,
-detached, with --worker to do the upload, so Claude Code cancelling the
-status line command does not stop it. --worker alone collects in the
-foreground (errors on stderr).
+Two entry points, both answering at once (they print nothing) and running
+this script again detached, so Claude Code cancelling them does not stop
+the upload (Linux, macOS, Windows):
 
-The worker reads what was added to every transcript under
-~/.claude/projects since the last accepted upload and posts one entry per
-Anthropic message id with its token counts, plus the status line's quotas
-and context fill. Prompts and replies never leave the device: only ids,
-model, time and counts.
+- --hook, from Claude Code's hooks (UserPromptSubmit, PostToolUse, Stop,
+  StopFailure, SessionEnd): tokens. The worker reads what was added to every transcript
+  under ~/.claude/projects since the last accepted upload and posts one
+  entry per Anthropic message id with its token counts. Prompts and
+  replies never leave the device: only ids, model, time and counts.
+- no argument, as the statusLine command: the 5-hour and 7-day quotas and
+  the context fill from the status line's JSON, which only the status
+  line receives. It never reads the transcripts.
+
+--worker alone collects the tokens in the foreground (errors on stderr).
 
 How far each file was sent is kept in ~/.cache/ai-activity/offsets.json, per
 server and device key (a new one gets the whole history), and only moves
@@ -43,7 +46,7 @@ else:
 
 # Bump on every change to this file, with COLLECTOR_VERSIONS in
 # shared/collectors.ts: the server flags older copies as outdated.
-VERSION = 2
+VERSION = 3
 COLLECTOR = {"name": "claude-code", "version": VERSION}
 SERVER = os.environ.get("AI_ACTIVITY_URL", "<server>")
 KEY = os.environ.get("AI_ACTIVITY_KEY", "<device key>")
@@ -268,16 +271,28 @@ def unlock(f):
     f.close()
 
 
-def collect(status):
+def collect():
     os.makedirs(CACHE, exist_ok=True)
-    held = lock(os.path.join(CACHE, "lock"))  # uploads wait for each other
+    # One active run and at most one waiting behind it: the tool-call hook
+    # fires often, and any other run can stop here, since the waiter reads
+    # the transcripts only once it holds the lock, so it sends what they would.
+    waiter = lock(os.path.join(CACHE, "waiter.lock"), wait=False)
+    if waiter is None:
+        return
     try:
-        send(status)
+        held = lock(os.path.join(CACHE, "lock"))
+        try:
+            unlock(waiter)  # a hook firing from now on queues the next run
+            waiter = None
+            send()
+        finally:
+            unlock(held)
     finally:
-        unlock(held)
+        if waiter:
+            unlock(waiter)
 
 
-def send(status):
+def send():
     """Posts what was added to the transcripts, then saves the offsets."""
     path = os.path.join(CACHE, "offsets.json")
     try:
@@ -295,28 +310,66 @@ def send(status):
         found += messages
     # One entry per message id: the last of its entries sorted by rank.
     messages = list({mid: e for mid, _, e in sorted(found, key=lambda x: x[1])}.values())
-    context = status.get("context_window") or {}
-    base = {
-        "rate_limits": status.get("rate_limits") or {},
-        "context": {"session_id": status.get("session_id"), "used_pct": context.get("used_percentage"),
-                    "window_size": context.get("context_window_size")},
-        "occurred_at": int(time.time()),
-    }
-    for i in range(0, max(len(messages), 1), BATCH):
-        post(dict(base, messages=messages[i:i + BATCH]))
+    for i in range(0, len(messages), BATCH):
+        post({"messages": messages[i:i + BATCH], "occurred_at": int(time.time())})
     offsets.update(moved)
     with open(path + ".tmp", "w") as out:
         json.dump(state, out)
     os.replace(path + ".tmp", path)
 
 
-def launch_worker(status):
-    """Run this script again with --worker, detached, handing it the status line's JSON on stdin."""
+STATUS_EVERY = 300  # an unchanged status is posted again after that long, not before
+
+
+def report(status):
+    """Posts the status line's quotas and context fill (no usage: the hooks send it).
+
+    The status line refreshes several times a second while Claude Code
+    works, and shares the device's request budget with the hooks' uploads:
+    the same values for the same server and key are not posted again
+    within STATUS_EVERY seconds."""
+    context = status.get("context_window") or {}
+    body = {
+        "rate_limits": status.get("rate_limits") or {},
+        "context": {"session_id": status.get("session_id"), "used_pct": context.get("used_percentage"),
+                    "window_size": context.get("context_window_size")},
+    }
+    if not body["rate_limits"] and body["context"]["used_pct"] is None:
+        return
+    seen = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+    os.makedirs(CACHE, exist_ok=True)
+    held = lock(os.path.join(CACHE, "status.lock"))  # posted in the order measured
+    try:
+        path = os.path.join(CACHE, "status.json")
+        try:
+            with open(path) as f:
+                saved = first_dict(f.read())
+        except OSError:
+            saved = {}
+        targets = saved.get("targets") if isinstance(saved.get("targets"), dict) else {}
+        targets = {k: v for k, v in targets.items() if isinstance(v, dict)}
+        fp = target()
+        last = targets.pop(fp, {})
+        now = int(time.time())
+        if last.get("seen") == seen and isinstance(last.get("at"), int) and 0 <= now - last["at"] < STATUS_EVERY:
+            targets[fp] = last
+            return
+        post(dict(body, occurred_at=now))
+        targets[fp] = {"seen": seen, "at": now}
+        with open(path + ".tmp", "w") as out:
+            json.dump({"targets": dict(list(targets.items())[-KEPT_TARGETS:])}, out)
+        os.replace(path + ".tmp", path)
+    finally:
+        unlock(held)
+
+
+def launch_worker(status, *flags):
+    """Run this script again with --worker (and flags), detached, handing it status on stdin."""
     options = {"start_new_session": True}
     if os.name == "nt":
         options = {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
                    | subprocess.CREATE_BREAKAWAY_FROM_JOB}
-    args = [sys.executable, os.path.abspath(__file__), "--worker"]
+    args = [sys.executable, os.path.abspath(__file__), "--worker", *flags]
     streams = dict(stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         worker = subprocess.Popen(args, **streams, **options)
@@ -332,13 +385,19 @@ def launch_worker(status):
 
 if __name__ == "__main__":
     try:
-        # The status line's JSON is a few KB: anything past 1 MB is not it.
-        status = sys.stdin.buffer.read(1 << 20)
-        if "--worker" in sys.argv:
+        if "--worker" not in sys.argv:
+            # The status line's JSON is a few KB: anything past 1 MB is not it.
+            status = sys.stdin.buffer.read(1 << 20)
+            if "--hook" in sys.argv:
+                launch_worker(b"")  # the hook's JSON is never sent: the worker reads every transcript
+            else:
+                launch_worker(status, "--status")
+        elif "--status" in sys.argv:
             with time_limit(900):
-                collect(first_dict(status.decode("utf-8", "replace")))
+                report(first_dict(sys.stdin.buffer.read(1 << 20).decode("utf-8", "replace")))
         else:
-            launch_worker(status)
-    except Exception as e:  # never break the status line; retried next refresh
+            with time_limit(900):
+                collect()
+    except Exception as e:  # never break the status line or a hook; retried next time
         print("ai-activity claude-code collector: %s" % e, file=sys.stderr)
         sys.exit(1)

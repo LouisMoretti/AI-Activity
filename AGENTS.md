@@ -190,8 +190,8 @@ Upgrades are normally deployed from GitHub (Continuous deployment below).
   app, restore the `-pre-v5` backup, start it. Restoring it under this
   code would only run migration 5 again and empty it once more.
 - Before going live: revoke and reissue every device key used through
-  quick tunnels, then point the collectors (statusLine, Codex hook,
-  OpenCode plugin) at the new URL.
+  quick tunnels, then point the collectors (Claude Code hooks and
+  statusLine, Codex hook, OpenCode plugin) at the new URL.
 - Logs rotate (`x-logging` in `compose.yaml`: 3 × 10 MB per container);
   Docker keeps them forever otherwise.
 
@@ -272,7 +272,7 @@ client; `test/dashboard.test.js` runs the client's state class
 (`dashboard.svelte.ts`, compiled with `svelte/compiler`) against a fake
 browser and fetch; `test/live.test.js` covers the API → view-model mapping;
 `test/collector.test.js` runs `collectors/claude-code.py` through the
-README's statusLine command and
+README's Claude Code hook and statusLine commands and
 `test/codex-collector.test.js` runs `collectors/codex.py` through the
 README's Codex Stop hook; `test/opencode-collector.test.js` runs
 `collectors/opencode.py` through its plugin on a fake OpenCode database;
@@ -327,7 +327,7 @@ git worktree prune
 ## 3. Architecture
 
 ```
-Claude Code statusLine → collectors/claude-code.py
+Claude Code hooks (tokens) + statusLine (quotas) → collectors/claude-code.py
 Codex Stop hook → collectors/codex.py
 OpenCode plugin → collectors/opencode.py
 Antigravity hooks → collectors/antigravity.py
@@ -412,15 +412,22 @@ Components never branch on live vs demo: both sources map into the same
   first free `<name>-<id>`, `<name>-<id>-2`… until it signs in again
   (`server/lib/accounts.ts`).
 - The Claude Code collector (`collectors/claude-code.py`, copied to
-  `~/.claude/ai-activity-claude-code.py`, run as the statusLine command;
-  exercised by `test/collector.test.js`) reads what was added to every
-  local transcript since the last accepted upload (byte offsets in
-  `~/.cache/ai-activity/offsets.json`; the first run imports all history)
-  and posts one entry per Anthropic message id. It answers at once and
-  runs itself again detached (`--worker`, handed the status line's JSON),
-  so Claude Code cancelling the status line does not kill the upload. It
-  replaced a `setsid -f python3 -c` one-liner and kept its offsets file
-  and lock.
+  `~/.claude/ai-activity-claude-code.py`; exercised by
+  `test/collector.test.js`) has two entry points. `--hook`, run by the
+  `UserPromptSubmit`, `PostToolUse`, `Stop`, `StopFailure` (a turn ended
+  by an API error, e.g. a rate limit) and `SessionEnd` hooks, sends the
+  tokens (an interrupted turn fires none: the next prompt or exit does): it reads what was added to every local transcript since the
+  last accepted upload (byte offsets in `~/.cache/ai-activity/offsets.json`;
+  the first run imports all history) and posts one entry per Anthropic
+  message id, one run at a time with at most one waiting
+  (`waiter.lock`, like Codex). Without arguments, as the statusLine
+  command, it posts the quotas and context fill, which Claude Code gives
+  only to the status line, and never reads the transcripts. So tokens are
+  counted in headless runs (`claude -p`) and next to a status line of the
+  user's own. Both answer at once and run the script again detached
+  (`--worker`; `--worker --status` handed the status line's JSON), so
+  Claude Code cancelling them does not kill the upload. It replaced a
+  `setsid -f python3 -c` one-liner and kept its offsets file and lock.
 - Every collector keeps its progress (`offsets.json`, `codex.json`,
   `opencode.json`, `antigravity.json`) per target: `{"targets": {"<fp>":
   {…}}}`, `fp` = the first 16 hex digits of SHA-256 of the normalized
@@ -485,7 +492,8 @@ Components never branch on live vs demo: both sources map into the same
   each collector where the README puts it, writes the README's Linux/macOS
   commands (on Windows, the installing interpreter's absolute path), merges
   into `settings.json` / `hooks.json` without touching other entries or
-  another statusLine (unless `AI_ACTIVITY_FORCE=1`), writes only what
+  another statusLine (unless `AI_ACTIVITY_FORCE=1`; Claude Code's hooks
+  are installed either way, so only its quotas go missing), writes only what
   changed (through symlinks, to their target), reads every config before
   writing anything (an invalid one changes nothing), checks the key first
   (a redirect is fatal: the collectors' POSTs never follow one) and refuses root unless
@@ -1043,13 +1051,13 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
    and sessions appear, no duplicates (Codex: after `codex exec`, or any
    turn once the hook is trusted; OpenCode: once a session goes idle;
    Antigravity: after a turn's hook fires).
-2. Resend the same message ids (every status line refresh does) →
+2. Resend the same message ids (a resent history does) →
    `deduped`, totals unchanged; a partial then final entry counts once.
 3. Two devices, same account → quota cards show the current window's value,
    not a sum, and a stale post from the other device does not lower it.
 4. Server unreachable for a while → offsets do not move, the next refresh
-   sends the whole backlog with original times. Killing the status line
-   command (its whole process group) does not stop the detached upload.
+   sends the whole backlog with original times. Killing the hook command
+   (its whole process group) does not stop the detached upload.
 5. Payload without `rate_limits` → quota card shows "Unavailable".
 6. Payload after `resets_at` passed → new snapshot replaces the old window.
 7. An event at 23:30 Europe/Paris shows on that local day; "Today" and the

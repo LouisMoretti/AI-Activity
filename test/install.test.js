@@ -16,7 +16,8 @@ const README = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8")
 const between = (from, to) => README.split(from)[1].split(to)[0];
 const jsonBlocks = (text) => [...text.matchAll(/```json\n([\s\S]*?)\n```/g)].map((m) => m[1]);
 // The README's Linux/macOS commands: what the installer writes there.
-const STATUS_LINE = JSON.parse(`{${jsonBlocks(between("## Send Claude Code usage", "## Send Codex"))[0]}}`).statusLine;
+const { hooks: CLAUDE_HOOKS, statusLine: STATUS_LINE } = JSON.parse(`{${jsonBlocks(between("## Send Claude Code usage", "## Send Codex"))[0]}}`);
+const CLAUDE_EVENTS = ["UserPromptSubmit", "PostToolUse", "Stop", "StopFailure", "SessionEnd"];
 const CODEX_HOOKS = JSON.parse(jsonBlocks(between("## Send Codex usage", "## Send Antigravity"))[0]).hooks;
 const ANTIGRAVITY_HOOK = JSON.parse(jsonBlocks(between("## Send Antigravity usage", "## Send OpenCode"))[0])["ai-activity"];
 const source = (f) => fs.readFileSync(new URL(`../collectors/${f}`, import.meta.url), "utf8");
@@ -148,7 +149,9 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
 
   test("installs the tools found, keeping existing settings and hooks", async () => {
     fs.mkdirSync(file(".claude", "projects", "-work"), { recursive: true });
-    fs.writeFileSync(file(".claude", "settings.json"), JSON.stringify({ model: "opus", permissions: { allow: ["Bash(ls)"] } }));
+    const theirHook = { matcher: "Bash", hooks: [{ type: "command", command: "rtk hook claude" }] };
+    fs.writeFileSync(file(".claude", "settings.json"), JSON.stringify({ model: "opus", permissions: { allow: ["Bash(ls)"] },
+      hooks: { PostToolUse: [theirHook] } }));
     fs.mkdirSync(file(".codex"), { recursive: true });
     const other = { hooks: [{ type: "command", command: "notify-send done" }] };
     fs.writeFileSync(file(".codex", "hooks.json"), JSON.stringify({ hooks: { Stop: [other] } }));
@@ -167,6 +170,14 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
     assert.equal(read(".claude", "ai-activity-claude-code.py"), filled("claude-code.py"));
     if (WINDOWS) assert.match(settings.statusLine.command, windowsCommand(file(".claude", "ai-activity-claude-code.py")));
     else assert.deepEqual(settings.statusLine, STATUS_LINE);
+    assert.deepEqual(Object.keys(CLAUDE_HOOKS), CLAUDE_EVENTS);
+    assert.deepEqual(settings.hooks.PostToolUse[0], theirHook);
+    for (const event of CLAUDE_EVENTS) {
+      const ours = settings.hooks[event].filter((h) => JSON.stringify(h).includes("ai-activity-claude-code.py"));
+      assert.equal(ours.length, 1);
+      if (WINDOWS) assert.match(ours[0].hooks[0].command, windowsCommand(file(".claude", "ai-activity-claude-code.py"), "--hook"));
+      else assert.deepEqual(ours[0], CLAUDE_HOOKS[event][0]);
+    }
 
     assert.equal(read(".codex", "ai-activity-codex.py"), filled("codex.py"));
     const hooks = json(".codex", "hooks.json").hooks;
@@ -196,23 +207,34 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
     assert.ok(!fs.existsSync(file(".config", "opencode")));
   });
 
-  test("the installed statusLine uploads with that URL and key", async () => {
+  // Run like Claude Code does: through a shell, its JSON on stdin.
+  const runCommand = (command, stdin) => new Promise((resolve) => {
+    const p = WINDOWS
+      ? spawn(command, { env, shell: true, windowsHide: true, stdio: ["pipe", "ignore", "ignore"] })
+      : spawn("sh", ["-c", command], { env, stdio: ["pipe", "ignore", "ignore"] });
+    p.stdin.on("error", () => {});
+    p.stdin.end(stdin);
+    p.on("exit", resolve);
+  });
+
+  test("the installed hook uploads the tokens with that URL and key", async () => {
     fs.writeFileSync(file(".claude", "projects", "-work", "s1.jsonl"), JSON.stringify({
       type: "assistant", sessionId: "s1", timestamp: new Date().toISOString(),
       message: { id: "msg_install_1", model: "claude-opus-5-5", usage: { input_tokens: 1, output_tokens: 41 } },
     }) + "\n");
-    const { statusLine } = json(".claude", "settings.json");
-    // Run like Claude Code does: through a shell, the status line JSON on stdin.
-    await new Promise((resolve) => {
-      const p = WINDOWS
-        ? spawn(statusLine.command, { env, shell: true, windowsHide: true, stdio: ["pipe", "ignore", "ignore"] })
-        : spawn("sh", ["-c", statusLine.command], { env, stdio: ["pipe", "ignore", "ignore"] });
-      p.stdin.on("error", () => {});
-      p.stdin.end("{}");
-      p.on("exit", resolve);
-    });
+    const { hooks } = json(".claude", "settings.json");
+    const ours = hooks.Stop.find((h) => JSON.stringify(h).includes("ai-activity-claude-code.py"));
+    await runCommand(ours.hooks[0].command, JSON.stringify({ hook_event_name: "Stop", session_id: "s1" }));
     const tokens = async () => (await req(srv.base, "GET", "/api/u/admin/stats?days=30", { headers: asNewClient() })).json.total_tokens;
     assert.equal(await waitFor(async () => (await tokens()) === 42), true, "the upload reached the server");
+  });
+
+  test("the installed statusLine uploads the quotas", async () => {
+    const { statusLine } = json(".claude", "settings.json");
+    const resets = Math.floor(Date.now() / 1000) + 3600;
+    await runCommand(statusLine.command, JSON.stringify({ rate_limits: { five_hour: { used_percentage: 12, resets_at: resets } } }));
+    const quotas = async () => (await req(srv.base, "GET", "/api/u/admin/quotas", { headers: asNewClient() })).json.quotas;
+    assert.equal(await waitFor(async () => (await quotas()).some((q) => q.tool === "claude-code" && q.used_pct === 12)), true);
   });
 
   test("running it again changes nothing", async () => {
@@ -236,18 +258,23 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
     assert.equal(read(".gemini", "ai-activity-antigravity.py"), filled("antigravity.py", key2));
     assert.ok(!read(".claude", "settings.json").includes(key2), "the key is in the script, not the settings");
     assert.equal(json(".codex", "hooks.json").hooks.UserPromptSubmit.length, 1);
+    assert.equal(json(".claude", "settings.json").hooks.Stop.length, 1);
+    assert.equal(json(".claude", "settings.json").hooks.PostToolUse.length, 2);
     assert.equal(json(".codex", "hooks.json").hooks.Stop.length, 2);
     await install(); // back to the first key for the next tests
   });
 
-  test("never replaces another statusLine unless asked", async () => {
+  test("never replaces another statusLine unless asked, and still installs the hooks", async () => {
     const mine = { type: "command", command: "echo my status" };
-    const settings = json(".claude", "settings.json");
+    const { hooks, ...settings } = json(".claude", "settings.json");
     fs.writeFileSync(file(".claude", "settings.json"), JSON.stringify({ ...settings, statusLine: mine }));
     const r = await install({ AI_ACTIVITY_TOOLS: "claude-code" });
     assert.equal(r.code, 0, r.out);
-    assert.match(r.out, /already has another statusLine/);
+    assert.match(r.out, /already has another statusLine, kept: tokens are sent/);
     assert.deepEqual(json(".claude", "settings.json").statusLine, mine);
+    for (const event of CLAUDE_EVENTS) {
+      assert.ok(JSON.stringify(json(".claude", "settings.json").hooks[event]).includes("ai-activity-claude-code.py"));
+    }
     await install({ AI_ACTIVITY_TOOLS: "claude-code", AI_ACTIVITY_FORCE: "1" });
     assert.ok(json(".claude", "settings.json").statusLine.command.includes("ai-activity-claude-code.py"));
   });

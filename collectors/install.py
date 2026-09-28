@@ -42,6 +42,10 @@ OPENCODE_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(HO
 CONFIGS = {"claude-code": os.path.join(CLAUDE_DIR, "settings.json"),
            "codex": os.path.join(CODEX_HOME, "hooks.json"),
            "antigravity": os.path.join(GEMINI_HOME, "config", "hooks.json")}
+# Claude Code events that send the tokens: during a turn, after it (StopFailure:
+# ended by an API error, e.g. a rate limit), before the next one (neither fires
+# on an interrupted turn) and at exit.
+CLAUDE_HOOKS = ("UserPromptSubmit", "PostToolUse", "Stop", "StopFailure", "SessionEnd")
 
 
 def fail(msg):
@@ -136,25 +140,37 @@ def preflight(tools):
         if tool not in tools:
             continue
         config = load_json(path)
-        if tool == "codex" and not isinstance(config.get("hooks", {}), dict):
+        if tool in ("claude-code", "codex") and not isinstance(config.get("hooks", {}), dict):
             fail(f"{path}: \"hooks\" is not an object: fix it, then run this again (nothing was changed)")
 
 
 def install_claude(url, key):
     path = CONFIGS["claude-code"]
     settings = load_json(path)
+    script = os.path.join(CLAUDE_DIR, "ai-activity-claude-code.py")
+    changed = write(script, fill(FILES["claude-code.py"], url, key), 0o600)
+    run = lambda *args: command(script, "~/.claude/ai-activity-claude-code.py", *args)
+    # Tokens: the hooks, next to the user's own.
+    hooks = settings.setdefault("hooks", {})  # an object: preflight checked
+    ours = {"hooks": [{"type": "command", "command": run("--hook"), "timeout": 10}]}
+    for event in CLAUDE_HOOKS:
+        entries = hooks.get(event)
+        entries = entries if isinstance(entries, list) else []
+        # Drop our earlier entries (any path), keep everyone else's.
+        hooks[event] = [e for e in entries if "ai-activity-claude-code.py" not in json.dumps(e)] + [ours]
+    # Quotas and context: the status line, the only place Claude Code gives them.
     current = settings.get("statusLine")
     # Ours: this script, or the former one-liner (it named ~/.cache/ai-activity).
     other = isinstance(current, dict) and "ai-activity" not in str(current.get("command", ""))
-    if current and other and os.environ.get("AI_ACTIVITY_FORCE") != "1":
-        say(f"Claude Code: skipped, {path} already has another statusLine. "
-            "AI_ACTIVITY_FORCE=1 replaces it (Claude Code runs one status line).")
-        return False
-    script = os.path.join(CLAUDE_DIR, "ai-activity-claude-code.py")
-    changed = write(script, fill(FILES["claude-code.py"], url, key), 0o600)
-    settings["statusLine"] = {"type": "command", "command": command(script, "~/.claude/ai-activity-claude-code.py")}
+    kept = current and other and os.environ.get("AI_ACTIVITY_FORCE") != "1"
+    if not kept:
+        settings["statusLine"] = {"type": "command", "command": run()}
     changed = write(path, dump(settings)) or changed
-    say(f"Claude Code: {'installed' if changed else 'already up to date'} ({script}, statusLine in {path})")
+    say(f"Claude Code: {'installed' if changed else 'already up to date'} ({script}, hooks"
+        f"{'' if kept else ' and statusLine'} in {path})")
+    if kept:
+        say(f"Claude Code: {path} already has another statusLine, kept: tokens are sent, quotas are not. "
+            "AI_ACTIVITY_FORCE=1 replaces it (Claude Code runs one status line).")
     return True
 
 
@@ -277,7 +293,7 @@ def main():
                "antigravity": install_antigravity, "opencode": install_opencode}
     done = [t for t in TOOLS if t in tools and install[t](url, key)]
     if "claude-code" in done:
-        say("Claude Code: usage is sent at the next status line refresh")
+        say("Claude Code: restart it (or review the hooks in /hooks), then usage is sent during and after every turn")
     if "codex" in done:
         say("Codex: review the new hooks once with /hooks, then they run during and after every turn")
     if "antigravity" in done:

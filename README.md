@@ -34,9 +34,11 @@ or the `py` launcher) and install the collectors of the tools they find
 (`claude` / `codex` / `agy` / `opencode` on the `PATH`, or their config
 folders), as the sections below describe:
 
-- Claude Code: `~/.claude/ai-activity-claude-code.py` and the `statusLine`
-  in `~/.claude/settings.json`. Another status line already set is left
-  alone (`AI_ACTIVITY_FORCE=1` replaces it: Claude Code runs only one).
+- Claude Code: `~/.claude/ai-activity-claude-code.py`, its five hooks
+  (tokens) and the `statusLine` (quotas) in `~/.claude/settings.json`, next
+  to your other hooks. Another status line already set is left alone: the
+  tokens are still sent, the quotas are not (`AI_ACTIVITY_FORCE=1` replaces
+  it: Claude Code runs only one). Restart Claude Code.
 - Codex: `~/.codex/ai-activity-codex.py` and its three hooks in
   `~/.codex/hooks.json`, next to your other hooks. Review them once with
   `/hooks`.
@@ -70,9 +72,17 @@ refuses to run as root unless `AI_ACTIVITY_ALLOW_ROOT=1`.
    your tunnel URL) and `<device key>` at its top (or set
    `AI_ACTIVITY_URL` / `AI_ACTIVITY_KEY` in the environment Claude Code runs
    in).
-3. Add this to `~/.claude/settings.json`:
+3. Add this to `~/.claude/settings.json` (merge the hooks into any you
+   already have), then restart Claude Code:
 
 ```json
+"hooks": {
+  "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "python3 ~/.claude/ai-activity-claude-code.py --hook", "timeout": 10}]}],
+  "PostToolUse": [{"hooks": [{"type": "command", "command": "python3 ~/.claude/ai-activity-claude-code.py --hook", "timeout": 10}]}],
+  "Stop": [{"hooks": [{"type": "command", "command": "python3 ~/.claude/ai-activity-claude-code.py --hook", "timeout": 10}]}],
+  "StopFailure": [{"hooks": [{"type": "command", "command": "python3 ~/.claude/ai-activity-claude-code.py --hook", "timeout": 10}]}],
+  "SessionEnd": [{"hooks": [{"type": "command", "command": "python3 ~/.claude/ai-activity-claude-code.py --hook", "timeout": 10}]}]
+},
 "statusLine": {
   "type": "command",
   "command": "python3 ~/.claude/ai-activity-claude-code.py"
@@ -83,6 +93,13 @@ On Windows, use this instead, replacing `<user>` with your Windows user
 directory name (backslashes and quotes are already JSON-escaped):
 
 ```json
+"hooks": {
+  "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "python \"C:\\Users\\<user>\\.claude\\ai-activity-claude-code.py\" --hook", "timeout": 10}]}],
+  "PostToolUse": [{"hooks": [{"type": "command", "command": "python \"C:\\Users\\<user>\\.claude\\ai-activity-claude-code.py\" --hook", "timeout": 10}]}],
+  "Stop": [{"hooks": [{"type": "command", "command": "python \"C:\\Users\\<user>\\.claude\\ai-activity-claude-code.py\" --hook", "timeout": 10}]}],
+  "StopFailure": [{"hooks": [{"type": "command", "command": "python \"C:\\Users\\<user>\\.claude\\ai-activity-claude-code.py\" --hook", "timeout": 10}]}],
+  "SessionEnd": [{"hooks": [{"type": "command", "command": "python \"C:\\Users\\<user>\\.claude\\ai-activity-claude-code.py\" --hook", "timeout": 10}]}]
+},
 "statusLine": {
   "type": "command",
   "command": "python \"C:\\Users\\<user>\\.claude\\ai-activity-claude-code.py\""
@@ -95,39 +112,58 @@ interpreter if it is not on Claude Code's PATH (`python3 -c 'import sys;
 print(sys.executable)'`, or `python -c "import sys; print(sys.executable)"`
 on Windows, JSON-escaped like the script path).
 
-Replacing the former one-liner (`setsid -f python3 -c "…"`): swap its
-`statusLine` command for this one. Its first refresh sends every
-transcript again (the one-liner's offsets did not say which server they
-were for); the server stores each message id once, so nothing is counted
-twice or missed.
+**The hooks send the tokens, the status line the quotas.** Claude Code
+only gives its 5-hour and 7-day quotas and the context fill to the status
+line; the tokens are in the transcripts, which any hook can read. So the
+hooks alone count every token, headless runs (`claude -p`, the Agent SDK)
+included, and keep working next to a status line of your own: only the
+quotas are then missing ("Unavailable").
 
-What it does on every status line refresh:
+Replacing an earlier install (the statusLine alone, or the former
+`setsid -f python3 -c "…"` one-liner): run the install command again, or
+add the hooks and swap the `statusLine` command for the one above. The
+one-liner's first run sends every transcript again (its offsets did not
+say which server they were for); the server stores each message id once,
+so nothing is counted twice or missed.
 
-- Reads what was added to every transcript under `~/.claude/projects`
+What the hooks do (a prompt, every tool call, the end of a turn, a turn
+ended by an API error such as a rate limit, the end of a session). A turn
+you interrupt fires none of them: its tokens go with the next prompt, or at
+exit:
+
+- Read what was added to every transcript under `~/.claude/projects`
   (sessions and subagents, all projects) since the last successful upload,
-  and sends **one entry per Anthropic message id** with its token counts.
+  and send **one entry per Anthropic message id** with its token counts.
   Prompts and replies never leave the device, only ids, model, time (with
-  the device's UTC offset at that time) and counts.
-- The first refresh therefore sends every transcript still on disk (Claude
+  the device's UTC offset at that time) and counts. The hook's own input is
+  never sent.
+- The first run therefore sends every transcript still on disk (Claude
   Code keeps about 30 days by default): that is the import of past
   sessions. It also replaces the rows the old snapshot collector sent for
   those sessions, which counted most API calls twice.
 - How far each file was sent is kept in `~/.cache/ai-activity/offsets.json`,
   per server and device key, and only moves forward once the server
   accepted everything, so nothing is lost while the server is down: the
-  next refresh sends the backlog. A new server or key starts from nothing,
-  so its first refresh sends the whole history. Delete that file to send
+  next run sends the backlog. A new server or key starts from nothing,
+  so its first run sends the whole history. Delete that file to send
   everything again (safe: the server stores each message id once).
 - The server stores each message id once. Claude Code sometimes writes a
   partial entry (a few output tokens) before the final one; the final
   counts replace it.
 - The script answers at once and starts the upload detached (its own
   session on Linux/macOS; on Windows out of the console, the process group
-  and, when Windows permits it, the parent job). Claude Code cancels a
-  status line command when the next refresh comes; the upload keeps
-  running. Uploads wait for each other (a lock in `~/.cache/ai-activity`)
-  and give up after 15 minutes.
-- Also sends the 5-hour and 7-day quotas and the context fill.
+  and, when Windows permits it, the parent job), so it never slows Claude
+  Code down and survives it being cancelled. Uploads wait for each other
+  (a lock in `~/.cache/ai-activity`); since tool calls come fast, at most
+  one more waits behind the active one and the others exit at once. A run
+  gives up after 15 minutes.
+
+What the status line does on every refresh: sends the 5-hour and 7-day
+quotas and the context fill, detached the same way, unless the same values
+went to the same server in the last 5 minutes (`status.json` in
+`~/.cache/ai-activity`): it refreshes several times a second while Claude
+Code works, and shares the device's request budget with the hooks. It
+never reads the transcripts, and prints nothing.
 
 **Days are local, like GitHub's contribution calendar.** Each entry carries
 the device's UTC offset when it happened (daylight saving included), and
@@ -207,8 +243,8 @@ in PowerShell is:
 ```
 
 If your hook runner uses `cmd.exe`, omit `&`; it is PowerShell syntax.
-Claude Code's Windows statusLine above runs through Git Bash and keeps its
-existing command.
+Claude Code's Windows hooks and statusLine above run through Git Bash and
+keep their commands.
 
 Codex asks you to review a new hook once (`/hooks`) before running it.
 
@@ -575,7 +611,7 @@ Each tool has one Python script in `collectors/`. They share the same design:
   stderr and exits 1; the tool is never blocked, and the next run retries.
 - **One upload at a time.** A lock file in `~/.cache/ai-activity/`
   (`flock`; on Windows `msvcrt` on its first byte) serializes runs. Where
-  hooks fire often (Codex, Antigravity), one more run may wait behind the
+  hooks fire often (Claude Code, Codex, Antigravity), one more run may wait behind the
   active one and any other exits at once: the waiter reads the sources only
   once its turn comes, so it sends what they would have.
 - **Idempotent.** Any script can also run by hand or from cron
@@ -591,19 +627,20 @@ Each tool has one Python script in `collectors/`. They share the same design:
 
 | Script | Copy to | Run by | Reads | Progress file | Locks |
 | --- | --- | --- | --- | --- | --- |
-| `claude-code.py` | `~/.claude/ai-activity-claude-code.py` | the statusLine, every refresh | `~/.claude/projects/**/*.jsonl` (sessions and subagents) | `offsets.json` (byte offset per transcript) | `lock` |
+| `claude-code.py` | `~/.claude/ai-activity-claude-code.py` | the `UserPromptSubmit`, `PostToolUse`, `Stop`, `StopFailure` and `SessionEnd` hooks (tokens); the statusLine, every refresh (quotas, context) | `~/.claude/projects/**/*.jsonl` (sessions and subagents) | `offsets.json` (byte offset per transcript), `status.json` (last status posted) | `lock`, `waiter.lock`, `status.lock` |
 | `codex.py` | `~/.codex/ai-activity-codex.py` | the `Stop`, `UserPromptSubmit` and `PostToolUse` hooks | `~/.codex/sessions`, `~/.codex/archived_sessions` (`CODEX_HOME`) | `codex.json` (byte offset per rollout) | `codex.lock`, `codex-waiter.lock` |
 | `opencode.py` | `~/.config/opencode/ai-activity-opencode.py` | `opencode-plugin.js`, at start and on `session.idle` | `~/.local/share/opencode/opencode.db` (`XDG_DATA_HOME`, `OPENCODE_DB`), numeric fields only | `opencode.json` (last `time_updated` sent) | `opencode.lock` |
 | `antigravity.py` | `~/.gemini/ai-activity-antigravity.py` | the `PostInvocation` and `Stop` hooks | `~/.gemini/{antigravity,antigravity-cli,antigravity-ide}/conversations/*.db` (`GEMINI_CLI_HOME`); quotas from `agy`, opt-in | `antigravity.json` (per database), `antigravity-quota.json` | `antigravity.lock`, `antigravity-waiter.lock`, `antigravity-quota.lock` |
 
 How each one is started:
 
-- `claude-code.py`: without arguments (the statusLine), reads the status
-  line's JSON on stdin, starts `claude-code.py --worker` detached with that
-  JSON, and prints nothing. `--worker` collects in the foreground: run
-  `python3 ~/.claude/ai-activity-claude-code.py --worker </dev/null` (on
-  Windows, `python "<path>" --worker <NUL` in cmd) to see errors while
-  setting up.
+- `claude-code.py`: `--hook` (the hooks) reads the hook's JSON on stdin
+  (never sent), starts `claude-code.py --worker` detached, and prints
+  nothing. Without arguments (the statusLine), it hands the status line's
+  JSON to `claude-code.py --worker --status`, which posts the quotas and
+  context fill. `--worker` alone collects the tokens in the foreground: run
+  `python3 ~/.claude/ai-activity-claude-code.py --worker` (on Windows,
+  `python "<path>" --worker`) to see errors while setting up.
 - `codex.py`: without arguments, collects in the foreground (by hand, cron,
   and the Linux/macOS hooks, which detach it with `setsid -f`). `--hook`
   (the Windows hooks) prints `{}` for Codex and starts the script again

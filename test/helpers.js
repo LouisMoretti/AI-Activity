@@ -437,7 +437,7 @@ export async function recordingServer() {
     let body = "";
     for await (const chunk of request) body += chunk;
     const payload = JSON.parse(body);
-    batches.push({ key: request.headers.authorization, messages: payload.messages ?? [] });
+    batches.push({ key: request.headers.authorization, messages: payload.messages ?? [], rate_limits: payload.rate_limits });
     response.setHeader("content-type", "application/json");
     response.end(JSON.stringify({ ok: true, messages: (payload.messages ?? []).length }));
   });
