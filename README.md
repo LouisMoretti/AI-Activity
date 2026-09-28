@@ -619,3 +619,24 @@ How each one is started:
 Claude Code, Codex and OpenCode runs give up after 15 minutes (the progress
 already accepted is kept). The payloads each script sends are described in
 `AGENTS.md` §5.
+
+## Collector CI
+
+`npm test` runs the installed collector integration tests on Linux and ARM64;
+the Windows CI job runs them explicitly. Each test starts a temporary app and
+local HTTP receiver, runs the served installer in an isolated home, invokes
+the installed status line, hook or plugin against synthetic tool data, then
+checks the upload format, retry, deduplication and dashboard totals. No model
+API or external account is needed.
+
+The separate **Collector CLI smoke** workflow runs on relevant collector
+changes and can also be started from Actions. Its Linux x64, Linux ARM64 and
+Windows x64 jobs install pinned Claude Code, Codex and OpenCode CLIs, point
+each at a local fake model API, complete one chat, and check that the
+installed integration reaches the real app. Windows uses a temporary ConPTY
+for Claude Code's interactive status line. It uses no model API key or external
+account. The workflow is not a required check on unrelated PRs. Antigravity
+is covered by the installed hook test with synthetic database rows. The
+separate **Antigravity CLI smoke** workflow also runs a real `agy` chat against
+a local Gemini stub and verifies that the installed hook uploads its measured
+usage; see the Antigravity section above.
