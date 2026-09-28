@@ -6,11 +6,13 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startServer, newDevice, req, processesGone } from "./helpers.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const require = createRequire(import.meta.url);
 async function waitFor(check, ms = 30000) {
   const end = Date.now() + ms;
   do {
@@ -22,7 +24,9 @@ async function waitFor(check, ms = 30000) {
 
 function run(bin, args, env, { cwd, input = "", timeout = 30000 } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+    const nodeScript = bin.endsWith(".js");
+    const child = spawn(nodeScript ? process.execPath : bin, nodeScript ? [bin, ...args] : args,
+      { cwd, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     let output = "";
     child.stdout.on("data", (part) => { output += part; });
     child.stderr.on("data", (part) => { output += part; });
@@ -34,7 +38,7 @@ function run(bin, args, env, { cwd, input = "", timeout = 30000 } = {}) {
   });
 }
 
-function interactiveClaude(cli, env, cwd, uploaded) {
+function interactiveClaudeUnix(cli, env, cwd, uploaded) {
   return new Promise((resolve, reject) => {
     const quoted = "'" + cli.replaceAll("'", "'\\''") + "'";
     const child = spawn("script", ["-q", "-e", "-c",
@@ -70,6 +74,41 @@ function interactiveClaude(cli, env, cwd, uploaded) {
     });
   });
 }
+
+function interactiveClaudeWindows(cli, env, cwd, uploaded) {
+  const pty = require(path.join(process.env.CLI_ROOT, "node-pty"));
+  return new Promise((resolve, reject) => {
+    const child = pty.spawn(cli, ["--model", "claude-sonnet-4-5"],
+      { cwd, env, cols: 120, rows: 40 });
+    let output = "";
+    let acceptedKey = false;
+    let stopping = false;
+    child.onData((part) => {
+      output += part;
+      if (!acceptedKey && output.includes("ANTHROPIC_API_KEY") && output.includes("recommended")) {
+        acceptedKey = true;
+        child.write("\x1b[A\r");
+        setTimeout(() => child.write("Say hello.\r"), 1500);
+      }
+    });
+    const poll = setInterval(async () => {
+      try {
+        if (!stopping && await uploaded()) {
+          stopping = true;
+          child.write("\x03");
+          setTimeout(() => child.kill(), 1000);
+        }
+      } catch { /* surface the main assertion below */ }
+    }, 500);
+    const limit = setTimeout(() => child.kill(), 30000);
+    child.onExit(({ exitCode }) => {
+      clearInterval(poll); clearTimeout(limit);
+      resolve({ code: exitCode, output });
+    });
+  });
+}
+
+const interactiveClaude = process.platform === "win32" ? interactiveClaudeWindows : interactiveClaudeUnix;
 
 async function localServer(handler) {
   const server = http.createServer(handler);
@@ -166,6 +205,10 @@ async function smoke(tool, cli) {
   const work = path.join(home, "work");
   fs.mkdirSync(work);
   fs.mkdirSync(path.join(home, ".codex"));
+  if (process.platform === "win32") {
+    fs.mkdirSync(path.join(home, "AppData", "Roaming"), { recursive: true });
+    fs.mkdirSync(path.join(home, "AppData", "Local"), { recursive: true });
+  }
   if (tool === "claude-code") fs.writeFileSync(path.join(home, ".claude.json"), JSON.stringify({
     hasCompletedOnboarding: true, lastOnboardingVersion: "2.1.283", theme: "dark",
     projects: { [work]: { hasTrustDialogAccepted: true } },
@@ -175,6 +218,8 @@ async function smoke(tool, cli) {
   const model = await modelServer(tool);
   const ingest = await ingestProxy(app.base, tool, key);
   const env = { ...process.env, HOME: home, USERPROFILE: home, CODEX_HOME: path.join(home, ".codex"),
+    ...(process.platform === "win32" ? { APPDATA: path.join(home, "AppData", "Roaming"),
+      LOCALAPPDATA: path.join(home, "AppData", "Local") } : {}),
     XDG_CONFIG_HOME: path.join(home, ".config"), XDG_DATA_HOME: path.join(home, ".local", "share"),
     XDG_CACHE_HOME: path.join(home, ".cache"),
     AI_ACTIVITY_URL: ingest.base, AI_ACTIVITY_KEY: key, AI_ACTIVITY_TOOLS: tool,
@@ -185,7 +230,10 @@ async function smoke(tool, cli) {
   delete env.CODEX_API_KEY;
   delete env.CLAUDE_CODE_OAUTH_TOKEN;
   try {
-    const install = await run("sh", ["-c", `curl -fsSL ${app.base}/install.sh | sh`], env, { cwd: work });
+    const install = process.platform === "win32"
+      ? await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
+        `irm ${app.base}/install.ps1 | iex`], env, { cwd: work })
+      : await run("sh", ["-c", `curl -fsSL ${app.base}/install.sh | sh`], env, { cwd: work });
     assert.equal(install.code, 0, install.output);
     const config = path.join(home, ".codex", "config.toml");
     if (tool === "codex") {
@@ -232,9 +280,13 @@ env_key = "MOCK_API_KEY"
   }
 }
 
+const cliRoot = process.env.CLI_ROOT;
 test("real Claude Code CLI calls the installed statusLine after a local chat", () =>
-  smoke("claude-code", process.env.CLAUDE_CLI || "claude"));
+  smoke("claude-code", process.env.CLAUDE_CLI || (cliRoot
+    ? path.join(cliRoot, "@anthropic-ai", "claude-code", "bin", "claude.exe") : "claude")));
 test("real Codex CLI calls the installed hook after a local chat", () =>
-  smoke("codex", process.env.CODEX_CLI || "codex"));
+  smoke("codex", process.env.CODEX_CLI || (cliRoot
+    ? path.join(cliRoot, "@openai", "codex", "bin", "codex.js") : "codex")));
 test("real OpenCode CLI loads the installed plugin after a local chat", () =>
-  smoke("opencode", process.env.OPENCODE_CLI || "opencode"));
+  smoke("opencode", process.env.OPENCODE_CLI || (cliRoot
+    ? path.join(cliRoot, "opencode-ai", "bin", "opencode.exe") : "opencode")));

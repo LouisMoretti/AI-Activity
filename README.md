@@ -618,11 +618,13 @@ checks the upload format, retry, deduplication and dashboard totals. No model
 API or external account is needed.
 
 The separate **Collector CLI smoke** workflow runs on relevant collector
-changes and can also be started from Actions. It installs pinned Claude Code,
-Codex and OpenCode CLIs, points each at a local fake model API, completes one
-chat, and checks that the installed integration reaches the real app. It uses
-no model API key or external account. The workflow is not a required check on
-unrelated PRs. Antigravity is covered by the installed hook test with
+changes and can also be started from Actions. Its Linux x64, Linux ARM64 and
+Windows x64 jobs install pinned Claude Code, Codex and OpenCode CLIs, point
+each at a local fake model API, complete one chat, and check that the
+installed integration reaches the real app. Windows uses a temporary ConPTY
+for Claude Code's interactive status line. It uses no model API key or external
+account. The workflow is not a required check on unrelated PRs. Antigravity
+is covered by the installed hook test with
 synthetic database rows; its current CLI persists a newer undocumented
 metadata layout that the collector skips, so a real CLI upload smoke test is
 not yet reliable.

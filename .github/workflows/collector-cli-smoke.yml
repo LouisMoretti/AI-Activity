@@ -39,7 +39,15 @@ concurrency:
 
 jobs:
   smoke:
-    runs-on: ubuntu-latest
+    name: smoke (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest, name: linux x64, platform: linux-x64 }
+          - { runner: ubuntu-24.04-arm, name: linux arm64, platform: linux-arm64 }
+          - { runner: windows-latest, name: windows x64, platform: windows-x64 }
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -56,23 +64,46 @@ jobs:
         id: cli-cache
         with:
           path: ${{ runner.temp }}/collector-clis
-          key: collector-clis-linux-x64-claude-2.1.283-codex-0.157.1-opencode-1.18.33
-      - name: Install pinned real CLIs
-        if: steps.cli-cache.outputs.cache-hit != 'true'
+          key: collector-clis-${{ matrix.platform }}-claude-2.1.283-codex-0.157.1-opencode-1.18.33-pty-1.1.0
+      - name: Install pinned real CLIs (Linux)
+        if: runner.os == 'Linux' && steps.cli-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p "$RUNNER_TEMP/collector-clis"
           /usr/bin/time -f "Cold CLI install elapsed: %e seconds" \
             npm install --prefix "$RUNNER_TEMP/collector-clis" --no-save \
               @anthropic-ai/claude-code@2.1.283 @openai/codex@0.157.1 \
               opencode-ai@1.18.33
+      - name: Install pinned real CLIs and ConPTY (Windows)
+        if: runner.os == 'Windows' && steps.cli-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $cliRoot = Join-Path $env:RUNNER_TEMP 'collector-clis'
+          New-Item -ItemType Directory -Force $cliRoot | Out-Null
+          $start = Get-Date
+          npm install --prefix $cliRoot --no-save `
+            @anthropic-ai/claude-code@2.1.283 @openai/codex@0.157.1 `
+            opencode-ai@1.18.33 node-pty@1.1.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Output "Cold CLI install elapsed: $((Get-Date) - $start)"
       - name: Report CLI cache
         run: |
           echo "CLI cache hit (warm run): ${{ steps.cli-cache.outputs.cache-hit }}"
       - name: Chat with local model APIs and verify installed collectors
         env:
-          CLAUDE_CLI: ${{ runner.temp }}/collector-clis/node_modules/.bin/claude
-          CODEX_CLI: ${{ runner.temp }}/collector-clis/node_modules/.bin/codex
-          OPENCODE_CLI: ${{ runner.temp }}/collector-clis/node_modules/.bin/opencode
+          CLI_ROOT: ${{ runner.temp }}/collector-clis/node_modules
           PYTHON: python
+        shell: bash
+        if: runner.os == 'Linux'
         run: |
           /usr/bin/time -f "CLI smoke elapsed: %e seconds" node --test test/real-cli-smoke.mjs
+      - name: Chat with local model APIs and verify installed collectors (Windows)
+        if: runner.os == 'Windows'
+        env:
+          CLI_ROOT: ${{ runner.temp }}/collector-clis/node_modules
+          PYTHON: python
+        shell: pwsh
+        run: |
+          $start = Get-Date
+          node --test test/real-cli-smoke.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Output "CLI smoke elapsed: $((Get-Date) - $start)"
