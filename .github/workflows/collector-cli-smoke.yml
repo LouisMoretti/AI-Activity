@@ -104,6 +104,6 @@ jobs:
         shell: pwsh
         run: |
           $start = Get-Date
-          node --test test/real-cli-smoke.mjs
+          node --test --test-force-exit test/real-cli-smoke.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Write-Output "CLI smoke elapsed: $((Get-Date) - $start)"
