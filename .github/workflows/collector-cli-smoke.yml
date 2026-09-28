@@ -104,6 +104,19 @@ jobs:
         shell: pwsh
         run: |
           $start = Get-Date
-          node --test --test-force-exit test/real-cli-smoke.mjs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($tool in @('Claude', 'Codex', 'OpenCode')) {
+            $stdout = Join-Path $env:RUNNER_TEMP "cli-$tool.out"
+            $stderr = Join-Path $env:RUNNER_TEMP "cli-$tool.err"
+            $test = Start-Process node -PassThru -NoNewWindow `
+              -ArgumentList @('--test', '--test-force-exit', "--test-name-pattern=$tool", 'test/real-cli-smoke.mjs') `
+              -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            $finished = $test.WaitForExit(120000)
+            if (-not $finished) {
+              taskkill /PID $test.Id /T /F | Out-Null
+            }
+            Get-Content $stdout
+            Get-Content $stderr
+            if (-not $finished) { throw "$tool CLI smoke timed out after 120 seconds" }
+            if ($test.ExitCode -ne 0) { exit $test.ExitCode }
+          }
           Write-Output "CLI smoke elapsed: $((Get-Date) - $start)"
