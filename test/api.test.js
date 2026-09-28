@@ -1375,6 +1375,8 @@ describe("leaderboard", () => {
       assert.deepEqual(month.entries[2], {
         username: "idle", display_name: "idle", avatar_url: null, tokens: 0, sessions: 0, events: 0, active_days: 0,
         top_model: null, last_active: null, current_streak: 0,
+        value: { usd: null, priced_tokens: 0, total_tokens: 0, priced_events: 0, total_events: 0,
+          fallback_events: 0, latest_received_at: null, by_tool: [], by_model: [] },
       });
       const b = month.entries[0];
       assert.equal(b.display_name, "Bob");

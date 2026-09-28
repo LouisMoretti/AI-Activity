@@ -1,7 +1,7 @@
 // Typed client for the dashboard JSON API (same origin, cookie session).
 import type {
   ActivityResponse, AdminOverview, AdminSettings, AdminUser, AuthStatus, DeletedAccount, DeletedActivity, LeaderboardResponse, Profile, Device, QuotasResponse,
-  SessionsResponse, SummaryResponse,
+  SessionsResponse, SummaryResponse, ValueResponse,
 } from "../../../shared/types.ts";
 
 export class UnauthorizedError extends Error {
@@ -96,6 +96,7 @@ export const api = {
   quotas: (username: string) => get<QuotasResponse>(`${profileBase(username)}/quotas`),
   summary: (username: string, tool: string | null) =>
     get<SummaryResponse>(`${profileBase(username)}/summary?x=1${toolQuery(tool)}`),
+  value: (username: string) => get<ValueResponse>(`${profileBase(username)}/value`),
   sessions: (username: string, limit: number, tool: string | null, offset: number) =>
     get<SessionsResponse>(`${profileBase(username)}/sessions?limit=${limit}&offset=${offset}${toolQuery(tool)}`),
   devices: () => get<{ devices: Device[] }>("/api/devices"),

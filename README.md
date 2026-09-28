@@ -9,6 +9,26 @@
 > their APIs on your behalf or work around their limits. Using those tools
 > stays subject to their own terms.
 
+## Optional API-equivalent value
+
+On a public profile, **Show estimate** displays today's and all-time recorded
+usage valued at published standard retail API token rates. The public
+leaderboard shows the same value beside tokens and can rank by either metric
+over 7 days, 30 days or all time. This is a USD estimate of API-equivalent
+usage, not an invoice, actual cash spend, provider serving cost or guaranteed
+savings. It does not ask for subscriptions, invoices, prompts or API keys.
+
+The versioned rates and official sources are in `server/lib/value.ts` and
+linked from the profile. Rates were first verified on 2026-09-28. Usage before
+that date uses the current-rate fallback, visibly counted in the estimate;
+no earlier rate is invented. The calculation uses the stored, disjoint input,
+output, cache-read and cache-write tokens. A row without a verifiable model
+rate, or without enough detail to choose a cache-write or context tier, is
+excluded and coverage is shown by events and tokens. A partial value is a
+priced subtotal, so it cannot be compared as if it covered all usage.
+Tool calls, grounding, cache storage, regional and priority rates are outside
+the collected metrics and therefore outside this estimate.
+
 ## One-command install
 
 Create a device key (**Settings → Devices**),

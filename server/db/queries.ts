@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
-  Account, ActivityDay, AdminOverview, AdminUser, Profile, Breakdown, BreakdownRow, DeletedAccount, DeletedActivity, Device, LeaderboardEntry,
+  Account, ActivityDay, AdminOverview, AdminUser, Profile, Breakdown, BreakdownRow, DeletedAccount, DeletedActivity, Device, LeaderboardEntry, ApiValue,
   LeaderboardResponse, Quota, Session,
 } from "../../shared/types.ts";
 import { COLLECTOR_VERSIONS } from "../../shared/collectors.ts";
 import { BREAKDOWN_DISPLAY_ROWS, TOOLS } from "../../shared/types.ts";
 import { nowSec, type DB } from "./schema.ts";
+import { PRICE_NOTE, PRICE_VERSION, priceEvent, type ValueEvent } from "../lib/value.ts";
 
 export interface DeviceRow extends Omit<Device, "has_key" | "collectors"> {
   user_id: number;
@@ -717,6 +718,48 @@ export function breakdown(
   };
 }
 
+type ValueRow = ValueEvent & { user_id: number; day: string };
+const emptyValue = (): ApiValue => ({ usd: null, priced_tokens: 0, total_tokens: 0, priced_events: 0,
+  total_events: 0, fallback_events: 0, latest_received_at: null, by_tool: [], by_model: [] });
+function sumValue(rows: ValueRow[]): ApiValue {
+  const result = emptyValue();
+  const tools = new Map<string, number>();
+  const models = new Map<string, number>();
+  let usd = 0;
+  for (const row of rows) {
+    const tokens = row.input_tokens + row.output_tokens + row.cache_read_tokens + row.cache_write_tokens;
+    result.total_tokens += tokens;
+    result.total_events++;
+    result.latest_received_at = Math.max(result.latest_received_at ?? 0, row.received_at);
+    const price = priceEvent(row);
+    if (!("usd" in price)) continue;
+    usd += price.usd;
+    result.priced_tokens += tokens;
+    result.priced_events++;
+    if (price.fallback) result.fallback_events++;
+    tools.set(row.tool, (tools.get(row.tool) ?? 0) + price.usd);
+    const model = row.model ?? "unknown";
+    models.set(model, (models.get(model) ?? 0) + price.usd);
+  }
+  result.usd = result.priced_events ? usd : null;
+  result.by_tool = [...tools].map(([name, usd]) => ({ name, usd })).sort((a, b) => b.usd - a.usd);
+  result.by_model = [...models].map(([name, usd]) => ({ name, usd })).sort((a, b) => b.usd - a.usd);
+  return result;
+}
+
+/** A single event-level pass keeps pricing and coverage identical everywhere. */
+function valueRows(db: DB, sinceSec: number, userId: number | null): ValueRow[] {
+  return db.prepare(`SELECT user_id, tool, model, input_tokens, output_tokens, cache_read_tokens,
+    cache_write_tokens, source, occurred_at, received_at, ${localDay()} AS day
+    FROM usage_events WHERE occurred_at >= ? AND (? IS NULL OR user_id = ?)`)
+    .all(sinceSec, userId, userId) as ValueRow[];
+}
+
+export function userValue(db: DB, userId: number, day: string): { total: ApiValue; today: ApiValue } {
+  const rows = valueRows(db, 0, userId);
+  return { total: sumValue(rows), today: sumValue(rows.filter((r) => r.day === day)) };
+}
+
 /**
  * Everyone's usage since sinceSec, ranked by tokens. The global heatmap
  * covers calendarDays local days and ignores the period, like the streaks
@@ -815,11 +858,26 @@ export function leaderboard(
       last_active: a.last,
       top_model: topModel(a.models),
       current_streak: streak(a.streakDays, today.get(u.id)!),
+      value: emptyValue(),
     };
   }).sort((x, y) => y.tokens - x.tokens || (nocase(x.username) < nocase(y.username) ? -1 : nocase(x.username) > nocase(y.username) ? 1 : 0));
 
+  const pricedRows = valueRows(db, sinceSec, null).filter((r) => acc.has(r.user_id));
+  const perUser = new Map<number, ValueRow[]>();
+  for (const row of pricedRows) {
+    if (!perUser.has(row.user_id)) perUser.set(row.user_id, []);
+    perUser.get(row.user_id)!.push(row);
+  }
+  const userIdByName = new Map(users.map((u) => [u.username, u.id]));
+  for (const entry of entries) {
+    entry.value = sumValue(perUser.get(userIdByName.get(entry.username)!) ?? []);
+  }
+
   return {
     accounts: users.length,
+    value: sumValue(pricedRows),
+    price_version: PRICE_VERSION,
+    value_note: PRICE_NOTE,
     totals: {
       tokens: total.tokens, sessions: total.sessions.size, events: total.events,
       active_accounts: entries.filter((e) => e.events > 0).length,

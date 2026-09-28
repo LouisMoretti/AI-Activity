@@ -108,6 +108,29 @@ export interface SummaryResponse {
   provenance: string;
 }
 
+/** Retail API token valuation; null means no priceable usage, never zero. */
+export interface ApiValue {
+  usd: number | null;
+  priced_tokens: number;
+  total_tokens: number;
+  priced_events: number;
+  total_events: number;
+  fallback_events: number;
+  latest_received_at: number | null;
+  by_tool: { name: string; usd: number }[];
+  by_model: { name: string; usd: number }[];
+}
+
+export interface ValueResponse {
+  currency: "USD";
+  price_version: string;
+  note: string;
+  sources: string[];
+  day: string;
+  today: ApiValue;
+  total: ApiValue;
+}
+
 export interface Device {
   id: number;
   name: string;
@@ -243,6 +266,7 @@ export interface LeaderboardEntry {
   last_active: number | null;
   /** Consecutive local days with usage ending on the account's today, or yesterday while today has none yet (same rule as a profile's streak). */
   current_streak: number;
+  value: ApiValue;
 }
 
 /** Server-wide usage across every enabled account (public, like profile pages). */
@@ -252,6 +276,9 @@ export interface LeaderboardResponse {
   /** Enabled accounts, active or not (= entries.length). */
   accounts: number;
   totals: { tokens: number; sessions: number; events: number; active_accounts: number };
+  value: ApiValue;
+  price_version: string;
+  value_note: string;
   /** Ranked by tokens, most first. */
   entries: LeaderboardEntry[];
   by_model: BreakdownRow[];

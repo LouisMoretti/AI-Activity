@@ -14,6 +14,7 @@
   import SiteHeader from "./components/SiteHeader.svelte";
   import Section from "./components/Section.svelte";
   import TodayByTool from "./components/TodayByTool.svelte";
+  import ValuePanel from "./components/ValuePanel.svelte";
   import StatsRow from "./components/StatsRow.svelte";
   import UsersPanel from "./components/UsersPanel.svelte";
   import { untrack } from "svelte";
@@ -116,6 +117,7 @@
       {@const quotaCards = { "claude-code": vm.claude, codex: vm.codex, antigravity: vm.antigravity }}
       <ActivityChart series={vm.series} today={vm.today} demo={vm.demo} hasActivity={vm.hasActivity} />
       <StatsRow stats={vm.stats} />
+      {#if !vm.demo}<ValuePanel username={dash.shown.username} />{/if}
 
       <Section title="Tools" subtitle="Limits are per account, latest snapshot">
         <div class="tools">

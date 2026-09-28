@@ -2,14 +2,15 @@ import { Hono, type Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type {
   ActivityResponse, LeaderboardResponse, Profile, ProfilesResponse, QuotasResponse, SessionsResponse, StatsResponse,
-  SummaryResponse,
+  SummaryResponse, ValueResponse,
 } from "../../shared/types.ts";
 import {
   addDays, breakdown, countSessions, dailyBuckets, dayAt, earliestOfDay, findUserByUsername, latestOffset, latestQuotas,
-  leaderboard, listProfiles, recentSessions, toProfile, usageTotals,
+  leaderboard, listProfiles, recentSessions, toProfile, usageTotals, userValue,
 } from "../db/queries.ts";
 import { nowSec, type DB } from "../db/schema.ts";
 import { intParam } from "../lib/http.ts";
+import { PRICE_NOTE, PRICE_VERSION, priceSources } from "../lib/value.ts";
 
 /** Days of the leaderboard's global heatmap (one year, like a profile's). */
 const LEADERBOARD_ACTIVITY_DAYS = 364;
@@ -63,6 +64,12 @@ function usage(db: DB, owner: Owner) {
         today: breakdown(db, uid, earliestOfDay(day), tool, day),
         provenance: "measured messages (one row per Anthropic message id)",
       });
+    })
+    .get("/value", (c) => {
+      const uid = owner(c);
+      const day = dayAt(latestOffset(db, uid), nowSec());
+      return c.json<ValueResponse>({ currency: "USD", price_version: PRICE_VERSION,
+        note: PRICE_NOTE, sources: priceSources, day, ...userValue(db, uid, day) });
     })
     .get("/sessions", (c) => {
       const uid = owner(c);

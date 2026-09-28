@@ -22,8 +22,13 @@
     { value: "7", label: "7 days" }, { value: "30", label: "30 days" }, { value: "all", label: "All time" },
   ];
   const REFRESH_MS = 15000;
+  type Ranking = "tokens" | "value";
+  const RANKINGS: { value: Ranking; label: string }[] = [
+    { value: "tokens", label: "Tokens" }, { value: "value", label: "API value" },
+  ];
 
   let period = $state<Period>("30");
+  let ranking = $state<Ranking>("tokens");
   let data = $state<LeaderboardResponse | null>(null);
   let error = $state("");
 
@@ -49,10 +54,15 @@
   const same = (a: string, b: string | null) => b !== null && a.toLowerCase() === b.toLowerCase();
   const periodText = $derived(period === "all" ? "all time" : `last ${period} days`);
   const top = $derived(data?.entries[0]?.tokens || 1);
+  const ranked = $derived(data ? ranking === "tokens" ? data.entries : [...data.entries].sort((a, b) =>
+    (b.value.usd ?? -1) - (a.value.usd ?? -1) || b.tokens - a.tokens || a.username.localeCompare(b.username)) : []);
+  const maxRank = $derived(ranking === "tokens" ? top : Math.max(1, ...ranked.map((e) => e.value.usd ?? 0)));
+  const money = (n: number | null) => n === null ? "Unavailable" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: n < 1 ? 4 : 2 }).format(n);
   const series = $derived(data ? denseSeries(data.activity, ACTIVITY_DAYS, data.day) : []);
   const today = $derived(data?.day ?? "");
   const tiles = $derived(data ? [
     { label: "Tokens", value: fmtCompact(data.totals.tokens), note: `${fmtCompact(data.totals.events)} API calls` },
+    { label: "API-equivalent value", value: money(data.value.usd), note: `${data.value.priced_events}/${data.value.total_events} events priced${data.value.usd !== null && data.value.priced_events < data.value.total_events ? " · partial" : ""}` },
     { label: "Conversations", value: fmtCompact(data.totals.sessions), note: "every account" },
     { label: "Active accounts", value: String(data.totals.active_accounts), note: `of ${data.accounts}` },
     { label: "Top model", value: data.by_model[0]?.name ?? "—", note: data.by_model[0] ? `${fmtCompact(data.by_model[0].tokens)} tokens` : "no usage", mono: true },
@@ -66,6 +76,7 @@
 <div class="head">
   <span class="muted">Measured usage of every account, {periodText}</span>
   <Segmented label="Period" value={period} onchange={(v) => (period = v)} options={PERIODS} />
+  <Segmented label="Rank by" value={ranking} onchange={(v) => (ranking = v)} options={RANKINGS} />
 </div>
 
 {#if error}<p class="error" role="alert">{error}</p>{/if}
@@ -77,9 +88,14 @@
     {/each}
   </div>
 
-  <Section title="Ranking" subtitle="By tokens, {periodText}">
+  <Section title="Ranking" subtitle="By {ranking === 'tokens' ? 'tokens' : 'estimated API-equivalent value'}, {periodText}">
+    {#if ranking === "value"}
+      <p class="value-note">Retail API-equivalent token value in USD, not actual spend or savings. Partial amounts are priced subtotals and may understate usage; unpriced usage is unavailable. {data.value_note} Rate version {data.price_version}. {#if data.value.latest_received_at}Latest data: {new Date(data.value.latest_received_at * 1000).toLocaleString()}.{/if}
+        Sources: <a href="https://platform.claude.com/docs/en/about-claude/pricing" target="_blank" rel="noopener noreferrer">Anthropic</a>, <a href="https://developers.openai.com/api/docs/pricing" target="_blank" rel="noopener noreferrer">OpenAI</a>, <a href="https://ai.google.dev/gemini-api/docs/pricing" target="_blank" rel="noopener noreferrer">Google</a>.
+      </p>
+    {/if}
     <ol class="list">
-      {#each data.entries as e, i (e.username)}
+      {#each ranked as e, i (e.username)}
         <li class:me={same(e.username, self)} class:idle={!e.events}>
           <span class="rank" class:medal={i < 3 && e.tokens > 0} aria-label="Rank {i + 1}">{medal(i, e.tokens)}</span>
           <a class="who" href={profilePath(e.username)} onclick={(ev) => { ev.preventDefault(); onopen(e.username); }}>
@@ -91,11 +107,12 @@
           </a>
           <div class="bar-cell">
             <div class="line">
-              <span class="num tokens">{fmtCompact(e.tokens)} tokens</span>
-              <span class="share">{fmtShare(e.tokens, data.totals.tokens)}</span>
+              <span class="num tokens">{ranking === "tokens" ? `${fmtCompact(e.tokens)} tokens` : `${money(e.value.usd)}${e.value.usd !== null && e.value.priced_events < e.value.total_events ? " (partial)" : ""}`}</span>
+              <span class="share">{ranking === "tokens" ? fmtShare(e.tokens, data.totals.tokens) : `${e.value.priced_events}/${e.value.total_events} events · ${fmtCompact(e.value.priced_tokens)}/${fmtCompact(e.value.total_tokens)} tokens priced`}</span>
             </div>
-            <div class="track" title="{fmtNum(e.tokens)} tokens"><i style:width="{(e.tokens / top) * 100}%"></i></div>
+            <div class="track" title={ranking === "tokens" ? `${fmtNum(e.tokens)} tokens` : `${money(e.value.usd)} estimated API-equivalent value`}><i style:width="{((ranking === 'tokens' ? e.tokens : e.value.usd ?? 0) / maxRank) * 100}%"></i></div>
             <div class="meta">
+              <span>{ranking === "tokens" ? `API value: ${money(e.value.usd)}${e.value.usd !== null && e.value.priced_events < e.value.total_events ? " (partial)" : ""}` : `${fmtCompact(e.tokens)} tokens`}</span>
               {#if e.last_active !== null}
                 <span>{plural(e.sessions, "conversation")}</span>
                 <span>{plural(e.active_days, "active day")}</span>
@@ -138,6 +155,7 @@
 <style>
   .head { display: flex; justify-content: space-between; align-items: center; gap: 12px 16px; flex-wrap: wrap; margin-bottom: 20px; }
   .muted { color: var(--muted); font-size: 13px; }
+  .value-note { color: var(--muted); font-size: 12px; line-height: 1.5; }
   .error { color: var(--warn); margin: 8px 0; font-size: 13px; }
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 12px; }
   .tile { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; display: grid; gap: 4px; min-width: 0; }

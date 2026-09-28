@@ -22,10 +22,9 @@ tapped), four stats (all-time tokens, today, sessions,
 current streak; hover shows the split by tool and model, or the longest
 streak), one card per tool in `TOOLS` order (Claude Code, Codex,
 Antigravity on a full row, then OpenCode, which takes 2/3 of the last row,
-next to "Today by tool": today's tokens split by tool), recent conversations (10 + "Show more"). No tool filter:
+next to "Today by tool": today's tokens split by tool), recent conversations (10 + "Show more"). Profiles can optionally reveal retail API-equivalent value (today and all time), with coverage and rate sources; the leaderboard can rank by tokens or this value. No tool filter:
 every tool is always shown; on your own page, a one-line box under them
-says how to add one (the install command, Settings → Devices). No cost or subscription tracking (removed on
-purpose). Only demo data carries a badge ("Demonstration data"). Palette: the
+says how to add one (the install command, Settings → Devices). No actual cost or subscription tracking; API-equivalent value is a retail-rate estimate only. Only demo data carries a badge ("Demonstration data"). Palette: the
 original dark theme; type: Geist, with Geist Mono only for ids and model
 names. Quota bars carry a mark for how far into the window we are.
 
@@ -1010,6 +1009,9 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   `active_days`, `top_model`, `last_active` (null when idle),
   `current_streak`), plus `totals`, `accounts`, `by_model` and a 364-day
   global `activity` ending on `day`. Disabled accounts never appear.
+  Each row and the server total also include `value` with USD priced subtotal,
+  event/token coverage and rate version. The UI can rank by either tokens or
+  priced value and marks partial coverage.
 - Usage, public, under `/api/u/:username/`:
   - `stats?days=30&tool=claude-code`
   - `activity?days=364&tool=...` (local-day buckets for the heatmap,
@@ -1017,6 +1019,8 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   - `quotas` (current window per account, tool + limit type; see §5)
   - `summary?tool=...` (`day`: the owner's today; all-time and today's
     tokens, sessions, events, each split `by_model` and `by_tool`)
+  - `value` (optional retail API-equivalent valuation, today and all time,
+    with coverage, model/tool breakdowns, rate version and official sources)
   - `sessions?limit=10&offset=0&tool=...` (grouped by unique session id,
     with latest `context_used_pct` / `context_window_size`, plus `total`
     for paging)
