@@ -12,6 +12,17 @@ import { startServer, newDevice, req, processesGone, tempHome } from "./helpers.
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const require = createRequire(import.meta.url);
+// Real CLIs run in an isolated home. Pass only OS/runtime settings from the
+// caller so a manual smoke cannot inherit provider credentials or endpoints.
+const RUNTIME_ENV = new Set([
+  "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "TMPDIR",
+  "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432", "PROGRAMDATA", "PSMODULEPATH",
+  "OS", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS", "LANG", "LC_ALL",
+  "LC_CTYPE", "TERM", "COLORTERM", "SHELL", "USER", "USERNAME", "CI",
+  "GITHUB_ACTIONS", "TZ",
+]);
+const runtimeEnv = (source = process.env) => Object.fromEntries(Object.entries(source)
+  .filter(([name]) => RUNTIME_ENV.has(name.toUpperCase())));
 async function waitFor(check, ms = 30000) {
   const end = Date.now() + ms;
   do {
@@ -240,14 +251,14 @@ async function smoke(tool, cli) {
     fs.mkdirSync(path.join(home, "AppData", "Local"), { recursive: true });
   }
   if (tool === "claude-code") fs.writeFileSync(path.join(home, ".claude.json"), JSON.stringify({
-    hasCompletedOnboarding: true, lastOnboardingVersion: "2.1.283", theme: "dark",
+    hasCompletedOnboarding: true, lastOnboardingVersion: process.env.CLAUDE_CLI_VERSION || "2.1.283", theme: "dark",
     projects: { [work]: { hasTrustDialogAccepted: true } },
   }));
   const app = await startServer();
   const key = (await newDevice(app.base, `real-${tool}`)).key;
   const model = await modelServer(tool);
   const ingest = await ingestProxy(app.base, tool, key);
-  const env = { ...process.env, HOME: home, USERPROFILE: home, CODEX_HOME: path.join(home, ".codex"),
+  const env = { ...runtimeEnv(), HOME: home, USERPROFILE: home, CODEX_HOME: path.join(home, ".codex"),
     ...(process.platform === "win32" ? { APPDATA: path.join(home, "AppData", "Roaming"),
       LOCALAPPDATA: path.join(home, "AppData", "Local") } : {}),
     XDG_CONFIG_HOME: path.join(home, ".config"), XDG_DATA_HOME: path.join(home, ".local", "share"),
@@ -256,9 +267,6 @@ async function smoke(tool, cli) {
     ANTHROPIC_BASE_URL: model.base, ANTHROPIC_API_KEY: "local-test-key",
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", DISABLE_TELEMETRY: "1",
     MOCK_API_KEY: "local-test-key", OPENCODE_DISABLE_AUTOUPDATE: "1" };
-  delete env.OPENAI_API_KEY;
-  delete env.CODEX_API_KEY;
-  delete env.CLAUDE_CODE_OAUTH_TOKEN;
   try {
     const install = process.platform === "win32"
       ? await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
@@ -317,6 +325,12 @@ env_key = "MOCK_API_KEY"
 }
 
 const cliRoot = process.env.CLI_ROOT;
+test("real CLI child environment excludes inherited provider settings", () => {
+  assert.deepEqual(runtimeEnv({
+    PATH: "/test/bin", ANTHROPIC_AUTH_TOKEN: "private", GOOGLE_API_KEY: "private",
+    AWS_ACCESS_KEY_ID: "private", OPENAI_BASE_URL: "https://example.invalid",
+  }), { PATH: "/test/bin" });
+});
 test("real Claude Code CLI calls the installed statusLine after a local chat", () =>
   smoke("claude-code", process.env.CLAUDE_CLI || (cliRoot
     ? path.join(cliRoot, "@anthropic-ai", "claude-code", "bin", "claude.exe") : "claude")));

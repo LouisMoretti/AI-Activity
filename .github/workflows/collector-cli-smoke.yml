@@ -33,6 +33,12 @@ on:
 permissions:
   contents: read
 
+env:
+  CLAUDE_CLI_VERSION: "2.1.283"
+  CODEX_CLI_VERSION: "0.157.1"
+  OPENCODE_CLI_VERSION: "1.18.33"
+  PTY_VERSION: "1.1.0"
+
 concurrency:
   group: collector-cli-smoke-${{ github.ref }}
   cancel-in-progress: true
@@ -65,15 +71,16 @@ jobs:
         id: cli-cache
         with:
           path: ${{ runner.temp }}/collector-clis
-          key: collector-clis-${{ matrix.platform }}-claude-2.1.283-codex-0.157.1-opencode-1.18.33-pty-1.1.0
+          key: collector-clis-${{ matrix.platform }}-claude-${{ env.CLAUDE_CLI_VERSION }}-codex-${{ env.CODEX_CLI_VERSION }}-opencode-${{ env.OPENCODE_CLI_VERSION }}-pty-${{ env.PTY_VERSION }}
       - name: Install pinned real CLIs (Linux)
         if: runner.os == 'Linux' && steps.cli-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p "$RUNNER_TEMP/collector-clis"
           /usr/bin/time -f "Cold CLI install elapsed: %e seconds" \
             npm install --prefix "$RUNNER_TEMP/collector-clis" --no-save \
-              @anthropic-ai/claude-code@2.1.283 @openai/codex@0.157.1 \
-              opencode-ai@1.18.33
+              "@anthropic-ai/claude-code@$CLAUDE_CLI_VERSION" \
+              "@openai/codex@$CODEX_CLI_VERSION" \
+              "opencode-ai@$OPENCODE_CLI_VERSION"
       - name: Install pinned real CLIs and ConPTY (Windows)
         if: runner.os == 'Windows' && steps.cli-cache.outputs.cache-hit != 'true'
         shell: pwsh
@@ -82,8 +89,9 @@ jobs:
           New-Item -ItemType Directory -Force $cliRoot | Out-Null
           $start = Get-Date
           npm install --prefix $cliRoot --no-save `
-            @anthropic-ai/claude-code@2.1.283 @openai/codex@0.157.1 `
-            opencode-ai@1.18.33 node-pty@1.1.0
+            "@anthropic-ai/claude-code@$env:CLAUDE_CLI_VERSION" `
+            "@openai/codex@$env:CODEX_CLI_VERSION" `
+            "opencode-ai@$env:OPENCODE_CLI_VERSION" "node-pty@$env:PTY_VERSION"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Write-Output "Cold CLI install elapsed: $((Get-Date) - $start)"
       - name: Report CLI cache

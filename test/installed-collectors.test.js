@@ -15,9 +15,10 @@ import { startServer, newDevice, req, processesGone, tempHome, PYTHON } from "./
 const WINDOWS = process.platform === "win32";
 const SECRET = "PRIVATE PROMPT MUST STAY LOCAL";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-async function waitFor(check, ms = 30000) {
+async function waitFor(check, errors, ms = 30000) {
   const end = Date.now() + ms;
   do {
+    if (errors.length) throw errors[0];
     if (await check()) return true;
     await sleep(100);
   } while (Date.now() < end);
@@ -37,8 +38,21 @@ function run(command, env, input = "", shell = "powershell") {
     child.stderr.on("data", (part) => { output += part; });
     child.stdin.on("error", () => {});
     child.stdin.end(input);
-    child.on("error", reject);
-    child.on("close", (code) => resolve({ code, output }));
+    let done = false;
+    const timer = setTimeout(() => { child.kill(); finish(null); }, 60000);
+    const finish = (code) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve({ code, output });
+    };
+    child.on("error", (error) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", finish);
   });
 }
 
@@ -141,12 +155,12 @@ async function fixture(tool, prepare) {
     AI_ACTIVITY_URL: wire.base, AI_ACTIVITY_KEY: key, AI_ACTIVITY_TOOLS: tool,
   };
   delete env.AI_ACTIVITY_ANTIGRAVITY_QUOTAS;
-  // The plugin inherits process.env. Child processes must see the temporary
-  // home and installed URL/key, never the developer's own tool settings.
-  Object.assign(process.env, env);
   let resource;
   try {
     resource = await prepare({ home, env });
+    // The plugin inherits process.env. Include any fixture-specific settings
+    // before it loads, while child processes receive the same explicit env.
+    Object.assign(process.env, env);
     const install = WINDOWS
       ? `irm ${srv.base}/install.ps1 | iex`
       : `curl -fsSL ${srv.base}/install.sh | sh`;
@@ -203,11 +217,11 @@ test("installed Claude Code statusLine uploads one message and replays nothing",
     const command = JSON.parse(fs.readFileSync(path.join(f.home, ".claude", "settings.json"))).statusLine.command;
     f.wire.refuseOnce();
     assert.equal((await run(command, f.env, "{}", "cmd")).code, 0);
-    assert.ok(await waitFor(() => f.wire.captured.length === 1));
+    assert.ok(await waitFor(() => f.wire.captured.length === 1, f.wire.errors));
     assert.ok(await processesGone(f.home));
     assert.equal((await f.summary()).events, 0, "failed upload did not advance progress");
     assert.equal((await run(command, f.env, "{}", "cmd")).code, 0);
-    assert.ok(await waitFor(async () => (await f.summary()).events === 1), String(f.wire.errors[0] ?? "upload absent"));
+    assert.ok(await waitFor(async () => (await f.summary()).events === 1, f.wire.errors), "upload absent");
     assert.ok(await processesGone(f.home));
     assertBatch(f, { input: 12, output: 7, session: "claude-session", id: "msg_installed_claude" }, 2);
     assert.deepEqual(f.wire.captured[0].messages, f.wire.captured[1].messages);
@@ -248,11 +262,11 @@ test("installed Codex Stop hook uploads a rollout and its quotas once", async ()
     const first = await runHook();
     assert.equal(first.code, 0, first.output);
     assert.deepEqual(JSON.parse(first.output), {});
-    assert.ok(await waitFor(() => f.wire.captured.length === 1));
+    assert.ok(await waitFor(() => f.wire.captured.length === 1, f.wire.errors));
     assert.ok(await processesGone(f.home));
     assert.equal((await f.summary()).events, 0);
     assert.equal((await runHook()).code, 0);
-    assert.ok(await waitFor(async () => (await f.summary()).events === 1));
+    assert.ok(await waitFor(async () => (await f.summary()).events === 1, f.wire.errors));
     assert.ok(await processesGone(f.home));
     assertBatch(f, { input: 20, output: 4, session, id: "resp_installed_codex" }, 2);
     assert.deepEqual(f.wire.captured[0].messages, f.wire.captured[1].messages);
@@ -290,11 +304,11 @@ test("installed OpenCode plugin uploads its SQLite message once", async () => {
     const plugin = path.join(f.home, ".config", "opencode", "plugins", "ai-activity.js");
     f.wire.refuseOnce();
     const hooks = await (await import(pathToFileURL(plugin).href)).AIActivity({});
-    assert.ok(await waitFor(() => f.wire.captured.length === 1));
+    assert.ok(await waitFor(() => f.wire.captured.length === 1, f.wire.errors));
     assert.ok(await processesGone(f.home));
     assert.equal((await f.summary()).events, 0);
     await hooks.event({ event: { type: "session.idle", properties: { sessionID: "ses_installed" } } });
-    assert.ok(await waitFor(async () => (await f.summary()).events === 1));
+    assert.ok(await waitFor(async () => (await f.summary()).events === 1, f.wire.errors));
     assert.ok(await processesGone(f.home));
     assertBatch(f, { input: 13, output: 6, session: "ses_installed", id: "msg_installed" }, 2);
     assert.deepEqual(f.wire.captured[0].messages, f.wire.captured[1].messages);
@@ -377,15 +391,15 @@ test("installed Antigravity hook uploads its conversation once", async () => {
     const first = await runHook();
     assert.equal(first.code, 0, first.output);
     assert.deepEqual(JSON.parse(first.output), { decision: "stop" });
-    assert.ok(await waitFor(() => f.wire.captured.length === 1));
+    assert.ok(await waitFor(() => f.wire.captured.length === 1, f.wire.errors));
     assert.ok(await processesGone(f.home));
     assert.equal((await f.summary()).events, 0);
     assert.equal((await runHook()).code, 0);
-    assert.ok(await waitFor(async () => (await f.summary()).events === 1));
+    assert.ok(await waitFor(async () => (await f.summary()).events === 1, f.wire.errors));
     assert.ok(await processesGone(f.home));
     assertBatch(f, { input: 110, output: 50, session: "installed", id: "response_installed" }, 2);
     assert.deepEqual(f.wire.captured[0].messages, f.wire.captured[1].messages);
-    assert.equal((await f.summary()).tokens, 660);
+    assert.equal((await f.summary()).tokens, 660); // 110 input + 500 cache read + 50 output
     assert.equal((await f.sessions())[0].model, "gemini-test");
     assert.deepEqual((await f.quotas()).map((q) => [q.account_ref, q.limit_type, q.used_pct]),
       [["claude-gpt", "five_hour", 0], ["claude-gpt", "seven_day", 70],
