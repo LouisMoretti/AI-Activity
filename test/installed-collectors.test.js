@@ -24,11 +24,13 @@ async function waitFor(check, ms = 30000) {
   return false;
 }
 
-function run(command, env, input = "") {
+function run(command, env, input = "", shell = "powershell") {
   return new Promise((resolve, reject) => {
     const child = WINDOWS
-      ? spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
-        { env, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] })
+      ? shell === "cmd"
+        ? spawn(command, { env, shell: true, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] })
+        : spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
+          { env, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] })
       : spawn("sh", ["-c", command], { env, stdio: ["pipe", "pipe", "pipe"] });
     let output = "";
     child.stdout.on("data", (part) => { output += part; });
@@ -200,18 +202,18 @@ test("installed Claude Code statusLine uploads one message and replays nothing",
   try {
     const command = JSON.parse(fs.readFileSync(path.join(f.home, ".claude", "settings.json"))).statusLine.command;
     f.wire.refuseOnce();
-    assert.equal((await run(command, f.env, "{}")).code, 0);
+    assert.equal((await run(command, f.env, "{}", "cmd")).code, 0);
     assert.ok(await waitFor(() => f.wire.captured.length === 1));
     assert.ok(await processesGone(f.home));
     assert.equal((await f.summary()).events, 0, "failed upload did not advance progress");
-    assert.equal((await run(command, f.env, "{}")).code, 0);
+    assert.equal((await run(command, f.env, "{}", "cmd")).code, 0);
     assert.ok(await waitFor(async () => (await f.summary()).events === 1), String(f.wire.errors[0] ?? "upload absent"));
     assert.ok(await processesGone(f.home));
     assertBatch(f, { input: 12, output: 7, session: "claude-session", id: "msg_installed_claude" }, 2);
     assert.deepEqual(f.wire.captured[0].messages, f.wire.captured[1].messages);
     assert.equal((await f.summary()).tokens, 19);
     assert.equal((await f.sessions())[0].model, "claude-test");
-    assert.equal((await run(command, f.env, "{}")).code, 0);
+    assert.equal((await run(command, f.env, "{}", "cmd")).code, 0);
     assert.ok(await processesGone(f.home));
     assert.equal(f.wire.captured.length, 2);
     assert.equal((await f.summary()).tokens, 19);
@@ -370,7 +372,7 @@ test("installed Antigravity hook uploads its conversation once", async () => {
   try {
     const config = JSON.parse(fs.readFileSync(path.join(f.home, ".gemini", "config", "hooks.json")));
     const command = config["ai-activity"].Stop[0].command;
-    const runHook = () => run(command, f.env, JSON.stringify({ conversationId: "installed", transcriptPath: SECRET }));
+    const runHook = () => run(command, f.env, JSON.stringify({ conversationId: "installed", transcriptPath: SECRET }), "cmd");
     f.wire.refuseOnce();
     const first = await runHook();
     assert.equal(first.code, 0, first.output);
