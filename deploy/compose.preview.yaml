@@ -1,0 +1,58 @@
+# One pull request preview, as the compose project ai-activity-pr-<N>: run
+# by deploy/ai-activity-preview, never from a checkout, and never next to
+# compose.yaml, whose name, network and alias are production's. Installed by
+# root in the previews' directory. See AGENTS.md, "Pull request previews".
+# PR, APP_IMAGE and ALLOWED_GITHUB_LOGINS come from pr-<N>/.env (written by
+# the script); PREVIEW_DOMAIN and the dev OAuth app from the directory's .env.
+name: ai-activity-pr-${PR:?}
+
+# Rotated logs (Docker keeps them forever otherwise): 3 × 10 MB.
+x-logging: &logging
+  driver: local
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  app:
+    image: ${APP_IMAGE:?}
+    restart: unless-stopped
+    logging: *logging
+    init: true
+    environment:
+      # Caddy's forwarding headers, on the preview network.
+      TRUST_PROXY: ${PREVIEW_SUBNET:-172.29.95.0/24}
+      PUBLIC_URL: https://pr-${PR:?}.${PREVIEW_DOMAIN:?}
+      # The dev OAuth app (wildcard callback on the preview domain), never
+      # production's: PR code can read it.
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:?}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:?}
+      # The PR's participants: nobody else can sign in.
+      ALLOWED_GITHUB_LOGINS: ${ALLOWED_GITHUB_LOGINS:?}
+    volumes:
+      - data:/data
+    networks:
+      preview:
+        aliases:
+          - pr-${PR:?} # Caddyfile: reverse_proxy {re.pr.1}:3000
+    # No published port. PR code runs here, on production's machine: it
+    # gets no capabilities, bounded resources and a read-only root (the app
+    # writes only to /data, SQLite's temporary files to /tmp).
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m
+    cpus: 1
+    pids_limit: 128
+
+volumes:
+  data:
+
+networks:
+  # Created once (docker network create); Caddy joins it. Never
+  # ai-activity-proxy: production trusts every address there.
+  preview:
+    name: ai-activity-preview
+    external: true

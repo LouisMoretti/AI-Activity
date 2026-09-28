@@ -1,0 +1,187 @@
+# Pull request previews: a pull request of a branch of this repository with
+# the "preview" label runs at https://pr-<number>.<preview domain>, on its own
+# data, where only its participants can sign in. Its image goes to its own
+# package, ghcr.io/<owner>/<repo>-preview:<commit>; the preview key can only
+# start and stop previews (deploy/ai-activity-preview, forced command).
+# The label is a convenience, not access control: a pull_request run uses the
+# PR's own copy of this file. The gate is the "preview" environment's required
+# reviewers: GitHub holds the key until a maintainer approves the run.
+# See AGENTS.md, "Pull request previews".
+name: Preview
+
+on:
+  # Never pull_request_target, and never issue_comment checking out PR code:
+  # both run PR code with secrets.
+  pull_request:
+    types: [labeled, unlabeled, synchronize, reopened, closed]
+  # Deletes old preview images.
+  schedule:
+    - cron: "37 3 * * *"
+
+permissions:
+  contents: read
+
+# One run per PR at a time: a newer one cancels an older one, waiting for
+# approval or not. A run that changes nothing (another label, a push without
+# this one, the daily cleanup) has a group of its own, so it cancels nothing.
+concurrency:
+  group: >-
+    preview-${{ github.event.pull_request.number }}${{
+    !(github.event.label.name == 'preview' || (!github.event.label &&
+    contains(github.event.pull_request.labels.*.name, 'preview')))
+    && format('-{0}', github.run_id) || '' }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    # Labeled "preview", or pushed to or reopened with it; open, and a branch
+    # of this repository (forks get no secrets: push the branch here).
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.state == 'open' &&
+      ((github.event.action == 'labeled' && github.event.label.name == 'preview') ||
+       (contains(fromJSON('["synchronize", "reopened"]'), github.event.action) &&
+        contains(github.event.pull_request.labels.*.name, 'preview')))
+    uses: ./.github/workflows/image.yml
+    with:
+      sha: ${{ github.event.pull_request.head.sha }}
+      suffix: -preview
+    permissions:
+      contents: read
+      packages: write
+
+  up:
+    needs: image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Holds the preview key: a maintainer approves every run, after reading
+    # the PR (its code, Dockerfile and this file run with it). The URL shows
+    # as "View deployment" on the PR.
+    environment:
+      name: preview
+      url: ${{ steps.up.outputs.url }}
+    permissions:
+      pull-requests: read
+    env:
+      PR: ${{ github.event.pull_request.number }}
+      SHA: ${{ github.event.pull_request.head.sha }}
+      GH_TOKEN: ${{ github.token }}
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER || 'deploy' }}
+      DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+      DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+      PREVIEW_SSH_KEY: ${{ secrets.PREVIEW_SSH_KEY }}
+    steps:
+      - name: Who may sign in
+        id: people
+        # Read now, not from the event: re-running the job picks up new
+        # reviewers. Anyone may review a public PR: only reviewers with write
+        # access count. The owner always does.
+        run: |
+          set -euo pipefail
+          {
+            gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" \
+              --jq '(.user, .assignees[], .requested_reviewers[]) | .login // empty'
+            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews" \
+              --jq '.[] | select(.author_association | IN("OWNER", "MEMBER", "COLLABORATOR")) | .user.login // empty'
+            echo "$GITHUB_REPOSITORY_OWNER"
+          } | grep -xE '[A-Za-z0-9-]{1,39}' | sort -fu | paste -sd, - > logins
+          echo "logins=$(cat logins)" >> "$GITHUB_OUTPUT"
+          echo "Who may sign in: $(cat logins)"
+      - name: Start or update the preview over SSH
+        id: up
+        env:
+          LOGINS: ${{ steps.people.outputs.logins }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DEPLOY_HOST" ] || [ -z "$PREVIEW_SSH_KEY" ] || [ -z "$DEPLOY_KNOWN_HOSTS" ]; then
+            echo "::error::Set DEPLOY_HOST, DEPLOY_KNOWN_HOSTS and the PREVIEW_SSH_KEY secret in the preview environment"
+            exit 1
+          fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$PREVIEW_SSH_KEY" > ~/.ssh/preview_key
+          chmod 600 ~/.ssh/preview_key
+          # Pinned host key: never trust whatever answers on first use.
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          # The server's forced command takes up and down only, checked.
+          ssh -i ~/.ssh/preview_key -p "$DEPLOY_PORT" \
+            -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 -o ServerAliveInterval=15 \
+            "$DEPLOY_USER@$DEPLOY_HOST" "up $PR $SHA $LOGINS" | tee out
+          grep '^url=' out >> "$GITHUB_OUTPUT"
+      - if: always()
+        run: rm -f ~/.ssh/preview_key
+
+  down:
+    # The label removed, or the PR closed (or merged) with it.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      ((github.event.action == 'unlabeled' && github.event.label.name == 'preview') ||
+       (github.event.action == 'closed' && contains(github.event.pull_request.labels.*.name, 'preview')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The same key, so this waits for approval too (else gc removes the
+    # preview a day after its last deploy). No deployment record: one without
+    # a URL would mark every other preview's inactive.
+    environment:
+      name: preview
+      deployment: false
+    permissions: {}
+    env:
+      PR: ${{ github.event.pull_request.number }}
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER || 'deploy' }}
+      DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+      DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+      PREVIEW_SSH_KEY: ${{ secrets.PREVIEW_SSH_KEY }}
+    steps:
+      - name: Remove the preview over SSH
+        run: |
+          set -eu
+          if [ -z "$DEPLOY_HOST" ] || [ -z "$PREVIEW_SSH_KEY" ] || [ -z "$DEPLOY_KNOWN_HOSTS" ]; then
+            echo "::error::Set DEPLOY_HOST, DEPLOY_KNOWN_HOSTS and the PREVIEW_SSH_KEY secret in the preview environment"
+            exit 1
+          fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$PREVIEW_SSH_KEY" > ~/.ssh/preview_key
+          chmod 600 ~/.ssh/preview_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/preview_key -p "$DEPLOY_PORT" \
+            -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 -o ServerAliveInterval=15 \
+            "$DEPLOY_USER@$DEPLOY_HOST" "down $PR"
+      - if: always()
+        run: rm -f ~/.ssh/preview_key
+
+  prune:
+    # A preview uses its image for a day or so (PREVIEW_DAYS): delete the
+    # versions older than 30 days. Needs this repository to have the Admin
+    # role in the package's settings (Manage Actions access).
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      packages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Delete preview images older than 30 days
+        run: |
+          set -euo pipefail
+          repo=${GITHUB_REPOSITORY#*/}
+          versions="users/$GITHUB_REPOSITORY_OWNER/packages/container/${repo,,}-preview/versions"
+          cutoff=$(date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ)
+          if ! gh api --paginate "$versions" --jq ".[] | select(.created_at < \"$cutoff\") | .id" > old 2> err; then
+            if grep -q 'HTTP 404' err; then echo "No preview image published yet"; exit 0; fi
+            cat err >&2
+            exit 1
+          fi
+          deleted=0
+          while read -r id; do
+            # GHCR keeps a package's last tagged version: that one fails.
+            if gh api -X DELETE "$versions/$id" --silent; then deleted=$((deleted + 1))
+            else echo "::warning::Could not delete version $id"; fi
+          done < old
+          echo "Deleted $deleted of $(wc -l < old) versions created before $cutoff"

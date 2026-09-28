@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# Pull request previews: one compose project per PR (ai-activity-pr-<N>, from
+# compose.preview.yaml), reached by Caddy as pr-<N>:3000 on the
+# ai-activity-preview network. Installed as root at
+# /usr/local/bin/ai-activity-preview (never run from a checkout: a PR must
+# not change what the preview key can do) and run by that key's forced
+# command, which passes the command in SSH_ORIGINAL_COMMAND:
+#
+#   up <pr> <commit> <logins>  start pr-<pr> on the image of <commit>, or
+#                              update it (same data); <logins>: who may sign
+#                              in, comma-separated GitHub logins
+#   down <pr>                  remove it, its data and its image
+#
+# By hand or from cron (as the same user), also:
+#
+#   gc                         remove previews not deployed for PREVIEW_DAYS,
+#                              and stop them all while Docker's disk (where
+#                              production's database lives) is low
+#
+# Settings are in the directory's .env. See AGENTS.md, "Pull request previews".
+set -euo pipefail
+
+DIR=${AI_ACTIVITY_PREVIEW_DIR:-/srv/ai-activity-previews}
+IMAGE=${AI_ACTIVITY_PREVIEW_IMAGE:-ghcr.io/louismoretti/ai-activity-preview}
+
+usage() {
+  echo "usage: ai-activity-preview up <pr> <40-character commit id> <login>[,<login>...] | down <pr> | gc" >&2
+  exit 2
+}
+fail() {
+  echo "$*" >&2
+  exit 1
+}
+
+# The preview key may only start and stop previews.
+if [[ -v SSH_ORIGINAL_COMMAND ]]; then
+  read -r -a args <<< "$SSH_ORIGINAL_COMMAND"
+  [[ ${args[0]-} == up || ${args[0]-} == down ]] || usage
+else
+  args=("$@")
+fi
+case "${args[0]-} ${#args[@]}" in
+  "up 4" | "down 2" | "gc 1") ;;
+  *) usage ;;
+esac
+cmd=${args[0]}
+pr=${args[1]-}
+[[ $cmd == gc || $pr =~ ^[1-9][0-9]{0,6}$ ]] || usage
+
+# docker compose prefers the environment to its .env files.
+unset PR APP_IMAGE ALLOWED_GITHUB_LOGINS PREVIEW_DOMAIN PREVIEW_SUBNET GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET
+
+cd "$DIR"
+[[ -f compose.preview.yaml && -f .env ]] || fail "$DIR needs compose.preview.yaml and .env (AGENTS.md, Pull request previews)"
+
+# A setting from .env (KEY=value lines, read, never sourced), else its default.
+setting() {
+  local v
+  v=$(sed -n "s/^$1=//p" .env | tail -n 1)
+  echo "${v:-$2}"
+}
+DOMAIN=$(setting PREVIEW_DOMAIN "")
+MAX=$(setting PREVIEW_MAX 3)
+DAYS=$(setting PREVIEW_DAYS 1)
+MIN_FREE_GB=$(setting PREVIEW_MIN_FREE_GB 10)
+for n in "$MAX" "$DAYS" "$MIN_FREE_GB"; do
+  [[ $n =~ ^[0-9]+$ ]] || fail "PREVIEW_MAX, PREVIEW_DAYS and PREVIEW_MIN_FREE_GB in $DIR/.env must be whole numbers"
+done
+
+exec 9>.lock
+flock 9 # one change at a time: the count of previews stays right
+
+# The previews' directories, pr-<N>.
+previews() {
+  local d
+  for d in pr-*; do
+    if [[ -d $d && $d =~ ^pr-[1-9][0-9]*$ ]]; then echo "$d"; fi
+  done
+}
+
+# GB free where Docker keeps images and volumes.
+free_gb() {
+  df -Pk "$(docker info --format '{{.DockerRootDir}}')" | awk 'NR == 2 { print int($4 / 1048576) }'
+}
+
+up() {
+  local pr=$1 sha=$2 logins=$3 dir=pr-$1 old="" n free tmp
+  [[ $sha =~ ^[0-9a-f]{40}$ && $logins =~ ^[A-Za-z0-9-]{1,39}(,[A-Za-z0-9-]{1,39}){0,49}$ ]] || usage
+  [[ $DOMAIN =~ ^[a-z0-9-]+(\.[a-z0-9-]+)+$ ]] || fail "set PREVIEW_DOMAIN in $DIR/.env"
+  if [[ ! -d $dir ]]; then
+    n=$(previews | wc -l)
+    ((n < MAX)) || fail "refused: $n previews already (PREVIEW_MAX=$MAX): close a pull request or remove its label"
+  fi
+  free=$(free_gb)
+  ((free >= MIN_FREE_GB)) || fail "refused: $free GB free on Docker's disk, under PREVIEW_MIN_FREE_GB=$MIN_FREE_GB"
+
+  # Pull first: a missing image changes nothing.
+  docker pull --quiet "$IMAGE:$sha"
+  mkdir -p "$dir"
+  if [[ -f $dir/.env ]]; then old=$(sed -n 's/^APP_IMAGE=//p' "$dir/.env"); fi
+  tmp=$(mktemp "$dir/.env.XXXXXX")
+  printf 'PR=%s\nAPP_IMAGE=%s\nALLOWED_GITHUB_LOGINS=%s\n' "$pr" "$IMAGE:$sha" "$logins" > "$tmp"
+  mv "$tmp" "$dir/.env" # its date is the last deploy, for gc
+
+  local compose=(docker compose -p "ai-activity-pr-$pr" -f compose.preview.yaml --env-file .env --env-file "$dir/.env")
+  if ! "${compose[@]}" up -d --no-build --remove-orphans --wait --wait-timeout 180; then
+    "${compose[@]}" ps
+    # The workflow's log is public: never a setup code.
+    "${compose[@]}" logs --tail 80 app | sed 's/Setup code: .*/Setup code: (hidden)/'
+    fail "preview pr-$pr failed to start: see the logs above"
+  fi
+  if [[ -n $old && $old != "$IMAGE:$sha" ]]; then docker rmi "$old" > /dev/null 2>&1 || true; fi
+  echo "url=https://pr-$pr.$DOMAIN"
+}
+
+down() {
+  local pr=$1 image=""
+  if [[ -f pr-$pr/.env ]]; then image=$(sed -n 's/^APP_IMAGE=//p' "pr-$pr/.env"); fi
+  # By project name, without its files: this works after a failed up too.
+  docker compose -p "ai-activity-pr-$pr" down --volumes
+  if [[ -n $image ]]; then docker rmi "$image" > /dev/null 2>&1 || true; fi
+  rm -rf -- "pr-$pr"
+  echo "removed pr-$pr"
+}
+
+gc() {
+  local d name free
+  for d in $(previews); do
+    if [[ ! -f $d/.env || -n $(find "$d/.env" -mmin "+$((DAYS * 1440))") ]]; then down "${d#pr-}"; fi
+  done
+  free=$(free_gb)
+  if ((free < MIN_FREE_GB)); then
+    # Production shares this disk: stop every preview (its data stays) until
+    # someone frees space. up refuses meanwhile.
+    for name in $(docker compose ls --quiet | grep -xE 'ai-activity-pr-[0-9]+' || true); do
+      docker compose -p "$name" stop
+      echo "stopped $name: $free GB free, under PREVIEW_MIN_FREE_GB=$MIN_FREE_GB" >&2
+    done
+  fi
+}
+
+case $cmd in
+  up) up "$pr" "${args[2]}" "${args[3]}" ;;
+  down) down "$pr" ;;
+  gc) gc ;;
+esac

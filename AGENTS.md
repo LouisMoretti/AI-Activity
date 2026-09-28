@@ -123,7 +123,9 @@ CI (`.github/workflows/ci.yml`) runs typecheck, the web build and tests
 (tests serve `web/dist`, so the build comes first) on
 every PR and push to main, on x64 and ARM64 runners (`better-sqlite3` is
 native). It also builds the Docker image on both and smoke-tests it
-(healthy, setup code, first account, device key, backup, clean stop), and
+(healthy, setup code, first account, device key, backup, clean stop), then
+as a pull request preview (`deploy/compose.preview.yaml`: hardened, its
+alias on the preview network), and
 runs every collector test on Windows (`collectors (windows)`, through the
 README's Windows commands).
 
@@ -204,7 +206,8 @@ Upgrades are normally deployed from GitHub (Continuous deployment below).
 ### Continuous deployment (GHCR + SSH)
 
 Once CI passes on a push to main, `.github/workflows/deploy.yml` builds the
-image on native amd64 and arm64 runners, publishes it as
+image on native amd64 and arm64 runners (`image.yml`, shared with pull
+request previews), publishes it as
 `ghcr.io/louismoretti/ai-activity:<commit>` (and `:latest`), then connects
 over SSH and runs `deploy/ai-activity-deploy <commit>` on the server. It can
 also be run by hand (Actions → Deploy → Run workflow, on main). The server
@@ -289,6 +292,147 @@ Types: `npm run typecheck` (tsc for server, svelte-check for web). Node >= 22.18
 (type stripping, no build step), so only erasable TS syntax is allowed (no
 `enum`, no parameter properties) and relative imports keep their `.ts`
 extension.
+
+### Pull request previews
+
+A pull request of a branch of this repository labeled `preview` runs at
+`https://pr-<N>.ai-preview.example` on the production server, once a
+maintainer approves the run: its own compose project (`ai-activity-pr-<N>`)
+and database (empty at first: a migration is tested on an empty one,
+production is never copied), where only the PR's participants can sign in
+(`ALLOWED_GITHUB_LOGINS`: its author, assignees, requested reviewers,
+reviewers with write access, and the repository's owner; the first to sign
+in becomes the admin). Several run at once; a push updates the PR's preview
+(same data, new image).
+
+`ai-preview.example` stands for a **separate registrable domain**, never a
+subdomain of production's: a subdomain can set cookies for its parent
+(cookie tossing), so PR code there could sign visitors in to another
+account on production (why GitHub Pages lives on `github.io`).
+
+```
+https://pr-123.ai-preview.example
+  DNS: *.ai-preview.example → the server (one record)
+  Caddy: wildcard certificate (DNS-01); Host ^(pr-[0-9]+)\.ai-preview\.example$ → pr-123:3000
+  Docker DNS on the ai-activity-preview network: pr-123 → project ai-activity-pr-123
+```
+
+- `.github/workflows/preview.yml`, when the label is added, or on a push or
+  a reopen with it: builds the PR's head commit like production
+  (`image.yml`) into its own package,
+  `ghcr.io/louismoretti/ai-activity-preview:<commit>` (never production's,
+  never `:latest`), reads who takes part in the PR, then SSHes
+  `up <pr> <commit> <logins>` in the `preview` environment, whose URL shows
+  as "View deployment" on the PR. Closed, merged or unlabeled: `down <pr>`.
+  One run per PR at a time: a newer one cancels an older one, waiting for
+  approval or not (runs that change nothing, e.g. another label, cancel
+  nothing). Daily, it deletes preview images older than 30 days.
+- The label is a convenience, not access control: a `pull_request` run uses
+  the PR branch's copy of the workflow, which can drop the check or send
+  the secrets elsewhere. The gate is the `preview` environment's required
+  reviewers: GitHub holds the key until a maintainer approves the run (for
+  `down` too; unapproved, `gc` removes the preview). Approve after reading
+  the PR: its code, Dockerfile and workflow run with that key. Forks get no
+  secrets (push the branch here to preview it). Never `pull_request_target`,
+  never `issue_comment` checking out PR code: both run PR code with secrets.
+- `deploy/ai-activity-preview` (installed as root, run by the forced command
+  of a second key, never the production one) takes `up` and `down` over
+  SSH, checked; `gc` only from cron or by hand. `up` refuses a new preview
+  beyond `PREVIEW_MAX` or while Docker's disk has less than
+  `PREVIEW_MIN_FREE_GB` free, pulls the image, writes `pr-<N>/.env`, runs
+  `docker compose up --wait` (on failure, the app's logs, never a setup
+  code: the job log is public), then removes the PR's previous image.
+  `down` removes the project, its volume, its image and `pr-<N>/`. `gc`
+  removes previews not deployed for `PREVIEW_DAYS` and, while the disk is
+  low, stops every preview (data kept): production shares that disk.
+- `deploy/compose.preview.yaml` (installed as root too; `compose.yaml`
+  cannot serve, its project name, network and alias are production's): the
+  app alone, no published port, on the external `ai-activity-preview`
+  network as `pr-<N>`; `TRUST_PROXY` that subnet, `PUBLIC_URL` its own
+  address (so its own OAuth callback), the dev OAuth app; `read_only` (the
+  app writes only to `/data`, SQLite's temporary files to a `/tmp` tmpfs),
+  `cap_drop: [ALL]`, `no-new-privileges`, 512 MB, 1 CPU, 128 processes,
+  rotated logs. CI starts it this way.
+- Previews never join `ai-activity-proxy` (production trusts every address
+  there). Their network cannot be `internal` (the OAuth exchange reaches
+  GitHub), and a container reaches the host's own addresses: check
+  `ss -tlnp` and bind or firewall what previews must not reach, a cloud
+  metadata service too (`iptables -I DOCKER-USER -s 172.29.95.0/24 -d
+  169.254.169.254 -j DROP`, persisted). Caddy's `trusted_proxies` must not
+  cover the preview subnet (e.g. `private_ranges`), or a preview could
+  forge client addresses to production through Caddy.
+- PR code runs on production's machine (the usual practice is another
+  one): the separate domain and network, the hardening and limits, files
+  out of the PR's reach and a maintainer approving every run are what keep
+  it from production.
+
+Setup, once:
+
+1. The production OAuth app: turn **wildcard matching** off (apps with a
+   single callback from before 2026-08-03 have it on; production needs
+   none).
+2. Buy the preview domain and put its zone on Cloudflare (Caddy's DNS
+   token must cover both zones). DNS: `*.ai-preview.example` → the server,
+   **DNS only** (grey cloud). If production is proxied by Cloudflare to
+   hide the server's address, this record reveals it: proxy it too
+   (Universal SSL covers `*.ai-preview.example`; Caddy then needs
+   Cloudflare's ranges in `trusted_proxies`), or host previews elsewhere.
+3. A **dev OAuth app**, never the production one: homepage
+   `https://ai-preview.example`, callback
+   `https://ai-preview.example/api/auth/github/callback`, wildcard matching
+   on, so `https://pr-123.ai-preview.example/api/auth/github/callback` is
+   accepted. Nothing but previews may ever run under this domain: any host
+   there can receive this app's codes. PR code can read its secret. Try it
+   once with a sign-in.
+4. The server (same `deploy` user, a second key):
+   ```bash
+   sudo docker network create ai-activity-preview --subnet 172.29.95.0/24
+   sudo install -d -o deploy -g deploy -m 700 /srv/ai-activity-previews
+   # Outside any checkout, owned by root; install again after they change.
+   sudo install -o root -g root -m 644 /srv/ai-activity/deploy/compose.preview.yaml /srv/ai-activity-previews/
+   sudo install -o root -g root -m 755 /srv/ai-activity/deploy/ai-activity-preview /usr/local/bin/
+   sudo -u deploy install -m 600 /dev/null /srv/ai-activity-previews/.env
+   #   PREVIEW_DOMAIN=ai-preview.example, GITHUB_CLIENT_ID=…, GITHUB_CLIENT_SECRET=… (the dev app)
+   #   optional: PREVIEW_MAX=3, PREVIEW_DAYS=1, PREVIEW_MIN_FREE_GB=10, PREVIEW_SUBNET=172.29.95.0/24
+   echo '*/10 * * * * deploy /usr/local/bin/ai-activity-preview gc 2>&1 | logger -t ai-activity-preview' \
+     | sudo tee /etc/cron.d/ai-activity-preview
+   ssh-keygen -t ed25519 -N '' -C github-preview -f preview_key   # on your machine
+   # /home/deploy/.ssh/authorized_keys, a second line:
+   restrict,command="/usr/local/bin/ai-activity-preview" ssh-ed25519 AAAA… github-preview
+   ```
+5. Caddy joins `ai-activity-preview` (an external network in its compose
+   file, like `ai-activity-proxy`; no Docker socket), and its Caddyfile
+   gets:
+   ```
+   *.ai-preview.example {
+   	tls {
+   		dns cloudflare {env.CF_API_TOKEN}
+   	}
+   	@pr header_regexp pr Host ^(pr-[0-9]+)\.ai-preview\.example$
+   	handle @pr {
+   		reverse_proxy {re.pr.1}:3000
+   	}
+   	handle {
+   		respond 404
+   	}
+   }
+   ```
+   Nothing is configured per PR: Docker's DNS resolves `pr-<N>` at request
+   time, and a PR without a preview answers 502. The regex is required:
+   with a plain `{labels.2}`, `ai-activity.ai-preview.example` would reach
+   production (Caddy is on `ai-activity-proxy` too).
+6. GitHub: a `preview` label; Settings → Environments → `preview`: required
+   reviewers (leave "Prevent self-review" off to approve your own PRs), no
+   branch restriction (PR branches deploy there), secret `PREVIEW_SSH_KEY`,
+   variables `DEPLOY_HOST`, `DEPLOY_KNOWN_HOSTS` (optional `DEPLOY_USER`,
+   `DEPLOY_PORT`) as in `production`, or once at the repository level.
+   After the first preview, the `ai-activity-preview` package: public (or
+   `docker login ghcr.io` as `deploy`, as for production), and Manage
+   Actions access → this repository as Admin, for the daily cleanup.
+
+On the server: `docker compose ls -a --filter name=ai-activity-pr-` lists
+the previews, `docker logs ai-activity-pr-<N>-app-1` shows one's log, and
+`sudo -u deploy ai-activity-preview down <N>` removes one by hand.
 
 ### Issues and pull requests
 
@@ -1073,6 +1217,10 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
    or account sections, for visitors and other accounts alike.
 11. `/leaderboard` opens without an account and lists every enabled
     account, idle ones included; disabled ones never listed.
+12. A pull request preview (§2): only the PR's participants sign in (the
+    first becomes admin, no setup code), anyone else lands on
+    `/?auth_error=not_allowed`; a push keeps its data; closing the PR
+    removes it.
 
 ```bash
 # manual test example
@@ -1092,7 +1240,9 @@ curl -s localhost:3000/api/u/<you>/quotas ; echo
 ## 8. Testing with the user (Cloudflare tunnel) — REQUIRED
 
 Quick tunnels are for testing sessions only; the deployed server is
-reached through Caddy (§2, Deploy). After `npm start` works locally:
+reached through Caddy (§2, Deploy). To try a pull request with Sign in
+with GitHub, and no OAuth app to edit, label it `preview` instead (§2,
+Pull request previews). After `npm start` works locally:
 
 1. Install `cloudflared` if missing (https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/).
 2. Start the tunnel:
