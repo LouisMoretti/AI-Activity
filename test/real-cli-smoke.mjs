@@ -77,14 +77,19 @@ function interactiveClaudeUnix(cli, env, cwd, uploaded) {
 
 function interactiveClaudeWindows(cli, env, cwd, uploaded) {
   const pty = require(path.join(process.env.CLI_ROOT, "node-pty"));
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const child = pty.spawn(cli, ["--model", "claude-sonnet-4-5"],
-      { cwd, env, cols: 120, rows: 40 });
+      { cwd, env, cols: 120, rows: 40, useConptyDll: true });
     let output = "";
+    let trusted = false;
     let acceptedKey = false;
     let stopping = false;
     child.onData((part) => {
       output += part;
+      if (!trusted && output.includes("Quick") && output.includes("safety") && output.includes("trust")) {
+        trusted = true;
+        child.write("\x1b[B\r");
+      }
       if (!acceptedKey && output.includes("ANTHROPIC_API_KEY") && output.includes("recommended")) {
         acceptedKey = true;
         child.write("\x1b[A\r");
@@ -260,10 +265,15 @@ env_key = "MOCK_API_KEY"
       : await run(cli, tool === "codex"
         ? ["exec", "--skip-git-repo-check", "--dangerously-bypass-hook-trust",
           "-m", "gpt-test", "Say hello."]
-        : ["run", "--model", "openai/gpt-test", "--format", "json", "Say hello."],
+        : ["--log-level", "DEBUG", "run", "--model", "openai/gpt-test", "--format", "json", "Say hello."],
       env, { cwd: work });
     if (tool === "codex") assert.equal(result.code, 0, result.output.slice(-2000));
-    assert.ok(model.calls.length >= 1, `CLI must use the local model API: ${result.output.slice(-3000)}`);
+    const logDir = path.join(home, ".local", "share", "opencode", "log");
+    const logs = tool === "opencode" && fs.existsSync(logDir)
+      ? fs.readdirSync(logDir).sort().slice(-1).map((file) => fs.readFileSync(path.join(logDir, file), "utf8").slice(-4000)).join("\n")
+      : "";
+    assert.ok(model.calls.length >= 1, `CLI must use the local model API (exit ${result.code}): ` +
+      `${result.output.slice(-3000)}\nOpenCode log: ${logs}`);
     assert.ok(await waitFor(async () => (await summary()).events === 1),
       `real ${tool} produced no collector upload; CLI output: ${result.output.slice(-1200)}`);
     assert.ok(await processesGone(home));
