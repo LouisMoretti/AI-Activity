@@ -35,6 +35,30 @@ function generation(id, { output = 20, model = "gemini-test", when = WHEN, step 
   return Buffer.concat([bytes(1, Buffer.concat([bytes(4, usage), ...(model ? [bytes(19, model)] : []),
     ...(when ? [bytes(9, bytes(4, stamp(when)))] : [])])), bytes(4, step)]);
 }
+// CLI 1.2.12 (Gemini) layout verified against a local stub: usage.1 is a
+// constant (ignored), usage.3 repeats total output (ignored), the response id
+// is usage.7, uncached input is usage.2, cached is usage.5, thinking is
+// usage.9, text is usage.10. No own timestamp: steps date the turn.
+const kv20 = (key, value) => bytes(20, Buffer.concat([bytes(1, key), bytes(2, value)]));
+function generation1212(id, { input = 12, output = 7, thinking = 0, cached = 0, model = "gemini-test",
+  step = "step1212", request = "traj-0", useRequestId = false, badStamp = false } = {}) {
+  const parts = [integer(1, 1036), integer(2, input), integer(3, output + thinking), integer(10, output)];
+  if (cached) parts.push(integer(5, cached));
+  if (thinking) parts.push(integer(9, thinking));
+  if (!useRequestId) parts.push(bytes(7, id));
+  const chat = [bytes(4, Buffer.concat(parts))];
+  if (model) chat.push(bytes(19, model));
+  // A sentinel variant: chat.9 present but 9.4 in a non-message form must not
+  // skip the row; steps still date it.
+  if (badStamp) chat.push(bytes(9, integer(4, 0)));
+  if (request) {
+    chat.push(kv20("trajectory_id", "traj"));
+    chat.push(kv20("request_id", useRequestId ? id : request));
+  }
+  return Buffer.concat([bytes(1, Buffer.concat(chat)), bytes(4, step)]);
+}
+const steps1212 = (step, id, when = WHEN + 60) =>
+  Buffer.concat([bytes(1, stamp(when)), bytes(12, step), bytes(9, bytes(7, id))]);
 // Quota probing is opt-in; the developer's own environment never enables it here.
 const withoutQuotaOptIn = ({ AI_ACTIVITY_ANTIGRAVITY_QUOTAS, ...rest }) => rest;
 const run = (env, args = [], input = "", command = null, script = SCRIPT) => new Promise((resolve, reject) => {
@@ -660,6 +684,147 @@ test("ambiguous step keys stay undated and duplicate responses upload once with 
     for (let i = 0; i < 2; i++) assert.equal((await f.collect()).code, 0);
     assert.equal(f.accepted.size, 1); assert.equal(f.batches.length, 1);
     assert.equal(f.accepted.get("dupes:final").usage.output_tokens, 110);
+  } finally { await f.close(); }
+});
+
+test("CLI 1.2.12 layout imports uncached input, cache, text and thinking once", async () => {
+  const f = await scanFixture();
+  try {
+    f.add("cli1212", [
+      generation1212("resp-seq-0", { input: 12, output: 7, step: "s0", request: "traj-0" }),
+      generation1212("resp-seq-1", { input: 31, output: 11, step: "s1", request: "traj-1" }),
+      generation1212("resp-seq-2", { input: 33, output: 13, thinking: 6, cached: 4, step: "s2", request: "traj-2" }),
+    ], [steps1212("s0", "resp-seq-0"), steps1212("s1", "resp-seq-1"), steps1212("s2", "resp-seq-2")]);
+    assert.equal((await f.collect()).code, 0);
+    assert.equal(f.accepted.size, 3);
+    const first = f.accepted.get("cli1212:resp-seq-0");
+    assert.equal(first.usage.input_tokens, 12, "the 1036 constant is not input");
+    assert.equal(first.usage.output_tokens, 7);
+    assert.equal(first.usage.cache_read_tokens, 0);
+    assert.equal(first.model, "gemini-test");
+    assert.equal(first.occurred_at, WHEN + 60);
+    const third = f.accepted.get("cli1212:resp-seq-2");
+    assert.equal(third.usage.input_tokens, 33, "37 prompt minus 4 cached");
+    assert.equal(third.usage.cache_read_tokens, 4);
+    assert.equal(third.usage.output_tokens, 19, "13 text plus 6 thinking, once");
+    const calls = f.batches.length;
+    assert.equal((await f.collect()).code, 0);
+    assert.equal(f.batches.length, calls, "replay sends nothing");
+  } finally { await f.close(); }
+});
+
+test("CLI 1.2.12 partial then final counts once, and request_id dates rows without a usage id", async () => {
+  const f = await scanFixture();
+  try {
+    f.add("cli1212partial", [generation1212("resp-partial", { input: 12, output: 2, step: "sp", request: "traj-p" })],
+      [steps1212("sp", "resp-partial")]);
+    assert.equal((await f.collect()).code, 0);
+    assert.equal(f.accepted.get("cli1212partial:resp-partial").usage.output_tokens, 2);
+    const db = new Database(path.join(f.dir, "cli1212partial.db"));
+    db.prepare("UPDATE gen_metadata SET data=? WHERE idx=1").run(
+      generation1212("resp-partial", { input: 12, output: 7, step: "sp", request: "traj-p" }));
+    db.close();
+    assert.equal((await f.collect()).code, 0);
+    assert.equal(f.accepted.get("cli1212partial:resp-partial").usage.output_tokens, 7);
+    assert.equal(f.accepted.size, 1);
+    // No usage.7: the chat.20 request_id is the stable id, dated by its step.
+    f.add("cli1212req", [generation1212("traj-9-0", { input: 5, output: 3, step: "sq", useRequestId: true })],
+      [Buffer.concat([bytes(1, stamp(WHEN + 60)), bytes(12, "sq")])]);
+    assert.equal((await f.collect()).code, 0);
+    const fallback = f.accepted.get("cli1212req:traj-9-0");
+    assert.ok(fallback, "request_id fallback imports the row");
+    assert.equal(fallback.usage.input_tokens, 5);
+    assert.equal(fallback.occurred_at, WHEN + 60);
+  } finally { await f.close(); }
+});
+
+test("legacy and CLI 1.2.12 rows share one database without double counting", async () => {
+  const f = await scanFixture();
+  try {
+    f.add("mixed", [
+      generation("legacy1", { output: 20, step: "m0", bot: "b0" }),
+      generation1212("resp-new-1", { input: 12, output: 7, step: "m1", request: "traj-m1" }),
+      generation1212("resp-new-2", { input: 8, output: 5, step: "m2", request: "traj-m2", badStamp: true }),
+      generation("legacy-claude", { output: 24, model: "claude-opus-test", step: "m3", bot: "b3" }),
+      generation1212("resp-new-claude", { input: 9, output: 6, model: "claude-opus-test", step: "m4", request: "traj-m4" }),
+    ], [
+      Buffer.concat([bytes(1, stamp(WHEN + 60)), bytes(12, "m0"), bytes(9, bytes(7, "b0"))]),
+      steps1212("m1", "resp-new-1"),
+      steps1212("m2", "resp-new-2"),
+      Buffer.concat([bytes(1, stamp(WHEN + 60)), bytes(12, "m3"), bytes(9, bytes(7, "b3"))]),
+      steps1212("m4", "resp-new-claude"),
+    ]);
+    assert.equal((await f.collect()).code, 0);
+    assert.equal(f.accepted.size, 4);
+    assert.equal(f.accepted.get("mixed:legacy1").usage.input_tokens, 110);
+    assert.equal(f.accepted.get("mixed:resp-new-1").usage.input_tokens, 12);
+    assert.equal(f.accepted.get("mixed:resp-new-2").usage.input_tokens, 8, "sentinel timestamp falls back to steps");
+    assert.equal(f.accepted.get("mixed:legacy-claude").usage.input_tokens, 110,
+      "legacy Claude rows keep the legacy input rule");
+    assert.ok(!f.accepted.has("mixed:resp-new-claude"),
+      "unverified non-Gemini layouts stay skipped instead of guessing input");
+  } finally { await f.close(); }
+});
+
+test("CLI 1.2.12 ambiguous steps and missing ids stay skipped", async () => {
+  const f = await scanFixture();
+  try {
+    // One turn whose step key matches two different step timestamps: undated.
+    f.add("cli1212amb", [generation1212("resp-amb", { input: 5, output: 3, step: "samb", request: "traj-amb" })],
+      [steps1212("samb", "resp-amb", WHEN + 60), steps1212("samb", "resp-amb", WHEN + 120)]);
+    // No usage.7 and no request_id: no stable id, skipped with a diagnostic.
+    const noId = (() => {
+      const usage = Buffer.concat([integer(1, 1036), integer(2, 5), integer(3, 3), integer(10, 3)]);
+      const chat = Buffer.concat([bytes(4, usage), bytes(19, "gemini-test")]);
+      return Buffer.concat([bytes(1, chat), bytes(4, "noid-step")]);
+    })();
+    f.add("cli1212noid", [noId],
+      [Buffer.concat([bytes(1, stamp(WHEN + 60)), bytes(12, "noid-step")])]);
+    const r = await f.collect();
+    assert.equal(r.code, 0);
+    assert.ok(!f.accepted.has("cli1212amb:resp-amb"), "ambiguous step timestamps stay undated");
+    assert.ok(![...f.accepted.keys()].some((k) => k.startsWith("cli1212noid:")),
+      "rows without any id stay skipped");
+  } finally { await f.close(); }
+});
+
+test("CLI 1.2.12 rows sharing one request_id count once, with the largest response", async () => {
+  const f = await scanFixture();
+  try {
+    // One turn, two model calls, no API response ids: both rows carry the
+    // turn's request_id and cannot be told apart.
+    f.add("cli1212shared", [
+      generation1212("shared-req-0", { input: 5, output: 3, step: "ss", useRequestId: true }),
+      generation1212("shared-req-0", { input: 9, output: 11, step: "ss", useRequestId: true }),
+    ], [Buffer.concat([bytes(1, stamp(WHEN + 60)), bytes(12, "ss")])]);
+    assert.equal((await f.collect()).code, 0);
+    assert.equal(f.accepted.size, 1);
+    assert.equal(f.accepted.get("cli1212shared:shared-req-0").usage.output_tokens, 11);
+  } finally { await f.close(); }
+});
+
+test("a parser upgrade re-reads databases stamped by an older collector", async () => {
+  const f = await scanFixture();
+  try {
+    f.add("upgraded", [generation("legacy-u", { output: 20, step: "u0", bot: "ub0" }),
+      generation1212("resp-u-1", { input: 12, output: 7, step: "u1", request: "traj-u1" })],
+    [Buffer.concat([bytes(1, stamp(WHEN + 60)), bytes(12, "u0"), bytes(9, bytes(7, "ub0"))]),
+      steps1212("u1", "resp-u-1")]);
+    // v2 stamped this database while skipping every row, and never wrote a
+    // version key. v3 must read it again instead of trusting that stamp.
+    const stampV2 = `import hashlib, json, pathlib\n` +
+      `p = pathlib.Path(${JSON.stringify(path.join(f.dir, "upgraded.db"))})\n` +
+      `name = hashlib.sha256(str(p.resolve()).encode()).hexdigest()\n` +
+      `state_path = pathlib.Path(${JSON.stringify(path.join(f.home, ".cache", "ai-activity", "antigravity.json"))})\n` +
+      `state_path.parent.mkdir(parents=True, exist_ok=True)\n` +
+      `state_path.write_text(json.dumps({"targets": {m.target(): {"files": {name: {"stamp": m.file_stamp(p), "sent": {}}}}}}))\n`;
+    assert.equal((await f.collect(stampV2)).code, 0);
+    assert.equal(f.accepted.size, 2, "stamped history is imported after the upgrade");
+    assert.deepEqual(f.batches.map((b) => b.length), [2]);
+    assert.equal(f.accepted.get("upgraded:resp-u-1").usage.input_tokens, 12);
+    const calls = f.batches.length;
+    assert.equal((await f.collect()).code, 0);
+    assert.equal(f.batches.length, calls, "the re-read settles the new stamp");
   } finally { await f.close(); }
 });
 

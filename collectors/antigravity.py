@@ -3,6 +3,9 @@
 
 The SQLite/protobuf layout is undocumented. Field evidence:
 https://github.com/junhoyeo/tokscale/blob/62ca1eb1677556972ba963fdfa3a41ab23c1eb4b/crates/tokscale-core/src/sessions/antigravity_cli.rs
+plus CLI 1.2.12 (Gemini): response id in 1.4.7 or request_id in chat.20,
+uncached input in 1.4.2, cached in 1.4.5, thinking in 1.4.9, text in 1.4.10;
+1.4.1 is a constant, 1.4.3 repeats total output, both ignored.
 Only standard protobuf timestamps are accepted; opaque timestamp layouts
 are skipped with a diagnostic, never dated using file mtime or import time.
 """
@@ -27,7 +30,7 @@ from email.utils import parsedate_to_datetime
 
 # Bump on every change to this file, with COLLECTOR_VERSIONS in
 # shared/collectors.ts: the server flags older copies as outdated.
-VERSION = 2
+VERSION = 3
 COLLECTOR = {"name": "antigravity", "version": VERSION}
 SERVER = os.environ.get("AI_ACTIVITY_URL", "<server>")
 KEY = os.environ.get("AI_ACTIVITY_KEY", "<device key>")
@@ -114,19 +117,81 @@ def stamp(obj):
     return seconds
 
 
+def request_id(chat):
+    """Stable per-turn id of CLI 1.2.12 rows without a usage response id.
+
+    The repeated chat.20 key/value metadata carries
+    request_id = <trajectory UUID>-<turn index>. Only metrics identifiers are
+    read; never prompts or content.
+    """
+    for wire, value in chat.get(20, []):
+        if wire != 2:
+            continue
+        try:
+            entry = fields(value)
+        except ValueError:
+            continue
+        try:
+            if text(entry, 1) == "request_id":
+                value = text(entry, 2)
+                if value is not None:
+                    return value
+        except (ValueError, UnicodeError):
+            continue
+    return None
+
+
 def parse(blob):
     root = fields(blob)
     chat = message(root, 1)
     usage = message(chat, 4)
-    counts = [scalar(usage, k, 0, 0) for k in (1, 2, 5, 9, 10)]
+    legacy_id = text(usage, 11)
+    if legacy_id is not None:
+        counts = [scalar(usage, k, 0, 0) for k in (1, 2, 5, 9, 10)]
+        if any(n > 9007199254740991 for n in counts) or sum(counts) > 9007199254740991:
+            raise ValueError("metadata token count overflow")
+        return {
+            "response_id": legacy_id, "model": text(chat, 19),
+            "step": text(root, 4), "bot": text(usage, 7), "legacy": True,
+            "occurred_at": stamp(message(message(chat, 9), 4)),
+            "usage": {"input_tokens": counts[0] + counts[1],
+                      "cache_read_tokens": counts[2], "output_tokens": counts[3] + counts[4]},
+        }
+    # Antigravity CLI 1.2.12 (Gemini provider): usage.1 is a constant that is
+    # not an input counter, usage.3 repeats the total output, the response id
+    # moved to usage.7, and the generation timestamp left chat.9.4 (only an
+    # unset sentinel and opaque bytes remain). Input is the uncached tokens in
+    # usage.2, cached input in usage.5, thinking in usage.9, text in usage.10.
+    # Without a usage id, fall back to the chat.20 request_id; the timestamp
+    # comes from the matching steps row (step_times), never from import time.
+    # The request_id gates the new layout: old rows without a legacy id (bot
+    # only, no request_id) stay skipped instead of gaining a bot-as-id event.
+    # Scope: verified against the CLI 1.2.12 Gemini layout only. A non-Gemini
+    # provider emitting chat.20 request_id with different 1.4.x semantics
+    # would be misreported rather than skipped; those rows stay skipped
+    # instead of having their input guessed (missing data is Unavailable,
+    # never interpolated).
+    model = text(chat, 19)
+    if model and ("claude" in model.lower() or "gpt" in model.lower()):
+        raise ValueError("unsupported provider layout")
+    counts = [scalar(usage, k, 0, 0) for k in (2, 5, 9, 10)]
     if any(n > 9007199254740991 for n in counts) or sum(counts) > 9007199254740991:
         raise ValueError("metadata token count overflow")
+    req = request_id(chat)
+    uid = text(usage, 7)
+    # A corrupt usage.7 must not block the valid request_id fallback.
+    uid = uid if uid and ID.fullmatch(uid) else None
+    response_id = (uid or req) if req is not None else None
+    try:
+        occurred_at = stamp(message(message(chat, 9), 4))
+    except (ValueError, UnicodeError):
+        occurred_at = None
     return {
-        "response_id": text(usage, 11), "model": text(chat, 19),
-        "step": text(root, 4), "bot": text(usage, 7),
-        "occurred_at": stamp(message(message(chat, 9), 4)),
-        "usage": {"input_tokens": counts[0] + counts[1],
-                  "cache_read_tokens": counts[2], "output_tokens": counts[3] + counts[4]},
+        "response_id": response_id, "model": model,
+        "step": text(root, 4), "bot": uid, "legacy": False,
+        "occurred_at": occurred_at,
+        "usage": {"input_tokens": counts[0],
+                  "cache_read_tokens": counts[1], "output_tokens": counts[2] + counts[3]},
     }
 
 
@@ -187,12 +252,28 @@ def read_database(path):
                 continue
             rows.append(row)
         # A step/bot key shared by two responses cannot tell which one a
-        # step's timestamp belongs to: those stay undated (skipped).
-        times = step_times(db, {(r["step"], r["bot"]) for r in rows if r["occurred_at"] is None
-                                and r["step"] and r["bot"] and len(uses[(r["step"], r["bot"])]) == 1})
+        # step's timestamp belongs to: those stay undated (skipped). Legacy
+        # rows still need their bot id; CLI 1.2.12 rows dated via request_id
+        # use the key (step, None), matching steps rows without a usage id.
+        # Req-only steps observed in real 1.2.12 databases carry no 9.7, but
+        # cover (step, request_id) too in case a variant stores it there.
+        wanted = set()
+        for r in rows:
+            if r["occurred_at"] is not None or not r["step"]:
+                continue
+            if r["legacy"] and not r["bot"]:
+                continue
+            if len(uses[(r["step"], r["bot"])]) != 1:
+                continue
+            wanted.add((r["step"], r["bot"]))
+            if not r["legacy"] and r["bot"] is None and r["response_id"]:
+                wanted.add((r["step"], r["response_id"]))
+        times = step_times(db, wanted)
         out = []
         for row in rows:
             when = row["occurred_at"] or times.get((row["step"], row["bot"]))
+            if when is None and not row["legacy"] and row["bot"] is None and row["response_id"]:
+                when = times.get((row["step"], row["response_id"]))
             if when is None:
                 skipped += 1
                 continue
@@ -518,7 +599,11 @@ def collect_tokens(state_path):
         raise RuntimeError("upload retry deferred by server")
     sources = [(hashlib.sha256(str(p.resolve()).encode()).hexdigest(), p) for p in databases()]
     # hashed path -> {"stamp": stamp once all of it was accepted,
-    #                 "sent": {response id: output tokens accepted}}.
+    #                 "sent": {response id: output tokens accepted},
+    #                 "version": collector VERSION that wrote the stamp}.
+    # A parser upgrade re-reads every database once: rows an older collector
+    # skipped as unavailable may be supported now. The sent map still prevents
+    # re-uploads (only new or grown responses are pending).
     # Entries of deleted databases and malformed ones are dropped.
     files = state.get("files") if isinstance(state.get("files"), dict) else {}
     state["files"] = files = {name: files[name] for name, _ in sources if isinstance(files.get(name), dict)
@@ -531,7 +616,7 @@ def collect_tokens(state_path):
             # accepted: a write during the read makes the next run read again.
             before = file_stamp(path)
             entry = files.setdefault(name, {"sent": {}})
-            if entry.get("stamp") == before:
+            if entry.get("stamp") == before and entry.get("version", 0) == VERSION:
                 continue
             try:
                 entries, skipped = read_database(path)
@@ -543,12 +628,15 @@ def collect_tokens(state_path):
                 else:
                     print("ai-activity antigravity: unsupported or unreadable conversation database skipped "
                           "until it changes", file=sys.stderr)
-                    entry["stamp"] = before
+                    entry.update(stamp=before, version=VERSION)
                 continue
             if skipped:
                 print("ai-activity antigravity: %d metadata rows unavailable; skipped "
                       "(unsupported or incomplete)" % skipped, file=sys.stderr)
             # A response written twice (partial, then final) is sent once, with its final counts.
+            # Rows without a per-response id share their turn's request_id, so a
+            # turn with several model calls but no API response ids counts once
+            # (its largest response) instead of once per call.
             best = {}
             for row in entries:
                 digest = hashlib.sha256(json.dumps(row, sort_keys=True).encode()).hexdigest()
@@ -567,7 +655,7 @@ def collect_tokens(state_path):
                 can_save = True
                 sent.update((row["response_id"], row["usage"]["output_tokens"]) for row in batch)
             # Every response now in the database was accepted; forget removed ones.
-            entry.update(stamp=before, sent={rid: sent[rid] for rid in best})
+            entry.update(stamp=before, sent={rid: sent[rid] for rid in best}, version=VERSION)
     finally:
         if can_save or "upload_retry_at" in state:
             save_state(state_path, stored)
