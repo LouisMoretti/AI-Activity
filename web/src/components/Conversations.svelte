@@ -3,6 +3,7 @@
   import { fmtAgo, fmtCompact, fmtPct, plural, RECENT_SEC } from "../lib/format.ts";
   import { TOOL_META, type SessionVM } from "../lib/view-model.ts";
   import Meter from "./Meter.svelte";
+  import ToolIcon from "./ToolIcon.svelte";
 
   let { sessions, total, onmore }: { sessions: SessionVM[]; total: number; onmore: () => void } = $props();
 </script>
@@ -11,7 +12,7 @@
   {#each sessions as s (s.tool + s.id)}
     <article class="session" style:--tool={TOOL_META[s.tool].color}>
       <div class="name">
-        <span class="icon" aria-hidden="true">{TOOL_META[s.tool].icon}</span>
+        <span class="icon" style:--tool={TOOL_META[s.tool].color}><ToolIcon tool={s.tool} size={16} /></span>
         <div>
           <strong>{TOOL_META[s.tool].name} · <span class="mono" title={s.id}>{s.id.slice(0, 8)}</span></strong>
           <small><span class="model">{s.model ?? "model not reported"}</span> · {plural(s.calls, "API call")}</small>
@@ -45,7 +46,7 @@
   .session + .session { border-top: 1px solid var(--line); }
   .empty { flex-direction: column; align-items: flex-start; gap: 2px; }
   .name { display: flex; align-items: center; gap: 12px; min-width: 0; }
-  .icon { font-size: 18px; width: 20px; text-align: center; color: var(--tool); }
+  .icon { width: 20px; height: 20px; display: grid; place-items: center; color: var(--tool); }
   strong { font-size: 14px; font-weight: 500; display: block; }
   small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
   .model { font-family: var(--mono); font-size: 11px; }
