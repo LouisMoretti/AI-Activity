@@ -32,9 +32,16 @@ function run(bin, args, env, { cwd, input = "", timeout = 30000 } = {}) {
     child.stderr.on("data", (part) => { output += part; });
     child.stdin.on("error", () => {});
     child.stdin.end(input);
-    const timer = setTimeout(() => child.kill(), timeout);
-    child.on("error", (error) => { clearTimeout(timer); reject(error); });
-    child.on("close", (code) => { clearTimeout(timer); resolve({ code, output }); });
+    let done = false;
+    const finish = (code) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve({ code, output });
+    };
+    const timer = setTimeout(() => { child.kill(); finish(null); }, timeout);
+    child.on("error", (error) => { if (!done) { done = true; clearTimeout(timer); reject(error); } });
+    child.on("close", finish);
   });
 }
 
