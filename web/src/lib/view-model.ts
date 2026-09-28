@@ -83,11 +83,11 @@ export interface DashboardVM {
 }
 
 // color: the tool's design token, set as `--tool` on its elements.
-export const TOOL_META: Record<ToolKey, { name: string; icon: string; color: string }> = {
-  "claude-code": { name: "Claude Code", icon: "✳", color: "var(--claude)" },
-  codex: { name: "Codex", icon: "⌘", color: "var(--codex)" },
-  opencode: { name: "OpenCode", icon: "◇", color: "var(--opencode)" },
-  antigravity: { name: "Antigravity", icon: "△", color: "var(--antigravity)" },
+export const TOOL_META: Record<ToolKey, { name: string; color: string; logo: string }> = {
+  "claude-code": { name: "Claude Code", color: "var(--claude)", logo: "/tool-logos/claude.svg" },
+  codex: { name: "Codex", color: "var(--codex)", logo: "/tool-logos/codex.svg" },
+  opencode: { name: "OpenCode", color: "var(--opencode)", logo: "/tool-logos/opencode.svg" },
+  antigravity: { name: "Antigravity", color: "var(--antigravity)", logo: "/tool-logos/antigravity.png" },
 };
 
 type PoolId = (typeof QUOTA_POOLS)[keyof typeof QUOTA_POOLS][number];
