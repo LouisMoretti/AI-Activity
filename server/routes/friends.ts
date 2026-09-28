@@ -1,6 +1,6 @@
 import { Hono } from "hono";
-import type { FriendsResponse } from "../../shared/types.ts";
-import { enabledUserByGithubId, getUser, latestUsageAt, toProfile, usageTotals } from "../db/queries.ts";
+import type { FriendEntry, FriendsResponse } from "../../shared/types.ts";
+import { enabledUsersByGithubIds, getUser, latestUsageAt, toProfile, usageTotals } from "../db/queries.ts";
 import { nowSec, type DB } from "../db/schema.ts";
 import { followingReader, type GithubConfig } from "../lib/github.ts";
 import type { ViewerEnv } from "../lib/viewer-auth.ts";
@@ -23,9 +23,10 @@ export function friendsRoutes(db: DB, github: GithubConfig | null) {
     }
     const until = nowSec();
     const since = until - RECENT_DAYS * 86400;
-    const friends = [];
+    const users = new Map(enabledUsersByGithubIds(db, ids).map((user) => [user.github_id, user]));
+    const friends: FriendEntry[] = [];
     for (const id of new Set(ids)) {
-      const user = enabledUserByGithubId(db, id);
+      const user = users.get(id);
       if (!user || user.id === viewer.id) continue;
       const totals = usageTotals(db, user.id, since, null);
       friends.push({ ...toProfile(user), tokens: totals.total_tokens, sessions: totals.sessions,

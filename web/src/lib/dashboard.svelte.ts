@@ -1,6 +1,6 @@
 // App state: sign-in, the current page (sign-in at /, a public profile at
-// /u/<username>, the fictional profile at /demo, /leaderboard, /settings,
-// /admin), session paging, and the 5 s auto-refresh
+// /u/<username>, the fictional profile at /demo, /leaderboard, /friends,
+// /settings, /admin), session paging, and the 5 s auto-refresh
 // (skipped while hidden or already in flight).
 import { api, NotFoundError, onSessionLost, RateLimitedError, UnauthorizedError } from "./api.ts";
 import { authErrorMessage } from "./auth-errors.ts";

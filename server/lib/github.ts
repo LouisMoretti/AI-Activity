@@ -76,10 +76,10 @@ export async function signedInUser(gh: GithubConfig, code: string, redirectUri: 
 
 /** Public GitHub follows, identified by stable numeric ids. No OAuth scope or stored token. */
 export function followingReader(gh: GithubConfig) {
-  const cache = new Map<number, { until: number; ids: number[] }>();
+  const cache = new Map<number, { login: string; until: number; ids: number[] }>();
   return async (viewerId: number, login: string): Promise<number[]> => {
     const saved = cache.get(viewerId);
-    if (saved && saved.until > Date.now()) return saved.ids;
+    if (saved && saved.login === login && saved.until > Date.now()) return [...saved.ids];
     const ids: number[] = [];
     for (let page = 1; page <= FOLLOWING_MAX_PAGES; page++) {
       const url = `${gh.apiUrl}/users/${encodeURIComponent(login)}/following?per_page=100&page=${page}`;
@@ -90,7 +90,7 @@ export function followingReader(gh: GithubConfig) {
         if (Number.isSafeInteger(id) && (id as number) > 0) ids.push(id as number);
       }
       if (body.length < 100) {
-        cache.set(viewerId, { until: Date.now() + FOLLOWING_CACHE_MS, ids });
+        cache.set(viewerId, { login, until: Date.now() + FOLLOWING_CACHE_MS, ids });
         return ids;
       }
     }

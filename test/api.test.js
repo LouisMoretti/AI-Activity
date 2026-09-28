@@ -1306,6 +1306,35 @@ describe("GitHub friends", () => {
       assert.equal((await req(srv.base, "GET", "/api/friends", { cookie: other.cookie })).status, 503);
     } finally { await srv.stop(); }
   });
+
+  test("a renamed viewer gets the new login's follows without waiting for the cache", async () => {
+    const srv = await startServer();
+    try {
+      await register(srv.base, "old-friend");
+      await register(srv.base, "new-friend");
+      githubFollowing("admin", ["old-friend"]);
+      assert.deepEqual((await req(srv.base, "GET", "/api/friends")).json.friends.map((f) => f.username), ["old-friend"]);
+
+      renameGithubUser("admin", "renamed-admin");
+      githubFollowing("renamed-admin", ["new-friend"]);
+      const renamed = await githubSignIn(srv.base, "renamed-admin");
+      assert.ok(renamed.cookie);
+      const r = await req(srv.base, "GET", "/api/friends", { cookie: renamed.cookie });
+      assert.equal(r.status, 200);
+      assert.deepEqual(r.json.friends.map((f) => f.username), ["new-friend"]);
+    } finally { await srv.stop(); }
+  });
+
+  test("matches a followed account beyond the first GitHub page", async () => {
+    const srv = await startServer();
+    try {
+      await register(srv.base, "later-friend");
+      githubFollowing("admin", [...Array.from({ length: 100 }, (_, i) => `github-only-${i}`), "later-friend"]);
+      const r = await req(srv.base, "GET", "/api/friends");
+      assert.equal(r.status, 200);
+      assert.deepEqual(r.json.friends.map((f) => f.username), ["later-friend"]);
+    } finally { await srv.stop(); }
+  });
 });
 
 describe("public profile pages", () => {

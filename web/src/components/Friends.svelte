@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { FriendsResponse } from "../../../shared/types.ts";
-  import { api } from "../lib/api.ts";
+  import { api, UnauthorizedError } from "../lib/api.ts";
   import { profilePath } from "../lib/dashboard.svelte.ts";
   import { fmtNum, plural } from "../lib/format.ts";
   import Avatar from "./Avatar.svelte";
@@ -20,7 +20,9 @@
     error = false;
     try {
       data = await api.friends();
-    } catch {
+    } catch (e) {
+      // The API client sends a lost session to the sign-in page.
+      if (e instanceof UnauthorizedError) return;
       data = null;
       error = true;
     } finally {
@@ -44,7 +46,11 @@
       <ul class="list">
         {#each data.friends as friend (friend.username)}
           <li>
-            <a href={profilePath(friend.username)} onclick={(event) => { event.preventDefault(); onopen(friend.username); }}>
+            <a href={profilePath(friend.username)} onclick={(event) => {
+              if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+              event.preventDefault();
+              onopen(friend.username);
+            }}>
               <Avatar name={friend.display_name} url={friend.avatar_url} size={40} />
               <span class="person"><strong>{friend.display_name}</strong><span class="handle">@{friend.username}</span></span>
             </a>

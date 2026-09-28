@@ -95,9 +95,12 @@ export function findUserByGithubId(db: DB, githubId: number): UserRow | null {
   return (db.prepare("SELECT * FROM users WHERE github_id = ?").get(githubId) as UserRow | undefined) ?? null;
 }
 
-/** A GitHub follow only appears when their public profile is currently enabled. */
-export function enabledUserByGithubId(db: DB, githubId: number): UserRow | null {
-  return (db.prepare("SELECT * FROM users WHERE github_id = ? AND disabled = 0").get(githubId) as UserRow | undefined) ?? null;
+/** Match all GitHub follows in one indexed lookup, regardless of list length. */
+export function enabledUsersByGithubIds(db: DB, githubIds: number[]): UserRow[] {
+  if (!githubIds.length) return [];
+  return db.prepare(
+    "SELECT * FROM users WHERE disabled = 0 AND github_id IN (SELECT value FROM json_each(?))"
+  ).all(JSON.stringify(githubIds)) as UserRow[];
 }
 
 /** Latest event in the same rolling period used for a friend's totals. */

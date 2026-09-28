@@ -46,9 +46,9 @@ with zeros) ranked by tokens over 7 days / 30 days / all time, with
 server-wide totals, the model split and a global activity calendar.
 `/friends` is signed-in only: it matches the viewer's public GitHub follows
 by numeric id to enabled accounts here, with their public seven-day usage.
-The GitHub list is cached for five minutes; if GitHub is unavailable, the
-page shows a retry action. The
-header (`SiteHeader`) is the same on every page: logo, demo badge, and the
+The GitHub list is cached for five minutes per numeric id and login; if GitHub
+is unavailable, the page shows a retry action. The header (`SiteHeader`) is
+the same on every page: logo, demo badge, and the
 avatar menu (or "Sign in"), plus a breadcrumb of the current page
 (`AI Activity / (picture) @name`, `/ (initial) Demo preview`, `/ Leaderboard`, `/ Friends`, `/ Settings`, `/ Admin panel`) that
 replaces in-page titles. It never reads the route itself (`App.svelte`
@@ -1000,8 +1000,8 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
     9 of them every 5 s, so about two tabs fit behind one address. A
     rate-limited refresh keeps the page as it was (the web client does
     not show it as "Could not reach the server");
-  - signed-in routes (`/api/devices`, `/api/account`, `/api/users`,
-    `/api/admin`): 120 per user, refill 1/s;
+  - signed-in routes (`/api/friends`, `/api/devices`, `/api/account`,
+    `/api/users`, `/api/admin`): 120 per user, refill 1/s;
   - at most 20 live devices per account (`POST /api/devices` → `409`;
     revoking one frees a slot);
   - starting a GitHub sign-in (`POST /api/auth/github`): 60 per client,
