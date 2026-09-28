@@ -81,7 +81,7 @@ function interactiveClaudeUnix(cli, env, cwd, uploaded) {
   });
 }
 
-function interactiveClaudeWindows(cli, env, cwd, uploaded) {
+function interactiveClaudeWindows(cli, env, cwd, uploaded, modelCalled) {
   const pty = require(path.join(process.env.CLI_ROOT, "node-pty"));
   return new Promise((resolve) => {
     const child = pty.spawn(cli, ["--model", "claude-sonnet-4-5"],
@@ -89,12 +89,13 @@ function interactiveClaudeWindows(cli, env, cwd, uploaded) {
     let output = "";
     let trusted = false;
     let acceptedKey = false;
+    let ready = false;
     let stopping = false;
     let done = false;
     const finish = (code) => {
       if (done) return;
       done = true;
-      clearInterval(poll); clearTimeout(limit);
+      clearInterval(poll); clearInterval(promptRetry); clearTimeout(promptStart); clearTimeout(limit);
       resolve({ code, output });
     };
     child.onData((part) => {
@@ -107,9 +108,22 @@ function interactiveClaudeWindows(cli, env, cwd, uploaded) {
       if (!acceptedKey && output.includes("ANTHROPIC_API_KEY") && output.includes("recommended")) {
         acceptedKey = true;
         child.write("\x1b[A\r");
-        setTimeout(() => child.write("Say hello.\r"), 1500);
+      }
+      // A cold Windows launch can redraw the terminal after accepting the
+      // key. Wait for the chat screen before typing, then retry only if the
+      // local model API has still received no request.
+      if (acceptedKey && !ready && (output.includes("auto mode on") || output.includes("manual mode on"))) {
+        ready = true;
+        promptStart = setTimeout(() => {
+          sendPrompt();
+          promptRetry = setInterval(sendPrompt, 6000);
+        }, 1500);
       }
     });
+    const sendPrompt = () => {
+      if (!stopping && !modelCalled()) child.write("Say hello.\r");
+    };
+    let promptStart, promptRetry;
     const poll = setInterval(async () => {
       try {
         if (!stopping && await uploaded()) {
@@ -119,7 +133,7 @@ function interactiveClaudeWindows(cli, env, cwd, uploaded) {
         }
       } catch { /* surface the main assertion below */ }
     }, 500);
-    const limit = setTimeout(() => { child.kill(); finish(null); }, 30000);
+    const limit = setTimeout(() => { child.kill(); finish(null); }, 45000);
     child.onExit(({ exitCode }) => finish(exitCode));
   });
 }
@@ -272,7 +286,8 @@ env_key = "MOCK_API_KEY"
     const before = Date.now();
     const summary = async () => (await req(app.base, "GET", `/api/u/admin/summary?tool=${tool}`)).json.total;
     const result = tool === "claude-code"
-      ? await interactiveClaude(cli, env, work, async () => (await summary()).events === 1)
+      ? await interactiveClaude(cli, env, work, async () => (await summary()).events === 1,
+        () => model.calls.length > 0)
       : await run(cli, tool === "codex"
         ? ["exec", "--skip-git-repo-check", "--dangerously-bypass-hook-trust",
           "-m", "gpt-test", "Say hello."]
