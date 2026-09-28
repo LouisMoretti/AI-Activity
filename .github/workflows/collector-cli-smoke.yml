@@ -1,0 +1,76 @@
+name: Collector CLI smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "collectors/**"
+      - "server/lib/installer.ts"
+      - "server/lib/ingest.ts"
+      - "server/routes/ingest.ts"
+      - "shared/collectors.ts"
+      - "test/*collector*.test.js"
+      - "test/install.test.js"
+      - "test/helpers.js"
+      - "test/real-cli-smoke.mjs"
+      - ".github/workflows/collector-cli-smoke.yml"
+  push:
+    branches: [main]
+    paths:
+      - "collectors/**"
+      - "server/lib/installer.ts"
+      - "server/lib/ingest.ts"
+      - "server/routes/ingest.ts"
+      - "shared/collectors.ts"
+      - "test/*collector*.test.js"
+      - "test/install.test.js"
+      - "test/helpers.js"
+      - "test/real-cli-smoke.mjs"
+      - ".github/workflows/collector-cli-smoke.yml"
+
+# This path-filtered workflow is intentionally not a required branch check:
+# GitHub leaves a skipped required workflow pending on unrelated PRs.
+permissions:
+  contents: read
+
+concurrency:
+  group: collector-cli-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/cache@v4
+        id: cli-cache
+        with:
+          path: ${{ runner.temp }}/collector-clis
+          key: collector-clis-linux-x64-claude-2.1.283-codex-0.157.1-opencode-1.18.33
+      - name: Install pinned real CLIs
+        if: steps.cli-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/collector-clis"
+          /usr/bin/time -f "Cold CLI install elapsed: %e seconds" \
+            npm install --prefix "$RUNNER_TEMP/collector-clis" --no-save \
+              @anthropic-ai/claude-code@2.1.283 @openai/codex@0.157.1 \
+              opencode-ai@1.18.33
+      - name: Report CLI cache
+        run: echo "CLI cache hit (warm run): ${{ steps.cli-cache.outputs.cache-hit }}"
+      - name: Chat with local model APIs and verify installed collectors
+        env:
+          CLAUDE_CLI: ${{ runner.temp }}/collector-clis/node_modules/.bin/claude
+          CODEX_CLI: ${{ runner.temp }}/collector-clis/node_modules/.bin/codex
+          OPENCODE_CLI: ${{ runner.temp }}/collector-clis/node_modules/.bin/opencode
+          PYTHON: python
+        run: /usr/bin/time -f "CLI smoke elapsed: %e seconds" node --test test/real-cli-smoke.mjs
