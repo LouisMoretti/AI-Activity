@@ -3,13 +3,12 @@
 // the one-command installer must make their native hooks upload the usage.
 import fs from "node:fs";
 import http from "node:http";
-import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { startServer, newDevice, req, processesGone } from "./helpers.js";
+import { startServer, newDevice, req, processesGone, tempHome } from "./helpers.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const require = createRequire(import.meta.url);
@@ -102,7 +101,8 @@ function interactiveClaudeWindows(cli, env, cwd, uploaded) {
       output += part;
       if (!trusted && output.includes("Quick") && output.includes("safety") && output.includes("trust")) {
         trusted = true;
-        child.write("\x1b[B\r");
+        setTimeout(() => child.write("\x1b[B"), 300);
+        setTimeout(() => child.write("\r"), 600);
       }
       if (!acceptedKey && output.includes("ANTHROPIC_API_KEY") && output.includes("recommended")) {
         acceptedKey = true;
@@ -217,7 +217,7 @@ async function ingestProxy(upstream, tool, key) {
 }
 
 async function smoke(tool, cli) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), `ai-activity-real-${tool}-`));
+  const home = tempHome(`ai-activity-real-${tool}-`);
   const work = path.join(home, "work");
   fs.mkdirSync(work);
   fs.mkdirSync(path.join(home, ".codex"));
@@ -277,7 +277,7 @@ env_key = "MOCK_API_KEY"
         ? ["exec", "--skip-git-repo-check", "--dangerously-bypass-hook-trust",
           "-m", "gpt-test", "Say hello."]
         : ["--log-level", "DEBUG", "run", "--model", "openai/gpt-test", "--format", "json", "Say hello."],
-      env, { cwd: work });
+      env, { cwd: work, timeout: tool === "opencode" && process.platform === "win32" ? 90000 : 30000 });
     if (tool === "codex") assert.equal(result.code, 0, result.output.slice(-2000));
     const logDir = path.join(home, ".local", "share", "opencode", "log");
     const logs = tool === "opencode" && fs.existsSync(logDir)
