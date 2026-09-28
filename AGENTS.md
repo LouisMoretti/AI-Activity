@@ -371,7 +371,7 @@ web/
   src/lib/demo.ts         FICTIONAL /demo dataset → DashboardVM (always labeled)
   src/lib/series.ts       pure helpers: dense day series, streaks, calendar grid
   src/lib/format.ts       number, day, duration and "ago" formatting
-  src/lib/dashboard.svelte.ts  state: provider, auth status, GitHub sign-in, 15 s refresh
+  src/lib/dashboard.svelte.ts  state: provider, auth status, GitHub sign-in, 5 s refresh
   src/lib/auth-errors.ts  ?auth_error=<code> → message (known codes only)
   src/lib/confirm-delete.svelte.ts  danger zone flows (typed phrase; sign in again if too old)
   src/App.svelte          routes the pages; renders the site chrome once
@@ -850,12 +850,12 @@ each conversation database under
 
 | Database source | Payload field |
 | --- | --- |
-| `data` 1.4.11 (response id) | `messages[].response_id` → event `antigravity:<session>:<response>` |
+| `data` 1.4.11, or 1.4.7 with `chat.20` request_id present (CLI 1.2.12), or `chat.20` request_id without a usage id | `messages[].response_id` → event `antigravity:<session>:<response>` |
 | database file name | `messages[].session_id` → stored as `antigravity:<name>` |
 | `data` 1.19 (`gemini-default` → null) | `messages[].model` |
-| `data` 1.9.4 timestamp, else the unique `steps` row matching step 4 / bot 1.4.7 | `occurred_at` |
+| `data` 1.9.4 timestamp, else the unique `steps` row matching step 4 / response id 1.4.7 (legacy: bot 1.4.7) | `occurred_at` |
 | machine clock at that time | `messages[].utc_offset_min` |
-| `data` 1.4.1 + 1.4.2 / 1.4.5 / 1.4.9 + 1.4.10 | `usage.input_tokens` / `cache_read_tokens` / `output_tokens` (text + thinking) |
+| `data` 1.4.2 / 1.4.5 / 1.4.9 + 1.4.10 (legacy: 1.4.1 + 1.4.2; 1.4.1 constant and 1.4.3 total ignored) | `usage.input_tokens` / `cache_read_tokens` / `output_tokens` (text + thinking) |
 | `agy -p /usage` buckets `gemini-*` / `3p-*` (`5h`, `weekly`) | quota-only batch, `account_ref` `gemini` / `claude-gpt`, `rate_limits.five_hour` / `seven_day` |
 
 - The same response id in two conversation databases counts twice (the
@@ -865,6 +865,10 @@ each conversation database under
   valid protobuf is skipped with a warning, never dated by file mtime or
   import time. A database in an unsupported format, or unreadable other
   than busy, is skipped until it changes; a busy one fails the run.
+  CLI 1.2.12 rows whose model is not Gemini (Claude/GPT) stay skipped too:
+  their field meanings are unverified, and input is never guessed.
+  Rows without a per-response id share their turn's request_id and count
+  once (the largest response), never once per model call.
 - Only new responses, or ones with more output tokens than accepted, are
   sent (partial then final counts, like the other tools); unchanged
   databases are not read. Cache writes and context are not recorded.
@@ -988,7 +992,7 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   `Retry-After`:
   - public reads (`/api/u/…`, `/api/leaderboard`, `/api/profiles`): 300
     per client (the client address above), refill 5/s. A dashboard polls
-    9 of them every 15 s, so about eight tabs fit behind one address. A
+    9 of them every 5 s, so about two tabs fit behind one address. A
     rate-limited refresh keeps the page as it was (the web client does
     not show it as "Could not reach the server");
   - signed-in routes (`/api/devices`, `/api/account`, `/api/users`,

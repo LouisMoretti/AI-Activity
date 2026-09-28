@@ -11,7 +11,7 @@ import type { Tool } from "./types.ts";
 export const COLLECTOR_VERSIONS: Record<Tool, number> = {
   "claude-code": 2,
   codex: 2,
-  antigravity: 2,
+  antigravity: 3,
   opencode: 2,
 };
 

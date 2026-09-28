@@ -29,7 +29,7 @@
     `${fmtDay(weeks[i].end)}: ${fmtNum(totals[i])} tokens since ${fmtDay(weeks[0].start)}${demo ? " (fictional)" : ""}`;
   const trendLabels = $derived(weeks.map((_, i) => (view === "weekly" ? describeWeek(i) : describeTotal(i))));
 
-  // The hovered day as of the latest refresh (the series is rebuilt every 15 s).
+  // The hovered day as of the latest refresh (the series is rebuilt every 5 s).
   const hoveredNow = $derived(hovered ? series.find((d) => d.day === hovered!.day) ?? hovered : null);
   const hasSeries = $derived(series.length > 0);
 

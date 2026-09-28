@@ -1,0 +1,65 @@
+name: Antigravity CLI smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "collectors/antigravity.py"
+      - "server/lib/installer.ts"
+      - "server/lib/ingest.ts"
+      - "server/routes/ingest.ts"
+      - "shared/collectors.ts"
+      - "test/antigravity-collector.test.js"
+      - "test/helpers.js"
+      - "test/real-antigravity-smoke.mjs"
+      - ".github/workflows/antigravity-cli-smoke.yml"
+  push:
+    branches: [main]
+    paths:
+      - "collectors/antigravity.py"
+      - "server/lib/installer.ts"
+      - "server/lib/ingest.ts"
+      - "server/routes/ingest.ts"
+      - "shared/collectors.ts"
+      - "test/antigravity-collector.test.js"
+      - "test/helpers.js"
+      - "test/real-antigravity-smoke.mjs"
+      - ".github/workflows/antigravity-cli-smoke.yml"
+
+# Path-filtered like the collector CLI smoke workflow: intentionally not a
+# required branch check, so skipped runs never block unrelated PRs.
+permissions:
+  contents: read
+
+concurrency:
+  group: antigravity-cli-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: smoke (linux x64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - run: npm ci
+      - run: npm run build
+      # Intentionally tracks the latest CLI (no version pin): the smoke must
+      # catch the next undocumented metadata change, not just re-verify
+      # 1.2.12. The test logs agy --version, so each run records what it
+      # validated.
+      - name: Install Antigravity CLI
+        run: |
+          curl -fsSL https://antigravity.google/cli/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Chat with a local Gemini stub and verify the installed hook
+        run: |
+          agy --version
+          /usr/bin/time -f "Antigravity smoke elapsed: %e seconds" node --test test/real-antigravity-smoke.mjs

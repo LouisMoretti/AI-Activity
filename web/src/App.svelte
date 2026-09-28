@@ -71,7 +71,7 @@
     {/if}
 
     {#if dash.status === "error"}
-      <p class="notice" role="alert">Could not reach the server. Retrying every 15 seconds.</p>
+      <p class="notice" role="alert">Could not reach the server. Retrying every 5 seconds.</p>
     {/if}
 
     {#if dash.route.page === "settings" && dash.account && dash.status === "ready"}
