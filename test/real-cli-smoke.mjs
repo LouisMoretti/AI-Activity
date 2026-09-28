@@ -84,6 +84,13 @@ function interactiveClaudeWindows(cli, env, cwd, uploaded) {
     let trusted = false;
     let acceptedKey = false;
     let stopping = false;
+    let done = false;
+    const finish = (code) => {
+      if (done) return;
+      done = true;
+      clearInterval(poll); clearTimeout(limit);
+      resolve({ code, output });
+    };
     child.onData((part) => {
       output += part;
       if (!trusted && output.includes("Quick") && output.includes("safety") && output.includes("trust")) {
@@ -105,11 +112,8 @@ function interactiveClaudeWindows(cli, env, cwd, uploaded) {
         }
       } catch { /* surface the main assertion below */ }
     }, 500);
-    const limit = setTimeout(() => child.kill(), 30000);
-    child.onExit(({ exitCode }) => {
-      clearInterval(poll); clearTimeout(limit);
-      resolve({ code: exitCode, output });
-    });
+    const limit = setTimeout(() => { child.kill(); finish(null); }, 30000);
+    child.onExit(({ exitCode }) => finish(exitCode));
   });
 }
 
