@@ -13,6 +13,7 @@ on:
       - "test/install.test.js"
       - "test/helpers.js"
       - "test/real-cli-smoke.mjs"
+      - "test/real-antigravity-smoke.mjs"
       - ".github/workflows/collector-cli-smoke.yml"
   push:
     branches: [main]
@@ -26,6 +27,7 @@ on:
       - "test/install.test.js"
       - "test/helpers.js"
       - "test/real-cli-smoke.mjs"
+      - "test/real-antigravity-smoke.mjs"
       - ".github/workflows/collector-cli-smoke.yml"
 
 # This path-filtered workflow is intentionally not a required branch check:
@@ -57,6 +59,38 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check whether Antigravity components changed
+        if: matrix.platform == 'linux-x64'
+        id: antigravity
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          CURRENT: ${{ github.sha }}
+        run: |
+          run=false
+          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            run=true
+          else
+            if [[ "$EVENT_NAME" == pull_request ]]; then
+              changed=$(git diff --name-only "$BASE...$HEAD")
+            else
+              changed=$(git diff --name-only "$BEFORE" "$CURRENT")
+            fi
+            while IFS= read -r file; do
+              case "$file" in
+                collectors/antigravity.py|collectors/install.py|server/lib/installer.ts|server/lib/ingest.ts|server/routes/ingest.ts|shared/collectors.ts|test/antigravity-collector.test.js|test/collector-versions.test.js|test/installed-collectors.test.js|test/install.test.js|test/real-antigravity-smoke.mjs|.github/workflows/collector-cli-smoke.yml)
+                  run=true
+                  break
+                  ;;
+              esac
+            done <<< "$changed"
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -97,6 +131,14 @@ jobs:
       - name: Report CLI cache
         run: |
           echo "CLI cache hit (warm run): ${{ steps.cli-cache.outputs.cache-hit }}"
+      # Antigravity tracks the latest CLI. Keep the real agy chat on Linux x64,
+      # but do not run it for unrelated changes to the shared test/helpers.js.
+      - name: Install Antigravity CLI
+        if: matrix.platform == 'linux-x64' && steps.antigravity.outputs.run == 'true'
+        shell: bash
+        run: |
+          curl -fsSL https://antigravity.google/cli/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Chat with local model APIs and verify installed collectors
         env:
           CLI_ROOT: ${{ runner.temp }}/collector-clis/node_modules
@@ -105,6 +147,12 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           /usr/bin/time -f "CLI smoke elapsed: %e seconds" node --test test/real-cli-smoke.mjs
+      - name: Chat with a local Gemini stub and verify the Antigravity hook
+        if: matrix.platform == 'linux-x64' && steps.antigravity.outputs.run == 'true'
+        shell: bash
+        run: |
+          agy --version
+          /usr/bin/time -f "Antigravity smoke elapsed: %e seconds" node --test test/real-antigravity-smoke.mjs
       - name: Chat with local model APIs and verify installed collectors (Windows)
         if: runner.os == 'Windows'
         env:

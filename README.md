@@ -629,26 +629,17 @@ the installed status line, hook or plugin against synthetic tool data, then
 checks the upload format, retry, deduplication and dashboard totals. No model
 API or external account is needed.
 
-The separate **Collector CLI smoke** workflow runs on relevant collector
-changes and can also be started from Actions. Its Linux x64, Linux ARM64 and
-Windows x64 jobs install pinned Claude Code, Codex and OpenCode CLIs, point
-each at a local fake model API, complete one chat, and check that the
-installed integration reaches the real app. Windows uses a temporary ConPTY
-for Claude Code's interactive status line. It uses no model API key or external
-account. The workflow is not a required check on unrelated PRs. Antigravity
-is covered by the installed hook test with synthetic database rows. The
-separate **Antigravity CLI smoke** workflow also runs a real `agy` chat against
-a local Gemini stub and verifies that the installed hook uploads its measured
-usage; see the Antigravity section above.
-
-Both smoke workflows run on matching pull request changes and pushes to `main`,
-or manually with `workflow_dispatch`. Antigravity watches its collector,
-`collectors/install.py`, the server installer and ingestion modules,
-`shared/collectors.ts`, its collector test, `test/install.test.js`, its real CLI
-smoke test and its workflow file. It deliberately does not watch
-`test/helpers.js`: that shared harness also contains the fake GitHub used by
-unrelated account features. Ordinary CI still tests those changes; manually
-run Antigravity's smoke when a harness change needs real CLI validation.
-Collector CLI smoke retains its broader collector/test filters, including
-`test/helpers.js`, and covers only Claude Code, Codex and OpenCode. Keep the
-Antigravity workflow for the fourth real CLI; neither smoke is a required check.
+The **Collector CLI smoke** workflow runs on relevant collector changes, on
+pull requests and pushes to `main`, and can be started manually from Actions.
+Its Linux x64, Linux ARM64 and Windows x64 jobs install pinned Claude Code,
+Codex and OpenCode CLIs, point each at a local fake model API, complete one
+chat, and check that the installed integration reaches the real app. Windows
+uses a temporary ConPTY for Claude Code's interactive status line. The Linux
+x64 job also installs the latest Antigravity CLI, chats with a local Gemini
+stub, and verifies that its installed hook uploads measured usage. The real
+Antigravity chat runs when its collector, installer, ingestion, version,
+collector test, installer test, real CLI test or this workflow changes, and
+on manual runs. A change only to `test/helpers.js` still runs the other CLI
+smokes but skips Antigravity: that shared harness contains unrelated fake
+GitHub behavior. No model API key or external account is needed. This
+path-filtered workflow is not a required check on unrelated PRs.
