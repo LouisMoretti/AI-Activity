@@ -116,6 +116,10 @@ free_gb() {
 
 up() {
   local pr=$1 sha=$2 logins=$3 dir=pr-$1 old="" n free tmp attempt new=0 volumes
+  # Login shape matches the server's GITHUB_LOGIN on purpose (old GitHub
+  # logins may start/end with a dash or hold "--"; the server validates
+  # again at start and at each sign-in). At most 50: the SSH command line
+  # is the transport, the server's own allowlist is uncapped (AGENTS.md).
   [[ $sha =~ ^[0-9a-f]{40}$ && $logins =~ ^[A-Za-z0-9-]{1,39}(,[A-Za-z0-9-]{1,39}){0,49}$ ]] || usage
   [[ $DOMAIN =~ ^[a-z0-9-]+(\.[a-z0-9-]+)+$ ]] || fail "set PREVIEW_DOMAIN in $DIR/.env"
   if [[ ! -d $dir ]]; then

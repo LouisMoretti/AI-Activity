@@ -55,6 +55,10 @@ export function createViewerAuth(db: DB, { clientId, isHttps }: ClientInfo, allo
     const token = cookieToken(c);
     const user = token ? viewerSessionUser(db, tokenHash(token)) : null;
     // A login taken off the list is signed out, not only kept from signing in.
+    // Checked against the stored username: a GitHub rename lands in the
+    // database at the next sign-in (the token is dropped, never polled), so
+    // until then the session answers for the old login. Rows of rejected
+    // sessions stay until their normal expiry; they authorize nothing.
     return user && allows(user.username)
       ? { userId: user.id, account: toAccount(user), signedInAt: user.session_created_at }
       : null;
