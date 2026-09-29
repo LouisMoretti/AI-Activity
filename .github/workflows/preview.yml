@@ -27,16 +27,16 @@ permissions:
 # One run per PR at a time within this workflow: a newer one cancels an older
 # one, waiting for approval or not. A run that changes nothing (another label,
 # a push without this one) has a group of its own, so it cancels nothing.
-# The group is prefixed per workflow: preview-fork.yml runs on every
+# The group keeps this workflow's name: preview-fork.yml runs on every
 # pull_request_target event too, even for same-repo PRs where all its jobs
 # skip, so a shared group would let that no-op run cancel the real one
-# (concurrency groups are repo-wide). Examples:
-# schedule -> preview-prune; preview PR 12 -> preview-same-12; unrelated run
-# 99 on PR 12 -> preview-same-12-99.
+# (concurrency groups are repo-wide, hence preview-fork-* over there).
+# Examples: schedule -> preview-prune; preview PR 12 -> preview-12;
+# unrelated run 99 on PR 12 -> preview-12-99.
 concurrency:
   group: >-
     ${{ github.event_name == 'schedule' && 'preview-prune' ||
-    format('preview-same-{0}{1}', github.event.pull_request.number,
+    format('preview-{0}{1}', github.event.pull_request.number,
     !(github.event.label.name == 'preview' || (!github.event.label &&
     contains(github.event.pull_request.labels.*.name, 'preview')))
     && format('-{0}', github.run_id) || '') }}
