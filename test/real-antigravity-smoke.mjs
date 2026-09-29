@@ -51,6 +51,48 @@ function run(bin, args, env, { cwd, timeout = 30000 } = {}) {
   });
 }
 
+// File listing for CI failure diagnostics: where did agy write its metadata,
+// did the installer land hooks.json, did any worker leave state behind?
+function tree(root, depth = 3) {
+  const out = [];
+  const walk = (dir, left) => {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      let suffix = "";
+      if (!entry.isDirectory()) {
+        try {
+          suffix = ` (${fs.statSync(full).size}b)`;
+        } catch {
+          suffix = " (unreadable)";
+        }
+      }
+      out.push(path.relative(root, full) + (entry.isDirectory() ? "/" : suffix));
+      if (entry.isDirectory() && left > 0) walk(full, left - 1);
+    }
+  };
+  try {
+    if (!fs.statSync(root).isDirectory()) return `(not a directory: ${root})`;
+  } catch {
+    return `(missing: ${root})`;
+  }
+  walk(root, depth);
+  return out.length ? out.join("\n") : "(empty)";
+}
+
+function readIf(pathname, max = 2000) {
+  try {
+    return fs.readFileSync(pathname, "utf8").slice(0, max);
+  } catch {
+    return `(unreadable: ${pathname})`;
+  }
+}
+
 test("real Antigravity CLI uploads measured usage through the installed hook", async (t) => {
   const version = agyVersion();
   if (!version) {
@@ -127,8 +169,17 @@ test("real Antigravity CLI uploads measured usage through the installed hook", a
     const chat = await run("agy", ["-p", "Say hello.", "--output-format", "json", "--print-timeout", "20s"], env, { cwd: work });
     assert.match(chat.output, /"status":"SUCCESS"/, chat.output.slice(-2000));
     const summary = async () => (await req(app.base, "GET", "/api/u/admin/summary?tool=antigravity")).json.total;
-    assert.ok(await waitFor(async () => (await summary()).events >= 1),
-      `real agy produced no collector upload (agy ${version}); output: ${chat.output.slice(-1200)}`);
+    const uploaded = await waitFor(async () => (await summary()).events >= 1);
+    if (!uploaded) {
+      const gemini = path.join(home, ".gemini");
+      const diag = [
+        `chat output: ${chat.output.slice(-1200)}`,
+        `hooks.json: ${readIf(path.join(gemini, "config", "hooks.json"))}`,
+        `isolated .gemini tree:\n${tree(gemini)}`,
+        `isolated .cache/ai-activity tree:\n${tree(path.join(home, ".cache", "ai-activity"))}`,
+      ].join("\n");
+      assert.fail(`real agy produced no collector upload (agy ${version});\n${diag}`);
+    }
     const message = uploads.flatMap((b) => b.messages).find((m) => m.response_id === "resp-smoke-1");
     assert.ok(message, "the installed hook sent the measured response id");
     assert.equal(message.usage.input_tokens, 12);
