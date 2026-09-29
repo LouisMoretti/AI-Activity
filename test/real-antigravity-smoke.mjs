@@ -184,6 +184,23 @@ test("real Antigravity CLI uploads measured usage through the installed hook", a
         "-Command", `irm ${app.base}/install.ps1 | iex`], env, { cwd: work })
       : await run("sh", ["-c", `curl -fsSL ${app.base}/install.sh | AI_ACTIVITY_URL=${ingest.base} AI_ACTIVITY_KEY=${key} AI_ACTIVITY_TOOLS=antigravity sh`], env, { cwd: work });
     assert.equal(install.code, 0, install.output.slice(-2000));
+    // DIAGNOSTIC (temporary): agy on Windows runs hooks through cmd, which
+    // misparses a quoted executable in first position (cmd /c quote-stripping:
+    // '"C:\...\python.exe"' is not recognized). Retry with the interpreter
+    // unquoted when it holds no space; the script stays quoted.
+    let hookVariant = "installer default";
+    if (process.platform === "win32") {
+      const hooksPath = path.join(home, ".gemini", "config", "hooks.json");
+      const hooks = JSON.parse(fs.readFileSync(hooksPath, "utf8"));
+      for (const entry of hooks["ai-activity"] ? Object.values(hooks["ai-activity"]).flat() : []) {
+        if (entry?.command) {
+          entry.command = entry.command.replace(/^"([^"]+)"(.*)$/,
+            (m, exe, rest) => (exe.includes(" ") ? m : `${exe}${rest}`));
+        }
+      }
+      fs.writeFileSync(hooksPath, JSON.stringify(hooks));
+      hookVariant = `unquoted exe: ${hooks["ai-activity"].Stop[0].command.slice(0, 120)}`;
+    }
     const chat = await run("agy", ["-p", "Say hello.", "--output-format", "json", "--print-timeout", "20s"], env, { cwd: work });
     assert.match(chat.output, /"status":"SUCCESS"/, chat.output.slice(-2000));
     const summary = async () => (await req(app.base, "GET", "/api/u/admin/summary?tool=antigravity")).json.total;
@@ -192,6 +209,7 @@ test("real Antigravity CLI uploads measured usage through the installed hook", a
       const gemini = path.join(home, ".gemini");
       const diag = [
         `chat output: ${chat.output.slice(-1200)}`,
+        `hook variant: ${hookVariant}`,
         `hooks.json: ${readIf(path.join(gemini, "config", "hooks.json"))}`,
         `agy cli.log hook lines:\n${hookLogLines(path.join(gemini, "antigravity-cli", "log"))}`,
         `isolated .gemini tree:\n${tree(gemini)}`,
