@@ -32,6 +32,9 @@ services:
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:?}
       # The PR's participants: nobody else can sign in.
       ALLOWED_GITHUB_LOGINS: ${ALLOWED_GITHUB_LOGINS:?}
+      # After a participant signs in, seed an unmistakably named sample
+      # profile for preview-only UI review. Never enabled in production.
+      PREVIEW_SEED: "1"
     volumes:
       - type: bind
         source: ${PREVIEW_DATA_ROOT:?}/pr-${PR:?}

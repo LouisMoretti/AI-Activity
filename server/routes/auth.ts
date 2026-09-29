@@ -3,6 +3,7 @@ import { Hono, type Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import type { AuthStatus } from "../../shared/types.ts";
 import { accountsExist, createAccount, createFirstAccount, findUserByGithubId, signupOpen } from "../db/queries.ts";
+import { seedPreviewData } from "../lib/preview-seed.ts";
 import type { DB } from "../db/schema.ts";
 import { applyGithubProfile, claimLogin } from "../lib/accounts.ts";
 import type { ClientInfo } from "../lib/client.ts";
@@ -216,6 +217,9 @@ export function authRoutes(
         result = "expired";
       }
       if (typeof result !== "number") return fail(result);
+      // Seed only after a real preview participant has signed in, preserving
+      // the preview's normal first-account/admin setup flow.
+      if (process.env.PREVIEW_SEED === "1") seedPreviewData(db);
       auth.login(c, result);
       return c.redirect(p.next, 302);
     })
