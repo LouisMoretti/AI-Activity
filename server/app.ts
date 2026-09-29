@@ -20,7 +20,7 @@ import { leaderboardRoutes, profileListRoutes, publicProfileRoutes } from "./rou
 /** setupCode: one-time code for creating the first account from the browser (null once one exists). */
 export function createApp(db: DB, config: Config, setupCode: string | null = null) {
   const client = clientInfo(config.trustProxy);
-  const auth = createViewerAuth(db, client);
+  const auth = createViewerAuth(db, client, config.allowedLogins);
   const cache = readCache(db);
   const publicReads = rateLimit(tokenBuckets(LIMITS.publicReads), (c) => auth.clientId(c));
   const perUser = rateLimit(tokenBuckets(LIMITS.sessionRequests), (c) => String(c.get("userId")));

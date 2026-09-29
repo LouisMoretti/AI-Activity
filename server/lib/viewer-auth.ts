@@ -31,9 +31,10 @@ const tokenHash = (token: string) => createHash("sha256").update(token).digest("
  * Per-user viewer sessions, stored hashed in SQLite so they survive a
  * restart. Every viewer API needs one: with no account yet, nothing is
  * readable until the first account is created (with the setup code).
- * Accounts sign in with GitHub (routes/auth.ts).
+ * Accounts sign in with GitHub (routes/auth.ts). allowedLogins: the only
+ * GitHub logins that may be signed in (config.ts), or null for anyone.
  */
-export function createViewerAuth(db: DB, { clientId, isHttps }: ClientInfo) {
+export function createViewerAuth(db: DB, { clientId, isHttps }: ClientInfo, allowedLogins: ReadonlySet<string> | null = null) {
   let fails = new Map<string, number>(); // client → failures in window
   let failsTotal = 0;
   let windowStart = Date.now();
@@ -47,15 +48,28 @@ export function createViewerAuth(db: DB, { clientId, isHttps }: ClientInfo) {
 
   const cookieToken = (c: Context) => getCookie(c, COOKIE) || null;
 
+  const allows = (login: string) => !allowedLogins || allowedLogins.has(login.toLowerCase());
+
   /** Who this request acts for, or null when it needs a login. */
   const resolve = (c: Context): { userId: number; account: Account; signedInAt: number } | null => {
     const token = cookieToken(c);
     const user = token ? viewerSessionUser(db, tokenHash(token)) : null;
-    return user ? { userId: user.id, account: toAccount(user), signedInAt: user.session_created_at } : null;
+    // A login taken off the list is signed out, not only kept from signing in.
+    // Checked against the stored username: a GitHub rename lands in the
+    // database at the next sign-in (the token is dropped, never polled), so
+    // until then the session answers for the old login. Rows of rejected
+    // sessions stay until their normal expiry; they authorize nothing.
+    return user && allows(user.username)
+      ? { userId: user.id, account: toAccount(user), signedInAt: user.session_created_at }
+      : null;
   };
 
   return {
     resolve,
+    /** Whether this GitHub login may sign in. */
+    allows,
+    /** Sign-in is limited to a list of logins: the first of them to sign in becomes the admin, no setup code. */
+    limited: allowedLogins !== null,
     /** The client address the per-client limits count (see client.ts). */
     clientId,
     /** Seconds until another attempt is allowed, or 0 if not throttled. */

@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Installed root-owned outside the checkout; sudo permits this command with
+# no arguments only. Docker's iptables backend and the fixed bridge name are
+# required. Reapplied before every preview start; no PR-controlled input.
+set -euo pipefail
+[[ $# == 0 && $EUID == 0 ]] || exit 2
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin
+unset IPTABLES_LIB_DIR XTABLES_LIBDIR
+
+# Refuse an unsupported Docker firewall backend rather than start exposed.
+iptables -w 10 -S DOCKER-USER > /dev/null
+[[ $(sysctl -n net.bridge.bridge-nf-call-iptables) == 1 ]]
+
+# Atomic replacement: never flush the active policy between individual rules.
+iptables-restore --wait 10 --noflush <<'RULES'
+*filter
+:AI-PREVIEW - [0:0]
+-F AI-PREVIEW
+# Caddy has this reserved static address; previews allocate from .128/25.
+-A AI-PREVIEW -s 172.29.95.2/32 -j RETURN
+-A AI-PREVIEW -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+-A AI-PREVIEW -m addrtype --dst-type LOCAL -j REJECT
+-A AI-PREVIEW -d 0.0.0.0/8 -j REJECT
+-A AI-PREVIEW -d 10.0.0.0/8 -j REJECT
+-A AI-PREVIEW -d 100.64.0.0/10 -j REJECT
+-A AI-PREVIEW -d 127.0.0.0/8 -j REJECT
+-A AI-PREVIEW -d 169.254.0.0/16 -j REJECT
+-A AI-PREVIEW -d 172.16.0.0/12 -j REJECT
+-A AI-PREVIEW -d 192.168.0.0/16 -j REJECT
+-A AI-PREVIEW -d 224.0.0.0/4 -j REJECT
+-A AI-PREVIEW -d 240.0.0.0/4 -j REJECT
+-A AI-PREVIEW -j RETURN
+COMMIT
+RULES
+# Both forwarded traffic (containers/LAN/metadata) and traffic addressed to
+# the host itself. Replies to Caddy's inbound connections still work.
+for chain in INPUT DOCKER-USER; do
+  first=$(iptables -w 10 -S "$chain" | sed -n '2p')
+  if [[ $first != "-A $chain -i ai-preview -j AI-PREVIEW" ]]; then
+    iptables -w 10 -I "$chain" 1 -i ai-preview -j AI-PREVIEW
+  fi
+done

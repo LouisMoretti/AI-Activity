@@ -68,6 +68,61 @@ assert not m.command(script, "~/.codex/ai-activity-codex.py", "--hook").startswi
   }
 });
 
+test("installer writes quoteless Antigravity hook commands on Windows", async () => {
+  // agy's hook runner splits the command naively on spaces and keeps the
+  // quotes in the tokens, so a quoted path never resolves there (Windows
+  // smoke, install.py short_path). Even a spaced interpreter must stay
+  // quoteless; 8.3 short paths remove the spaces on a real Windows host.
+  const home = tempHome("ai-activity install-agy-");
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const program = `
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("installer", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+m.WINDOWS = True
+m.sys.executable = sys.executable
+m.GEMINI_HOME = os.path.join(sys.argv[2], ".gemini")
+m.CONFIGS["antigravity"] = os.path.join(m.GEMINI_HOME, "config", "hooks.json")
+m.FILES["antigravity.py"] = 'SERVER = "<server>"; KEY = "<device key>"'
+m.install_antigravity("https://example.com", "test-key")
+config = json.load(open(m.CONFIGS["antigravity"], encoding="utf-8"))
+script = os.path.join(m.GEMINI_HOME, "ai-activity-antigravity.py")
+for event, flag in (("PostInvocation", "--post-invocation"), ("Stop", "--hook")):
+    cmd = config["ai-activity"][event][0]["command"]
+    assert '"' not in cmd, cmd
+    assert cmd.endswith(" " + flag), cmd
+    if os.name == "nt":
+        # Real 8.3 short paths: no token holds a space, and the short script
+        # resolves back to the installed one.
+        import ctypes
+        exe, installed, got_flag = cmd.split(" ")
+        assert got_flag == flag and exe.lower().endswith("python.exe"), cmd
+        buf = ctypes.create_unicode_buffer(300)
+        assert ctypes.windll.kernel32.GetLongPathNameW(installed, buf, 300)
+        assert os.path.normcase(buf.value) == os.path.normcase(script), cmd
+    else:
+        # short_path is a no-op off Windows: the long script stays as is.
+        assert script in cmd, cmd
+m.install_antigravity("https://example.com", "test-key")
+print("quoteless antigravity hooks ok")
+`;
+      const child = spawn(PYTHON, ["-c", program,
+        fileURLToPath(new URL("../collectors/install.py", import.meta.url)), home],
+        { stdio: ["ignore", "pipe", "pipe"] });
+      let output = "";
+      child.stdout.on("data", (data) => { output += data; });
+      child.stderr.on("data", (data) => { output += data; });
+      child.on("error", reject);
+      child.on("close", (code) => resolve({ code, output }));
+    });
+    assert.equal(result.code, 0, result.output);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function waitFor(fn, ms = 20000) {
   const end = Date.now() + ms;
@@ -183,9 +238,13 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
     const gemini = json(".gemini", "config", "hooks.json");
     assert.deepEqual(gemini.theirs, theirs);
     if (WINDOWS) {
-      const p = file(".gemini", "ai-activity-antigravity.py");
-      assert.match(gemini["ai-activity"].PostInvocation[0].command, windowsCommand(p, "--post-invocation"));
-      assert.match(gemini["ai-activity"].Stop[0].command, windowsCommand(p, "--hook"));
+      // Quoteless short paths: agy's hook runner splits naively on spaces,
+      // so a quoted path never resolves (see short_path in install.py).
+      for (const [event, flag] of [["PostInvocation", "--post-invocation"], ["Stop", "--hook"]]) {
+        const cmd = gemini["ai-activity"][event][0].command;
+        assert.ok(!cmd.includes('"'), `no quotes for agy's splitter: ${cmd}`);
+        assert.match(cmd, new RegExp(`\\.py ${flag}$`, "i"));
+      }
     } else assert.deepEqual(gemini["ai-activity"], ANTIGRAVITY_HOOK);
 
     if (!WINDOWS) {

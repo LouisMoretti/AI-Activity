@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import type { BlockList } from "node:net";
 import { defaultBackupDir } from "./db/schema.ts";
 import { parseTrustProxy } from "./lib/client.ts";
-import type { GithubConfig } from "./lib/github.ts";
+import { parseAllowedLogins, type GithubConfig } from "./lib/github.ts";
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -21,6 +21,12 @@ export interface Config {
    * request's own host and scheme (behind Caddy or a tunnel, that host).
    */
   publicUrl: string | null;
+  /**
+   * The only GitHub logins that may sign in (ALLOWED_GITHUB_LOGINS,
+   * lowercase), or null for anyone. With a list, the first of them to sign
+   * in becomes the admin: no setup code.
+   */
+  allowedLogins: ReadonlySet<string> | null;
 }
 
 const trimUrl = (v: string | undefined) => (v?.trim() ? v.trim().replace(/\/+$/, "") : null);
@@ -45,5 +51,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       }
       : null,
     publicUrl: trimUrl(env.PUBLIC_URL),
+    allowedLogins: parseAllowedLogins(env.ALLOWED_GITHUB_LOGINS),
   };
 }
