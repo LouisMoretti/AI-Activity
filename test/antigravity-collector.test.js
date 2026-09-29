@@ -231,8 +231,17 @@ describe("Antigravity collector", () => {
     const prefix = windows ? 'python "C:\\Users\\<user>\\.gemini\\ai-activity-antigravity.py"' : "python3 ~/.gemini/ai-activity-antigravity.py";
     for (const [event, output] of [["PostInvocation", 60], ["Stop", 80]]) {
       const documented = config[event][0].command;
-      assert.ok(documented.startsWith(prefix));
-      const command = documented.replace(prefix, `${quote(python)} ${quote(copy)}`);
+      let command;
+      if (windows) {
+        // Quoteless short paths (install.py short_path): [<exe>, <script>, <flag>].
+        assert.ok(!documented.includes('"'), `documented hook is quoteless: ${documented}`);
+        const parts = documented.split(" ");
+        assert.equal(parts.length, 3, documented);
+        command = `${quote(python)} ${quote(copy)} ${parts[2]}`;
+      } else {
+        assert.ok(documented.startsWith(prefix));
+        command = documented.replace(prefix, `${quote(python)} ${quote(copy)}`);
+      }
       const start = Date.now();
       const r = await run(env, [], '{"transcriptPath":"secret/path","conversationId":"conversation1"}', command);
       assert.equal(r.code, 0); assert.deepEqual(JSON.parse(r.out), event === "Stop" ? { decision: "stop" } : {});
