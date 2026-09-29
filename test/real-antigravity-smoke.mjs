@@ -116,7 +116,13 @@ test("real Antigravity CLI uploads measured usage through the installed hook", a
       AI_ACTIVITY_URL: ingest.base, AI_ACTIVITY_KEY: key, AI_ACTIVITY_TOOLS: "antigravity",
       GEMINI_API_KEY: "dummy", GOOGLE_GEMINI_BASE_URL: stub.base,
     };
-    const install = await run("sh", ["-c", `curl -fsSL ${app.base}/install.sh | AI_ACTIVITY_URL=${ingest.base} AI_ACTIVITY_KEY=${key} AI_ACTIVITY_TOOLS=antigravity sh`], env, { cwd: work });
+    // The hook installer ships as install.sh (sh) and install.ps1
+    // (PowerShell): use the shell of the platform under test, like
+    // real-cli-smoke.mjs. Both read AI_ACTIVITY_* from the environment.
+    const install = process.platform === "win32"
+      ? await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+        "-Command", `irm ${app.base}/install.ps1 | iex`], env, { cwd: work })
+      : await run("sh", ["-c", `curl -fsSL ${app.base}/install.sh | AI_ACTIVITY_URL=${ingest.base} AI_ACTIVITY_KEY=${key} AI_ACTIVITY_TOOLS=antigravity sh`], env, { cwd: work });
     assert.equal(install.code, 0, install.output.slice(-2000));
     const chat = await run("agy", ["-p", "Say hello.", "--output-format", "json", "--print-timeout", "20s"], env, { cwd: work });
     assert.match(chat.output, /"status":"SUCCESS"/, chat.output.slice(-2000));
