@@ -47,8 +47,8 @@ sudo bash deploy/ai-activity-preview-firewall
 # The policy can be reapplied without removing existing protections.
 sudo bash deploy/ai-activity-preview-firewall
 "${preview[@]}" up -d --wait --wait-timeout 120
-"${preview[@]}" logs app | grep -q 'Only these GitHub accounts can sign in: octocat'
-"${preview[@]}" exec -T app node scripts/backup.ts | grep -q 'integrity ok'
+"${preview[@]}" logs app | grep 'Only these GitHub accounts can sign in: octocat' > /dev/null
+"${preview[@]}" exec -T app node scripts/backup.ts | grep 'integrity ok' > /dev/null
 # Persist measured data across a container replacement.
 "${preview[@]}" exec -T app sh -c 'echo measured > /data/marker'
 "${preview[@]}" up -d --force-recreate --wait --wait-timeout 120
@@ -89,5 +89,5 @@ before=$(df -Pk "$root" | awk 'NR==2 {print $4}')
 '
 after=$(df -Pk "$root" | awk 'NR==2 {print $4}')
 ((before - after < 65536)) || { echo 'preview writes grew the host filesystem' >&2; exit 1; }
-"${preview[@]}" exec -T app node scripts/backup.ts | grep -q 'integrity ok'
+"${preview[@]}" exec -T app node scripts/backup.ts | grep 'integrity ok' > /dev/null
 echo 'Preview smoke passed: persistent bounded data, Caddy access, public HTTPS, blocked private egress.'
