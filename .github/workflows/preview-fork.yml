@@ -1,0 +1,159 @@
+# Pull request previews for FORKS: same deployments as preview.yml, through
+# pull_request_target. This is the single sanctioned exception to the "never
+# pull_request_target" rule (AGENTS.md), and it is shaped so a fork cannot
+# turn the exception into secret access:
+# - pull_request_target runs THIS file from the base branch, never the fork's
+#   copy: a fork cannot change what runs with secrets, and the label stays a
+#   convenience (like in preview.yml, it is not access control).
+# - No job checks out PR code where a secret is present. The image build sees
+#   only the Dockerfile and build context (its steps come from the base
+#   branch too, via image.yml); the published image is what the server pulls.
+# - Two human gates before anything reaches the server: a maintainer puts the
+#   "preview" label on, then approves the environment run. The SSH key can
+#   only run up/down (forced command), checked server-side.
+# See AGENTS.md, "Pull request previews".
+name: Preview (forks)
+
+on:
+  pull_request_target:
+    types: [labeled, unlabeled, synchronize, reopened, closed]
+
+permissions:
+  contents: read
+
+# One run per PR at a time within this workflow, whatever the trigger. The
+# group is prefixed per workflow: preview.yml runs on every pull_request event
+# too, even for fork PRs where all its jobs skip, so a shared group would let
+# that no-op run cancel the real one (concurrency groups are repo-wide).
+concurrency:
+  group: >-
+    ${{ github.event_name == 'schedule' && 'preview-prune' ||
+    format('preview-fork-{0}{1}', github.event.pull_request.number,
+    !(github.event.label.name == 'preview' || (!github.event.label &&
+    contains(github.event.pull_request.labels.*.name, 'preview')))
+    && format('-{0}', github.run_id) || '') }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    # A fork PR labeled "preview", or pushed to or reopened with it, while
+    # open. No secrets here (only the publish token): the gates below guard
+    # everything that touches the server.
+    if: >-
+      github.event.pull_request.head.repo.full_name != github.repository &&
+      github.event.pull_request.state == 'open' &&
+      ((github.event.action == 'labeled' && github.event.label.name == 'preview') ||
+       (contains(fromJSON('["synchronize", "reopened"]'), github.event.action) &&
+        contains(github.event.pull_request.labels.*.name, 'preview')))
+    uses: ./.github/workflows/image.yml
+    with:
+      sha: ${{ github.event.pull_request.head.sha }}
+      repo: ${{ github.event.pull_request.head.repo.full_name }}
+      suffix: -preview
+    permissions:
+      contents: read
+      packages: write
+
+  up:
+    needs: image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Holds the preview key: a maintainer approves every run, after reading
+    # the PR (only the built image runs with it, on the server). The URL shows
+    # as "View deployment" on the PR. The steps below come from the base
+    # branch: a fork cannot rewrite what happens after approval.
+    environment:
+      name: preview
+      url: ${{ steps.up.outputs.url }}
+    permissions:
+      pull-requests: read
+    env:
+      PR: ${{ github.event.pull_request.number }}
+      SHA: ${{ github.event.pull_request.head.sha }}
+      GH_TOKEN: ${{ github.token }}
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER || 'deploy' }}
+      DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+      DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+      PREVIEW_SSH_KEY: ${{ secrets.PREVIEW_SSH_KEY }}
+    steps:
+      - name: Who may sign in
+        id: people
+        # Read now, not from the event: re-running the job picks up new
+        # reviewers. Anyone may review a public PR: only reviewers with write
+        # access count. The owner always does.
+        run: |
+          set -euo pipefail
+          {
+            gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" \
+              --jq '(.user, .assignees[], .requested_reviewers[]) | .login // empty'
+            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews" \
+              --jq '.[] | select(.author_association | IN("OWNER", "MEMBER", "COLLABORATOR")) | .user.login // empty'
+            echo "$GITHUB_REPOSITORY_OWNER"
+          } | grep -xE '[A-Za-z0-9-]{1,39}' | sort -fu | paste -sd, - > logins
+          echo "logins=$(cat logins)" >> "$GITHUB_OUTPUT"
+          echo "Who may sign in: $(cat logins)"
+      - name: Start or update the preview over SSH
+        id: up
+        env:
+          LOGINS: ${{ steps.people.outputs.logins }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DEPLOY_HOST" ] || [ -z "$PREVIEW_SSH_KEY" ] || [ -z "$DEPLOY_KNOWN_HOSTS" ]; then
+            echo "::error::Set DEPLOY_HOST, DEPLOY_KNOWN_HOSTS and the PREVIEW_SSH_KEY secret in the preview environment"
+            exit 1
+          fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$PREVIEW_SSH_KEY" > ~/.ssh/preview_key
+          chmod 600 ~/.ssh/preview_key
+          # Pinned host key: never trust whatever answers on first use.
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          # The server's forced command takes up and down only, checked.
+          ssh -i ~/.ssh/preview_key -p "$DEPLOY_PORT" \
+            -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 -o ServerAliveInterval=15 \
+            "$DEPLOY_USER@$DEPLOY_HOST" "up $PR $SHA $LOGINS" | tee out
+          grep '^url=' out >> "$GITHUB_OUTPUT"
+      - if: always()
+        run: rm -f ~/.ssh/preview_key
+
+  down:
+    # The label removed, or the PR closed (or merged) with it.
+    if: >-
+      github.event.pull_request.head.repo.full_name != github.repository &&
+      ((github.event.action == 'unlabeled' && github.event.label.name == 'preview') ||
+       (github.event.action == 'closed' && contains(github.event.pull_request.labels.*.name, 'preview')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The same key, so this waits for approval too (else gc removes the
+    # preview a day after its last deploy). No deployment record: one without
+    # a URL would mark every other preview's inactive.
+    environment:
+      name: preview
+      deployment: false
+    permissions: {}
+    env:
+      PR: ${{ github.event.pull_request.number }}
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER || 'deploy' }}
+      DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+      DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+      PREVIEW_SSH_KEY: ${{ secrets.PREVIEW_SSH_KEY }}
+    steps:
+      - name: Remove the preview over SSH
+        run: |
+          set -eu
+          if [ -z "$DEPLOY_HOST" ] || [ -z "$PREVIEW_SSH_KEY" ] || [ -z "$DEPLOY_KNOWN_HOSTS" ]; then
+            echo "::error::Set DEPLOY_HOST, DEPLOY_KNOWN_HOSTS and the PREVIEW_SSH_KEY secret in the preview environment"
+            exit 1
+          fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$PREVIEW_SSH_KEY" > ~/.ssh/preview_key
+          chmod 600 ~/.ssh/preview_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/preview_key -p "$DEPLOY_PORT" \
+            -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 -o ServerAliveInterval=15 \
+            "$DEPLOY_USER@$DEPLOY_HOST" "down $PR"
+      - if: always()
+        run: rm -f ~/.ssh/preview_key

@@ -116,6 +116,24 @@ def command(script, default, *args):
     return " ".join([python, shown, *args])
 
 
+def short_path(path):
+    """8.3 short path (never any space, so never any quote): agy's hook runner
+    splits the hook command naively on spaces and keeps the quotes in the
+    tokens, so a quoted path never resolves there. Only meaningful on
+    Windows; anywhere else, or when the short name is unavailable (8.3
+    disabled on the volume), the path comes back unchanged."""
+    if os.name != "nt":
+        return path
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(300)
+        if ctypes.windll.kernel32.GetShortPathNameW(path, buf, 300):
+            return buf.value
+    except Exception:
+        pass
+    return path
+
+
 def present(tool):
     on_path = lambda name: shutil.which(name) is not None
     if tool == "claude-code":
@@ -190,7 +208,14 @@ def install_antigravity(url, key):
     changed = write(script, fill(FILES["antigravity.py"], url, key), 0o600)
     path = CONFIGS["antigravity"]
     config = load_json(path)
-    run = lambda flag: {"type": "command", "command": command(script, "~/.gemini/ai-activity-antigravity.py", flag), "timeout": 10}
+    if WINDOWS:
+        # Quoteless 8.3 paths: see short_path(). The other tools' runners
+        # (PowerShell, Git Bash) accept quoted paths, agy's does not.
+        run = lambda flag: {"type": "command",
+                            "command": f"{short_path(sys.executable)} {short_path(script)} {flag}",
+                            "timeout": 10}
+    else:
+        run = lambda flag: {"type": "command", "command": command(script, "~/.gemini/ai-activity-antigravity.py", flag), "timeout": 10}
     # A named hook: ours is replaced whole, the others are kept.
     config["ai-activity"] = {"enabled": True, "PostInvocation": [run("--post-invocation")], "Stop": [run("--hook")]}
     changed = write(path, dump(config)) or changed

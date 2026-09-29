@@ -42,10 +42,14 @@ browser (no usage API call, no refresh). It lives only at `/demo`, never
 under `/u/`, so a real account named `demo` is never mistaken for it.
 `/leaderboard` is **public** too: every enabled account (idle ones last,
 with zeros) ranked by tokens over 7 days / 30 days / all time, with
-server-wide totals, the model split and a global activity calendar. The
-header (`SiteHeader`) is the same on every page: logo, demo badge, and the
+server-wide totals, the model split and a global activity calendar.
+`/friends` is signed-in only: it matches the viewer's public GitHub follows
+by numeric id to enabled accounts here, with their public seven-day usage.
+The GitHub list is cached for five minutes per numeric id and login; if GitHub
+is unavailable, the page shows a retry action. The header (`SiteHeader`) is
+the same on every page: logo, demo badge, and the
 avatar menu (or "Sign in"), plus a breadcrumb of the current page
-(`AI Activity / (picture) @name`, `/ (initial) Demo preview`, `/ Leaderboard`, `/ Settings`, `/ Admin panel`) that
+(`AI Activity / (picture) @name`, `/ (initial) Demo preview`, `/ Leaderboard`, `/ Friends`, `/ Settings`, `/ Admin panel`) that
 replaces in-page titles. It never reads the route itself (`App.svelte`
 passes the breadcrumb); site chrome (header and `SiteFooter`) is rendered
 once in `App.svelte`, outside the pages. The footer, like the top of
@@ -53,7 +57,7 @@ README.md, says the project is not affiliated with or endorsed by the
 makers of the tools it measures (their names are trademarks, used only to
 identify them): keep both, and name any newly supported tool's owner in
 them.
-Clicking the avatar opens Your profile / Leaderboard / Settings / Admin
+Clicking the avatar opens Your profile / Leaderboard / Friends / Settings / Admin
 panel (admins) / Sign out. `/settings` (signed in) holds Account (the
 profile from GitHub, read-only), Devices and a Danger zone
 (delete your own activity, or your whole account); `/admin`
@@ -96,6 +100,12 @@ still sign in). Everything happens on the site: accounts are only ever
 created by signing in with GitHub, device keys only in Settings →
 Devices (copyable again there). There is no account or key CLI.
 
+`ALLOWED_GITHUB_LOGINS` (comma-separated logins; unset: anyone) limits
+sign-in to those GitHub accounts: anyone else gets `not_allowed`, and a
+login taken off the list is signed out. With a list there is no setup
+code: the first of them to sign in becomes the admin. Pull request
+previews set it to the PR's participants.
+
 Username = the GitHub login, name and picture = GitHub's, updated at each
 sign-in (a login rename moves `/u/<login>`; the account, keyed by the
 GitHub numeric id, keeps its data).
@@ -116,7 +126,9 @@ CI (`.github/workflows/ci.yml`) runs typecheck, the web build and tests
 (tests serve `web/dist`, so the build comes first) on
 every PR and push to main, on x64 and ARM64 runners (`better-sqlite3` is
 native). It also builds the Docker image on both and smoke-tests it
-(healthy, setup code, first account, device key, backup, clean stop), and
+(healthy, setup code, first account, device key, backup, clean stop), then
+as a pull request preview (`deploy/compose.preview.yaml`: hardened, its
+alias on the preview network), and
 runs every collector test on Windows (`collectors (windows)`, through the
 README's Windows commands).
 
@@ -197,7 +209,8 @@ Upgrades are normally deployed from GitHub (Continuous deployment below).
 ### Continuous deployment (GHCR + SSH)
 
 Once CI passes on a push to main, `.github/workflows/deploy.yml` builds the
-image on native amd64 and arm64 runners, publishes it as
+image on native amd64 and arm64 runners (`image.yml`, shared with pull
+request previews), publishes it as
 `ghcr.io/louismoretti/ai-activity:<commit>` (and `:latest`), then connects
 over SSH and runs `deploy/ai-activity-deploy <commit>` on the server. It can
 also be run by hand (Actions → Deploy → Run workflow, on main). The server
@@ -263,6 +276,9 @@ migrations; `test/rate-limit.test.js` covers the token buckets;
 restores; `test/client.test.js` covers client addresses behind proxies;
 `test/collector-versions.test.js` checks collector versions (constants,
 file hashes, update hints in each collector);
+`test/preview.test.js` covers deployment failures and storage/network gates;
+`test/preview-smoke.sh` runs on isolated Linux CI runners with real Docker
+(bounded ext4 fill, persistence, Caddy reachability and blocked private egress);
 `test/confirm-delete.test.js` runs the Settings danger zone's flows
 (`confirm-delete.svelte.ts`, delete activity and delete account: confirm,
 cancel, success, failure);
@@ -282,6 +298,219 @@ Types: `npm run typecheck` (tsc for server, svelte-check for web). Node >= 22.18
 (type stripping, no build step), so only erasable TS syntax is allowed (no
 `enum`, no parameter properties) and relative imports keep their `.ts`
 extension.
+
+### Pull request previews
+
+A pull request labeled `preview` runs at
+`https://pr-<N>.ai-preview.example` on the production server, once a
+maintainer approves the run: its own compose project (`ai-activity-pr-<N>`)
+and database (empty at first: a migration is tested on an empty one,
+production is never copied), where only the PR's participants can sign in
+(`ALLOWED_GITHUB_LOGINS`: its author, assignees, requested reviewers,
+reviewers with write access, and the repository's owner; the first to sign
+in becomes the admin). Several run at once; a push updates the PR's preview
+(same data, new image). Branches of this repository go through
+`.github/workflows/preview.yml`, forks through `preview-fork.yml` (same
+deployments, stricter trigger: see below).
+
+`ai-preview.example` stands for a **separate registrable domain**, never a
+subdomain of production's: a subdomain can set cookies for its parent
+(cookie tossing), so PR code there could sign visitors in to another
+account on production (why GitHub Pages lives on `github.io`).
+
+```
+https://pr-123.ai-preview.example
+  DNS: *.ai-preview.example → the server (one record)
+  Caddy: wildcard certificate (DNS-01); Host ^(pr-[0-9]+)\.ai-preview\.example$ → pr-123:3000
+  Docker DNS on the ai-activity-preview network: pr-123 → project ai-activity-pr-123
+```
+
+- `.github/workflows/preview.yml` (same-repo branches) and `preview-fork.yml`
+  (forks), when the label is added, or on a push or
+  a reopen with it: builds the PR's head commit like production
+  (`image.yml`) into its own package,
+  `ghcr.io/louismoretti/ai-activity-preview:<commit>` (never production's,
+  never `:latest`), reads who takes part in the PR, then SSHes
+  `up <pr> <commit> <logins>` in the `preview` environment, whose URL shows
+  as "View deployment" on the PR. Closed, merged or unlabeled: `down <pr>`.
+  One run per PR at a time: a newer one cancels an older one, waiting for
+  approval or not (runs that change nothing, e.g. another label, cancel
+  nothing). Daily, it deletes preview images older than 30 days.
+- The label is a convenience, not access control: a `pull_request` run uses
+  the PR branch's copy of the workflow, which can drop the check or send
+  the secrets elsewhere. The gate is the `preview` environment's required
+  reviewers: GitHub holds the key until a maintainer approves the run (for
+  `down` too; unapproved, `gc` removes the preview). Approve after reading
+  the PR: its code, Dockerfile and workflow run with that key. Fork pull
+  requests go through `.github/workflows/preview-fork.yml` instead: the
+  single sanctioned exception to the rule below. `pull_request_target`
+  there always runs the base branch's copy of the file (never the fork's),
+  PR code is only checked out into the secret-free image build, and the key
+  still waits for the `preview` environment's approval. Never
+  `pull_request_target` anywhere else, never `issue_comment` checking out
+  PR code: both run PR code with secrets.
+- `deploy/ai-activity-preview` (installed as root, run by the forced command
+  of a second key, never the production one) takes `up` and `down` over
+  SSH, checked; `gc` only from cron or by hand. `up` refuses a new preview
+  beyond `PREVIEW_MAX` or while Docker's disk has less than
+  `PREVIEW_MIN_FREE_GB` free, pulls the image, writes `pr-<N>/.env`, runs
+  `docker compose up --wait` (on failure, the app's logs, never a setup
+  code: the job log is public), then removes the PR's previous image.
+  A failed first start is removed immediately; a failed update keeps its data.
+  Pulls retry three times before changing any preview state. `down` uses the
+  same compose file and settings as `up`, removing its data, image and `pr-<N>/`. `gc`
+  removes previews not deployed for `PREVIEW_DAYS` and, while the disk is
+  low, removes unused images from the preview repository only, checks free
+  space again and stops every preview if still low (data kept). Production
+  rollback images are never pruned. `up`/`down` wait at most 120 seconds for
+  the deployment lock; a busy cron `gc` exits immediately.
+- `deploy/compose.preview.yaml` (installed as root too; `compose.yaml`
+  cannot serve, its project name, network and alias are production's): the
+  app alone, no published port, on the external `ai-activity-preview`
+  network as `pr-<N>`; `TRUST_PROXY` that subnet, `PUBLIC_URL` its own
+  address (so its own OAuth callback), the dev OAuth app; `read_only` (the
+  app writes only to `/data`, SQLite's temporary files to a `/tmp` tmpfs),
+  `cap_drop: [ALL]`, `no-new-privileges`, 512 MB (384 MB Node heap), 1 CPU, 128 processes,
+  rotated logs. CI starts it this way.
+- Preview data uses bind directories on a dedicated ext4 filesystem, capped
+  at **3 GiB total**, preallocated during setup below. `up` refuses a missing,
+  oversized or shared Docker filesystem, and images declaring writable
+  volumes other than `/data`. Filling the preview filesystem affects other
+  previews, but cannot grow into production's disk space. Data survives
+  updates and reboots; `down` erases that preview's directory. Old previews
+  using Docker volumes must be removed before installing this version.
+- Previews never join `ai-activity-proxy` (production trusts every address
+  there). The IPv4-only network uses `172.29.95.0/24`, bridge `ai-preview`,
+  and allocates previews only from `172.29.95.128/25`. Caddy must join with
+  the reserved static address `172.29.95.2`; that source is exempted so
+  Caddy can initiate connections to previews. No other container may use it.
+  Before each `up`, the root-owned `ai-activity-preview-firewall` installs
+  rules in INPUT and DOCKER-USER: previews cannot initiate connections to
+  host addresses, private networks, link-local/cloud metadata addresses or
+  other containers; replies to Caddy's inbound connections and public
+  internet access for GitHub OAuth still work. Docker's **iptables backend**
+  and `net.bridge.bridge-nf-call-iptables=1` are required; unsupported setups
+  fail closed. IPv6 is disabled in each preview container as well.
+  Previews do not restart automatically: after a host/Docker reboot, rerun
+  `up` to recheck the mount and restore the firewall first. Do not manually
+  start them or remove firewall rules while they run. Caddy's
+  `trusted_proxies` must not cover the preview subnet (e.g. `private_ranges`).
+- Preview usage pages (`/api/u/*`, `/api/profiles`, `/leaderboard`, `/demo`)
+  remain public; use throwaway data. The login allowlist is checked against
+  the last GitHub login seen at sign-in; a GitHub rename is discovered at
+  the next sign-in. Listed new accounts still obey the admin's sign-up
+  switch. Setup codes are unused under the allowlist; revoked sessions are
+  rejected immediately, with their rows retained until normal expiry.
+- Shell settings use unquoted `KEY=value` lines (no inline comments).
+  `PREVIEW_MAX` and `PREVIEW_DAYS` are 1..9999; `PREVIEW_MIN_FREE_GB` is
+  0..999999 (0 explicitly disables the free-space threshold, not the storage
+  bound). The SSH command accepts at most 50 logins; the server's general
+  allowlist has no count cap. Both accept `GITHUB_LOGIN`'s 1..39 ASCII
+  letters/digits/hyphens, including historical GitHub logins.
+- PR code runs on production's machine (the usual practice is another
+  one): the separate domain and network, the hardening and limits, files
+  out of the PR's reach and a maintainer approving every run are what keep
+  it from production.
+
+Setup, once:
+
+1. The production OAuth app: turn **wildcard matching** off (apps with a
+   single callback from before 2026-08-03 have it on; production needs
+   none).
+2. Buy the preview domain and put its zone on Cloudflare (Caddy's DNS
+   token must cover both zones). DNS: `*.ai-preview.example` → the server,
+   **DNS only** (grey cloud). If production is proxied by Cloudflare to
+   hide the server's address, this record reveals it: proxy it too
+   (Universal SSL covers `*.ai-preview.example`; Caddy then needs
+   Cloudflare's ranges in `trusted_proxies`), or host previews elsewhere.
+3. A **dev OAuth app**, never the production one: homepage
+   `https://ai-preview.example`, callback
+   `https://ai-preview.example/api/auth/github/callback`, wildcard matching
+   on, so `https://pr-123.ai-preview.example/api/auth/github/callback` is
+   accepted. Nothing but previews may ever run under this domain: any host
+   there can receive this app's codes. PR code can read its secret. Try it
+   once with a sign-in.
+4. The server (same `deploy` user, a second key):
+   ```bash
+   sudo docker network create ai-activity-preview --subnet 172.29.95.0/24 --gateway 172.29.95.1 \
+     --ip-range 172.29.95.128/25 --opt com.docker.network.bridge.name=ai-preview
+   # Dedicated, bounded storage. Run ONCE, on a non-CoW filesystem with at
+   # least 3 GiB + the production reserve free. Never truncate an existing image.
+   sudo install -d -m 755 /srv/ai-activity-preview-data
+   sudo fallocate -l 3G /srv/ai-activity-preview-data.img
+   sudo chmod 600 /srv/ai-activity-preview-data.img
+   sudo mkfs.ext4 -E nodiscard -m 0 /srv/ai-activity-preview-data.img
+   # Add to /etc/fstab (no nofail: a missing mount must be investigated):
+   # /srv/ai-activity-preview-data.img /srv/ai-activity-preview-data ext4 loop,nodev,nosuid,noexec 0 0
+   sudo mount /srv/ai-activity-preview-data
+   sudo chown deploy:deploy /srv/ai-activity-preview-data
+   sudo chmod 700 /srv/ai-activity-preview-data
+   sudo install -o root -g root -m 755 /srv/ai-activity/deploy/ai-activity-preview-firewall /usr/local/bin/
+   # /etc/sudoers.d/ai-activity-preview (root-owned, 0440; validate with visudo):
+   # deploy ALL=(root) NOPASSWD: /usr/local/bin/ai-activity-preview-firewall ""
+   # Persist br_netfilter via /etc/modules-load.d/ and
+   # net.bridge.bridge-nf-call-iptables=1 via /etc/sysctl.d/.
+   sudo modprobe br_netfilter
+   sudo sysctl -w net.bridge.bridge-nf-call-iptables=1
+   sudo install -d -o deploy -g deploy -m 700 /srv/ai-activity-previews
+   # Outside any checkout, owned by root; install again after they change.
+   sudo install -o root -g root -m 644 /srv/ai-activity/deploy/compose.preview.yaml /srv/ai-activity-previews/
+   sudo install -o root -g root -m 755 /srv/ai-activity/deploy/ai-activity-preview /usr/local/bin/
+   sudo -u deploy install -m 600 /dev/null /srv/ai-activity-previews/.env
+   #   PREVIEW_DOMAIN=ai-preview.example, GITHUB_CLIENT_ID=…, GITHUB_CLIENT_SECRET=… (the dev app)
+   #   optional: PREVIEW_MAX=3, PREVIEW_DAYS=1, PREVIEW_MIN_FREE_GB=10
+   echo '*/10 * * * * deploy /usr/local/bin/ai-activity-preview gc 2>&1 | logger -t ai-activity-preview' \
+     | sudo tee /etc/cron.d/ai-activity-preview
+   ssh-keygen -t ed25519 -N '' -C github-preview -f preview_key   # on your machine
+   # /home/deploy/.ssh/authorized_keys, a second line:
+   restrict,command="/usr/local/bin/ai-activity-preview" ssh-ed25519 AAAA… github-preview
+   ```
+5. Caddy joins `ai-activity-preview` with a reserved static address (no
+   Docker socket). Keep its other networks:
+   ```yaml
+   services:
+     caddy:
+       networks:
+         default: {}
+         ai-activity-proxy: {}
+         ai-activity-preview:
+           ipv4_address: 172.29.95.2
+   networks:
+     ai-activity-preview:
+       external: true
+   ```
+   Its Caddyfile gets:
+   ```
+   *.ai-preview.example {
+   	tls {
+   		dns cloudflare {env.CF_API_TOKEN}
+   	}
+   	@pr header_regexp pr Host ^(pr-[0-9]+)\.ai-preview\.example$
+   	handle @pr {
+   		reverse_proxy {re.pr.1}:3000
+   	}
+   	handle {
+   		respond 404
+   	}
+   }
+   ```
+   Nothing is configured per PR: Docker's DNS resolves `pr-<N>` at request
+   time, and a PR without a preview answers 502. The regex is required:
+   with a plain `{labels.2}`, `ai-activity.ai-preview.example` would reach
+   production (Caddy is on `ai-activity-proxy` too).
+6. GitHub: a `preview` label; Settings → Environments → `preview`: required
+   reviewers (leave "Prevent self-review" off to approve your own PRs), no
+   branch restriction (PR branches deploy there), secret `PREVIEW_SSH_KEY`,
+   variables `DEPLOY_HOST`, `DEPLOY_KNOWN_HOSTS` (optional `DEPLOY_USER`,
+   `DEPLOY_PORT`) as in `production`, or once at the repository level.
+   After the first preview, the `ai-activity-preview` package: public (or
+   `docker login ghcr.io` as `deploy`, as for production), and Manage
+   Actions access → this repository as Admin, for the daily cleanup.
+
+On the server: `docker compose ls -a --filter name=ai-activity-pr-` lists
+the previews, `docker logs ai-activity-pr-<N>-app-1` shows one's log, and
+`sudo -u deploy ai-activity-preview down <N>` removes one by hand. Reinstall both root-owned scripts and the compose file
+after changing them. The firewall helper accepts no arguments.
 
 ### Issues and pull requests
 
@@ -343,7 +572,8 @@ Browser dashboard (web/: Svelte 5 + TypeScript, built by Vite)
 server/
   index.ts          boot: config, DB, listen
   app.ts            Hono app: /api mount, viewer-auth gate, static + SPA fallback
-  config.ts         env → Config (PORT, DB_PATH, STATIC_DIR, BACKUP_DIR, GITHUB_*, PUBLIC_URL)
+  config.ts         env → Config (PORT, DB_PATH, STATIC_DIR, BACKUP_DIR, GITHUB_*, PUBLIC_URL,
+                    ALLOWED_GITHUB_LOGINS)
   db/schema.ts      open + migrate (runs pending migrations)
   db/migrations.ts  ordered schema migrations (PRAGMA user_version)
   db/queries.ts     every SQL statement lives here
@@ -359,7 +589,8 @@ server/
   lib/rate-limit.ts   token buckets + LIMITS (ingest, public reads, per user, OAuth)
   lib/http.ts
   routes/           auth, ingest, usage (public profiles + leaderboard),
-                    devices, account (profile + admin users)
+                    friends (signed-in GitHub follows), devices,
+                    account (profile + admin users)
 shared/types.ts     API response types shared with the web client, TOOLS
 shared/quota-pools.ts  quota window lengths, quota pools per tool (QUOTA_POOLS)
 shared/collectors.ts   collector versions: latest and minimum per tool
@@ -370,7 +601,7 @@ web/
   src/lib/demo.ts         FICTIONAL /demo dataset → DashboardVM (always labeled)
   src/lib/series.ts       pure helpers: dense day series, streaks, calendar grid
   src/lib/format.ts       number, day, duration and "ago" formatting
-  src/lib/dashboard.svelte.ts  state: provider, auth status, GitHub sign-in, 15 s refresh
+  src/lib/dashboard.svelte.ts  state: provider, auth status, GitHub sign-in, 5 s refresh
   src/lib/auth-errors.ts  ?auth_error=<code> → message (known codes only)
   src/lib/confirm-delete.svelte.ts  danger zone flows (typed phrase; sign in again if too old)
   src/App.svelte          routes the pages; renders the site chrome once
@@ -384,7 +615,7 @@ web/
                           Conversations, DevicesPanel,
                           DangerZone (DangerAction), AccountMenu,
                           SiteHeader, ProfilePanel, UsersPanel,
-                          AuthPanel, Leaderboard,
+                          AuthPanel, Leaderboard, Friends,
                           AdminOverview, …
   src/styles/tokens.css   design tokens — components only use these variables
 ```
@@ -440,10 +671,12 @@ Components never branch on live vs demo: both sources map into the same
   lock file's first byte there (`fcntl.flock` elsewhere), the 15-minute
   limit a timer instead of `SIGALRM`, and detached runs leave the console,
   the process group and, when allowed, the parent job. Hook commands on
-  Windows are `& python "<script>" --hook` for Codex in PowerShell
-  (`&` is required before a quoted executable path),
-  `python "<script>" --hook` for Antigravity, or the script alone for
-  Claude Code through Git Bash; use the syntax of the hook runner's shell.
+   Windows are `& python "<script>" --hook` for Codex in PowerShell
+   (`&` is required before a quoted executable path), quoteless 8.3 short
+   paths (`<short-python> <short-script> --hook`) for Antigravity (agy's
+   hook runner splits the command naively on spaces and keeps the quotes,
+   so a quoted path never resolves), or the script alone for
+   Claude Code through Git Bash; use the syntax of the hook runner's shell.
 - The Codex collector (`collectors/codex.py`, copied to
   `~/.codex/ai-activity-codex.py`, run detached by `PostToolUse`, `Stop`
   and `UserPromptSubmit` hooks in `~/.codex/hooks.json`) works the same way on
@@ -849,12 +1082,12 @@ each conversation database under
 
 | Database source | Payload field |
 | --- | --- |
-| `data` 1.4.11 (response id) | `messages[].response_id` → event `antigravity:<session>:<response>` |
+| `data` 1.4.11, or 1.4.7 with `chat.20` request_id present (CLI 1.2.12), or `chat.20` request_id without a usage id | `messages[].response_id` → event `antigravity:<session>:<response>` |
 | database file name | `messages[].session_id` → stored as `antigravity:<name>` |
 | `data` 1.19 (`gemini-default` → null) | `messages[].model` |
-| `data` 1.9.4 timestamp, else the unique `steps` row matching step 4 / bot 1.4.7 | `occurred_at` |
+| `data` 1.9.4 timestamp, else the unique `steps` row matching step 4 / response id 1.4.7 (legacy: bot 1.4.7) | `occurred_at` |
 | machine clock at that time | `messages[].utc_offset_min` |
-| `data` 1.4.1 + 1.4.2 / 1.4.5 / 1.4.9 + 1.4.10 | `usage.input_tokens` / `cache_read_tokens` / `output_tokens` (text + thinking) |
+| `data` 1.4.2 / 1.4.5 / 1.4.9 + 1.4.10 (legacy: 1.4.1 + 1.4.2; 1.4.1 constant and 1.4.3 total ignored) | `usage.input_tokens` / `cache_read_tokens` / `output_tokens` (text + thinking) |
 | `agy -p /usage` buckets `gemini-*` / `3p-*` (`5h`, `weekly`) | quota-only batch, `account_ref` `gemini` / `claude-gpt`, `rate_limits.five_hour` / `seven_day` |
 
 - The same response id in two conversation databases counts twice (the
@@ -864,6 +1097,10 @@ each conversation database under
   valid protobuf is skipped with a warning, never dated by file mtime or
   import time. A database in an unsupported format, or unreadable other
   than busy, is skipped until it changes; a busy one fails the run.
+  CLI 1.2.12 rows whose model is not Gemini (Claude/GPT) stay skipped too:
+  their field meanings are unverified, and input is never guessed.
+  Rows without a per-response id share their turn's request_id and count
+  once (the largest response), never once per model call.
 - Only new responses, or ones with more output tokens than accepted, are
   sent (partial then final counts, like the other tools); unchanged
   databases are not read. Cache writes and context are not recorded.
@@ -886,7 +1123,8 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
 
 - `GET /api/auth/status` → `{authenticated, user, setup_required, signup_open, github_sign_in}`
   (`user` is `{id, username, display_name, avatar_url, is_admin}` or null;
-  `setup_required` while no account exists; `github_sign_in`: sign-in is
+  `setup_required` while no account exists, unless `ALLOWED_GITHUB_LOGINS`
+  is set; `github_sign_in`: sign-in is
   set up, else nobody can sign in), `POST /api/auth/logout`
 - `POST /api/auth/github {next?, setup_code?, reauth?}` → `{url}`: the
   GitHub authorize page to send the browser to (`503` if GitHub sign-in is
@@ -898,8 +1136,9 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   redirect uses. Anything else is `/`. While no account exists it needs `setup_code` (wrong or
   missing → `401`, `409` if the server has none; throttled below; the code
   ignores case, spaces and dashes): that sign-in creates the first
-  account, admin. `reauth: true` (signed in, else `401`) signs the same
-  account in again, for the danger zone.
+  account, admin. With `ALLOWED_GITHUB_LOGINS` (§2) there is no code: the
+  first listed login to sign in gets it. `reauth: true` (signed in, else
+  `401`) signs the same account in again, for the danger zone.
 - `GET /api/auth/github/callback?code&state` (GitHub sends the browser
   here) → `302` to `next` with a new session. A failure goes to the
   sign-in page, still headed for `next` (`/?next=<next>&auth_error=<code>`),
@@ -912,7 +1151,8 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   `setup`, `exists` (a first-account sign-in after one was made), `closed`
   (sign-up closed, new GitHub user), `too_many` (5 new accounts from one
   client in an hour, counted once made), `other_account` (`reauth`
-  with another GitHub account: the session stays as it was). The web
+  with another GitHub account: the session stays as it was), `not_allowed`
+  (a GitHub account not in `ALLOWED_GITHUB_LOGINS`). The web
   client shows a fixed message per code.
 - `GET /api/profiles` → enabled accounts `{username, display_name, avatar_url}`,
   **no session needed** (the public leaderboard lists them too).
@@ -987,11 +1227,11 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   `Retry-After`:
   - public reads (`/api/u/…`, `/api/leaderboard`, `/api/profiles`): 300
     per client (the client address above), refill 5/s. A dashboard polls
-    9 of them every 15 s, so about eight tabs fit behind one address. A
+    9 of them every 5 s, so about two tabs fit behind one address. A
     rate-limited refresh keeps the page as it was (the web client does
     not show it as "Could not reach the server");
-  - signed-in routes (`/api/devices`, `/api/account`, `/api/users`,
-    `/api/admin`): 120 per user, refill 1/s;
+  - signed-in routes (`/api/friends`, `/api/devices`, `/api/account`,
+    `/api/users`, `/api/admin`): 120 per user, refill 1/s;
   - at most 20 live devices per account (`POST /api/devices` → `409`;
     revoking one frees a slot);
   - starting a GitHub sign-in (`POST /api/auth/github`): 60 per client,
@@ -1067,6 +1307,10 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
    or account sections, for visitors and other accounts alike.
 11. `/leaderboard` opens without an account and lists every enabled
     account, idle ones included; disabled ones never listed.
+12. A pull request preview (§2): only the PR's participants sign in (the
+    first becomes admin, no setup code), anyone else lands on
+    `/?auth_error=not_allowed`; a push keeps its data; closing the PR
+    removes it.
 
 ```bash
 # manual test example
@@ -1086,7 +1330,9 @@ curl -s localhost:3000/api/u/<you>/quotas ; echo
 ## 8. Testing with the user (Cloudflare tunnel) — REQUIRED
 
 Quick tunnels are for testing sessions only; the deployed server is
-reached through Caddy (§2, Deploy). After `npm start` works locally:
+reached through Caddy (§2, Deploy). To try a pull request with Sign in
+with GitHub, and no OAuth app to edit, label it `preview` instead (§2,
+Pull request previews). After `npm start` works locally:
 
 1. Install `cloudflared` if missing (https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/).
 2. Start the tunnel:

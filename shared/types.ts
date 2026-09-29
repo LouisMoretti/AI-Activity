@@ -189,7 +189,11 @@ export interface AuthStatus {
   authenticated: boolean;
   /** The signed-in account; null when signed out. */
   user: Account | null;
-  /** No account exists yet: the first one needs the setup code (or the CLI). */
+  /**
+   * No account exists yet: the first one needs the setup code (or the CLI).
+   * False when ALLOWED_GITHUB_LOGINS limits sign-in: the first of them to
+   * sign in needs no code.
+   */
   setup_required: boolean;
   /** Anyone may create an account from the sign-in page (an admin setting). */
   signup_open: boolean;
@@ -223,6 +227,20 @@ export interface Profile {
 
 export interface ProfilesResponse {
   profiles: Profile[];
+}
+
+/** A followed GitHub account with an enabled, public AI Activity profile. */
+export interface FriendEntry extends Profile {
+  tokens: number;
+  sessions: number;
+  last_active: number | null;
+}
+
+export interface FriendsResponse {
+  /** Rolling seven-day window, in Unix seconds. */
+  since: number;
+  until: number;
+  friends: FriendEntry[];
 }
 
 /** POST /api/ingest/<tool> with one flat event. */

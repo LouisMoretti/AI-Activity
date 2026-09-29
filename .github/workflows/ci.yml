@@ -56,7 +56,7 @@ jobs:
           python-version: "3.x"
       - run: npm ci
       - run: npm run build
-      - run: node --test test/collector.test.js test/codex-collector.test.js test/opencode-collector.test.js test/antigravity-collector.test.js test/install.test.js test/collector-versions.test.js
+      - run: node --test test/collector.test.js test/codex-collector.test.js test/opencode-collector.test.js test/antigravity-collector.test.js test/install.test.js test/installed-collectors.test.js test/collector-versions.test.js
         env:
           PYTHON: python
 
@@ -89,3 +89,5 @@ jobs:
           docker stop app
           # A clean stop checkpoints the WAL: no -wal left with data in it.
           docker run --rm --volumes-from app --entrypoint sh ai-activity:ci -c '[ ! -s /data/dashboard.db-wal ]'
+      - name: Smoke test a pull request preview
+        run: bash test/preview-smoke.sh

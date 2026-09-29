@@ -68,7 +68,7 @@ const CACHE_MAX = 500;
  * Cache successful GET answers of public read routes (profiles, leaderboard)
  * until the database changes, or for 30 s at most (time-based windows such
  * as "today" and "last 30 days" move on their own). Every open dashboard
- * polls every 15 s, so an idle server answers from memory. "Changed" is
+ * polls every 5 s, so an idle server answers from memory. "Changed" is
  * total_changes() for this server's own writes and PRAGMA data_version for
  * writes from another connection (a restore, or a tool opening the file).
  */

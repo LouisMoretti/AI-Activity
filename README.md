@@ -29,6 +29,16 @@ priced subtotal, so it cannot be compared as if it covered all usage.
 Tool calls, grounding, cache storage, regional and priority rates are outside
 the collected metrics and therefore outside this estimate.
 
+## Friends
+
+Sign in and open **Friends** from the avatar menu to see the people you
+follow on GitHub who also have an enabled AI Activity profile. Each entry
+links to that public profile and shows measured tokens, conversations and
+last activity for the past seven days. The server reads GitHub's public
+following list using the OAuth app's client ID and secret, without requesting
+an OAuth scope or keeping a user's GitHub token.
+If GitHub is unavailable, the page offers a retry.
+
 ## One-command install
 
 Create a device key (**Settings → Devices**),
@@ -336,8 +346,12 @@ What it does after every tool call and at the end of every turn:
 }
 ```
 
-For Windows, use this instead, replacing `<user>` with your Windows user
-directory name. Backslashes and quotes below are already JSON-escaped:
+For Windows, use 8.3 short paths with no quotes instead, replacing `<user>`
+with your Windows user directory name. Backslashes below are already
+JSON-escaped. Quotes would seem natural here, but agy's hook runner splits
+the command naively on spaces and keeps the quotes in the pieces, so a
+quoted path never resolves; the one-command install writes these short paths
+for you (find one with `cmd /c for %I in ("<path>") do @echo %~sI`):
 
 ```json
 {
@@ -346,14 +360,14 @@ directory name. Backslashes and quotes below are already JSON-escaped:
     "PostInvocation": [
       {
         "type": "command",
-        "command": "python \"C:\\Users\\<user>\\.gemini\\ai-activity-antigravity.py\" --post-invocation",
+        "command": "C:\\PROGRA~1\\Python312\\python.exe C:\\Users\\<user>\\.gemini\\ai-activity-antigravity.py --post-invocation",
         "timeout": 10
       }
     ],
     "Stop": [
       {
         "type": "command",
-        "command": "python \"C:\\Users\\<user>\\.gemini\\ai-activity-antigravity.py\" --hook",
+        "command": "C:\\PROGRA~1\\Python312\\python.exe C:\\Users\\<user>\\.gemini\\ai-activity-antigravity.py --hook",
         "timeout": 10
       }
     ]
@@ -392,7 +406,7 @@ command after setup, while Antigravity is running and these hooks are enabled.
    unavailable quota report (with its reason). Exit code 1 means a busy
    database or an upload failure; fix it and run again.
 6. Complete a new Antigravity turn and leave the dashboard open. Its existing
-   15-second refresh should show supported persisted usage after collection.
+   5-second refresh should show supported persisted usage after collection.
    If it does not, check the hook is loaded, Python and script paths resolve
    in Antigravity, the configured URL/key are correct, and a manual run works.
    Unsupported database formats may still produce no usage; see below.
@@ -420,8 +434,11 @@ What it does:
   tool output, workspace paths, or authentication data.
 - Sends ids, recorded model (unknown stays unknown), token counts, the
   original generation timestamp, and this machine's UTC offset at that
-  time. Input includes recorded system and new input; cached input is
-  separate; text and thinking output are added once. Subagent databases
+  time. Input is uncached input; cached input is separate; text and
+  thinking output are added once. Antigravity CLI 1.2.12 writes a constant
+  in `1.4.1` that is not an input counter and repeats total output in
+  `1.4.3`: both are ignored, so a first turn reports 12 input / 7 output,
+  not 1048. Subagent databases
   count as separate conversations because parent attribution is unavailable.
 - Imports supported history, then skips every database whose stamp is
   unchanged since all of it was accepted. The stamp covers the database and
@@ -498,14 +515,23 @@ and [plan windows](https://antigravity.google/docs/plans/). Quota tests run
 the collector against a fake `agy` with synthetic reports.
 
 **Format limitations:** Antigravity's persisted protobuf layout is
-undocumented. The parser follows [independently observed field evidence](https://github.com/junhoyeo/tokscale/blob/62ca1eb1677556972ba963fdfa3a41ab23c1eb4b/crates/tokscale-core/src/sessions/antigravity_cli.rs).
+undocumented. The parser follows [independently observed field evidence](https://github.com/junhoyeo/tokscale/blob/62ca1eb1677556972ba963fdfa3a41ab23c1eb4b/crates/tokscale-core/src/sessions/antigravity_cli.rs),
+plus the CLI 1.2.12 Gemini layout verified against a local stub (synthetic
+usage 12/7, 31/11, then 37 input / 13 output / 4 cached / 6 thinking):
+response id in `1.4.7` (or the `request_id` in `chat.20` when the API returned
+none), model in `1.19`, uncached input in `1.4.2`, cached input in `1.4.5`,
+thinking in `1.4.9`, text output in `1.4.10`.
 It accepts standard protobuf generation timestamps, or a unique matching
-step UUID and bot id with a standard step timestamp. Unknown timestamp
-layouts, missing response ids, corrupt records, and ambiguous step matches
-are skipped with a diagnostic, and read again only when their database
-changes. They are never assigned the database modification time or import
-time, so totals may be incomplete on unsupported versions. Automated tests
-use synthetic SQLite/protobuf fixtures.
+step UUID (`4`) and response id with a standard step timestamp (`steps.1`).
+Unknown timestamp layouts, missing response ids, corrupt records, and
+ambiguous step matches are skipped with a diagnostic, and read again only
+when their database changes. Rows whose model is not Gemini are skipped
+too under the 1.2.12 rules (their field meanings are unverified), and rows
+without a per-response id share their turn's request id and count once
+(the largest response). They are never assigned the database
+modification time or import time, so totals may be incomplete on
+unsupported versions. Automated tests use synthetic SQLite/protobuf
+fixtures for both the legacy and the 1.2.12 layouts.
 
 ## Send OpenCode usage from a device
 
@@ -627,3 +653,26 @@ How each one is started:
 Claude Code, Codex and OpenCode runs give up after 15 minutes (the progress
 already accepted is kept). The payloads each script sends are described in
 `AGENTS.md` §5.
+
+## Collector CI
+
+`npm test` runs the installed collector integration tests on Linux and ARM64;
+the Windows CI job runs them explicitly. Each test starts a temporary app and
+local HTTP receiver, runs the served installer in an isolated home, invokes
+the installed status line, hook or plugin against synthetic tool data, then
+checks the upload format, retry, deduplication and dashboard totals. No model
+API or external account is needed.
+
+The **Collector CLI smoke** workflow runs on relevant collector changes, on
+pull requests and pushes to `main`, and can be started manually from Actions.
+Its Linux x64, Linux ARM64 and Windows x64 jobs install pinned Claude Code,
+Codex and OpenCode CLIs, point each at a local fake model API, complete one
+chat, and check that the installed integration reaches the real app. Windows
+uses a temporary ConPTY for Claude Code's interactive status line. The same
+jobs also install the latest Antigravity CLI, chat with a local Gemini
+stub, and verify that its installed hook uploads measured usage; see the
+Antigravity section above. `agy` stays in its own steps because it is a
+native binary rather than a Node CLI: it cannot be pinned with the rest and
+intentionally tracks the latest release, and its chat is headless (`agy -p`
+print mode, no TUI). No model API key or external account is needed. This
+path-filtered workflow is not a required check on unrelated PRs.

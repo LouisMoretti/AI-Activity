@@ -27,7 +27,8 @@ const STATE_PATH = "/api/auth/github";
  * web client says it in words: a link cannot put any text on the page).
  */
 export type AuthError =
-  | "denied" | "expired" | "github" | "disabled" | "setup" | "exists" | "closed" | "too_many" | "other_account";
+  | "denied" | "expired" | "github" | "disabled" | "setup" | "exists" | "closed" | "too_many" | "other_account"
+  | "not_allowed";
 
 /**
  * What a sign-in started with POST /api/auth/github does once GitHub sends
@@ -114,6 +115,7 @@ export function authRoutes(
 
   /** What the callback does for each kind of sign-in: the account to sign in, or why not. */
   const complete = (c: Context, p: Pending, gh: GithubUser): number | AuthError => {
+    if (!auth.allows(gh.login)) return "not_allowed";
     if (p.mode === "setup") return accountsExist(db) ? "exists" : signUp(c, gh, true);
     const known = findUserByGithubId(db, gh.id);
     if (p.mode === "reauth" && known?.id !== p.userId) return "other_account";
@@ -122,7 +124,7 @@ export function authRoutes(
       applyGithubProfile(db, known.id, gh);
       return known.id;
     }
-    if (!accountsExist(db)) return "setup";
+    if (!accountsExist(db)) return auth.limited ? signUp(c, gh, true) : "setup";
     if (!signupOpen(db)) return "closed";
     return signUp(c, gh, false);
   };
@@ -133,7 +135,7 @@ export function authRoutes(
       return c.json<AuthStatus>({
         authenticated: Boolean(who),
         user: who?.account ?? null,
-        setup_required: !accountsExist(db),
+        setup_required: !accountsExist(db) && !auth.limited,
         signup_open: signupOpen(db),
         github_sign_in: github !== null,
       });
@@ -149,7 +151,7 @@ export function authRoutes(
         const who = auth.resolve(c);
         if (!who) return c.json({ error: "sign in first" }, 401);
         p = { ...base, mode: "reauth", userId: who.userId };
-      } else if (!accountsExist(db)) {
+      } else if (!accountsExist(db) && !auth.limited) {
         if (!setupCode) return c.json({ error: "no setup code: restart the server for a new one" }, 409);
         const wait = auth.attempt(c);
         if (wait) {

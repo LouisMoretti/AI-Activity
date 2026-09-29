@@ -33,6 +33,22 @@ export interface GithubUser {
 export const GITHUB_LOGIN = /^[A-Za-z0-9-]{1,39}$/;
 const NAME_MAX = 60;
 const TIMEOUT_MS = 10_000;
+const FOLLOWING_CACHE_MS = 5 * 60_000;
+const FOLLOWING_MAX_PAGES = 100;
+
+/**
+ * ALLOWED_GITHUB_LOGINS: comma-separated GitHub logins, the only accounts
+ * that may sign in (a pull request preview: its participants), lowercased;
+ * null when unset (anyone). Throws on anything that is not a login, so a
+ * typo stops the server at start.
+ */
+export function parseAllowedLogins(spec: string | undefined): ReadonlySet<string> | null {
+  const logins = (spec ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  for (const login of logins) {
+    if (!GITHUB_LOGIN.test(login)) throw new Error(`ALLOWED_GITHUB_LOGINS: "${login}" is not a GitHub login`);
+  }
+  return logins.length ? new Set(logins.map((l) => l.toLowerCase())) : null;
+}
 
 /** The account fields from a GitHub user object, or null when it is not one. */
 export function githubUser(v: unknown): GithubUser | null {
@@ -70,4 +86,31 @@ export async function signedInUser(gh: GithubConfig, code: string, redirectUri: 
   }));
   if (!user) throw new Error("GitHub gave no usable user");
   return user;
+}
+
+/** Public GitHub follows, identified by stable numeric ids. No OAuth scope or stored token. */
+export function followingReader(gh: GithubConfig) {
+  const cache = new Map<number, { login: string; until: number; ids: number[] }>();
+  // GitHub accepts the OAuth app's credentials for public REST reads. Keep
+  // them in the server-side Authorization header, never in the URL or browser.
+  const authorization = `Basic ${Buffer.from(`${gh.clientId}:${gh.clientSecret}`).toString("base64")}`;
+  return async (viewerId: number, login: string): Promise<number[]> => {
+    const saved = cache.get(viewerId);
+    if (saved && saved.login === login && saved.until > Date.now()) return [...saved.ids];
+    const ids: number[] = [];
+    for (let page = 1; page <= FOLLOWING_MAX_PAGES; page++) {
+      const url = `${gh.apiUrl}/users/${encodeURIComponent(login)}/following?per_page=100&page=${page}`;
+      const body = await fetchJson(url, { headers: { accept: "application/vnd.github+json", authorization, "user-agent": "ai-activity" } });
+      if (!Array.isArray(body)) throw new Error("GitHub gave no following list");
+      for (const item of body) {
+        const id = (item as { id?: unknown } | null)?.id;
+        if (Number.isSafeInteger(id) && (id as number) > 0) ids.push(id as number);
+      }
+      if (body.length < 100) {
+        cache.set(viewerId, { login, until: Date.now() + FOLLOWING_CACHE_MS, ids });
+        return ids;
+      }
+    }
+    throw new Error("GitHub following list is too long");
+  };
 }

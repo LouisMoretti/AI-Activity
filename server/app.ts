@@ -13,13 +13,14 @@ import { createViewerAuth } from "./lib/viewer-auth.ts";
 import { accountRoutes, adminRoutes, userRoutes } from "./routes/account.ts";
 import { authRoutes } from "./routes/auth.ts";
 import { deviceRoutes } from "./routes/devices.ts";
+import { friendsRoutes } from "./routes/friends.ts";
 import { ingestRoutes } from "./routes/ingest.ts";
 import { leaderboardRoutes, profileListRoutes, publicProfileRoutes } from "./routes/usage.ts";
 
 /** setupCode: one-time code for creating the first account from the browser (null once one exists). */
 export function createApp(db: DB, config: Config, setupCode: string | null = null) {
   const client = clientInfo(config.trustProxy);
-  const auth = createViewerAuth(db, client);
+  const auth = createViewerAuth(db, client, config.allowedLogins);
   const cache = readCache(db);
   const publicReads = rateLimit(tokenBuckets(LIMITS.publicReads), (c) => auth.clientId(c));
   const perUser = rateLimit(tokenBuckets(LIMITS.sessionRequests), (c) => String(c.get("userId")));
@@ -51,6 +52,7 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
     // Everything below requires a viewer session.
     .use(auth.require)
     .use(perUser)
+    .route("/friends", friendsRoutes(db, config.github))
     .route("/devices", deviceRoutes(db))
     .route("/account", accountRoutes(db))
     .route("/users", userRoutes(db))
