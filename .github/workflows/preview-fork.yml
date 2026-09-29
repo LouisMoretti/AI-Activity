@@ -21,11 +21,11 @@ on:
 permissions:
   contents: read
 
-# Shared with preview.yml: one run per PR at a time, whatever the trigger.
+# Fork runs cancel older fork runs for the same PR, but cannot cancel the
+# no-op run of preview.yml or a deployment waiting for approval there.
 concurrency:
   group: >-
-    ${{ github.event_name == 'schedule' && 'preview-prune' ||
-    format('preview-{0}{1}', github.event.pull_request.number,
+    ${{ format('preview-fork-{0}{1}', github.event.pull_request.number,
     !(github.event.label.name == 'preview' || (!github.event.label &&
     contains(github.event.pull_request.labels.*.name, 'preview')))
     && format('-{0}', github.run_id) || '') }}
