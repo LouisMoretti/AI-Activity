@@ -38,6 +38,8 @@ sudo mount -o loop,nodev,nosuid,noexec "$root/data.img" "$root/data"
 sudo chown "$PREVIEW_UID:$PREVIEW_GID" "$root/data"
 mkdir "$root/data/pr-1"
 docker network create ai-activity-preview --subnet 172.29.95.0/24 --ip-range 172.29.95.128/25 --opt com.docker.network.bridge.name=ai-preview
+gateway=$(docker network inspect ai-activity-preview --format '{{(index .IPAM.Config 0).Gateway}}')
+echo "Preview gateway: $gateway"
 sudo modprobe br_netfilter
 sudo sysctl -w net.bridge.bridge-nf-call-iptables=1
 sudo bash deploy/ai-activity-preview-firewall
@@ -59,12 +61,12 @@ docker exec preview-peer node -e "fetch('http://localhost:3000').then(r=>{if(!r.
 # A real host service: the denial cannot pass merely because no port listens.
 docker run -d --name preview-host --network host --entrypoint node "$APP_IMAGE" \
   -e "require('http').createServer((q,s)=>s.end('host')).listen(38987,'0.0.0.0')"
-docker exec preview-host node -e "fetch('http://172.29.95.1:38987').then(r=>{if(!r.ok)process.exit(1)})"
+docker exec preview-host node -e "fetch(process.argv[1]).then(r=>{if(!r.ok)process.exit(1)})" "http://$gateway:38987"
 # Public HTTPS (OAuth) remains reachable; host gateway, peer and metadata fail.
-"${preview[@]}" exec -T app node --input-type=module -e '
+"${preview[@]}" exec -T -e "PREVIEW_HOST_URL=http://$gateway:38987" app node --input-type=module -e '
   const publicResponse = await fetch("https://api.github.com");
   if (!publicResponse.ok) throw new Error("public HTTPS unavailable");
-  for (const url of ["http://preview-peer:3000", "http://172.29.95.1:38987", "http://169.254.169.254/latest/meta-data/"]) {
+  for (const url of ["http://preview-peer:3000", process.env.PREVIEW_HOST_URL, "http://169.254.169.254/latest/meta-data/"]) {
     try { await fetch(url, {signal: AbortSignal.timeout(2000)}); }
     catch { continue; }
     throw new Error(`preview reached ${url}`);
