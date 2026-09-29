@@ -316,8 +316,12 @@ What it does after every tool call and at the end of every turn:
 }
 ```
 
-For Windows, use this instead, replacing `<user>` with your Windows user
-directory name. Backslashes and quotes below are already JSON-escaped:
+For Windows, use 8.3 short paths with no quotes instead, replacing `<user>`
+with your Windows user directory name. Backslashes below are already
+JSON-escaped. Quotes would seem natural here, but agy's hook runner splits
+the command naively on spaces and keeps the quotes in the pieces, so a
+quoted path never resolves; the one-command install writes these short paths
+for you (find one with `cmd /c for %I in ("<path>") do @echo %~sI`):
 
 ```json
 {
@@ -326,14 +330,14 @@ directory name. Backslashes and quotes below are already JSON-escaped:
     "PostInvocation": [
       {
         "type": "command",
-        "command": "python \"C:\\Users\\<user>\\.gemini\\ai-activity-antigravity.py\" --post-invocation",
+        "command": "C:\\PROGRA~1\\Python312\\python.exe C:\\Users\\<user>\\.gemini\\ai-activity-antigravity.py --post-invocation",
         "timeout": 10
       }
     ],
     "Stop": [
       {
         "type": "command",
-        "command": "python \"C:\\Users\\<user>\\.gemini\\ai-activity-antigravity.py\" --hook",
+        "command": "C:\\PROGRA~1\\Python312\\python.exe C:\\Users\\<user>\\.gemini\\ai-activity-antigravity.py --hook",
         "timeout": 10
       }
     ]
