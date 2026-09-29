@@ -331,7 +331,7 @@ test("real CLI child environment excludes inherited provider settings", () => {
     AWS_ACCESS_KEY_ID: "private", OPENAI_BASE_URL: "https://example.invalid",
   }), { PATH: "/test/bin" });
 });
-test("real Claude Code CLI calls the installed statusLine after a local chat", () =>
+test("real Claude Code CLI calls the installed hook after a local chat", () =>
   smoke("claude-code", process.env.CLAUDE_CLI || (cliRoot
     ? path.join(cliRoot, "@anthropic-ai", "claude-code", "bin", "claude.exe") : "claude")));
 test("real Codex CLI calls the installed hook after a local chat", () =>

@@ -203,7 +203,7 @@ function assertBatch(f, expected, count = 1) {
   assert.equal(message.message_id ?? message.response_id, expected.id);
 }
 
-test("installed Claude Code statusLine uploads one message and replays nothing", async () => {
+test("installed Claude Code Stop hook uploads one message and replays nothing", async () => {
   const f = await fixture("claude-code", ({ home }) => {
     const project = path.join(home, ".claude", "projects", "-fake");
     fs.mkdirSync(project, { recursive: true });
@@ -214,7 +214,8 @@ test("installed Claude Code statusLine uploads one message and replays nothing",
     }) + "\n" + JSON.stringify({ type: "user", text: SECRET }) + "\n");
   });
   try {
-    const command = JSON.parse(fs.readFileSync(path.join(f.home, ".claude", "settings.json"))).statusLine.command;
+    const hooks = JSON.parse(fs.readFileSync(path.join(f.home, ".claude", "settings.json"))).hooks;
+    const command = hooks.Stop.at(-1).hooks[0].command;
     f.wire.refuseOnce();
     assert.equal((await run(command, f.env, "{}", "cmd")).code, 0);
     assert.ok(await waitFor(() => f.wire.captured.length === 1, f.wire.errors));
