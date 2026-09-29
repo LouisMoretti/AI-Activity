@@ -1,7 +1,8 @@
 # Builds the image of one commit for amd64 and arm64 and publishes it to GHCR
 # as ghcr.io/<owner>/<repo><suffix>:<commit>. Called by deploy.yml
-# (production, also :latest) and preview.yml (pull request previews, their
-# own package). See AGENTS.md, "Continuous deployment".
+# (production, also :latest), preview.yml (same-repo pull request previews)
+# and preview-fork.yml (fork previews), into their own package.
+# See AGENTS.md, "Continuous deployment".
 name: Image
 
 on:
@@ -11,6 +12,10 @@ on:
         description: The commit to build
         type: string
         required: true
+      repo:
+        description: The repository holding the commit (a fork's, for preview-fork.yml)
+        type: string
+        default: ""
       suffix:
         description: Added to the package name ("-preview" for pull request previews)
         type: string
@@ -45,7 +50,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # A fork's commit for preview-fork.yml (unset: this repository).
+          # persist-credentials: the build must not keep a token in git config.
+          repository: ${{ inputs.repo || github.repository }}
           ref: ${{ env.SHA }}
+          persist-credentials: false
       - name: Image name (lowercase)
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}$SUFFIX" >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@v3

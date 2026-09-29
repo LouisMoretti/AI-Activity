@@ -298,7 +298,7 @@ extension.
 
 ### Pull request previews
 
-A pull request of a branch of this repository labeled `preview` runs at
+A pull request labeled `preview` runs at
 `https://pr-<N>.ai-preview.example` on the production server, once a
 maintainer approves the run: its own compose project (`ai-activity-pr-<N>`)
 and database (empty at first: a migration is tested on an empty one,
@@ -306,7 +306,9 @@ production is never copied), where only the PR's participants can sign in
 (`ALLOWED_GITHUB_LOGINS`: its author, assignees, requested reviewers,
 reviewers with write access, and the repository's owner; the first to sign
 in becomes the admin). Several run at once; a push updates the PR's preview
-(same data, new image).
+(same data, new image). Branches of this repository go through
+`.github/workflows/preview.yml`, forks through `preview-fork.yml` (same
+deployments, stricter trigger: see below).
 
 `ai-preview.example` stands for a **separate registrable domain**, never a
 subdomain of production's: a subdomain can set cookies for its parent
@@ -320,7 +322,8 @@ https://pr-123.ai-preview.example
   Docker DNS on the ai-activity-preview network: pr-123 → project ai-activity-pr-123
 ```
 
-- `.github/workflows/preview.yml`, when the label is added, or on a push or
+- `.github/workflows/preview.yml` (same-repo branches) and `preview-fork.yml`
+  (forks), when the label is added, or on a push or
   a reopen with it: builds the PR's head commit like production
   (`image.yml`) into its own package,
   `ghcr.io/louismoretti/ai-activity-preview:<commit>` (never production's,
@@ -335,9 +338,14 @@ https://pr-123.ai-preview.example
   the secrets elsewhere. The gate is the `preview` environment's required
   reviewers: GitHub holds the key until a maintainer approves the run (for
   `down` too; unapproved, `gc` removes the preview). Approve after reading
-  the PR: its code, Dockerfile and workflow run with that key. Forks get no
-  secrets (push the branch here to preview it). Never `pull_request_target`,
-  never `issue_comment` checking out PR code: both run PR code with secrets.
+  the PR: its code, Dockerfile and workflow run with that key. Fork pull
+  requests go through `.github/workflows/preview-fork.yml` instead: the
+  single sanctioned exception to the rule below. `pull_request_target`
+  there always runs the base branch's copy of the file (never the fork's),
+  PR code is only checked out into the secret-free image build, and the key
+  still waits for the `preview` environment's approval. Never
+  `pull_request_target` anywhere else, never `issue_comment` checking out
+  PR code: both run PR code with secrets.
 - `deploy/ai-activity-preview` (installed as root, run by the forced command
   of a second key, never the production one) takes `up` and `down` over
   SSH, checked; `gc` only from cron or by hand. `up` refuses a new preview
