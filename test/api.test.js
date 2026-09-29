@@ -981,6 +981,67 @@ describe("creating accounts from the site", () => {
   });
 });
 
+describe("sign-in limited to some GitHub accounts (ALLOWED_GITHUB_LOGINS, pull request previews)", () => {
+  test("only listed logins sign in, in any case; the first becomes the admin with no setup code", async () => {
+    const srv = await startServer({ autoLogin: false, env: { ALLOWED_GITHUB_LOGINS: " Lead-Dev, reviewer1 " } });
+    try {
+      assert.equal(srv.setupCode(), null, "nothing to read from the server log");
+      assert.equal((await req(srv.base, "GET", "/api/auth/status", { anon: true })).json.setup_required, false,
+        "the sign-in page, not the first-account form");
+      assert.equal((await register(srv.base, "stranger")).location, "/?auth_error=not_allowed");
+      const lead = await register(srv.base, "lead-dev", { next: "/settings" });
+      assert.deepEqual([lead.start.status, lead.location], [200, "/settings"]);
+      assert.deepEqual((await req(srv.base, "GET", "/api/auth/status", { cookie: lead.cookie })).json.user,
+        { id: 1, username: "lead-dev", display_name: "lead-dev", avatar_url: null, is_admin: true });
+      const reviewer = await register(srv.base, "Reviewer1");
+      assert.equal((await req(srv.base, "GET", "/api/auth/status", { cookie: reviewer.cookie })).json.user.is_admin, false);
+      assert.equal((await register(srv.base, "stranger", { next: "/settings" })).location,
+        `/?next=${encodeURIComponent("/settings")}&auth_error=not_allowed`);
+      const users = withDb(srv, (db) => db.prepare("SELECT username FROM users ORDER BY id").all().map((u) => u.username));
+      assert.deepEqual(users, ["lead-dev", "Reviewer1"]);
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  test("a login taken off the list is signed out and cannot sign in again", async () => {
+    const dir = fs.mkdtempSync(`${os.tmpdir()}/ai-usage-allowed-`);
+    const env = { DB_PATH: `${dir}/t.db` };
+    try {
+      const first = await startServer({ autoLogin: false, env: { ...env, ALLOWED_GITHUB_LOGINS: "owner1,helper1" } });
+      const owner = await register(first.base, "owner1");
+      const helper = await register(first.base, "helper1");
+      await first.stop();
+      const again = await startServer({ autoLogin: false, env: { ...env, ALLOWED_GITHUB_LOGINS: "owner1" } });
+      try {
+        const status = async (cookie) => (await req(again.base, "GET", "/api/auth/status", { cookie })).json;
+        assert.equal((await status(owner.cookie)).user.username, "owner1");
+        const gone = await status(helper.cookie);
+        assert.deepEqual([gone.authenticated, gone.user], [false, null]);
+        assert.equal((await req(again.base, "GET", "/api/devices", { cookie: helper.cookie })).status, 401);
+        assert.equal((await githubSignIn(again.base, "helper1")).error, "not_allowed");
+        const reauth = await githubSignIn(again.base, "helper1", { reauth: true, cookie: helper.cookie });
+        assert.equal(reauth.start.status, 401, "no session left to sign in again");
+      } finally {
+        await again.stop();
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an empty list means anyone; anything but logins stops the server at start", async () => {
+    const srv = await startServer({ autoLogin: false, env: { ALLOWED_GITHUB_LOGINS: " , " } });
+    try {
+      assert.ok(srv.setupCode(), "the usual first account");
+    } finally {
+      await srv.stop();
+    }
+    await assert.rejects(startServer({ autoLogin: false, env: { ALLOWED_GITHUB_LOGINS: "alice,@bob" } }),
+      /ALLOWED_GITHUB_LOGINS: "@bob" is not a GitHub login/);
+  });
+});
+
 describe("open sign-up and admin panel", () => {
   test("anyone with a GitHub account signs up from the sign-in page", async () => {
     const srv = await startServer();

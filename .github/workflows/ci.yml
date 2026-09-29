@@ -89,3 +89,5 @@ jobs:
           docker stop app
           # A clean stop checkpoints the WAL: no -wal left with data in it.
           docker run --rm --volumes-from app --entrypoint sh ai-activity:ci -c '[ ! -s /data/dashboard.db-wal ]'
+      - name: Smoke test a pull request preview
+        run: bash test/preview-smoke.sh
