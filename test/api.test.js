@@ -1086,7 +1086,7 @@ describe("open sign-up and admin panel", () => {
       assert.deepEqual(burst.map((r) => r.error ?? "ok").sort(), ["ok", "ok", "ok", "ok", "ok", "too_many", "too_many"]);
       assert.equal((await register(srv.base, "bulk7", { ip: "203.0.113.50" })).error, "too_many");
       // Existing accounts still sign in from there.
-      assert.equal((await githubSignIn(srv.base, "race0", { ip: "203.0.113.50" })).error, null);
+      assert.equal((await githubSignIn(srv.base, `race${burst.findIndex((r) => !r.error)}`, { ip: "203.0.113.50" })).error, null);
       assert.equal((await register(srv.base, "other", { ip: "203.0.113.51" })).error, null);
     } finally {
       await srv.stop();

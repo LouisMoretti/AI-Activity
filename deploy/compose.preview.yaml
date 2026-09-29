@@ -16,12 +16,15 @@ x-logging: &logging
 services:
   app:
     image: ${APP_IMAGE:?}
-    restart: unless-stopped
+    # Reboot requires an explicit up, which rechecks storage and firewall.
+    restart: "no"
+    user: ${PREVIEW_UID:?}:${PREVIEW_GID:?}
     logging: *logging
     init: true
     environment:
+      NODE_OPTIONS: --max-old-space-size=384
       # Caddy's forwarding headers, on the preview network.
-      TRUST_PROXY: ${PREVIEW_SUBNET:-172.29.95.0/24}
+      TRUST_PROXY: 172.29.95.0/24
       PUBLIC_URL: https://pr-${PR:?}.${PREVIEW_DOMAIN:?}
       # The dev OAuth app (wildcard callback on the preview domain), never
       # production's: PR code can read it.
@@ -30,7 +33,11 @@ services:
       # The PR's participants: nobody else can sign in.
       ALLOWED_GITHUB_LOGINS: ${ALLOWED_GITHUB_LOGINS:?}
     volumes:
-      - data:/data
+      - type: bind
+        source: ${PREVIEW_DATA_ROOT:?}/pr-${PR:?}
+        target: /data
+        bind:
+          create_host_path: false
     networks:
       preview:
         aliases:
@@ -41,14 +48,15 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=64m
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: "1"
+      net.ipv6.conf.default.disable_ipv6: "1"
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     mem_limit: 512m
     cpus: 1
     pids_limit: 128
 
-volumes:
-  data:
 
 networks:
   # Created once (docker network create); Caddy joins it. Never

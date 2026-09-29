@@ -19,8 +19,10 @@
 #
 # Settings are in the directory's .env. See AGENTS.md, "Pull request previews".
 set -euo pipefail
+umask 077
 
 DIR=${AI_ACTIVITY_PREVIEW_DIR:-/srv/ai-activity-previews}
+DATA_ROOT=${AI_ACTIVITY_PREVIEW_DATA_ROOT:-/srv/ai-activity-preview-data}
 IMAGE=${AI_ACTIVITY_PREVIEW_IMAGE:-ghcr.io/louismoretti/ai-activity-preview}
 
 usage() {
@@ -48,7 +50,7 @@ pr=${args[1]-}
 [[ $cmd == gc || $pr =~ ^[1-9][0-9]{0,6}$ ]] || usage
 
 # docker compose prefers the environment to its .env files.
-unset PR APP_IMAGE ALLOWED_GITHUB_LOGINS PREVIEW_DOMAIN PREVIEW_SUBNET GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET
+unset PR APP_IMAGE ALLOWED_GITHUB_LOGINS PREVIEW_DOMAIN PREVIEW_SUBNET GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET PREVIEW_UID PREVIEW_GID PREVIEW_DATA_ROOT NODE_OPTIONS
 
 cd "$DIR"
 [[ -f compose.preview.yaml && -f .env ]] || fail "$DIR needs compose.preview.yaml and .env (AGENTS.md, Pull request previews)"
@@ -63,12 +65,41 @@ DOMAIN=$(setting PREVIEW_DOMAIN "")
 MAX=$(setting PREVIEW_MAX 3)
 DAYS=$(setting PREVIEW_DAYS 1)
 MIN_FREE_GB=$(setting PREVIEW_MIN_FREE_GB 10)
-for n in "$MAX" "$DAYS" "$MIN_FREE_GB"; do
-  [[ $n =~ ^[0-9]+$ ]] || fail "PREVIEW_MAX, PREVIEW_DAYS and PREVIEW_MIN_FREE_GB in $DIR/.env must be whole numbers"
-done
+[[ $MAX =~ ^[1-9][0-9]{0,3}$ && $DAYS =~ ^[1-9][0-9]{0,3}$ && $MIN_FREE_GB =~ ^(0|[1-9][0-9]{0,5})$ ]] ||
+  fail "PREVIEW_MAX and PREVIEW_DAYS must be positive integers (at most 9999); PREVIEW_MIN_FREE_GB must be 0..999999"
 
 exec 9>.lock
-flock 9 # one change at a time: the count of previews stays right
+if [[ $cmd == gc ]]; then
+  flock -n 9 || exit 0 # cron must not pile up behind a pull
+else
+  flock -w 120 9 || fail "another preview operation held the lock for 120 seconds"
+fi
+
+export PREVIEW_DATA_ROOT=$DATA_ROOT PREVIEW_UID PREVIEW_GID
+PREVIEW_UID=$(id -u)
+PREVIEW_GID=$(id -g)
+((PREVIEW_UID > 0)) || fail "run as the unprivileged deploy user"
+
+# A separate ext4 filesystem, at most 3 GiB for ALL previews. The setup
+# preallocates its loop image; filling /data cannot grow Docker's filesystem.
+# Check down/gc too: never remove paths underneath a missing mount.
+check_storage() {
+  local fs size device docker_device
+  read -r fs size < <(findmnt --bytes --noheadings --mountpoint "$DATA_ROOT" --output FSTYPE,SIZE) ||
+    fail "preview data mount is missing at $DATA_ROOT"
+  if [[ $fs != ext4 || ! $size =~ ^[0-9]+$ ]] || ((size == 0 || size > 3221225472)); then
+    fail "preview data needs a dedicated ext4 mount of at most 3 GiB at $DATA_ROOT"
+  fi
+  device=$(stat -c %d "$DATA_ROOT")
+  docker_device=$(stat -c %d "$(docker info --format '{{.DockerRootDir}}')")
+  [[ $device != "$docker_device" && ! -L $DATA_ROOT ]] || fail "preview data must be on a separate filesystem"
+}
+
+compose() {
+  local pr=$1
+  shift
+  docker compose -p "ai-activity-pr-$pr" -f compose.preview.yaml --env-file .env --env-file "pr-$pr/.env" "$@"
+}
 
 # The previews' directories, pr-<N>.
 previews() {
@@ -84,29 +115,45 @@ free_gb() {
 }
 
 up() {
-  local pr=$1 sha=$2 logins=$3 dir=pr-$1 old="" n free tmp
+  local pr=$1 sha=$2 logins=$3 dir=pr-$1 old="" n free tmp attempt new=0 volumes
   [[ $sha =~ ^[0-9a-f]{40}$ && $logins =~ ^[A-Za-z0-9-]{1,39}(,[A-Za-z0-9-]{1,39}){0,49}$ ]] || usage
   [[ $DOMAIN =~ ^[a-z0-9-]+(\.[a-z0-9-]+)+$ ]] || fail "set PREVIEW_DOMAIN in $DIR/.env"
   if [[ ! -d $dir ]]; then
+    new=1
     n=$(previews | wc -l)
     ((n < MAX)) || fail "refused: $n previews already (PREVIEW_MAX=$MAX): close a pull request or remove its label"
   fi
   free=$(free_gb)
   ((free >= MIN_FREE_GB)) || fail "refused: $free GB free on Docker's disk, under PREVIEW_MIN_FREE_GB=$MIN_FREE_GB"
 
-  # Pull first: a missing image changes nothing.
-  docker pull --quiet "$IMAGE:$sha"
-  mkdir -p "$dir"
+  check_storage
+  [[ $(docker network inspect ai-activity-preview --format '{{.Driver}} {{.EnableIPv6}} {{index .Options "com.docker.network.bridge.name"}} {{range .IPAM.Config}}{{.Subnet}} {{.IPRange}}{{end}}') == 'bridge false ai-preview 172.29.95.0/24 172.29.95.128/25' ]] ||
+    fail "preview network must use the reserved Caddy address and preview allocation range (see AGENTS.md)"
+  sudo -n /usr/local/bin/ai-activity-preview-firewall || fail "preview firewall could not be enforced"
+
+  # Pull first: a missing image changes nothing, including the slot count.
+  for attempt in 1 2 3; do
+    if docker pull --quiet "$IMAGE:$sha"; then break; fi
+    ((attempt < 3)) || fail "preview image pull failed after 3 attempts"
+    sleep "$((attempt * 2))"
+  done
+  # Image-declared VOLUMEs otherwise create unbounded anonymous storage,
+  # even with a read-only root. /data is replaced by our bounded bind mount.
+  volumes=$(docker image inspect "$IMAGE:$sha" --format '{{range $path, $_ := .Config.Volumes}}{{$path}}{{"\n"}}{{end}}')
+  [[ -z $volumes || $volumes == /data ]] || fail "preview image declares an unbounded volume"
+  [[ ! -L $DATA_ROOT/$dir ]] || fail "preview data directory must not be a symlink"
+  mkdir -p "$dir" "$DATA_ROOT/$dir"
   if [[ -f $dir/.env ]]; then old=$(sed -n 's/^APP_IMAGE=//p' "$dir/.env"); fi
   tmp=$(mktemp "$dir/.env.XXXXXX")
   printf 'PR=%s\nAPP_IMAGE=%s\nALLOWED_GITHUB_LOGINS=%s\n' "$pr" "$IMAGE:$sha" "$logins" > "$tmp"
   mv "$tmp" "$dir/.env" # its date is the last deploy, for gc
 
-  local compose=(docker compose -p "ai-activity-pr-$pr" -f compose.preview.yaml --env-file .env --env-file "$dir/.env")
-  if ! "${compose[@]}" up -d --no-build --remove-orphans --wait --wait-timeout 180; then
-    "${compose[@]}" ps
-    # The workflow's log is public: never a setup code.
-    "${compose[@]}" logs --tail 80 app | sed 's/Setup code: .*/Setup code: (hidden)/'
+  if ! compose "$pr" up -d --no-build --remove-orphans --wait --wait-timeout 180; then
+    compose "$pr" ps || true
+    # The workflow's log is public: never a setup code. Diagnostics must not
+    # prevent cleanup if the daemon fails while collecting them.
+    compose "$pr" logs --tail 80 app | sed 's/Setup code: .*/Setup code: (hidden)/' || true
+    if ((new)); then down "$pr"; fi
     fail "preview pr-$pr failed to start: see the logs above"
   fi
   if [[ -n $old && $old != "$IMAGE:$sha" ]]; then docker rmi "$old" > /dev/null 2>&1 || true; fi
@@ -116,26 +163,43 @@ up() {
 down() {
   local pr=$1 image=""
   if [[ -f pr-$pr/.env ]]; then image=$(sed -n 's/^APP_IMAGE=//p' "pr-$pr/.env"); fi
-  # By project name, without its files: this works after a failed up too.
-  docker compose -p "ai-activity-pr-$pr" down --volumes
+  if [[ -f pr-$pr/.env ]]; then
+    compose "$pr" down --volumes --remove-orphans
+  else
+    # No manifest (unknown PR/interrupted first deploy): remove only resources
+    # carrying this exact Compose project label, never discover another file.
+    local id ids
+    ids=$(docker ps -aq --filter "label=com.docker.compose.project=ai-activity-pr-$pr")
+    for id in $ids; do docker rm -f "$id"; done
+    ids=$(docker volume ls -q --filter "label=com.docker.compose.project=ai-activity-pr-$pr")
+    for id in $ids; do docker volume rm "$id"; done
+  fi
+  check_storage
+  rm -rf --one-file-system -- "$DATA_ROOT/pr-$pr"
   if [[ -n $image ]]; then docker rmi "$image" > /dev/null 2>&1 || true; fi
   rm -rf -- "pr-$pr"
   echo "removed pr-$pr"
 }
 
 gc() {
-  local d name free
+  local d free image
   for d in $(previews); do
     if [[ ! -f $d/.env || -n $(find "$d/.env" -mmin "+$((DAYS * 1440))") ]]; then down "${d#pr-}"; fi
   done
   free=$(free_gb)
   if ((free < MIN_FREE_GB)); then
-    # Production shares this disk: stop every preview (its data stays) until
-    # someone frees space. up refuses meanwhile.
-    for name in $(docker compose ls --quiet | grep -xE 'ai-activity-pr-[0-9]+' || true); do
-      docker compose -p "$name" stop
-      echo "stopped $name: $free GB free, under PREVIEW_MIN_FREE_GB=$MIN_FREE_GB" >&2
+    # Reclaim only unused images from THIS repository; a global prune would
+    # remove production's rollback images and unrelated applications' images.
+    for image in $(docker image ls --format '{{.Repository}}:{{.Tag}}' "$IMAGE"); do
+      docker rmi "$image" > /dev/null 2>&1 || true
     done
+    free=$(free_gb)
+    if ((free < MIN_FREE_GB)); then
+      for d in $(previews); do
+        if [[ -f $d/.env ]]; then compose "${d#pr-}" stop; fi
+      done
+      echo "stopped previews: $free GB free, under PREVIEW_MIN_FREE_GB=$MIN_FREE_GB" >&2
+    fi
   fi
 }
 

@@ -90,23 +90,4 @@ jobs:
           # A clean stop checkpoints the WAL: no -wal left with data in it.
           docker run --rm --volumes-from app --entrypoint sh ai-activity:ci -c '[ ! -s /data/dashboard.db-wal ]'
       - name: Smoke test a pull request preview
-        env:
-          PR: "1"
-          APP_IMAGE: ai-activity:ci
-          PREVIEW_DOMAIN: preview.test
-          GITHUB_CLIENT_ID: ci
-          GITHUB_CLIENT_SECRET: ci
-          ALLOWED_GITHUB_LOGINS: octocat
-        run: |
-          set -eu
-          preview="docker compose -f deploy/compose.preview.yaml"
-          docker network create ai-activity-preview --subnet 172.29.95.0/24
-          # Hardened (read-only root, no capabilities, limits), it still
-          # starts and writes its database and backups.
-          $preview up -d --wait --wait-timeout 120
-          $preview logs app | grep -q "Only these GitHub accounts can sign in: octocat"
-          $preview exec -T app node scripts/backup.ts | grep -q "integrity ok"
-          # Caddy reaches it as pr-<N> on the preview network.
-          docker run --rm --network ai-activity-preview --entrypoint node ai-activity:ci -e \
-            "fetch('http://pr-1:3000/api/auth/status').then((r) => r.json()).then((s) => process.exit(s.setup_required ? 1 : 0), () => process.exit(1))"
-          $preview down --volumes
+        run: bash test/preview-smoke.sh

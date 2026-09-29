@@ -273,6 +273,9 @@ migrations; `test/rate-limit.test.js` covers the token buckets;
 restores; `test/client.test.js` covers client addresses behind proxies;
 `test/collector-versions.test.js` checks collector versions (constants,
 file hashes, update hints in each collector);
+`test/preview.test.js` covers deployment failures and storage/network gates;
+`test/preview-smoke.sh` runs on isolated Linux CI runners with real Docker
+(bounded ext4 fill, persistence, Caddy reachability and blocked private egress);
 `test/confirm-delete.test.js` runs the Settings danger zone's flows
 (`confirm-delete.svelte.ts`, delete activity and delete account: confirm,
 cancel, success, failure);
@@ -342,25 +345,57 @@ https://pr-123.ai-preview.example
   `PREVIEW_MIN_FREE_GB` free, pulls the image, writes `pr-<N>/.env`, runs
   `docker compose up --wait` (on failure, the app's logs, never a setup
   code: the job log is public), then removes the PR's previous image.
-  `down` removes the project, its volume, its image and `pr-<N>/`. `gc`
+  A failed first start is removed immediately; a failed update keeps its data.
+  Pulls retry three times before changing any preview state. `down` uses the
+  same compose file and settings as `up`, removing its data, image and `pr-<N>/`. `gc`
   removes previews not deployed for `PREVIEW_DAYS` and, while the disk is
-  low, stops every preview (data kept): production shares that disk.
+  low, removes unused images from the preview repository only, checks free
+  space again and stops every preview if still low (data kept). Production
+  rollback images are never pruned. `up`/`down` wait at most 120 seconds for
+  the deployment lock; a busy cron `gc` exits immediately.
 - `deploy/compose.preview.yaml` (installed as root too; `compose.yaml`
   cannot serve, its project name, network and alias are production's): the
   app alone, no published port, on the external `ai-activity-preview`
   network as `pr-<N>`; `TRUST_PROXY` that subnet, `PUBLIC_URL` its own
   address (so its own OAuth callback), the dev OAuth app; `read_only` (the
   app writes only to `/data`, SQLite's temporary files to a `/tmp` tmpfs),
-  `cap_drop: [ALL]`, `no-new-privileges`, 512 MB, 1 CPU, 128 processes,
+  `cap_drop: [ALL]`, `no-new-privileges`, 512 MB (384 MB Node heap), 1 CPU, 128 processes,
   rotated logs. CI starts it this way.
+- Preview data uses bind directories on a dedicated ext4 filesystem, capped
+  at **3 GiB total**, preallocated during setup below. `up` refuses a missing,
+  oversized or shared Docker filesystem, and images declaring writable
+  volumes other than `/data`. Filling the preview filesystem affects other
+  previews, but cannot grow into production's disk space. Data survives
+  updates and reboots; `down` erases that preview's directory. Old previews
+  using Docker volumes must be removed before installing this version.
 - Previews never join `ai-activity-proxy` (production trusts every address
-  there). Their network cannot be `internal` (the OAuth exchange reaches
-  GitHub), and a container reaches the host's own addresses: check
-  `ss -tlnp` and bind or firewall what previews must not reach, a cloud
-  metadata service too (`iptables -I DOCKER-USER -s 172.29.95.0/24 -d
-  169.254.169.254 -j DROP`, persisted). Caddy's `trusted_proxies` must not
-  cover the preview subnet (e.g. `private_ranges`), or a preview could
-  forge client addresses to production through Caddy.
+  there). The IPv4-only network uses `172.29.95.0/24`, bridge `ai-preview`,
+  and allocates previews only from `172.29.95.128/25`. Caddy must join with
+  the reserved static address `172.29.95.2`; that source is exempted so
+  Caddy can initiate connections to previews. No other container may use it.
+  Before each `up`, the root-owned `ai-activity-preview-firewall` installs
+  rules in INPUT and DOCKER-USER: previews cannot initiate connections to
+  host addresses, private networks, link-local/cloud metadata addresses or
+  other containers; replies to Caddy's inbound connections and public
+  internet access for GitHub OAuth still work. Docker's **iptables backend**
+  and `net.bridge.bridge-nf-call-iptables=1` are required; unsupported setups
+  fail closed. IPv6 is disabled in each preview container as well.
+  Previews do not restart automatically: after a host/Docker reboot, rerun
+  `up` to recheck the mount and restore the firewall first. Do not manually
+  start them or remove firewall rules while they run. Caddy's
+  `trusted_proxies` must not cover the preview subnet (e.g. `private_ranges`).
+- Preview usage pages (`/api/u/*`, `/api/profiles`, `/leaderboard`, `/demo`)
+  remain public; use throwaway data. The login allowlist is checked against
+  the last GitHub login seen at sign-in; a GitHub rename is discovered at
+  the next sign-in. Listed new accounts still obey the admin's sign-up
+  switch. Setup codes are unused under the allowlist; revoked sessions are
+  rejected immediately, with their rows retained until normal expiry.
+- Shell settings use unquoted `KEY=value` lines (no inline comments).
+  `PREVIEW_MAX` and `PREVIEW_DAYS` are 1..9999; `PREVIEW_MIN_FREE_GB` is
+  0..999999 (0 explicitly disables the free-space threshold, not the storage
+  bound). The SSH command accepts at most 50 logins; the server's general
+  allowlist has no count cap. Both accept `GITHUB_LOGIN`'s 1..39 ASCII
+  letters/digits/hyphens, including historical GitHub logins.
 - PR code runs on production's machine (the usual practice is another
   one): the separate domain and network, the hardening and limits, files
   out of the PR's reach and a maintainer approving every run are what keep
@@ -386,23 +421,52 @@ Setup, once:
    once with a sign-in.
 4. The server (same `deploy` user, a second key):
    ```bash
-   sudo docker network create ai-activity-preview --subnet 172.29.95.0/24
+   sudo docker network create ai-activity-preview --subnet 172.29.95.0/24 \
+     --ip-range 172.29.95.128/25 --opt com.docker.network.bridge.name=ai-preview
+   # Dedicated, bounded storage. Run ONCE, on a non-CoW filesystem with at
+   # least 3 GiB + the production reserve free. Never truncate an existing image.
+   sudo install -d -m 755 /srv/ai-activity-preview-data
+   sudo fallocate -l 3G /srv/ai-activity-preview-data.img
+   sudo chmod 600 /srv/ai-activity-preview-data.img
+   sudo mkfs.ext4 -E nodiscard -m 0 /srv/ai-activity-preview-data.img
+   # Add to /etc/fstab (no nofail: a missing mount must be investigated):
+   # /srv/ai-activity-preview-data.img /srv/ai-activity-preview-data ext4 loop,nodev,nosuid,noexec 0 0
+   sudo mount /srv/ai-activity-preview-data
+   sudo chown deploy:deploy /srv/ai-activity-preview-data
+   sudo chmod 700 /srv/ai-activity-preview-data
+   sudo install -o root -g root -m 755 /srv/ai-activity/deploy/ai-activity-preview-firewall /usr/local/bin/
+   # /etc/sudoers.d/ai-activity-preview (root-owned, 0440; validate with visudo):
+   # deploy ALL=(root) NOPASSWD: /usr/local/bin/ai-activity-preview-firewall ""
+   # Persist net.bridge.bridge-nf-call-iptables=1 via /etc/sysctl.d/.
+   sudo sysctl -w net.bridge.bridge-nf-call-iptables=1
    sudo install -d -o deploy -g deploy -m 700 /srv/ai-activity-previews
    # Outside any checkout, owned by root; install again after they change.
    sudo install -o root -g root -m 644 /srv/ai-activity/deploy/compose.preview.yaml /srv/ai-activity-previews/
    sudo install -o root -g root -m 755 /srv/ai-activity/deploy/ai-activity-preview /usr/local/bin/
    sudo -u deploy install -m 600 /dev/null /srv/ai-activity-previews/.env
    #   PREVIEW_DOMAIN=ai-preview.example, GITHUB_CLIENT_ID=…, GITHUB_CLIENT_SECRET=… (the dev app)
-   #   optional: PREVIEW_MAX=3, PREVIEW_DAYS=1, PREVIEW_MIN_FREE_GB=10, PREVIEW_SUBNET=172.29.95.0/24
+   #   optional: PREVIEW_MAX=3, PREVIEW_DAYS=1, PREVIEW_MIN_FREE_GB=10
    echo '*/10 * * * * deploy /usr/local/bin/ai-activity-preview gc 2>&1 | logger -t ai-activity-preview' \
      | sudo tee /etc/cron.d/ai-activity-preview
    ssh-keygen -t ed25519 -N '' -C github-preview -f preview_key   # on your machine
    # /home/deploy/.ssh/authorized_keys, a second line:
    restrict,command="/usr/local/bin/ai-activity-preview" ssh-ed25519 AAAA… github-preview
    ```
-5. Caddy joins `ai-activity-preview` (an external network in its compose
-   file, like `ai-activity-proxy`; no Docker socket), and its Caddyfile
-   gets:
+5. Caddy joins `ai-activity-preview` with a reserved static address (no
+   Docker socket). Keep its other networks:
+   ```yaml
+   services:
+     caddy:
+       networks:
+         default: {}
+         ai-activity-proxy: {}
+         ai-activity-preview:
+           ipv4_address: 172.29.95.2
+   networks:
+     ai-activity-preview:
+       external: true
+   ```
+   Its Caddyfile gets:
    ```
    *.ai-preview.example {
    	tls {
@@ -432,7 +496,8 @@ Setup, once:
 
 On the server: `docker compose ls -a --filter name=ai-activity-pr-` lists
 the previews, `docker logs ai-activity-pr-<N>-app-1` shows one's log, and
-`sudo -u deploy ai-activity-preview down <N>` removes one by hand.
+`sudo -u deploy ai-activity-preview down <N>` removes one by hand. Reinstall both root-owned scripts and the compose file
+after changing them. The firewall helper accepts no arguments.
 
 ### Issues and pull requests
 
