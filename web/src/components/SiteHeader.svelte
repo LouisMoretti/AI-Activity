@@ -51,8 +51,8 @@
   .top-right { display: flex; align-items: center; gap: 12px; min-width: 0; flex-wrap: wrap; justify-content: flex-end; }
   .signin { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 4px 10px; font-size: 12px; color: var(--text); }
   .badge { border: 1px solid var(--line); font-size: 12px; padding: 5px 10px; border-radius: var(--radius-sm); }
-  .badge.demo { border-color: var(--demo-line); background: var(--demo-bg); color: var(--demo-text); }
-  .badge.preview { border: 1px solid var(--line); border-radius: 999px; padding: 5px 9px; color: var(--muted); font-size: 11px; white-space: nowrap; }
+  .badge.demo, .badge.preview { border-color: var(--demo-line); background: var(--demo-bg); color: var(--demo-text); }
+  .badge.preview { white-space: nowrap; }
   @media (max-width: 720px) {
     .top { gap: 12px; align-items: flex-start; }
     h1 { white-space: nowrap; }
