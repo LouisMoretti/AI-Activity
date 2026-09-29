@@ -38,6 +38,8 @@ sudo mount -o loop,nodev,nosuid,noexec "$root/data.img" "$root/data"
 sudo chown "$PREVIEW_UID:$PREVIEW_GID" "$root/data"
 mkdir "$root/data/pr-1"
 docker network create ai-activity-preview --subnet 172.29.95.0/24 --ip-range 172.29.95.128/25 --opt com.docker.network.bridge.name=ai-preview
+sudo modprobe br_netfilter
+sudo sysctl -w net.bridge.bridge-nf-call-iptables=1
 sudo bash deploy/ai-activity-preview-firewall
 # The policy can be reapplied without removing existing protections.
 sudo bash deploy/ai-activity-preview-firewall

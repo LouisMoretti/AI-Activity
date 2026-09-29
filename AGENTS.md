@@ -437,7 +437,9 @@ Setup, once:
    sudo install -o root -g root -m 755 /srv/ai-activity/deploy/ai-activity-preview-firewall /usr/local/bin/
    # /etc/sudoers.d/ai-activity-preview (root-owned, 0440; validate with visudo):
    # deploy ALL=(root) NOPASSWD: /usr/local/bin/ai-activity-preview-firewall ""
-   # Persist net.bridge.bridge-nf-call-iptables=1 via /etc/sysctl.d/.
+   # Persist br_netfilter via /etc/modules-load.d/ and
+   # net.bridge.bridge-nf-call-iptables=1 via /etc/sysctl.d/.
+   sudo modprobe br_netfilter
    sudo sysctl -w net.bridge.bridge-nf-call-iptables=1
    sudo install -d -o deploy -g deploy -m 700 /srv/ai-activity-previews
    # Outside any checkout, owned by root; install again after they change.
