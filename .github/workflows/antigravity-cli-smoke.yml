@@ -5,29 +5,34 @@ on:
   pull_request:
     paths:
       - "collectors/antigravity.py"
+      - "collectors/install.py"
       - "server/lib/installer.ts"
       - "server/lib/ingest.ts"
       - "server/routes/ingest.ts"
       - "shared/collectors.ts"
       - "test/antigravity-collector.test.js"
-      - "test/helpers.js"
+      - "test/install.test.js"
       - "test/real-antigravity-smoke.mjs"
       - ".github/workflows/antigravity-cli-smoke.yml"
   push:
     branches: [main]
     paths:
       - "collectors/antigravity.py"
+      - "collectors/install.py"
       - "server/lib/installer.ts"
       - "server/lib/ingest.ts"
       - "server/routes/ingest.ts"
       - "shared/collectors.ts"
       - "test/antigravity-collector.test.js"
-      - "test/helpers.js"
+      - "test/install.test.js"
       - "test/real-antigravity-smoke.mjs"
       - ".github/workflows/antigravity-cli-smoke.yml"
 
 # Path-filtered like the collector CLI smoke workflow: intentionally not a
 # required branch check, so skipped runs never block unrelated PRs.
+# Keep push and pull_request paths in sync. test/helpers.js also contains
+# unrelated fake GitHub changes; ordinary CI covers it. Use workflow_dispatch
+# when a harness-only change needs validation with the real Antigravity CLI.
 permissions:
   contents: read
 

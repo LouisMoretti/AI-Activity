@@ -640,3 +640,15 @@ is covered by the installed hook test with synthetic database rows. The
 separate **Antigravity CLI smoke** workflow also runs a real `agy` chat against
 a local Gemini stub and verifies that the installed hook uploads its measured
 usage; see the Antigravity section above.
+
+Both smoke workflows run on matching pull request changes and pushes to `main`,
+or manually with `workflow_dispatch`. Antigravity watches its collector,
+`collectors/install.py`, the server installer and ingestion modules,
+`shared/collectors.ts`, its collector test, `test/install.test.js`, its real CLI
+smoke test and its workflow file. It deliberately does not watch
+`test/helpers.js`: that shared harness also contains the fake GitHub used by
+unrelated account features. Ordinary CI still tests those changes; manually
+run Antigravity's smoke when a harness change needs real CLI validation.
+Collector CLI smoke retains its broader collector/test filters, including
+`test/helpers.js`, and covers only Claude Code, Codex and OpenCode. Keep the
+Antigravity workflow for the fourth real CLI; neither smoke is a required check.
