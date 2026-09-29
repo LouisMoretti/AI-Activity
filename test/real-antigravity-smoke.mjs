@@ -8,7 +8,7 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { startServer, newDevice, req, tempHome } from "./helpers.js";
+import { startServer, newDevice, req, tempHome, processesGone } from "./helpers.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function waitFor(check, ms = 30000) {
@@ -49,6 +49,66 @@ function run(bin, args, env, { cwd, timeout = 30000 } = {}) {
     child.on("error", (e) => { clearTimeout(timer); reject(e); });
     child.on("close", (code) => { clearTimeout(timer); resolve({ code, output }); });
   });
+}
+
+// File listing for CI failure diagnostics: where did agy write its metadata,
+// did the installer land hooks.json, did any worker leave state behind?
+function tree(root, depth = 3) {
+  const out = [];
+  const walk = (dir, left) => {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      let suffix = "";
+      if (!entry.isDirectory()) {
+        try {
+          suffix = ` (${fs.statSync(full).size}b)`;
+        } catch {
+          suffix = " (unreadable)";
+        }
+      }
+      out.push(path.relative(root, full) + (entry.isDirectory() ? "/" : suffix));
+      if (entry.isDirectory() && left > 0) walk(full, left - 1);
+    }
+  };
+  try {
+    if (!fs.statSync(root).isDirectory()) return `(not a directory: ${root})`;
+  } catch {
+    return `(missing: ${root})`;
+  }
+  walk(root, depth);
+  return out.length ? out.join("\n") : "(empty)";
+}
+
+function readIf(pathname, max = 2000) {
+  try {
+    return fs.readFileSync(pathname, "utf8").slice(0, max);
+  } catch {
+    return `(unreadable: ${pathname})`;
+  }
+}
+
+// agy's own log lines about hooks: did the app fire ours, and what did the
+// hook print? Only matching lines, capped, so no chat content is dumped.
+function hookLogLines(logDir, max = 3000) {
+  let files = [];
+  try {
+    files = fs.readdirSync(logDir).filter((f) => /^cli(-.*)?\.log$/.test(f))
+      .map((f) => path.join(logDir, f))
+      .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+  } catch {
+    return `(unreadable: ${logDir})`;
+  }
+  if (!files.length) return "(no agy cli log)";
+  const lines = readIf(files[0], 200000).split("\n")
+    .filter((line) => /hook|ai-activity/i.test(line));
+  const tail = lines.join("\n").slice(-max);
+  return tail || "(no hook lines in agy cli log)";
 }
 
 test("real Antigravity CLI uploads measured usage through the installed hook", async (t) => {
@@ -116,13 +176,29 @@ test("real Antigravity CLI uploads measured usage through the installed hook", a
       AI_ACTIVITY_URL: ingest.base, AI_ACTIVITY_KEY: key, AI_ACTIVITY_TOOLS: "antigravity",
       GEMINI_API_KEY: "dummy", GOOGLE_GEMINI_BASE_URL: stub.base,
     };
-    const install = await run("sh", ["-c", `curl -fsSL ${app.base}/install.sh | AI_ACTIVITY_URL=${ingest.base} AI_ACTIVITY_KEY=${key} AI_ACTIVITY_TOOLS=antigravity sh`], env, { cwd: work });
+    // The hook installer ships as install.sh (sh) and install.ps1
+    // (PowerShell): use the shell of the platform under test, like
+    // real-cli-smoke.mjs. Both read AI_ACTIVITY_* from the environment.
+    const install = process.platform === "win32"
+      ? await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+        "-Command", `irm ${app.base}/install.ps1 | iex`], env, { cwd: work })
+      : await run("sh", ["-c", `curl -fsSL ${app.base}/install.sh | AI_ACTIVITY_URL=${ingest.base} AI_ACTIVITY_KEY=${key} AI_ACTIVITY_TOOLS=antigravity sh`], env, { cwd: work });
     assert.equal(install.code, 0, install.output.slice(-2000));
     const chat = await run("agy", ["-p", "Say hello.", "--output-format", "json", "--print-timeout", "20s"], env, { cwd: work });
     assert.match(chat.output, /"status":"SUCCESS"/, chat.output.slice(-2000));
     const summary = async () => (await req(app.base, "GET", "/api/u/admin/summary?tool=antigravity")).json.total;
-    assert.ok(await waitFor(async () => (await summary()).events >= 1),
-      `real agy produced no collector upload (agy ${version}); output: ${chat.output.slice(-1200)}`);
+    const uploaded = await waitFor(async () => (await summary()).events >= 1);
+    if (!uploaded) {
+      const gemini = path.join(home, ".gemini");
+      const diag = [
+        `chat output: ${chat.output.slice(-1200)}`,
+        `hooks.json: ${readIf(path.join(gemini, "config", "hooks.json"))}`,
+        `agy cli.log hook lines:\n${hookLogLines(path.join(gemini, "antigravity-cli", "log"))}`,
+        `isolated .gemini tree:\n${tree(gemini)}`,
+        `isolated .cache/ai-activity tree:\n${tree(path.join(home, ".cache", "ai-activity"))}`,
+      ].join("\n");
+      assert.fail(`real agy produced no collector upload (agy ${version});\n${diag}`);
+    }
     const message = uploads.flatMap((b) => b.messages).find((m) => m.response_id === "resp-smoke-1");
     assert.ok(message, "the installed hook sent the measured response id");
     assert.equal(message.usage.input_tokens, 12);
@@ -131,6 +207,9 @@ test("real Antigravity CLI uploads measured usage through the installed hook", a
     assert.ok((await summary()).tokens >= 19, "measured tokens reached the API");
     assert.ok(!JSON.stringify(uploads).includes("Say hello."));
   } finally {
+    // Detached hook workers may still hold the collection lock on Windows,
+    // where unlinking a locked file fails (EBUSY): wait them out first.
+    await processesGone(home);
     if (ingest) await ingest.close();
     if (stub) await stub.close();
     if (app) await app.stop();
