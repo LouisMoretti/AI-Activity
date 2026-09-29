@@ -14,7 +14,7 @@ import type { Context, MiddlewareHandler } from "hono";
  *     (its quotas and context are still kept) until the budget refills;
  * - public reads, per client: a profile polls 9 routes every 5 s
  *   (108/min); 300 with 5/s leaves room for two tabs behind one address;
- * - signed-in routes (devices, account, users, admin), per user;
+ * - signed-in routes (friends, devices, account, users, admin), per user;
  * - starting a GitHub sign-in, per client: 60, then one every 2 s, so
  *   visitors sharing one address (IPv6 behind Caddy, issue #102) still
  *   sign in.

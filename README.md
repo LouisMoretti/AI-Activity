@@ -9,6 +9,16 @@
 > their APIs on your behalf or work around their limits. Using those tools
 > stays subject to their own terms.
 
+## Friends
+
+Sign in and open **Friends** from the avatar menu to see the people you
+follow on GitHub who also have an enabled AI Activity profile. Each entry
+links to that public profile and shows measured tokens, conversations and
+last activity for the past seven days. The server reads GitHub's public
+following list using the OAuth app's client ID and secret, without requesting
+an OAuth scope or keeping a user's GitHub token.
+If GitHub is unavailable, the page offers a retry.
+
 ## One-command install
 
 Create a device key (**Settings → Devices**),
