@@ -56,7 +56,7 @@ jobs:
           python-version: "3.x"
       - run: npm ci
       - run: npm run build
-      - run: node --test test/collector.test.js test/codex-collector.test.js test/opencode-collector.test.js test/antigravity-collector.test.js test/install.test.js test/collector-versions.test.js
+      - run: node --test test/collector.test.js test/codex-collector.test.js test/opencode-collector.test.js test/antigravity-collector.test.js test/install.test.js test/installed-collectors.test.js test/collector-versions.test.js
         env:
           PYTHON: python
 

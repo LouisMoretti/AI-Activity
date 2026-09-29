@@ -400,8 +400,11 @@ What it does:
   tool output, workspace paths, or authentication data.
 - Sends ids, recorded model (unknown stays unknown), token counts, the
   original generation timestamp, and this machine's UTC offset at that
-  time. Input includes recorded system and new input; cached input is
-  separate; text and thinking output are added once. Subagent databases
+  time. Input is uncached input; cached input is separate; text and
+  thinking output are added once. Antigravity CLI 1.2.12 writes a constant
+  in `1.4.1` that is not an input counter and repeats total output in
+  `1.4.3`: both are ignored, so a first turn reports 12 input / 7 output,
+  not 1048. Subagent databases
   count as separate conversations because parent attribution is unavailable.
 - Imports supported history, then skips every database whose stamp is
   unchanged since all of it was accepted. The stamp covers the database and
@@ -478,14 +481,23 @@ and [plan windows](https://antigravity.google/docs/plans/). Quota tests run
 the collector against a fake `agy` with synthetic reports.
 
 **Format limitations:** Antigravity's persisted protobuf layout is
-undocumented. The parser follows [independently observed field evidence](https://github.com/junhoyeo/tokscale/blob/62ca1eb1677556972ba963fdfa3a41ab23c1eb4b/crates/tokscale-core/src/sessions/antigravity_cli.rs).
+undocumented. The parser follows [independently observed field evidence](https://github.com/junhoyeo/tokscale/blob/62ca1eb1677556972ba963fdfa3a41ab23c1eb4b/crates/tokscale-core/src/sessions/antigravity_cli.rs),
+plus the CLI 1.2.12 Gemini layout verified against a local stub (synthetic
+usage 12/7, 31/11, then 37 input / 13 output / 4 cached / 6 thinking):
+response id in `1.4.7` (or the `request_id` in `chat.20` when the API returned
+none), model in `1.19`, uncached input in `1.4.2`, cached input in `1.4.5`,
+thinking in `1.4.9`, text output in `1.4.10`.
 It accepts standard protobuf generation timestamps, or a unique matching
-step UUID and bot id with a standard step timestamp. Unknown timestamp
-layouts, missing response ids, corrupt records, and ambiguous step matches
-are skipped with a diagnostic, and read again only when their database
-changes. They are never assigned the database modification time or import
-time, so totals may be incomplete on unsupported versions. Automated tests
-use synthetic SQLite/protobuf fixtures.
+step UUID (`4`) and response id with a standard step timestamp (`steps.1`).
+Unknown timestamp layouts, missing response ids, corrupt records, and
+ambiguous step matches are skipped with a diagnostic, and read again only
+when their database changes. Rows whose model is not Gemini are skipped
+too under the 1.2.12 rules (their field meanings are unverified), and rows
+without a per-response id share their turn's request id and count once
+(the largest response). They are never assigned the database
+modification time or import time, so totals may be incomplete on
+unsupported versions. Automated tests use synthetic SQLite/protobuf
+fixtures for both the legacy and the 1.2.12 layouts.
 
 ## Send OpenCode usage from a device
 
@@ -607,3 +619,24 @@ How each one is started:
 Claude Code, Codex and OpenCode runs give up after 15 minutes (the progress
 already accepted is kept). The payloads each script sends are described in
 `AGENTS.md` §5.
+
+## Collector CI
+
+`npm test` runs the installed collector integration tests on Linux and ARM64;
+the Windows CI job runs them explicitly. Each test starts a temporary app and
+local HTTP receiver, runs the served installer in an isolated home, invokes
+the installed status line, hook or plugin against synthetic tool data, then
+checks the upload format, retry, deduplication and dashboard totals. No model
+API or external account is needed.
+
+The separate **Collector CLI smoke** workflow runs on relevant collector
+changes and can also be started from Actions. Its Linux x64, Linux ARM64 and
+Windows x64 jobs install pinned Claude Code, Codex and OpenCode CLIs, point
+each at a local fake model API, complete one chat, and check that the
+installed integration reaches the real app. Windows uses a temporary ConPTY
+for Claude Code's interactive status line. It uses no model API key or external
+account. The workflow is not a required check on unrelated PRs. Antigravity
+is covered by the installed hook test with synthetic database rows. The
+separate **Antigravity CLI smoke** workflow also runs a real `agy` chat against
+a local Gemini stub and verifies that the installed hook uploads its measured
+usage; see the Antigravity section above.

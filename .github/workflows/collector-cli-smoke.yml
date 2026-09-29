@@ -1,0 +1,131 @@
+name: Collector CLI smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "collectors/**"
+      - "server/lib/installer.ts"
+      - "server/lib/ingest.ts"
+      - "server/routes/ingest.ts"
+      - "shared/collectors.ts"
+      - "test/*collector*.test.js"
+      - "test/install.test.js"
+      - "test/helpers.js"
+      - "test/real-cli-smoke.mjs"
+      - ".github/workflows/collector-cli-smoke.yml"
+  push:
+    branches: [main]
+    paths:
+      - "collectors/**"
+      - "server/lib/installer.ts"
+      - "server/lib/ingest.ts"
+      - "server/routes/ingest.ts"
+      - "shared/collectors.ts"
+      - "test/*collector*.test.js"
+      - "test/install.test.js"
+      - "test/helpers.js"
+      - "test/real-cli-smoke.mjs"
+      - ".github/workflows/collector-cli-smoke.yml"
+
+# This path-filtered workflow is intentionally not a required branch check:
+# GitHub leaves a skipped required workflow pending on unrelated PRs.
+permissions:
+  contents: read
+
+env:
+  CLAUDE_CLI_VERSION: "2.1.283"
+  CODEX_CLI_VERSION: "0.157.1"
+  OPENCODE_CLI_VERSION: "1.18.33"
+  PTY_VERSION: "1.1.0"
+
+concurrency:
+  group: collector-cli-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: smoke (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest, name: linux x64, platform: linux-x64 }
+          - { runner: ubuntu-24.04-arm, name: linux arm64, platform: linux-arm64 }
+          - { runner: windows-latest, name: windows x64, platform: windows-x64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/cache@v4
+        if: runner.os == 'Linux'
+        id: cli-cache
+        with:
+          path: ${{ runner.temp }}/collector-clis
+          key: collector-clis-${{ matrix.platform }}-claude-${{ env.CLAUDE_CLI_VERSION }}-codex-${{ env.CODEX_CLI_VERSION }}-opencode-${{ env.OPENCODE_CLI_VERSION }}-pty-${{ env.PTY_VERSION }}
+      - name: Install pinned real CLIs (Linux)
+        if: runner.os == 'Linux' && steps.cli-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/collector-clis"
+          /usr/bin/time -f "Cold CLI install elapsed: %e seconds" \
+            npm install --prefix "$RUNNER_TEMP/collector-clis" --no-save \
+              "@anthropic-ai/claude-code@$CLAUDE_CLI_VERSION" \
+              "@openai/codex@$CODEX_CLI_VERSION" \
+              "opencode-ai@$OPENCODE_CLI_VERSION"
+      - name: Install pinned real CLIs and ConPTY (Windows)
+        if: runner.os == 'Windows' && steps.cli-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $cliRoot = Join-Path $env:RUNNER_TEMP 'collector-clis'
+          New-Item -ItemType Directory -Force $cliRoot | Out-Null
+          $start = Get-Date
+          npm install --prefix $cliRoot --no-save `
+            "@anthropic-ai/claude-code@$env:CLAUDE_CLI_VERSION" `
+            "@openai/codex@$env:CODEX_CLI_VERSION" `
+            "opencode-ai@$env:OPENCODE_CLI_VERSION" "node-pty@$env:PTY_VERSION"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Output "Cold CLI install elapsed: $((Get-Date) - $start)"
+      - name: Report CLI cache
+        run: |
+          echo "CLI cache hit (warm run): ${{ steps.cli-cache.outputs.cache-hit }}"
+      - name: Chat with local model APIs and verify installed collectors
+        env:
+          CLI_ROOT: ${{ runner.temp }}/collector-clis/node_modules
+          PYTHON: python
+        shell: bash
+        if: runner.os == 'Linux'
+        run: |
+          /usr/bin/time -f "CLI smoke elapsed: %e seconds" node --test test/real-cli-smoke.mjs
+      - name: Chat with local model APIs and verify installed collectors (Windows)
+        if: runner.os == 'Windows'
+        env:
+          CLI_ROOT: ${{ runner.temp }}/collector-clis/node_modules
+          PYTHON: python
+        shell: pwsh
+        run: |
+          $start = Get-Date
+          foreach ($tool in @('Claude', 'Codex', 'OpenCode')) {
+            $stdout = Join-Path $env:RUNNER_TEMP "cli-$tool.out"
+            $stderr = Join-Path $env:RUNNER_TEMP "cli-$tool.err"
+            $test = Start-Process node -PassThru -NoNewWindow `
+              -ArgumentList @('--test', '--test-force-exit', "--test-name-pattern=$tool", 'test/real-cli-smoke.mjs') `
+              -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            $finished = $test.WaitForExit(120000)
+            if (-not $finished) {
+              taskkill /PID $test.Id /T /F | Out-Null
+            }
+            Get-Content $stdout
+            Get-Content $stderr
+            if (-not $finished) { throw "$tool CLI smoke timed out after 120 seconds" }
+            if ($test.ExitCode -ne 0) { exit $test.ExitCode }
+          }
+          Write-Output "CLI smoke elapsed: $((Get-Date) - $start)"
