@@ -316,11 +316,16 @@ deployments, stricter trigger: see below).
 
 Every preview page shows "This is a preview build" in the header. Nothing is
 seeded on sign-in. After the first participant becomes admin, the preview-only
-admin panel can generate or replace a separate "Preview sample" profile from
-validated JSON (days, events per day, tools, models and token counts). Its
-fictional activity is labeled on the profile and leaderboard, and contributes
-to preview-only leaderboard totals. Production has no seed controls or sample
-data. This preview sample is distinct from the browser-only `/demo` dataset.
+admin panel can generate or replace fictional activity from validated JSON
+(`target`, days, events per day, tools, models and token counts). `target` is
+`self` by default, adding events to the signed-in admin's account; the option
+`preview_user` makes a separate "Preview sample" profile. Events use a device
+named `preview`, and regenerating replaces only that device's events, leaving
+measured events intact. A previous synthetic profile is removed when switching
+back to `self`. Fictional activity is labeled on the profile and leaderboard,
+and contributes to preview-only leaderboard totals. Production has no seed
+controls or sample data. This preview seed is distinct from the browser-only
+`/demo` dataset.
 Until the root-installed preview Compose file is reinstalled, the app also
 recognizes the existing preview configuration (its `pr-<N>` public URL,
 preview proxy subnet and sign-in allowlist) without `PREVIEW_MODE`.

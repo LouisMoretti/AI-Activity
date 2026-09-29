@@ -104,7 +104,7 @@ export function adminRoutes(db: DB, preview = false) {
       const body = await readJson(c);
       try {
         const config = parsePreviewSeed(body);
-        return c.json({ ...seedPreviewData(db, config), config });
+        return c.json({ ...seedPreviewData(db, config, c.get("userId")), config });
       } catch (err) {
         if (err instanceof Error && !("code" in err)) return c.json({ error: err.message }, 400);
         throw err;

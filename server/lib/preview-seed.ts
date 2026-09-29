@@ -1,6 +1,7 @@
 import { TOOLS, type PreviewSeedConfig, type Tool } from "../../shared/types.ts";
 
 export const DEFAULT_PREVIEW_SEED: PreviewSeedConfig = {
+  target: "self",
   days: 60,
   events_per_day: 2,
   tools: [...TOOLS],
@@ -17,6 +18,8 @@ export function parsePreviewSeed(value: unknown): PreviewSeedConfig {
   const v = value as Record<string, unknown>;
   const keys = Object.keys(DEFAULT_PREVIEW_SEED);
   if (Object.keys(v).some((key) => !keys.includes(key))) throw new Error("unknown sample setting");
+  const target = v.target ?? "self";
+  if (target !== "self" && target !== "preview_user") throw new Error("target must be self or preview_user");
   const integer = (key: keyof PreviewSeedConfig, min: number, max: number): number => {
     const n = v[key];
     if (!Number.isInteger(n) || (n as number) < min || (n as number) > max) {
@@ -36,6 +39,7 @@ export function parsePreviewSeed(value: unknown): PreviewSeedConfig {
       models.some((model) => typeof model !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._\/-]{0,79}$/.test(model)) ||
       new Set(models).size !== models.length) throw new Error("models must be 1 to 16 distinct model names");
   return {
+    target,
     days, events_per_day, tools: tools as Tool[], models: models as string[],
     input_tokens: integer("input_tokens", 0, 1000000),
     output_tokens: integer("output_tokens", 0, 1000000),
