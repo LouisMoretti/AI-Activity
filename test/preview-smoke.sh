@@ -4,6 +4,7 @@
 # Commands passed to the container must be expanded there, not on the host.
 # shellcheck disable=SC2016
 set -euo pipefail
+trap 'echo "Preview smoke failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 root=$(mktemp -d)
 export PR=1 APP_IMAGE=${APP_IMAGE:-ai-activity:ci} PREVIEW_DOMAIN=preview.test
 export GITHUB_CLIENT_ID=ci GITHUB_CLIENT_SECRET=ci ALLOWED_GITHUB_LOGINS=octocat
@@ -74,7 +75,7 @@ docker exec preview-host node -e "fetch(process.argv[1]).then(r=>{if(!r.ok)proce
 '
 # Prove the metadata request hit the reject rule, even on a runner without
 # a metadata service. A timeout by itself would not prove the firewall works.
-sudo iptables -w 10 -nvxL AI-PREVIEW | awk '$9 == "169.254.0.0/16" && $1 > 0 {hit=1} END {exit !hit}'
+sudo iptables -w 10 -nvxL AI-PREVIEW | tee /dev/stderr | awk '$9 == "169.254.0.0/16" && $1 > 0 {hit=1} END {exit !hit}'
 "${preview[@]}" exec -T app sh -c 'test "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6)" = 1'
 # Exhaust the bounded filesystem. The host filesystem has already reserved
 # these blocks, so its free space must not drop by the amount written.
