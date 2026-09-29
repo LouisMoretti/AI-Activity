@@ -88,10 +88,23 @@ m.CONFIGS["antigravity"] = os.path.join(m.GEMINI_HOME, "config", "hooks.json")
 m.FILES["antigravity.py"] = 'SERVER = "<server>"; KEY = "<device key>"'
 m.install_antigravity("https://example.com", "test-key")
 config = json.load(open(m.CONFIGS["antigravity"], encoding="utf-8"))
+script = os.path.join(m.GEMINI_HOME, "ai-activity-antigravity.py")
 for event, flag in (("PostInvocation", "--post-invocation"), ("Stop", "--hook")):
     cmd = config["ai-activity"][event][0]["command"]
     assert '"' not in cmd, cmd
-    assert cmd.endswith("ai-activity-antigravity.py " + flag), cmd
+    assert cmd.endswith(" " + flag), cmd
+    if os.name == "nt":
+        # Real 8.3 short paths: no token holds a space, and the short script
+        # resolves back to the installed one.
+        import ctypes
+        exe, installed, got_flag = cmd.split(" ")
+        assert got_flag == flag and exe.lower().endswith("python.exe"), cmd
+        buf = ctypes.create_unicode_buffer(300)
+        assert ctypes.windll.kernel32.GetLongPathNameW(installed, buf, 300)
+        assert os.path.normcase(buf.value) == os.path.normcase(script), cmd
+    else:
+        # short_path is a no-op off Windows: the long script stays as is.
+        assert script in cmd, cmd
 m.install_antigravity("https://example.com", "test-key")
 print("quoteless antigravity hooks ok")
 `;
