@@ -21,11 +21,14 @@ on:
 permissions:
   contents: read
 
-# Shared with preview.yml: one run per PR at a time, whatever the trigger.
+# One run per PR at a time within this workflow, whatever the trigger. The
+# group is prefixed per workflow: preview.yml runs on every pull_request event
+# too, even for fork PRs where all its jobs skip, so a shared group would let
+# that no-op run cancel the real one (concurrency groups are repo-wide).
 concurrency:
   group: >-
     ${{ github.event_name == 'schedule' && 'preview-prune' ||
-    format('preview-{0}{1}', github.event.pull_request.number,
+    format('preview-fork-{0}{1}', github.event.pull_request.number,
     !(github.event.label.name == 'preview' || (!github.event.label &&
     contains(github.event.pull_request.labels.*.name, 'preview')))
     && format('-{0}', github.run_id) || '') }}
