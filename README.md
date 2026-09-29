@@ -9,6 +9,16 @@
 > their APIs on your behalf or work around their limits. Using those tools
 > stays subject to their own terms.
 
+## Friends
+
+Sign in and open **Friends** from the avatar menu to see the people you
+follow on GitHub who also have an enabled AI Activity profile. Each entry
+links to that public profile and shows measured tokens, conversations and
+last activity for the past seven days. The server reads GitHub's public
+following list using the OAuth app's client ID and secret, without requesting
+an OAuth scope or keeping a user's GitHub token.
+If GitHub is unavailable, the page offers a retry.
+
 ## One-command install
 
 Create a device key (**Settings → Devices**),
@@ -352,8 +362,12 @@ What it does after every tool call and at the end of every turn:
 }
 ```
 
-For Windows, use this instead, replacing `<user>` with your Windows user
-directory name. Backslashes and quotes below are already JSON-escaped:
+For Windows, use 8.3 short paths with no quotes instead, replacing `<user>`
+with your Windows user directory name. Backslashes below are already
+JSON-escaped. Quotes would seem natural here, but agy's hook runner splits
+the command naively on spaces and keeps the quotes in the pieces, so a
+quoted path never resolves; the one-command install writes these short paths
+for you (find one with `cmd /c for %I in ("<path>") do @echo %~sI`):
 
 ```json
 {
@@ -362,14 +376,14 @@ directory name. Backslashes and quotes below are already JSON-escaped:
     "PostInvocation": [
       {
         "type": "command",
-        "command": "python \"C:\\Users\\<user>\\.gemini\\ai-activity-antigravity.py\" --post-invocation",
+        "command": "C:\\PROGRA~1\\Python312\\python.exe C:\\Users\\<user>\\.gemini\\ai-activity-antigravity.py --post-invocation",
         "timeout": 10
       }
     ],
     "Stop": [
       {
         "type": "command",
-        "command": "python \"C:\\Users\\<user>\\.gemini\\ai-activity-antigravity.py\" --hook",
+        "command": "C:\\PROGRA~1\\Python312\\python.exe C:\\Users\\<user>\\.gemini\\ai-activity-antigravity.py --hook",
         "timeout": 10
       }
     ]
@@ -656,3 +670,26 @@ How each one is started:
 Claude Code, Codex and OpenCode runs give up after 15 minutes (the progress
 already accepted is kept). The payloads each script sends are described in
 `AGENTS.md` §5.
+
+## Collector CI
+
+`npm test` runs the installed collector integration tests on Linux and ARM64;
+the Windows CI job runs them explicitly. Each test starts a temporary app and
+local HTTP receiver, runs the served installer in an isolated home, invokes
+the installed status line, hook or plugin against synthetic tool data, then
+checks the upload format, retry, deduplication and dashboard totals. No model
+API or external account is needed.
+
+The **Collector CLI smoke** workflow runs on relevant collector changes, on
+pull requests and pushes to `main`, and can be started manually from Actions.
+Its Linux x64, Linux ARM64 and Windows x64 jobs install pinned Claude Code,
+Codex and OpenCode CLIs, point each at a local fake model API, complete one
+chat, and check that the installed integration reaches the real app. Windows
+uses a temporary ConPTY for Claude Code's interactive status line. The same
+jobs also install the latest Antigravity CLI, chat with a local Gemini
+stub, and verify that its installed hook uploads measured usage; see the
+Antigravity section above. `agy` stays in its own steps because it is a
+native binary rather than a Node CLI: it cannot be pinned with the rest and
+intentionally tracks the latest release, and its chat is headless (`agy -p`
+print mode, no TUI). No model API key or external account is needed. This
+path-filtered workflow is not a required check on unrelated PRs.

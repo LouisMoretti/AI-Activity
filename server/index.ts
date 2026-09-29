@@ -8,12 +8,17 @@ import { newSetupCode } from "./lib/setup.ts";
 const config = loadConfig();
 const db = openDb(config.dbPath, config.backupDir);
 // New on every start and only in this log: whoever creates the first
-// account from the browser must be able to read the server's output.
-const setupCode = accountsExist(db) ? null : newSetupCode();
+// account from the browser must be able to read the server's output. None
+// when ALLOWED_GITHUB_LOGINS already says who may take the server.
+const setupCode = accountsExist(db) || config.allowedLogins ? null : newSetupCode();
 
 const server = serve({ fetch: createApp(db, config, setupCode).fetch, port: config.port }, () => {
   console.log(`AI Activity listening on http://localhost:${config.port}`);
   console.log(`DB: ${config.dbPath}`);
+  if (config.allowedLogins) {
+    console.log(`Only these GitHub accounts can sign in: ${[...config.allowedLogins].join(", ")}`);
+    if (!accountsExist(db)) console.log("No account yet: the first of them to sign in becomes the admin.");
+  }
   if (setupCode) {
     console.log("No account yet. Sign in with GitHub in the browser with this setup code:");
     console.log(`  Setup code: ${setupCode}`);

@@ -11,6 +11,7 @@ const MESSAGES: Record<string, string> = {
   closed: "Account creation is closed on this server: only existing accounts can sign in.",
   too_many: "Too many accounts were created from here. Try again later.",
   other_account: "That GitHub account is not the one signed in here: sign in again with this account's GitHub account.",
+  not_allowed: "Only some GitHub accounts can sign in on this server, and this one is not one of them.",
 };
 
 /** The message for an auth_error code, or null for an unknown one. */

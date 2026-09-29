@@ -1,0 +1,114 @@
+# Builds the image of one commit for amd64 and arm64 and publishes it to GHCR
+# as ghcr.io/<owner>/<repo><suffix>:<commit>. Called by deploy.yml
+# (production, also :latest), preview.yml (same-repo pull request previews)
+# and preview-fork.yml (fork previews), into their own package.
+# See AGENTS.md, "Continuous deployment".
+name: Image
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        description: The commit to build
+        type: string
+        required: true
+      repo:
+        description: The repository holding the commit (a fork's, for preview-fork.yml)
+        type: string
+        default: ""
+      suffix:
+        description: Added to the package name ("-preview" for pull request previews)
+        type: string
+        default: ""
+      latest:
+        description: Also tag it latest
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  SHA: ${{ inputs.sha }}
+  SUFFIX: ${{ inputs.suffix }}
+
+jobs:
+  build:
+    name: build (${{ matrix.arch }})
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # Native runners: nothing is emulated.
+          - { runner: ubuntu-latest, arch: amd64 }
+          - { runner: ubuntu-24.04-arm, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # A fork's commit for preview-fork.yml (unset: this repository).
+          # persist-credentials: the build must not keep a token in git config.
+          repository: ${{ inputs.repo || github.repository }}
+          ref: ${{ env.SHA }}
+          persist-credentials: false
+      - name: Image name (lowercase)
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}$SUFFIX" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.SHA }}
+          # Pushed by digest only; the merge job tags the multi-arch image.
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+      - run: echo "${{ steps.build.outputs.digest }}" > digest-${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: digest-${{ matrix.arch }}
+          retention-days: 1
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}$SUFFIX" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tag the multi-arch image
+        env:
+          LATEST: ${{ inputs.latest }}
+        run: |
+          set -eu
+          refs=()
+          for f in digest-*; do refs+=("$IMAGE@$(cat "$f")"); done
+          tags=(-t "$IMAGE:$SHA")
+          if [ "$LATEST" = true ]; then tags+=(-t "$IMAGE:latest"); fi
+          docker buildx imagetools create "${tags[@]}" "${refs[@]}"
+          docker buildx imagetools inspect "$IMAGE:$SHA"

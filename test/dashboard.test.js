@@ -147,6 +147,29 @@ describe("dashboard state", () => {
     stop();
   });
 
+  test("Friends requires sign-in and returns there after GitHub", async () => {
+    const { dash, stop } = await open("/friends", { "/api/auth/status": signedOut });
+    assert.equal(loc.pathname + loc.search, `/?next=${encodeURIComponent("/friends")}`);
+    assert.equal(dash.status, "signed-out");
+    stop();
+    const signed = await open("/friends");
+    assert.equal(signed.dash.route.page, "friends");
+    assert.equal(signed.dash.status, "ready");
+    signed.stop();
+  });
+
+  test("a 401 from Friends sends the viewer to sign-in with the return path", async () => {
+    const { dash, stop } = await open("/friends", { "/api/friends": 401 });
+    assert.equal(dash.status, "ready");
+    routes["/api/auth/status"] = signedOut;
+    await assert.rejects(api.friends());
+    await settle();
+    assert.equal(dash.account, null);
+    assert.equal(dash.status, "signed-out");
+    assert.equal(loc.pathname + loc.search, `/?next=${encodeURIComponent("/friends")}`);
+    stop();
+  });
+
   test("a lost session preserves the query through the GitHub sign-in", async () => {
     const { dash, stop } = await open("/u/me?tab=x", profileRoutes("me"));
     routes["/api/devices"] = 401;
