@@ -82,7 +82,7 @@ spec = importlib.util.spec_from_file_location("installer", sys.argv[1])
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 m.WINDOWS = True
-m.sys.executable = r"C:\\Program Files\\Python312\\python.exe"
+m.sys.executable = sys.executable
 m.GEMINI_HOME = os.path.join(sys.argv[2], ".gemini")
 m.CONFIGS["antigravity"] = os.path.join(m.GEMINI_HOME, "config", "hooks.json")
 m.FILES["antigravity.py"] = 'SERVER = "<server>"; KEY = "<device key>"'
