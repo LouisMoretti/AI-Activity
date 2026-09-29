@@ -77,13 +77,16 @@ export async function signedInUser(gh: GithubConfig, code: string, redirectUri: 
 /** Public GitHub follows, identified by stable numeric ids. No OAuth scope or stored token. */
 export function followingReader(gh: GithubConfig) {
   const cache = new Map<number, { login: string; until: number; ids: number[] }>();
+  // GitHub accepts the OAuth app's credentials for public REST reads. Keep
+  // them in the server-side Authorization header, never in the URL or browser.
+  const authorization = `Basic ${Buffer.from(`${gh.clientId}:${gh.clientSecret}`).toString("base64")}`;
   return async (viewerId: number, login: string): Promise<number[]> => {
     const saved = cache.get(viewerId);
     if (saved && saved.login === login && saved.until > Date.now()) return [...saved.ids];
     const ids: number[] = [];
     for (let page = 1; page <= FOLLOWING_MAX_PAGES; page++) {
       const url = `${gh.apiUrl}/users/${encodeURIComponent(login)}/following?per_page=100&page=${page}`;
-      const body = await fetchJson(url, { headers: { accept: "application/vnd.github+json", "user-agent": "ai-activity" } });
+      const body = await fetchJson(url, { headers: { accept: "application/vnd.github+json", authorization, "user-agent": "ai-activity" } });
       if (!Array.isArray(body)) throw new Error("GitHub gave no following list");
       for (const item of body) {
         const id = (item as { id?: unknown } | null)?.id;

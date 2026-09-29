@@ -94,6 +94,8 @@ export async function fakeGithub() {
     }
     const following = url.pathname.match(/^\/users\/([^/]+)\/following$/);
     if (following) {
+      const appCredentials = Buffer.from("test-client:test-secret").toString("base64");
+      if (request.headers.authorization !== `Basic ${appCredentials}`) return send(401, { message: "Bad app credentials" });
       const login = decodeURIComponent(following[1]).toLowerCase();
       const follows = github.follows.has(login) ? github.follows.get(login) : [];
       if (follows === null) return send(503, { message: "Unavailable" });
