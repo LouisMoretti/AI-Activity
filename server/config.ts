@@ -33,6 +33,19 @@ export interface Config {
 
 const trimUrl = (v: string | undefined) => (v?.trim() ? v.trim().replace(/\/+$/, "") : null);
 
+/** The root-installed preview Compose file can lag behind an image update. */
+function isPreview(env: NodeJS.ProcessEnv): boolean {
+  if (env.PREVIEW_MODE === "1") return true;
+  const url = trimUrl(env.PUBLIC_URL);
+  if (!url || env.TRUST_PROXY !== "172.29.95.0/24" || !env.ALLOWED_GITHUB_LOGINS?.trim()) return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" && /^pr-[1-9][0-9]*\.[a-z0-9.-]+$/i.test(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const dbPath = env.DB_PATH || path.join(ROOT, "data", "dashboard.db");
   return {
@@ -54,6 +67,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       : null,
     publicUrl: trimUrl(env.PUBLIC_URL),
     allowedLogins: parseAllowedLogins(env.ALLOWED_GITHUB_LOGINS),
-    preview: env.PREVIEW_MODE === "1",
+    preview: isPreview(env),
   };
 }

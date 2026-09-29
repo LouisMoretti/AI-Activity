@@ -52,3 +52,17 @@ test("production has no sample controls or preview marker", async () => {
     await srv.stop();
   }
 });
+
+test("the installed preview Compose configuration enables the controls without PREVIEW_MODE", async () => {
+  const srv = await startServer({ env: {
+    PUBLIC_URL: "https://pr-206.ai-activity-preview.example",
+    TRUST_PROXY: "172.29.95.0/24",
+    ALLOWED_GITHUB_LOGINS: "admin",
+  } });
+  try {
+    assert.equal((await req(srv.base, "GET", "/api/auth/status", { anon: true })).json.preview, true);
+    assert.equal((await req(srv.base, "GET", "/api/admin/preview-seed")).status, 200);
+  } finally {
+    await srv.stop();
+  }
+});

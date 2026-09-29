@@ -321,6 +321,9 @@ validated JSON (days, events per day, tools, models and token counts). Its
 fictional activity is labeled on the profile and leaderboard, and contributes
 to preview-only leaderboard totals. Production has no seed controls or sample
 data. This preview sample is distinct from the browser-only `/demo` dataset.
+Until the root-installed preview Compose file is reinstalled, the app also
+recognizes the existing preview configuration (its `pr-<N>` public URL,
+preview proxy subnet and sign-in allowlist) without `PREVIEW_MODE`.
 
 `ai-preview.example` stands for a **separate registrable domain**, never a
 subdomain of production's: a subdomain can set cookies for its parent
