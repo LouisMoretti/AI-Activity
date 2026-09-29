@@ -1,5 +1,6 @@
 <script lang="ts">
   import AdminOverview from "./components/AdminOverview.svelte";
+  import PreviewSeedPanel from "./components/PreviewSeedPanel.svelte";
   import AuthPanel from "./components/AuthPanel.svelte";
   import ActivityChart from "./components/ActivityChart.svelte";
   import Conversations from "./components/Conversations.svelte";
@@ -50,7 +51,7 @@
 <!-- Site chrome (header and footer) lives here,
      outside the page branches, so every page gets exactly the same. -->
 <div class="shell">
-  <SiteHeader account={dash.account} demo={!!dash.vm?.demo}
+  <SiteHeader account={dash.account} demo={!!dash.vm?.demo} sample={!!dash.shown?.sample} preview={dash.preview}
     {crumb}
     signIn={dash.status !== "loading" && dash.status !== "signed-out" && dash.status !== "setup"}
     onnavigate={(p) => dash.go(p)} onlogout={() => dash.logout()} />
@@ -102,6 +103,11 @@
         <Section title="Overview" subtitle="The whole server, every account">
           <AdminOverview />
         </Section>
+        {#if dash.preview}
+          <Section title="Preview sample data" subtitle="Fictional activity for this isolated preview">
+            <PreviewSeedPanel />
+          </Section>
+        {/if}
         <Section title="Users" subtitle="Profile pages are public; devices and settings stay private">
           <UsersPanel selfId={dash.account.id} />
         </Section>
@@ -121,7 +127,7 @@
     {#if dash.vm && dash.shown}
       {@const vm = dash.vm}
       {@const quotaCards = { "claude-code": vm.claude, codex: vm.codex, antigravity: vm.antigravity }}
-      <ActivityChart series={vm.series} today={vm.today} demo={vm.demo} hasActivity={vm.hasActivity} />
+      <ActivityChart series={vm.series} today={vm.today} demo={vm.demo || !!dash.shown.sample} hasActivity={vm.hasActivity} />
       <StatsRow stats={vm.stats} />
 
       <Section title="Tools" subtitle="Limits are per account, latest snapshot">

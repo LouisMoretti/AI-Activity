@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
   Account, ActivityDay, AdminOverview, AdminUser, Profile, Breakdown, BreakdownRow, DeletedAccount, DeletedActivity, Device, LeaderboardEntry,
-  LeaderboardResponse, Quota, Session,
+  LeaderboardResponse, PreviewSeedConfig, Quota, Session,
 } from "../../shared/types.ts";
 import { COLLECTOR_VERSIONS } from "../../shared/collectors.ts";
 import { BREAKDOWN_DISPLAY_ROWS, TOOLS } from "../../shared/types.ts";
 import { nowSec, type DB } from "./schema.ts";
+import { DEFAULT_PREVIEW_SEED } from "../lib/preview-seed.ts";
 
 export interface DeviceRow extends Omit<Device, "has_key" | "collectors"> {
   user_id: number;
@@ -83,7 +84,7 @@ export function toAccount(u: UserRow): Account {
 
 export function toProfile(u: UserRow): Profile {
   const { username, display_name, avatar_url } = toAccount(u);
-  return { username, display_name, avatar_url };
+  return { username, display_name, avatar_url, ...(u.github_id < 0 ? { sample: true as const } : {}) };
 }
 
 /** True once at least one account exists; before that nothing is viewable (setup). */
@@ -745,10 +746,10 @@ export function leaderboard(
   // Every enabled account, used or not: idle ones rank last with zeros.
   const users = db
     .prepare(
-      `SELECT id, username, display_name, avatar_url FROM users
+      `SELECT id, username, display_name, avatar_url, github_id FROM users
        WHERE disabled = 0`
     )
-    .all() as { id: number; username: string; display_name: string | null; avatar_url: string | null }[];
+    .all() as { id: number; username: string; display_name: string | null; avatar_url: string | null; github_id: number }[];
   const today = new Map(users.map((u) => [u.id, dayAt(latestOffset(db, u.id), now)]));
   // The calendar ends on the latest of those days (UTC with no account).
   const lastDay = [...today.values()].reduce((a, d) => (d > a ? d : a), dayAt(null, now));
@@ -823,6 +824,7 @@ export function leaderboard(
       username: u.username,
       display_name: u.display_name || u.username,
       avatar_url: u.avatar_url,
+      ...(u.github_id < 0 ? { sample: true as const } : {}),
       tokens: a.tokens,
       sessions: a.sessions.size,
       events: a.events,
@@ -845,4 +847,63 @@ export function leaderboard(
     activity: [...activity].sort((x, y) => (x[0] < y[0] ? -1 : 1))
       .map(([day, t]) => ({ day, tokens: t.tokens, sessions: t.sessions.size })),
   };
+}
+
+/** SQL for the synthetic account exists only in the preview administration path. */
+const PREVIEW_SEED_KEY = "preview_seed_config";
+const SAMPLE_GITHUB_ID = -2147000000;
+
+export function previewSeedSettings(db: DB): PreviewSeedConfig {
+  const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(PREVIEW_SEED_KEY) as { value: string } | undefined;
+  return row ? JSON.parse(row.value) as PreviewSeedConfig : DEFAULT_PREVIEW_SEED;
+}
+
+/** Replace only the synthetic account's events in an isolated preview database. */
+export function seedPreviewData(db: DB, config: PreviewSeedConfig): { username: string; events: number } {
+  return db.transaction(() => {
+    let user = db.prepare("SELECT id, username FROM users WHERE github_id = ?").get(SAMPLE_GITHUB_ID) as
+      { id: number; username: string } | undefined;
+    const now = Math.floor(Date.now() / 1000);
+    if (!user) {
+      const base = "preview-sample";
+      let username = base;
+      for (let n = 2; db.prepare("SELECT 1 FROM users WHERE username = ? COLLATE NOCASE").get(username); n++) {
+        username = `${base}-${n}`;
+      }
+      const result = db.prepare(
+        "INSERT INTO users (github_id, username, display_name, avatar_url, is_admin, created_at) VALUES (?, ?, ?, NULL, 0, ?)"
+      ).run(SAMPLE_GITHUB_ID, username, "Preview sample", now);
+      user = { id: Number(result.lastInsertRowid), username };
+    }
+    const userId = user.id;
+    db.prepare("UPDATE users SET disabled = 0, display_name = 'Preview sample' WHERE id = ?").run(userId);
+    const device = db.prepare("SELECT id FROM devices WHERE user_id = ? AND name = 'Preview sample data'").get(userId) as { id: number } | undefined;
+    const deviceId = device?.id ?? Number(db.prepare(
+      "INSERT INTO devices (user_id, name, key_hash, key_prefix, revoked, created_at) VALUES (?, ?, ?, ?, 0, ?)"
+    ).run(userId, "Preview sample data", "preview-seed-device", "preview", now).lastInsertRowid);
+
+    db.prepare("DELETE FROM quota_snapshots WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM usage_events WHERE user_id = ?").run(userId);
+    const insert = db.prepare(`
+      INSERT INTO usage_events (
+        event_id, device_id, user_id, tool, session_id, prompt_id, model,
+        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+        context_window_size, context_used_pct, occurred_at, received_at, source, utc_offset_min
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'message', 0)
+    `);
+    const count = config.days * config.events_per_day;
+    for (let i = 0; i < count; i++) {
+      const day = Math.floor(i / config.events_per_day);
+      const at = now - day * 86400 - (i % config.events_per_day) * 1800;
+      insert.run(
+        `preview-sample-${i}`, deviceId, userId, config.tools[i % config.tools.length],
+        `preview-session-${Math.floor(i / 3)}`, `preview-prompt-${i}`,
+        config.models[i % config.models.length], config.input_tokens, config.output_tokens,
+        config.cache_read_tokens, config.cache_write_tokens, 200000, 30 + (i * 7) % 60, at, now,
+      );
+    }
+    db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .run(PREVIEW_SEED_KEY, JSON.stringify(config));
+    return { username: user.username, events: count };
+  })();
 }

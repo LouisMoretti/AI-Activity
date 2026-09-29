@@ -7,12 +7,14 @@
 
   // Same header on every page: it never reads the route itself, the page
   // only hands it the breadcrumb.
-  let { account, demo, crumb, signIn, onnavigate, onlogout }: {
+  let { account, demo, sample, preview, crumb, signIn, onnavigate, onlogout }: {
     account: Account | null;
     /** Current page, shown as "AI Activity / <label>". */
     crumb: { label: string; mono?: boolean; picture?: { name: string; url: string | null } } | null;
     /** Fictional data on screen: always labeled. */
     demo: boolean;
+    sample: boolean;
+    preview: boolean;
     /** Show "Sign in" when signed out (off on the sign-in screen itself). */
     signIn: boolean;
     onnavigate: (path: string) => void;
@@ -26,7 +28,9 @@
     {#if crumb}<span class="crumb"><span class="sep" aria-hidden="true">/</span>{#if crumb.picture}<Avatar name={crumb.picture.name} url={crumb.picture.url} size={22} />{/if}<span class="label" class:mono={crumb.mono}>{crumb.label}</span></span>{/if}
   </div>
   <div class="top-right">
+    {#if preview}<span class="badge preview">This is a preview build</span>{/if}
     {#if demo}<span class="badge demo">Demonstration data</span>{/if}
+    {#if sample}<span class="badge preview">Fictional sample data</span>{/if}
     {#if account}
       <AccountMenu {account} {onnavigate} {onlogout} />
     {:else if signIn}
@@ -48,6 +52,7 @@
   .signin { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 4px 10px; font-size: 12px; color: var(--text); }
   .badge { border: 1px solid var(--line); font-size: 12px; padding: 5px 10px; border-radius: var(--radius-sm); }
   .badge.demo { border-color: var(--demo-line); background: var(--demo-bg); color: var(--demo-text); }
+  .badge.preview { border: 1px solid var(--line); border-radius: 999px; padding: 5px 9px; color: var(--muted); font-size: 11px; white-space: nowrap; }
   @media (max-width: 720px) {
     .top { gap: 12px; align-items: flex-start; }
     h1 { white-space: nowrap; }

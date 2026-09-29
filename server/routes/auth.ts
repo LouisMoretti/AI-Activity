@@ -3,7 +3,6 @@ import { Hono, type Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import type { AuthStatus } from "../../shared/types.ts";
 import { accountsExist, createAccount, createFirstAccount, findUserByGithubId, signupOpen } from "../db/queries.ts";
-import { seedPreviewData } from "../lib/preview-seed.ts";
 import type { DB } from "../db/schema.ts";
 import { applyGithubProfile, claimLogin } from "../lib/accounts.ts";
 import type { ClientInfo } from "../lib/client.ts";
@@ -83,6 +82,7 @@ function signInWithError(next: string, error: AuthError): string {
 export function authRoutes(
   db: DB, auth: ViewerAuth, client: ClientInfo, github: GithubConfig | null, publicUrl: string | null,
   setupCode: string | null,
+  preview = false,
 ) {
   let signups = new Map<string, number>(); // client → accounts created in window
   let signupWindow = Date.now();
@@ -134,6 +134,7 @@ export function authRoutes(
     .get("/status", (c) => {
       const who = auth.resolve(c);
       return c.json<AuthStatus>({
+        ...(preview ? { preview: true } : {}),
         authenticated: Boolean(who),
         user: who?.account ?? null,
         setup_required: !accountsExist(db) && !auth.limited,
@@ -217,9 +218,6 @@ export function authRoutes(
         result = "expired";
       }
       if (typeof result !== "number") return fail(result);
-      // Seed only after a real preview participant has signed in, preserving
-      // the preview's normal first-account/admin setup flow.
-      if (process.env.PREVIEW_SEED === "1") seedPreviewData(db);
       auth.login(c, result);
       return c.redirect(p.next, 302);
     })

@@ -38,7 +38,7 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
     // successful sign-in must not cost twice, and the callback only works
     // with a state this server just handed out.
     .on("POST", "/auth/github", oauth)
-    .route("/auth", authRoutes(db, auth, client, config.github, config.publicUrl, setupCode))
+    .route("/auth", authRoutes(db, auth, client, config.github, config.publicUrl, setupCode, config.preview))
     .route("/ingest", ingestRoutes(db))
     // Public, read-only: profile pages, the account list and the leaderboard.
     .use("/u/*", publicReads)
@@ -56,7 +56,7 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
     .route("/devices", deviceRoutes(db))
     .route("/account", accountRoutes(db))
     .route("/users", userRoutes(db))
-    .route("/admin", adminRoutes(db));
+    .route("/admin", adminRoutes(db, config.preview));
 
   const indexFile = path.join(config.staticDir, "index.html");
   // Served from memory; an async stat per request picks up a rebuilt web

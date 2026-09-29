@@ -314,6 +314,14 @@ in becomes the admin). Several run at once; a push updates the PR's preview
 `.github/workflows/preview.yml`, forks through `preview-fork.yml` (same
 deployments, stricter trigger: see below).
 
+Every preview page shows "This is a preview build" in the header. Nothing is
+seeded on sign-in. After the first participant becomes admin, the preview-only
+admin panel can generate or replace a separate "Preview sample" profile from
+validated JSON (days, events per day, tools, models and token counts). Its
+fictional activity is labeled on the profile and leaderboard, and contributes
+to preview-only leaderboard totals. Production has no seed controls or sample
+data. This preview sample is distinct from the browser-only `/demo` dataset.
+
 `ai-preview.example` stands for a **separate registrable domain**, never a
 subdomain of production's: a subdomain can set cookies for its parent
 (cookie tossing), so PR code there could sign visitors in to another

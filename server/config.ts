@@ -27,6 +27,8 @@ export interface Config {
    * in becomes the admin: no setup code.
    */
   allowedLogins: ReadonlySet<string> | null;
+  /** Only isolated PR previews expose sample data controls. */
+  preview: boolean;
 }
 
 const trimUrl = (v: string | undefined) => (v?.trim() ? v.trim().replace(/\/+$/, "") : null);
@@ -52,5 +54,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       : null,
     publicUrl: trimUrl(env.PUBLIC_URL),
     allowedLogins: parseAllowedLogins(env.ALLOWED_GITHUB_LOGINS),
+    preview: env.PREVIEW_MODE === "1",
   };
 }

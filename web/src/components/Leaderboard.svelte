@@ -64,7 +64,7 @@
 </script>
 
 <div class="head">
-  <span class="muted">Measured usage of every account, {periodText}</span>
+  <span class="muted">{data?.entries.some((entry) => entry.sample) ? "Usage includes fictional sample data" : "Measured usage of every account"}, {periodText}</span>
   <Segmented label="Period" value={period} onchange={(v) => (period = v)} options={PERIODS} />
 </div>
 
@@ -85,7 +85,7 @@
           <a class="who" href={profilePath(e.username)} onclick={(ev) => { ev.preventDefault(); onopen(e.username); }}>
             <Avatar name={e.display_name} url={e.avatar_url} size={32} />
             <span class="names">
-              <strong>{e.display_name}{same(e.username, self) ? " (you)" : ""}</strong>
+              <strong>{e.display_name}{e.sample ? " (fictional sample)" : ""}{same(e.username, self) ? " (you)" : ""}</strong>
               <small class="mono">@{e.username}</small>
             </span>
           </a>
