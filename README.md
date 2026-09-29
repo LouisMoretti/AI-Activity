@@ -636,7 +636,9 @@ each at a local fake model API, complete one chat, and check that the
 installed integration reaches the real app. Windows uses a temporary ConPTY
 for Claude Code's interactive status line. It uses no model API key or external
 account. The workflow is not a required check on unrelated PRs. Antigravity
-is covered by the installed hook test with synthetic database rows. The
-separate **Antigravity CLI smoke** workflow also runs a real `agy` chat against
-a local Gemini stub and verifies that the installed hook uploads its measured
-usage; see the Antigravity section above.
+is covered by the installed hook test with synthetic database rows. The same
+jobs also run a real `agy` chat against a local Gemini stub and verify that
+the installed hook uploads its measured usage; see the Antigravity section
+above. `agy` stays in its own steps because it is a native binary rather than
+a Node CLI: it cannot be pinned with the rest and intentionally tracks the
+latest release, and its chat is headless (`agy -p` print mode, no TUI).

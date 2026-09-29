@@ -13,6 +13,7 @@ on:
       - "test/install.test.js"
       - "test/helpers.js"
       - "test/real-cli-smoke.mjs"
+      - "test/real-antigravity-smoke.mjs"
       - ".github/workflows/collector-cli-smoke.yml"
   push:
     branches: [main]
@@ -26,6 +27,7 @@ on:
       - "test/install.test.js"
       - "test/helpers.js"
       - "test/real-cli-smoke.mjs"
+      - "test/real-antigravity-smoke.mjs"
       - ".github/workflows/collector-cli-smoke.yml"
 
 # This path-filtered workflow is intentionally not a required branch check:
@@ -97,6 +99,27 @@ jobs:
       - name: Report CLI cache
         run: |
           echo "CLI cache hit (warm run): ${{ steps.cli-cache.outputs.cache-hit }}"
+      # Antigravity runs in its own steps below, separate from the three Node
+      # CLIs above, because agy is different in kind: a native binary, not an
+      # npm package, so it cannot be pinned or cached with the rest. It
+      # intentionally tracks the latest release (no version pin) so the smoke
+      # catches the next undocumented conversation-metadata change; the test
+      # logs agy --version, so each run records what it validated. The chat
+      # itself is headless (`agy -p` print mode against a local Gemini stub,
+      # no provider key or account): no PTY/TUI dance like Claude Code's
+      # interactive status line, and a Gemini event-stream stub instead of
+      # the Anthropic/OpenAI fake model API.
+      - name: Install Antigravity CLI (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          curl -fsSL https://antigravity.google/cli/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install Antigravity CLI (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          irm https://antigravity.google/cli/install.ps1 | iex
+          Add-Content $env:GITHUB_PATH "$env:LOCALAPPDATA\agy\bin"
       - name: Chat with local model APIs and verify installed collectors
         env:
           CLI_ROOT: ${{ runner.temp }}/collector-clis/node_modules
@@ -129,3 +152,33 @@ jobs:
             if ($test.ExitCode -ne 0) { exit $test.ExitCode }
           }
           Write-Output "CLI smoke elapsed: $((Get-Date) - $start)"
+      # Same headless agy chat on every platform of the matrix: agy --version
+      # fails the step when the binary is missing, so the test below can never
+      # pass as a silent skip.
+      - name: Chat with a local Gemini stub and verify the Antigravity hook (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          agy --version
+          /usr/bin/time -f "Antigravity smoke elapsed: %e seconds" node --test test/real-antigravity-smoke.mjs
+      - name: Chat with a local Gemini stub and verify the Antigravity hook (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $start = Get-Date
+          agy --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $stdout = Join-Path $env:RUNNER_TEMP "cli-Antigravity.out"
+          $stderr = Join-Path $env:RUNNER_TEMP "cli-Antigravity.err"
+          $test = Start-Process node -PassThru -NoNewWindow `
+            -ArgumentList @('--test', '--test-force-exit', '--test-name-pattern=Antigravity', 'test/real-antigravity-smoke.mjs') `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          $finished = $test.WaitForExit(120000)
+          if (-not $finished) {
+            taskkill /PID $test.Id /T /F | Out-Null
+          }
+          Get-Content $stdout
+          Get-Content $stderr
+          if (-not $finished) { throw "Antigravity CLI smoke timed out after 120 seconds" }
+          if ($test.ExitCode -ne 0) { exit $test.ExitCode }
+          Write-Output "Antigravity smoke elapsed: $((Get-Date) - $start)"
