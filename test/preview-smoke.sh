@@ -37,9 +37,9 @@ mkfs.ext4 -q -E nodiscard -m 0 "$root/data.img"
 sudo mount -o loop,nodev,nosuid,noexec "$root/data.img" "$root/data"
 sudo chown "$PREVIEW_UID:$PREVIEW_GID" "$root/data"
 mkdir "$root/data/pr-1"
-docker network create ai-activity-preview --subnet 172.29.95.0/24 --ip-range 172.29.95.128/25 --opt com.docker.network.bridge.name=ai-preview
+docker network create ai-activity-preview --subnet 172.29.95.0/24 --gateway 172.29.95.1 --ip-range 172.29.95.128/25 --opt com.docker.network.bridge.name=ai-preview
 gateway=$(docker network inspect ai-activity-preview --format '{{(index .IPAM.Config 0).Gateway}}')
-echo "Preview gateway: $gateway"
+[[ $gateway == 172.29.95.1 ]] || { echo "Unexpected preview gateway: $gateway" >&2; exit 1; }
 sudo modprobe br_netfilter
 sudo sysctl -w net.bridge.bridge-nf-call-iptables=1
 sudo bash deploy/ai-activity-preview-firewall

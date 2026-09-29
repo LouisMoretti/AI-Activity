@@ -39,7 +39,7 @@ if (cmd === 'df') {
 if (cmd === 'sudo') die(process.env.BAD_FIREWALL ? 1 : 0);
 if (cmd === 'docker') {
   if (a[0] === 'info') out('/docker');
-  if (a[0] === 'network') out(process.env.NETWORK || 'bridge false ai-preview 172.29.95.0/24 172.29.95.128/25');
+  if (a[0] === 'network') out(process.env.NETWORK || 'bridge false ai-preview 172.29.95.0/24 172.29.95.128/25 172.29.95.1');
   if (a[0] === 'pull') {
     const file = path.join(root, 'pulls');
     const n = fs.existsSync(file) ? +fs.readFileSync(file) + 1 : 1;

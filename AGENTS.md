@@ -421,7 +421,7 @@ Setup, once:
    once with a sign-in.
 4. The server (same `deploy` user, a second key):
    ```bash
-   sudo docker network create ai-activity-preview --subnet 172.29.95.0/24 \
+   sudo docker network create ai-activity-preview --subnet 172.29.95.0/24 --gateway 172.29.95.1 \
      --ip-range 172.29.95.128/25 --opt com.docker.network.bridge.name=ai-preview
    # Dedicated, bounded storage. Run ONCE, on a non-CoW filesystem with at
    # least 3 GiB + the production reserve free. Never truncate an existing image.

@@ -127,7 +127,7 @@ up() {
   ((free >= MIN_FREE_GB)) || fail "refused: $free GB free on Docker's disk, under PREVIEW_MIN_FREE_GB=$MIN_FREE_GB"
 
   check_storage
-  [[ $(docker network inspect ai-activity-preview --format '{{.Driver}} {{.EnableIPv6}} {{index .Options "com.docker.network.bridge.name"}} {{range .IPAM.Config}}{{.Subnet}} {{.IPRange}}{{end}}') == 'bridge false ai-preview 172.29.95.0/24 172.29.95.128/25' ]] ||
+  [[ $(docker network inspect ai-activity-preview --format '{{.Driver}} {{.EnableIPv6}} {{index .Options "com.docker.network.bridge.name"}} {{range .IPAM.Config}}{{.Subnet}} {{.IPRange}} {{.Gateway}}{{end}}') == 'bridge false ai-preview 172.29.95.0/24 172.29.95.128/25 172.29.95.1' ]] ||
     fail "preview network must use the reserved Caddy address and preview allocation range (see AGENTS.md)"
   sudo -n /usr/local/bin/ai-activity-preview-firewall || fail "preview firewall could not be enforced"
 
