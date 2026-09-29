@@ -93,6 +93,24 @@ function readIf(pathname, max = 2000) {
   }
 }
 
+// agy's own log lines about hooks: did the app fire ours, and what did the
+// hook print? Only matching lines, capped, so no chat content is dumped.
+function hookLogLines(logDir, max = 3000) {
+  let files = [];
+  try {
+    files = fs.readdirSync(logDir).filter((f) => /^cli(-.*)?\.log$/.test(f))
+      .map((f) => path.join(logDir, f))
+      .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+  } catch {
+    return `(unreadable: ${logDir})`;
+  }
+  if (!files.length) return "(no agy cli log)";
+  const lines = readIf(files[0], 200000).split("\n")
+    .filter((line) => /hook|ai-activity/i.test(line));
+  const tail = lines.join("\n").slice(-max);
+  return tail || "(no hook lines in agy cli log)";
+}
+
 test("real Antigravity CLI uploads measured usage through the installed hook", async (t) => {
   const version = agyVersion();
   if (!version) {
@@ -175,6 +193,7 @@ test("real Antigravity CLI uploads measured usage through the installed hook", a
       const diag = [
         `chat output: ${chat.output.slice(-1200)}`,
         `hooks.json: ${readIf(path.join(gemini, "config", "hooks.json"))}`,
+        `agy cli.log hook lines:\n${hookLogLines(path.join(gemini, "antigravity-cli", "log"))}`,
         `isolated .gemini tree:\n${tree(gemini)}`,
         `isolated .cache/ai-activity tree:\n${tree(path.join(home, ".cache", "ai-activity"))}`,
       ].join("\n");
