@@ -297,6 +297,25 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
     }
   }
 
+  test("reinstall keeps other handlers in a shared Claude Code matcher group", () =>
+    inFreshHome("ai-activity-install-shared-", async (h, run) => {
+      const config = path.join(h, ".claude", "settings.json");
+      fs.mkdirSync(path.dirname(config));
+      const own = { type: "command", command: "python3 /old/path/ai-activity-claude-code.py --hook" };
+      const other = { type: "command", command: "echo keep-this-hook" };
+      const group = { matcher: "Bash", timeout: 30, hooks: [own, other] };
+      fs.writeFileSync(config, JSON.stringify({ hooks: { Stop: [group] } }));
+      const first = await run({ AI_ACTIVITY_TOOLS: "claude-code" });
+      assert.equal(first.code, 0, first.out);
+      const entries = JSON.parse(fs.readFileSync(config, "utf8")).hooks.Stop;
+      assert.deepEqual(entries[0], { ...group, hooks: [other] });
+      assert.equal(entries.length, 2, "the new handler is installed once");
+      const snapshot = fs.readFileSync(config, "utf8");
+      const second = await run({ AI_ACTIVITY_TOOLS: "claude-code" });
+      assert.equal(second.code, 0, second.out);
+      assert.equal(fs.readFileSync(config, "utf8"), snapshot, "reinstall is idempotent");
+    }));
+
   test("a broken config stops the install before anything is written", () =>
     inFreshHome("ai-activity-install-broken-", async (h, run) => {
       fs.mkdirSync(path.join(h, ".claude"));

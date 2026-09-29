@@ -284,6 +284,44 @@ describe("Claude Code collector (hooks and statusLine from README.md)", () => {
     }
   });
 
+  test("status refreshes do not queue behind a slow upload", async () => {
+    const received = [];
+    let releaseFirst;
+    const firstDone = new Promise((resolve) => { releaseFirst = resolve; });
+    const endpoint = http.createServer(async (request, response) => {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      received.push(JSON.parse(Buffer.concat(chunks).toString()).rate_limits.five_hour.used_percentage);
+      if (received.length === 1) await firstDone;
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ ok: true }));
+    });
+    await new Promise((resolve) => endpoint.listen(0, "127.0.0.1", resolve));
+    const base = `http://127.0.0.1:${endpoint.address().port}`;
+    const refresh = (pct) => run(statusLine(base), { env, stdin: JSON.stringify({
+      rate_limits: { five_hour: { used_percentage: pct, resets_at: 1999999999 } },
+    }) });
+    try {
+      await refresh(51);
+      assert.ok(await waitFor(() => received.length === 1), "the first upload started");
+      await Promise.all([52, 53, 54, 55, 56].map(refresh));
+      // The detached workers have time to see the held lock. They must
+      // finish without waiting for the first HTTP response.
+      await sleep(1000);
+      assert.deepEqual(received, [51]);
+      releaseFirst();
+      await collectorsDone(marker);
+      assert.deepEqual(received, [51], "stale captured values were not posted after the lock was released");
+      await refresh(56);
+      await collectorsDone(marker);
+      assert.deepEqual(received, [51, 56], "the next refresh sends the latest value");
+    } finally {
+      releaseFirst();
+      cmd(srv.base);
+      await new Promise((resolve) => endpoint.close(resolve));
+    }
+  });
+
   test("a redirect cannot forward the device bearer key", async () => {
     const before = await stats();
     const file = saved();

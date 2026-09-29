@@ -156,8 +156,21 @@ def install_claude(url, key):
     for event in CLAUDE_HOOKS:
         entries = hooks.get(event)
         entries = entries if isinstance(entries, list) else []
-        # Drop our earlier entries (any path), keep everyone else's.
-        hooks[event] = [e for e in entries if "ai-activity-claude-code.py" not in json.dumps(e)] + [ours]
+        # A matcher group may contain both our handler and the user's handlers.
+        # Remove only ours, even if an earlier install used a different path.
+        kept = []
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
+                kept.append(entry)
+                continue
+            handlers = [handler for handler in entry["hooks"]
+                        if not (isinstance(handler, dict) and isinstance(handler.get("command"), str)
+                                and "ai-activity-claude-code.py" in handler["command"])]
+            if len(handlers) == len(entry["hooks"]):
+                kept.append(entry)
+            elif handlers:
+                kept.append({**entry, "hooks": handlers})
+        hooks[event] = kept + [ours]
     # Quotas and context: the status line, the only place Claude Code gives them.
     current = settings.get("statusLine")
     # Ours: this script, or the former one-liner (it named ~/.cache/ai-activity).

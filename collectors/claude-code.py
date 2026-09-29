@@ -46,7 +46,7 @@ else:
 
 # Bump on every change to this file, with COLLECTOR_VERSIONS in
 # shared/collectors.ts: the server flags older copies as outdated.
-VERSION = 3
+VERSION = 4
 COLLECTOR = {"name": "claude-code", "version": VERSION}
 SERVER = os.environ.get("AI_ACTIVITY_URL", "<server>")
 KEY = os.environ.get("AI_ACTIVITY_KEY", "<device key>")
@@ -338,7 +338,11 @@ def report(status):
         return
     seen = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
     os.makedirs(CACHE, exist_ok=True)
-    held = lock(os.path.join(CACHE, "status.lock"))  # posted in the order measured
+    # A slow POST can hold this lock for a minute. Later refreshes should exit
+    # instead of queuing captured values; the next refresh will send the latest.
+    held = lock(os.path.join(CACHE, "status.lock"), wait=False)
+    if held is None:
+        return
     try:
         path = os.path.join(CACHE, "status.json")
         try:
