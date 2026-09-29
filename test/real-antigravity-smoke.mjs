@@ -8,7 +8,7 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { startServer, newDevice, req, tempHome } from "./helpers.js";
+import { startServer, newDevice, req, tempHome, processesGone } from "./helpers.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function waitFor(check, ms = 30000) {
@@ -184,21 +184,6 @@ test("real Antigravity CLI uploads measured usage through the installed hook", a
         "-Command", `irm ${app.base}/install.ps1 | iex`], env, { cwd: work })
       : await run("sh", ["-c", `curl -fsSL ${app.base}/install.sh | AI_ACTIVITY_URL=${ingest.base} AI_ACTIVITY_KEY=${key} AI_ACTIVITY_TOOLS=antigravity sh`], env, { cwd: work });
     assert.equal(install.code, 0, install.output.slice(-2000));
-    // DIAGNOSTIC v2 (temporary): strip every quote whose content holds no
-    // space: only a quoteless command survives agy's naive splitter.
-    let hookVariant = "installer default";
-    if (process.platform === "win32") {
-      const hooksPath = path.join(home, ".gemini", "config", "hooks.json");
-      const hooks = JSON.parse(fs.readFileSync(hooksPath, "utf8"));
-      for (const entry of hooks["ai-activity"] ? Object.values(hooks["ai-activity"]).flat() : []) {
-        if (entry?.command) {
-          entry.command = entry.command.replace(/"([^"]*)"/g,
-            (m, inner) => (inner.includes(" ") ? m : inner));
-        }
-      }
-      fs.writeFileSync(hooksPath, JSON.stringify(hooks));
-      hookVariant = `quoteless: ${hooks["ai-activity"].Stop[0].command.slice(0, 160)}`;
-    }
     const chat = await run("agy", ["-p", "Say hello.", "--output-format", "json", "--print-timeout", "20s"], env, { cwd: work });
     assert.match(chat.output, /"status":"SUCCESS"/, chat.output.slice(-2000));
     const summary = async () => (await req(app.base, "GET", "/api/u/admin/summary?tool=antigravity")).json.total;
@@ -207,7 +192,6 @@ test("real Antigravity CLI uploads measured usage through the installed hook", a
       const gemini = path.join(home, ".gemini");
       const diag = [
         `chat output: ${chat.output.slice(-1200)}`,
-        `hook variant: ${hookVariant}`,
         `hooks.json: ${readIf(path.join(gemini, "config", "hooks.json"))}`,
         `agy cli.log hook lines:\n${hookLogLines(path.join(gemini, "antigravity-cli", "log"))}`,
         `isolated .gemini tree:\n${tree(gemini)}`,
@@ -223,6 +207,9 @@ test("real Antigravity CLI uploads measured usage through the installed hook", a
     assert.ok((await summary()).tokens >= 19, "measured tokens reached the API");
     assert.ok(!JSON.stringify(uploads).includes("Say hello."));
   } finally {
+    // Detached hook workers may still hold the collection lock on Windows,
+    // where unlinking a locked file fails (EBUSY): wait them out first.
+    await processesGone(home);
     if (ingest) await ingest.close();
     if (stub) await stub.close();
     if (app) await app.stop();
