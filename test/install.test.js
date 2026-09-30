@@ -16,11 +16,54 @@ const README = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8")
 const between = (from, to) => README.split(from)[1].split(to)[0];
 const jsonBlocks = (text) => [...text.matchAll(/```json\n([\s\S]*?)\n```/g)].map((m) => m[1]);
 // The README's Linux/macOS commands: what the installer writes there.
-const STATUS_LINE = JSON.parse(`{${jsonBlocks(between("## Send Claude Code usage", "## Send Codex"))[0]}}`).statusLine;
+const { hooks: CLAUDE_HOOKS, statusLine: STATUS_LINE } = JSON.parse(`{${jsonBlocks(between("## Send Claude Code usage", "## Send Codex"))[0]}}`);
+const CLAUDE_EVENTS = ["UserPromptSubmit", "PostToolUse", "Stop", "StopFailure", "SessionEnd"];
 const CODEX_HOOKS = JSON.parse(jsonBlocks(between("## Send Codex usage", "## Send Antigravity"))[0]).hooks;
 const ANTIGRAVITY_HOOK = JSON.parse(jsonBlocks(between("## Send Antigravity usage", "## Send OpenCode"))[0])["ai-activity"];
 const source = (f) => fs.readFileSync(new URL(`../collectors/${f}`, import.meta.url), "utf8");
 const PLUGIN = source("opencode-plugin.js");
+
+test("Windows Claude hooks use direct arguments and upgrade shell-form handlers", async () => {
+  const home = tempHome("ai-activity Claude spaced-path-");
+  try {
+    const program = `
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("installer", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+m.WINDOWS = True
+m.sys.executable = r"C:\\Program Files\\Python312\\python.exe"
+m.CLAUDE_DIR = os.path.join(sys.argv[2], ".claude")
+m.CONFIGS["claude-code"] = os.path.join(m.CLAUDE_DIR, "settings.json")
+m.FILES["claude-code.py"] = 'SERVER = "<server>"; KEY = "<device key>"'
+other = {"type": "command", "command": "echo preserved"}
+old = {"type": "command", "command": 'python "C:/old/ai-activity-claude-code.py" --hook'}
+m.write(m.CONFIGS["claude-code"], m.dump({"hooks": {event: [{"hooks": [old, other]}] for event in m.CLAUDE_HOOKS}}))
+m.install_claude("https://example.com", "test-key")
+first = open(m.CONFIGS["claude-code"], encoding="utf-8").read()
+settings = json.loads(first)
+script = os.path.join(m.CLAUDE_DIR, "ai-activity-claude-code.py")
+for event in m.CLAUDE_HOOKS:
+    entries = settings["hooks"][event]
+    assert entries[0] == {"hooks": [other]}
+    assert entries[1]["hooks"][0] == {"type": "command", "command": m.sys.executable, "args": [script, "--hook"], "timeout": 10}
+wrapper = os.path.join(m.CLAUDE_DIR, "ai-activity-claude-code.ps1")
+assert open(wrapper, encoding="utf-8-sig").read() == "& '" + m.sys.executable + "' '" + script.replace("'", "''") + "'\\n"
+assert settings["statusLine"]["command"].endswith(' -File "' + wrapper.replace("\\\\", "/") + '"')
+m.install_claude("https://example.com", "test-key")
+assert open(m.CONFIGS["claude-code"], encoding="utf-8").read() == first
+`;
+    const result = await new Promise((resolve, reject) => {
+      const child = spawn(PYTHON, ["-c", program, fileURLToPath(new URL("../collectors/install.py", import.meta.url)), home]);
+      let output = "";
+      child.stdout.on("data", (part) => { output += part; });
+      child.stderr.on("data", (part) => { output += part; });
+      child.on("error", reject);
+      child.on("close", (code) => resolve({ code, output }));
+    });
+    assert.equal(result.code, 0, result.output);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
 
 test("installer generates and upgrades all Windows Codex hooks with quoted paths", async () => {
   const home = tempHome("ai-activity install-");
@@ -39,7 +82,7 @@ m.FILES["codex.py"] = 'SERVER = "<server>"; KEY = "<device key>"'
 script = os.path.join(m.CODEX_HOME, "ai-activity-codex.py")
 old = m.command(script, "~/.codex/ai-activity-codex.py", "--hook")
 other = {"hooks": [{"type": "command", "command": "echo preserved"}]}
-events = ("Stop", "UserPromptSubmit", "PostToolUse")
+events = ("UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd")
 m.write(m.CONFIGS["codex"], m.dump({"hooks": {event: [other, {"hooks": [{"type": "command", "command": old}]}] for event in events}}))
 m.install_codex("https://example.com", "test-key")
 first = open(m.CONFIGS["codex"], encoding="utf-8").read()
@@ -48,6 +91,7 @@ for event in events:
     entries = config["hooks"][event]
     assert len(entries) == 2 and entries[0] == other
     assert entries[1]["hooks"][0]["command"] == r'& "C:\\Program Files\\Python312\\python.exe" "' + script + '" --hook'
+    assert entries[1]["hooks"][0]["timeout"] == (3 if event == "SessionEnd" else 10)
 m.install_codex("https://example.com", "test-key")
 assert open(m.CONFIGS["codex"], encoding="utf-8").read() == first
 # Claude Code / other shells keep their original invocation.
@@ -160,7 +204,7 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
   before(async () => {
     srv = await startServer();
     key = (await newDevice(srv.base, "installer")).key;
-    home = tempHome("ai-activity-install-");
+    home = tempHome("ai-activity install-");
     const { AI_ACTIVITY_URL, AI_ACTIVITY_KEY, AI_ACTIVITY_TOOLS, CODEX_HOME, GEMINI_CLI_HOME, XDG_CONFIG_HOME, ...inherited } = process.env;
     if (WINDOWS) {
       // PowerShell and Python need the real PATH; the runner has none of the tools.
@@ -203,7 +247,9 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
 
   test("installs the tools found, keeping existing settings and hooks", async () => {
     fs.mkdirSync(file(".claude", "projects", "-work"), { recursive: true });
-    fs.writeFileSync(file(".claude", "settings.json"), JSON.stringify({ model: "opus", permissions: { allow: ["Bash(ls)"] } }));
+    const theirHook = { matcher: "Bash", hooks: [{ type: "command", command: "rtk hook claude" }] };
+    fs.writeFileSync(file(".claude", "settings.json"), JSON.stringify({ model: "opus", permissions: { allow: ["Bash(ls)"] },
+      hooks: { PostToolUse: [theirHook] } }));
     fs.mkdirSync(file(".codex"), { recursive: true });
     const other = { hooks: [{ type: "command", command: "notify-send done" }] };
     fs.writeFileSync(file(".codex", "hooks.json"), JSON.stringify({ hooks: { Stop: [other] } }));
@@ -220,15 +266,31 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
     assert.equal(settings.model, "opus");
     assert.deepEqual(settings.permissions, { allow: ["Bash(ls)"] });
     assert.equal(read(".claude", "ai-activity-claude-code.py"), filled("claude-code.py"));
-    if (WINDOWS) assert.match(settings.statusLine.command, windowsCommand(file(".claude", "ai-activity-claude-code.py")));
+    if (WINDOWS) {
+      assert.equal(settings.statusLine.command, `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${file(".claude", "ai-activity-claude-code.ps1").replaceAll("\\", "/")}"`);
+      assert.ok(read(".claude", "ai-activity-claude-code.ps1").includes("& '"));
+    }
     else assert.deepEqual(settings.statusLine, STATUS_LINE);
+    assert.deepEqual(Object.keys(CLAUDE_HOOKS), CLAUDE_EVENTS);
+    assert.deepEqual(settings.hooks.PostToolUse[0], theirHook);
+    for (const event of CLAUDE_EVENTS) {
+      const ours = settings.hooks[event].filter((h) => JSON.stringify(h).includes("ai-activity-claude-code.py"));
+      assert.equal(ours.length, 1);
+      if (WINDOWS) {
+        assert.ok(path.isAbsolute(ours[0].hooks[0].command));
+        assert.ok(!ours[0].hooks[0].command.includes('"'));
+        assert.deepEqual(ours[0].hooks[0].args, [file(".claude", "ai-activity-claude-code.py"), "--hook"]);
+      }
+      else assert.deepEqual(ours[0], CLAUDE_HOOKS[event][0]);
+    }
 
     assert.equal(read(".codex", "ai-activity-codex.py"), filled("codex.py"));
     const hooks = json(".codex", "hooks.json").hooks;
     assert.deepEqual(hooks.Stop[0], other);
-    for (const event of ["Stop", "UserPromptSubmit", "PostToolUse"]) {
+    for (const event of ["UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd"]) {
       const ours = hooks[event].filter((h) => JSON.stringify(h).includes("ai-activity-codex.py"));
       assert.equal(ours.length, 1);
+      assert.equal(ours[0].hooks[0].timeout, event === "SessionEnd" ? 3 : 10);
       if (WINDOWS) assert.match(ours[0].hooks[0].command, new RegExp("^& " + windowsCommand(file(".codex", "ai-activity-codex.py"), "--hook").source.slice(1)));
       else if (fs.existsSync(path.join(env.PATH, "setsid"))) assert.deepEqual(ours[0], CODEX_HOOKS[event][0]);
       else assert.equal(ours[0].hooks[0].command, "python3 ~/.codex/ai-activity-codex.py --hook");
@@ -255,23 +317,63 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
     assert.ok(!fs.existsSync(file(".config", "opencode")));
   });
 
-  test("the installed statusLine uploads with that URL and key", async () => {
+  // Run like Claude Code does: through a shell, its JSON on stdin.
+  const runCommand = (command, stdin, shell = "cmd") => new Promise((resolve) => {
+    const p = typeof command === "object" && command.args
+      ? spawn(command.command, command.args, { env, windowsHide: true, stdio: ["pipe", "ignore", "ignore"] })
+      : WINDOWS && shell === "powershell"
+      ? spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], { env, windowsHide: true, stdio: ["pipe", "ignore", "ignore"] })
+      : WINDOWS
+      ? spawn(command, { env, shell: true, windowsHide: true, stdio: ["pipe", "ignore", "ignore"] })
+      : spawn("sh", ["-c", command], { env, stdio: ["pipe", "ignore", "ignore"] });
+    p.stdin.on("error", () => {});
+    p.stdin.end(stdin);
+    p.on("exit", resolve);
+  });
+
+  test("the installed hook uploads the tokens with that URL and key", async () => {
     fs.writeFileSync(file(".claude", "projects", "-work", "s1.jsonl"), JSON.stringify({
       type: "assistant", sessionId: "s1", timestamp: new Date().toISOString(),
       message: { id: "msg_install_1", model: "claude-opus-5-5", usage: { input_tokens: 1, output_tokens: 41 } },
     }) + "\n");
-    const { statusLine } = json(".claude", "settings.json");
-    // Run like Claude Code does: through a shell, the status line JSON on stdin.
-    await new Promise((resolve) => {
-      const p = WINDOWS
-        ? spawn(statusLine.command, { env, shell: true, windowsHide: true, stdio: ["pipe", "ignore", "ignore"] })
-        : spawn("sh", ["-c", statusLine.command], { env, stdio: ["pipe", "ignore", "ignore"] });
-      p.stdin.on("error", () => {});
-      p.stdin.end("{}");
-      p.on("exit", resolve);
-    });
+    const { hooks } = json(".claude", "settings.json");
+    const ours = hooks.Stop.find((h) => JSON.stringify(h).includes("ai-activity-claude-code.py"));
+    const handler = ours.hooks[0];
+    assert.equal(await runCommand(handler.args ? handler : handler.command, JSON.stringify({ hook_event_name: "Stop", session_id: "s1" })), 0);
     const tokens = async () => (await req(srv.base, "GET", "/api/u/admin/stats?days=30", { headers: asNewClient() })).json.total_tokens;
     assert.equal(await waitFor(async () => (await tokens()) === 42), true, "the upload reached the server");
+  });
+
+  test("the installed statusLine uploads the quotas", async () => {
+    const { statusLine } = json(".claude", "settings.json");
+    const resets = Math.floor(Date.now() / 1000) + 3600;
+    assert.equal(await runCommand(statusLine.command, JSON.stringify({ rate_limits: { five_hour: { used_percentage: 12, resets_at: resets } } })), 0);
+    const quotas = async () => (await req(srv.base, "GET", "/api/u/admin/quotas", { headers: asNewClient() })).json.quotas;
+    assert.equal(await waitFor(async () => (await quotas()).some((q) => q.tool === "claude-code" && q.used_pct === 12)), true);
+    if (WINDOWS) {
+      assert.equal(await runCommand(statusLine.command, JSON.stringify({ rate_limits: { five_hour: { used_percentage: 13, resets_at: resets } } }), "powershell"), 0);
+      assert.equal(await waitFor(async () => (await quotas()).some((q) => q.tool === "claude-code" && q.used_pct === 13)), true);
+    }
+  });
+
+  test("Windows Claude exec hooks upload from both cmd and PowerShell parents", { skip: !WINDOWS }, async () => {
+    const handler = json(".claude", "settings.json").hooks.Stop.at(-1).hooks[0];
+    // Emulate Claude's documented exec form inside each parent shell. The
+    // handler itself is never reparsed as a shell command.
+    const program = `const {spawnSync}=require('node:child_process');const h=${JSON.stringify(handler)};const r=spawnSync(h.command,h.args,{stdio:'inherit',windowsHide:true});process.exit(r.status??1);`;
+    const encoded = Buffer.from(program).toString("base64");
+    const bootstrap = `"${process.execPath}" -e "eval(Buffer.from('${encoded}','base64').toString())"`;
+    for (const [index, shell] of ["cmd", "powershell"].entries()) {
+      fs.writeFileSync(file(".claude", "projects", "-work", `shell-${index}.jsonl`), JSON.stringify({
+        type: "assistant", sessionId: `shell-${index}`, timestamp: new Date().toISOString(),
+        message: { id: `msg_install_shell_${index}`, model: "claude-test", usage: { input_tokens: 2, output_tokens: 3 } },
+      }) + "\n");
+      const command = (shell === "powershell" ? "& " : "") + bootstrap;
+      assert.equal(await runCommand(command, "{}", shell), 0, `${shell} parent launches the exec hook`);
+      assert.ok(await waitFor(async () => (await req(srv.base, "GET", "/api/u/admin/sessions")).json.sessions
+        .some((s) => s.session_id === `shell-${index}` && s.tokens === 5)), `${shell} upload arrived`);
+      assert.ok(await waitFor(() => !running(file(".claude"))));
+    }
   });
 
   test("running it again changes nothing", async () => {
@@ -295,20 +397,29 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
     assert.equal(read(".gemini", "ai-activity-antigravity.py"), filled("antigravity.py", key2));
     assert.ok(!read(".claude", "settings.json").includes(key2), "the key is in the script, not the settings");
     assert.equal(json(".codex", "hooks.json").hooks.UserPromptSubmit.length, 1);
+    assert.equal(json(".claude", "settings.json").hooks.Stop.length, 1);
+    assert.equal(json(".claude", "settings.json").hooks.PostToolUse.length, 2);
     assert.equal(json(".codex", "hooks.json").hooks.Stop.length, 2);
     await install(); // back to the first key for the next tests
   });
 
-  test("never replaces another statusLine unless asked", async () => {
+  test("never replaces another statusLine unless asked, and still installs the hooks", async () => {
     const mine = { type: "command", command: "echo my status" };
-    const settings = json(".claude", "settings.json");
+    const { hooks, ...settings } = json(".claude", "settings.json");
     fs.writeFileSync(file(".claude", "settings.json"), JSON.stringify({ ...settings, statusLine: mine }));
     const r = await install({ AI_ACTIVITY_TOOLS: "claude-code" });
     assert.equal(r.code, 0, r.out);
-    assert.match(r.out, /already has another statusLine/);
+    assert.match(r.out, /already has another statusLine, kept: tokens are sent/);
     assert.deepEqual(json(".claude", "settings.json").statusLine, mine);
+    for (const event of CLAUDE_EVENTS) {
+      assert.ok(JSON.stringify(json(".claude", "settings.json").hooks[event]).includes("ai-activity-claude-code.py"));
+    }
     await install({ AI_ACTIVITY_TOOLS: "claude-code", AI_ACTIVITY_FORCE: "1" });
-    assert.ok(json(".claude", "settings.json").statusLine.command.includes("ai-activity-claude-code.py"));
+    const status = json(".claude", "settings.json").statusLine;
+    if (WINDOWS) {
+      assert.equal(status.command, `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${file(".claude", "ai-activity-claude-code.ps1").replaceAll("\\", "/")}"`);
+      assert.ok(read(".claude", "ai-activity-claude-code.ps1").includes("ai-activity-claude-code.py"));
+    } else assert.deepEqual(status, STATUS_LINE);
   });
 
   test("AI_ACTIVITY_TOOLS installs a tool not found yet", async () => {
@@ -328,6 +439,25 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
       fs.rmSync(h, { recursive: true, force: true });
     }
   }
+
+  test("reinstall keeps other handlers in a shared Claude Code matcher group", () =>
+    inFreshHome("ai-activity-install-shared-", async (h, run) => {
+      const config = path.join(h, ".claude", "settings.json");
+      fs.mkdirSync(path.dirname(config));
+      const own = { type: "command", command: "python3 /old/path/ai-activity-claude-code.py --hook" };
+      const other = { type: "command", command: "echo keep-this-hook" };
+      const group = { matcher: "Bash", timeout: 30, hooks: [own, other] };
+      fs.writeFileSync(config, JSON.stringify({ hooks: { Stop: [group] } }));
+      const first = await run({ AI_ACTIVITY_TOOLS: "claude-code" });
+      assert.equal(first.code, 0, first.out);
+      const entries = JSON.parse(fs.readFileSync(config, "utf8")).hooks.Stop;
+      assert.deepEqual(entries[0], { ...group, hooks: [other] });
+      assert.equal(entries.length, 2, "the new handler is installed once");
+      const snapshot = fs.readFileSync(config, "utf8");
+      const second = await run({ AI_ACTIVITY_TOOLS: "claude-code" });
+      assert.equal(second.code, 0, second.out);
+      assert.equal(fs.readFileSync(config, "utf8"), snapshot, "reinstall is idempotent");
+    }));
 
   test("a broken config stops the install before anything is written", () =>
     inFreshHome("ai-activity-install-broken-", async (h, run) => {

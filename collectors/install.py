@@ -42,6 +42,14 @@ OPENCODE_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(HO
 CONFIGS = {"claude-code": os.path.join(CLAUDE_DIR, "settings.json"),
            "codex": os.path.join(CODEX_HOME, "hooks.json"),
            "antigravity": os.path.join(GEMINI_HOME, "config", "hooks.json")}
+# Claude Code events that send the tokens: during a turn, after it (StopFailure:
+# ended by an API error, e.g. a rate limit), before the next one (neither fires
+# on an interrupted turn) and at exit.
+CLAUDE_HOOKS = ("UserPromptSubmit", "PostToolUse", "Stop", "StopFailure", "SessionEnd")
+# PostToolUse sends a long turn as it runs. UserPromptSubmit catches up on
+# rollouts left by a turn whose Stop hook did not fire (e.g. a rate limit).
+CODEX_HOOKS = ("UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd")
+ANTIGRAVITY_HOOKS = (("PostInvocation", "--post-invocation"), ("Stop", "--hook"))
 
 
 def fail(msg):
@@ -154,25 +162,65 @@ def preflight(tools):
         if tool not in tools:
             continue
         config = load_json(path)
-        if tool == "codex" and not isinstance(config.get("hooks", {}), dict):
+        if tool in ("claude-code", "codex") and not isinstance(config.get("hooks", {}), dict):
             fail(f"{path}: \"hooks\" is not an object: fix it, then run this again (nothing was changed)")
 
 
 def install_claude(url, key):
     path = CONFIGS["claude-code"]
     settings = load_json(path)
+    script = os.path.join(CLAUDE_DIR, "ai-activity-claude-code.py")
+    changed = write(script, fill(FILES["claude-code.py"], url, key), 0o600)
+    run = lambda *args: command(script, "~/.claude/ai-activity-claude-code.py", *args)
+    # Tokens: the hooks, next to the user's own.
+    hooks = settings.setdefault("hooks", {})  # an object: preflight checked
+    # Exec form bypasses Git Bash / PowerShell on Windows, including when
+    # Claude itself was started from cmd.exe. Paths stay separate arguments.
+    handler = ({"command": sys.executable, "args": [script, "--hook"]}
+               if WINDOWS else {"command": run("--hook")})
+    ours = {"hooks": [{"type": "command", **handler, "timeout": 10}]}
+    for event in CLAUDE_HOOKS:
+        entries = hooks.get(event)
+        entries = entries if isinstance(entries, list) else []
+        # A matcher group may contain both our handler and the user's handlers.
+        # Remove only ours, even if an earlier install used a different path.
+        kept = []
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
+                kept.append(entry)
+                continue
+            handlers = [handler for handler in entry["hooks"]
+                        if not (isinstance(handler, dict) and isinstance(handler.get("command"), str)
+                                 and "ai-activity-claude-code.py" in
+                                 (handler["command"] + " " + json.dumps(handler.get("args", []))))]
+            if len(handlers) == len(entry["hooks"]):
+                kept.append(entry)
+            elif handlers:
+                kept.append({**entry, "hooks": handlers})
+        hooks[event] = kept + [ours]
+    # Quotas and context: the status line, the only place Claude Code gives them.
     current = settings.get("statusLine")
     # Ours: this script, or the former one-liner (it named ~/.cache/ai-activity).
     other = isinstance(current, dict) and "ai-activity" not in str(current.get("command", ""))
-    if current and other and os.environ.get("AI_ACTIVITY_FORCE") != "1":
-        say(f"Claude Code: skipped, {path} already has another statusLine. "
-            "AI_ACTIVITY_FORCE=1 replaces it (Claude Code runs one status line).")
-        return False
-    script = os.path.join(CLAUDE_DIR, "ai-activity-claude-code.py")
-    changed = write(script, fill(FILES["claude-code.py"], url, key), 0o600)
-    settings["statusLine"] = {"type": "command", "command": command(script, "~/.claude/ai-activity-claude-code.py")}
+    kept = current and other and os.environ.get("AI_ACTIVITY_FORCE") != "1"
+    if not kept:
+        status_command = run()
+        if WINDOWS:
+            # statusLine has no exec form. Use an explicit PowerShell script
+            # whose invocation is valid from cmd, PowerShell and Git Bash.
+            wrapper = os.path.join(CLAUDE_DIR, "ai-activity-claude-code.ps1")
+            quoted = lambda value: "'" + value.replace("'", "''") + "'"
+            # Windows PowerShell 5 reads non-ASCII paths correctly with a BOM.
+            changed = write(wrapper, "\ufeff& " + quoted(sys.executable) + " " + quoted(script) + "\n", 0o600) or changed
+            status_command = ('powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'
+                              + wrapper.replace("\\", "/") + '"')
+        settings["statusLine"] = {"type": "command", "command": status_command}
     changed = write(path, dump(settings)) or changed
-    say(f"Claude Code: {'installed' if changed else 'already up to date'} ({script}, statusLine in {path})")
+    say(f"Claude Code: {'installed' if changed else 'already up to date'} ({script}, hooks"
+        f"{'' if kept else ' and statusLine'} in {path})")
+    if kept:
+        say(f"Claude Code: {path} already has another statusLine, kept: tokens are sent, quotas are not. "
+            "AI_ACTIVITY_FORCE=1 replaces it (Claude Code runs one status line).")
     return True
 
 
@@ -191,8 +239,11 @@ def install_codex(url, key):
             run = "& " + run
     else:
         run = f"setsid -f {command(script, '~/.codex/ai-activity-codex.py')} >/dev/null 2>&1 </dev/null; echo '{{}}'"
-    ours = {"hooks": [{"type": "command", "command": run, "timeout": 10}]}
-    for event in ("Stop", "UserPromptSubmit", "PostToolUse"):
+    for event in CODEX_HOOKS:
+        # Codex caps SessionEnd hooks at three seconds. The command only
+        # detaches the collector, so this still leaves time for its upload.
+        ours = {"hooks": [{"type": "command", "command": run,
+                            "timeout": 3 if event == "SessionEnd" else 10}]}
         entries = hooks.get(event)
         entries = entries if isinstance(entries, list) else []
         # Drop our earlier entries (any path), keep everyone else's.
@@ -217,7 +268,7 @@ def install_antigravity(url, key):
     else:
         run = lambda flag: {"type": "command", "command": command(script, "~/.gemini/ai-activity-antigravity.py", flag), "timeout": 10}
     # A named hook: ours is replaced whole, the others are kept.
-    config["ai-activity"] = {"enabled": True, "PostInvocation": [run("--post-invocation")], "Stop": [run("--hook")]}
+    config["ai-activity"] = {"enabled": True, **{event: [run(flag)] for event, flag in ANTIGRAVITY_HOOKS}}
     changed = write(path, dump(config)) or changed
     say(f"Antigravity: {'installed' if changed else 'already up to date'} ({script}, hook in {path})")
     return True
@@ -302,7 +353,7 @@ def main():
                "antigravity": install_antigravity, "opencode": install_opencode}
     done = [t for t in TOOLS if t in tools and install[t](url, key)]
     if "claude-code" in done:
-        say("Claude Code: usage is sent at the next status line refresh")
+        say("Claude Code: restart it (or review the hooks in /hooks), then usage is sent during and after every turn")
     if "codex" in done:
         say("Codex: review the new hooks once with /hooks, then they run during and after every turn")
     if "antigravity" in done:

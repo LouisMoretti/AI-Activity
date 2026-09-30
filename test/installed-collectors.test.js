@@ -27,7 +27,9 @@ async function waitFor(check, errors, ms = 30000) {
 
 function run(command, env, input = "", shell = "powershell") {
   return new Promise((resolve, reject) => {
-    const child = WINDOWS
+    const child = typeof command === "object"
+      ? spawn(command.command, command.args, { env, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] })
+      : WINDOWS
       ? shell === "cmd"
         ? spawn(command, { env, shell: true, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] })
         : spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
@@ -203,7 +205,7 @@ function assertBatch(f, expected, count = 1) {
   assert.equal(message.message_id ?? message.response_id, expected.id);
 }
 
-test("installed Claude Code statusLine uploads one message and replays nothing", async () => {
+test("installed Claude Code Stop hook uploads one message and replays nothing", async () => {
   const f = await fixture("claude-code", ({ home }) => {
     const project = path.join(home, ".claude", "projects", "-fake");
     fs.mkdirSync(project, { recursive: true });
@@ -214,7 +216,9 @@ test("installed Claude Code statusLine uploads one message and replays nothing",
     }) + "\n" + JSON.stringify({ type: "user", text: SECRET }) + "\n");
   });
   try {
-    const command = JSON.parse(fs.readFileSync(path.join(f.home, ".claude", "settings.json"))).statusLine.command;
+    const hooks = JSON.parse(fs.readFileSync(path.join(f.home, ".claude", "settings.json"))).hooks;
+    const handler = hooks.Stop.at(-1).hooks[0];
+    const command = handler.args ? handler : handler.command;
     f.wire.refuseOnce();
     assert.equal((await run(command, f.env, "{}", "cmd")).code, 0);
     assert.ok(await waitFor(() => f.wire.captured.length === 1, f.wire.errors));
