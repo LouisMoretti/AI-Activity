@@ -6,6 +6,14 @@
 export const TOOLS = ["claude-code", "codex", "cursor", "antigravity", "opencode"] as const;
 export type Tool = (typeof TOOLS)[number];
 
+/** Optional public profile widgets, stored in display order. */
+export const WIDGETS = ["today-by-tool", "today-by-hour", "best-day", "leaderboard"] as const;
+export type Widget = (typeof WIDGETS)[number];
+export const DEFAULT_WIDGETS: Widget[] = ["today-by-tool"];
+export interface WidgetSettings { widgets: Widget[] }
+export interface HourBucket { hour: number; tool: Tool; tokens: number }
+export interface HoursResponse { day: string; current_hour: number; hours: HourBucket[]; provenance: string }
+
 /** Rows kept separate in dashboard breakdown lists (the last is the fold). */
 export const BREAKDOWN_DISPLAY_ROWS = 8;
 

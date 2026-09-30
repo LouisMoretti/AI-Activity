@@ -2,11 +2,11 @@ import { Hono, type Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type {
   ActivityResponse, LeaderboardResponse, Profile, ProfilesResponse, QuotasResponse, SessionsResponse, StatsResponse,
-  SummaryResponse,
+  SummaryResponse, HoursResponse, WidgetSettings,
 } from "../../shared/types.ts";
 import {
   addDays, breakdown, countSessions, dailyBuckets, dayAt, earliestOfDay, findUserByUsername, latestOffset, latestQuotas,
-  leaderboard, listProfiles, recentSessions, toProfile, usageTotals,
+  leaderboard, listProfiles, recentSessions, toProfile, usageTotals, hourlyBuckets, widgetSettings,
 } from "../db/queries.ts";
 import { nowSec, type DB } from "../db/schema.ts";
 import { intParam } from "../lib/http.ts";
@@ -41,6 +41,18 @@ function usage(db: DB, owner: Owner) {
       const first = addDays(dayAt(latestOffset(db, uid)), -(days - 1));
       return c.json<ActivityResponse>({
         days: dailyBuckets(db, uid, earliestOfDay(first), tool).filter((d) => d.day >= first),
+        provenance: "measured messages",
+      });
+    })
+    .get("/hours", (c) => {
+      const uid = owner(c);
+      const offset = latestOffset(db, uid);
+      const now = nowSec();
+      const day = dayAt(offset, now);
+      return c.json<HoursResponse>({
+        day,
+        current_hour: new Date((now + (offset ?? 0) * 60) * 1000).getUTCHours(),
+        hours: hourlyBuckets(db, uid, day),
         provenance: "measured messages",
       });
     })
@@ -111,5 +123,6 @@ export function publicProfileRoutes(db: DB) {
     .get("/", (c) => {
       return c.json<Profile>(toProfile(owner(c)));
     })
+    .get("/widgets", (c) => c.json<WidgetSettings>({ widgets: widgetSettings(owner(c)) }))
     .route("/", usage(db, (c) => owner(c).id));
 }

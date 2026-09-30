@@ -68,6 +68,7 @@ const profileRoutes = (name, sessions = { sessions: [], total: 0, provenance: ""
   [`/api/u/${name}/summary`]: emptySummary,
   [`/api/u/${name}/activity`]: { days: [], provenance: "" },
   [`/api/u/${name}/quotas`]: { quotas: [], provenance: "" },
+  [`/api/u/${name}/widgets`]: { widgets: ["today-by-tool"] },
   [`/api/u/${name}/sessions`]: sessions,
 });
 
@@ -93,9 +94,24 @@ async function open(url, extra = {}) {
 }
 
 describe("dashboard state", () => {
+  test("loads optional widget data only when the profile selects it", async () => {
+    const widgets = { ...profileRoutes("me"),
+      "/api/u/me/widgets": { widgets: ["leaderboard", "today-by-hour"] },
+      "/api/u/me/hours": { day: emptySummary.day, current_hour: 10, hours: [], provenance: "measured" },
+      "/api/leaderboard": { accounts: 1, entries: [{ username: "me", tokens: 0 }] },
+    };
+    const { dash, stop } = await open("/u/me", widgets);
+    assert.deepEqual(dash.widgets, ["leaderboard", "today-by-hour"]);
+    assert.equal(dash.hours.current_hour, 10);
+    assert.equal(dash.widgetBoard.accounts, 1);
+    assert.ok(calls.includes("/api/u/me/hours"));
+    assert.ok(calls.includes("/api/leaderboard?days=7"));
+    stop();
+  });
+
   test("card reads are per tool and a failed card refresh preserves measured data", async () => {
     const { dash, stop, tick } = await open("/u/me", profileRoutes("me"));
-    assert.equal(calls.filter(c => c.startsWith("/api/u/")).length, 11);
+    assert.equal(calls.filter(c => c.startsWith("/api/u/")).length, 12);
     assert.equal(calls.filter(c => c.includes("tool-activity")).length, 0);
     assert.equal(dash.vm.cursor.available, true);
     // Only the Cursor card's reads fail: the profile stays up and keeps

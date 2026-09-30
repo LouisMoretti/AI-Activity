@@ -15,7 +15,13 @@ export const MIGRATIONS: ((db: DB) => void)[] = [
   activityClearedAt,
   collectorVersions,
   githubAccounts,
+  profileWidgets,
 ];
+
+/** 6: Each account selects the public widgets and their display order. */
+function profileWidgets(db: DB): void {
+  db.exec("ALTER TABLE users ADD COLUMN widgets TEXT NOT NULL DEFAULT '[\"today-by-tool\"]'");
+}
 
 /**
  * 5: sign in with GitHub only (issue #127). `users.github_id` is the GitHub

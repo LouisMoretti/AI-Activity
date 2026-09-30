@@ -7,7 +7,7 @@ import { authErrorMessage } from "./auth-errors.ts";
 import { DEMO_PROFILE, demoDashboard } from "./demo.ts";
 import { ACTIVITY_DAYS, liveDashboard, type LiveData } from "./live.ts";
 import type { DashboardVM } from "./view-model.ts";
-import type { Account, Profile, SessionsResponse } from "../../../shared/types.ts";
+import { DEFAULT_WIDGETS, WIDGETS, type Account, type Profile, type SessionsResponse, type HoursResponse, type LeaderboardResponse, type Widget } from "../../../shared/types.ts";
 
 export type Route =
   | { page: "home" }
@@ -108,6 +108,9 @@ export class Dashboard {
   authError = $state<string | null>(null);
   /** The profile on screen. */
   shown = $state<Profile | null>(null);
+  widgets = $state<Widget[]>([...DEFAULT_WIDGETS]);
+  hours = $state<HoursResponse | null>(null);
+  widgetBoard = $state<LeaderboardResponse | null>(null);
   private live = $state<LiveData | null>(null);
   private inFlight = false;
   private reloadQueued = false;
@@ -183,6 +186,9 @@ export class Dashboard {
    */
   private async loadDemo(route: Route): Promise<void> {
     this.shown = DEMO_PROFILE;
+    this.widgets = [...WIDGETS];
+    this.hours = null;
+    this.widgetBoard = null;
     this.status = "ready";
     try {
       const auth = await api.authStatus();
@@ -203,13 +209,14 @@ export class Dashboard {
     // can fetch only the visible tools. A failed card read never discards a
     // healthy profile, and a slow sibling cannot overlap the next refresh
     // after another request failed quickly.
-    const [profile, summary, activity, quotas, sessions,
+    const [profile, summary, activity, quotas, sessions, widgetSettings,
       ocSummary, ocLatest, agSummary, agLatest, cuSummary, cuLatest] = await Promise.allSettled([
       api.profile(username),
       api.summary(username, null),
       api.activity(username, ACTIVITY_DAYS, null),
       api.quotas(username),
       fetchSessions(username, this.sessionsLimit),
+      api.widgets(username),
       api.summary(username, "opencode"),
       // Enough to count the conversations active right now.
       api.sessions(username, 10, "opencode", 0),
@@ -225,6 +232,13 @@ export class Dashboard {
     if (activity.status === "rejected") throw activity.reason;
     if (quotas.status === "rejected") throw quotas.reason;
     if (sessions.status === "rejected") throw sessions.reason;
+    if (widgetSettings.status === "rejected") throw widgetSettings.reason;
+    const widgets = widgetSettings.value.widgets;
+    const [hours, board] = await Promise.allSettled([
+      widgets.includes("today-by-hour") ? api.hours(username) : Promise.resolve(null),
+      widgets.includes("leaderboard") ? api.leaderboard(7) : Promise.resolve(null),
+    ]);
+    if (this.route !== route) return;
     // Keep a failed card's last measured data only for the same local day.
     // An initial failure or midnight rollover is Unavailable, never guessed.
     const keep = (tool: "opencode" | "antigravity" | "cursor") => {
@@ -236,6 +250,9 @@ export class Dashboard {
       sum.status === "fulfilled" && lat.status === "fulfilled"
         ? { summary: sum.value, latest: lat.value } : keep(tool);
     this.shown = profile.value;
+    this.widgets = widgets;
+    this.hours = hours.status === "fulfilled" ? hours.value : null;
+    this.widgetBoard = board.status === "fulfilled" ? board.value : null;
     this.live = {
       summary: summary.value, activity: activity.value, quotas: quotas.value, sessions: sessions.value,
       opencode: card("opencode", ocSummary, ocLatest),
@@ -269,6 +286,9 @@ export class Dashboard {
   private showPath(): void {
     this.route = routeFromPath();
     this.live = null;
+    this.widgets = [...DEFAULT_WIDGETS];
+    this.hours = null;
+    this.widgetBoard = null;
     this.shown = null;
     this.sessionsLimit = SESSIONS_PAGE;
     this.status = "loading";

@@ -1,10 +1,10 @@
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import {
-  DELETE_ACCOUNT_PHRASE, DELETE_ACTIVITY_PHRASE, type AdminOverview, type AdminSettings, type AdminUser, type DeletedAccount, type DeletedActivity,
+  DELETE_ACCOUNT_PHRASE, DELETE_ACTIVITY_PHRASE, WIDGETS, type Widget, type WidgetSettings, type AdminOverview, type AdminSettings, type AdminUser, type DeletedAccount, type DeletedActivity,
 } from "../../shared/types.ts";
 import {
   adminOverview, deleteAccount, deleteUserActivity, deleteUserSessions, getUser, listAdminUsers, setUserAdmin,
-  setSignupOpen, setUserDisabled, signupOpen, previewSeedSettings, seedPreviewData, type UserRow,
+  setSignupOpen, setUserDisabled, signupOpen, previewSeedSettings, seedPreviewData, setWidgetSettings, widgetSettings, type UserRow,
 } from "../db/queries.ts";
 import { nowSec, type DB } from "../db/schema.ts";
 import { readJson } from "../lib/http.ts";
@@ -43,6 +43,17 @@ export function accountRoutes(db: DB) {
   }
 
   return new Hono<ViewerEnv>()
+    .get("/widgets", (c) => c.json<WidgetSettings>({ widgets: widgetSettings(getUser(db, c.get("userId"))!) }))
+    .post("/widgets", async (c) => {
+      const { widgets } = await readJson(c);
+      if (!Array.isArray(widgets) || widgets.length > WIDGETS.length ||
+        !widgets.every((v: unknown) => typeof v === "string" && WIDGETS.includes(v as Widget)) ||
+        new Set(widgets).size !== widgets.length) {
+        return c.json({ error: "widgets must be a unique list of known widget names" }, 400);
+      }
+      setWidgetSettings(db, c.get("userId"), widgets as Widget[]);
+      return c.json<WidgetSettings>({ widgets });
+    })
     // Deletes the signed-in user's own usage and quotas; the account,
     // profile, devices and sessions stay.
     .post("/delete-activity", async (c) => {

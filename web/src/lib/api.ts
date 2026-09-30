@@ -1,7 +1,7 @@
 // Typed client for the dashboard JSON API (same origin, cookie session).
 import type {
   ActivityResponse, AdminOverview, AdminSettings, AdminUser, AuthStatus, DeletedAccount, DeletedActivity, LeaderboardResponse, Profile, Device, QuotasResponse,
-  SessionsResponse, SummaryResponse, FriendsResponse, PreviewSeedConfig,
+  SessionsResponse, SummaryResponse, FriendsResponse, PreviewSeedConfig, HoursResponse, WidgetSettings, Widget,
 } from "../../../shared/types.ts";
 
 export class UnauthorizedError extends Error {
@@ -94,8 +94,12 @@ export const api = {
   /** Everyone's usage over the last `days` days, or all time (null). */
   leaderboard: (days: number | null) => get<LeaderboardResponse>(`/api/leaderboard?days=${days ?? "all"}`),
   friends: () => get<FriendsResponse>("/api/friends"),
+  ownWidgets: () => get<WidgetSettings>("/api/account/widgets"),
+  saveWidgets: (widgets: Widget[]) => post<WidgetSettings>("/api/account/widgets", { widgets }),
   // A profile's usage, public by username (the viewer's own page uses it too).
   profile: (username: string) => get<Profile>(profileBase(username)),
+  widgets: (username: string) => get<WidgetSettings>(`${profileBase(username)}/widgets`),
+  hours: (username: string) => get<HoursResponse>(`${profileBase(username)}/hours`),
   activity: (username: string, days: number, tool: string | null) =>
     get<ActivityResponse>(`${profileBase(username)}/activity?days=${days}${toolQuery(tool)}`),
   quotas: (username: string) => get<QuotasResponse>(`${profileBase(username)}/quotas`),

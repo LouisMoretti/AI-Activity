@@ -19,6 +19,15 @@ following list using the OAuth app's client ID and secret, without requesting
 an OAuth scope or keeping a user's GitHub token.
 If GitHub is unavailable, the page offers a retry.
 
+## Profile widgets
+
+In **Settings → Profile widgets**, choose the extra cards on your public
+profile and move them into display order. The first card sits beside OpenCode;
+the remaining cards appear underneath the tool cards. Available cards are
+Today by tool, Today by hour, Best day and Leaderboard · 7 days. You can
+hide them all. New accounts show Today by tool until they change this setting.
+The public `/demo` page shows every card with fictional, labeled data.
+
 ## One-command install
 
 Create a device key (**Settings → Devices**),

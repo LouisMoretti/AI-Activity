@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
   Account, ActivityDay, AdminOverview, AdminUser, Profile, Breakdown, BreakdownRow, DeletedAccount, DeletedActivity, Device, LeaderboardEntry,
-  LeaderboardResponse, PreviewSeedConfig, Quota, Session,
+  LeaderboardResponse, PreviewSeedConfig, Quota, Session, Widget, HourBucket,
 } from "../../shared/types.ts";
 import { COLLECTOR_VERSIONS } from "../../shared/collectors.ts";
-import { BREAKDOWN_DISPLAY_ROWS, TOOLS } from "../../shared/types.ts";
+import { BREAKDOWN_DISPLAY_ROWS, DEFAULT_WIDGETS, TOOLS, WIDGETS } from "../../shared/types.ts";
 import { nowSec, type DB } from "./schema.ts";
 import { DEFAULT_PREVIEW_SEED, parsePreviewSeed } from "../lib/preview-seed.ts";
 
@@ -72,6 +72,21 @@ export interface UserRow {
   github_id: number;
   is_admin: number;
   disabled: number;
+  widgets: string;
+}
+
+export function widgetSettings(user: UserRow): Widget[] {
+  try {
+    const value: unknown = JSON.parse(user.widgets);
+    if (Array.isArray(value) && value.length <= WIDGETS.length &&
+      value.every((v) => typeof v === "string" && WIDGETS.includes(v as Widget)) &&
+      new Set(value).size === value.length) return value as Widget[];
+  } catch { /* Old or manually edited value: keep the default layout. */ }
+  return [...DEFAULT_WIDGETS];
+}
+
+export function setWidgetSettings(db: DB, userId: number, widgets: Widget[]): void {
+  db.prepare("UPDATE users SET widgets = ? WHERE id = ?").run(JSON.stringify(widgets), userId);
 }
 
 export function toAccount(u: UserRow): Account {
@@ -624,6 +639,18 @@ export function dailyBuckets(db: DB, userId: number, sinceSec: number, tool: str
        GROUP BY day ORDER BY day`
     )
     .all(userId, sinceSec, tool, tool) as ActivityDay[];
+}
+
+/** Today's tokens by hour on each event's local clock, using the covering read index. */
+export function hourlyBuckets(db: DB, userId: number, day: string): HourBucket[] {
+  return db.prepare(
+    `SELECT CAST(strftime('%H', occurred_at + COALESCE(utc_offset_min, 0) * 60, 'unixepoch') AS INTEGER) AS hour,
+            tool, SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens) AS tokens
+     FROM usage_events INDEXED BY idx_usage_user_read
+     WHERE user_id = ? AND occurred_at >= ? AND occurred_at < ?
+       AND ${localDay()} = ?
+     GROUP BY hour, tool ORDER BY hour, tool`
+  ).all(userId, earliestOfDay(day), earliestOfDay(addDays(day, 1)) + 28 * 3600, day) as HourBucket[];
 }
 
 const TOKENS = "input_tokens + output_tokens + cache_read_tokens + cache_write_tokens";

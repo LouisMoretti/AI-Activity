@@ -15,7 +15,8 @@
   import QuotaCard from "./components/QuotaCard.svelte";
   import SiteHeader from "./components/SiteHeader.svelte";
   import Section from "./components/Section.svelte";
-  import TodayByTool from "./components/TodayByTool.svelte";
+  import ProfileWidget from "./components/ProfileWidget.svelte";
+  import WidgetSettings from "./components/WidgetSettings.svelte";
   import StatsRow from "./components/StatsRow.svelte";
   import UsersPanel from "./components/UsersPanel.svelte";
   import { untrack } from "svelte";
@@ -90,6 +91,10 @@
         <DevicesPanel />
       </Section>
 
+      <Section title="Profile widgets" subtitle="Choose and order the extra cards on your public dashboard">
+        <WidgetSettings />
+      </Section>
+
       <Section title="Danger zone" subtitle="Cannot be undone">
         {#key dash.account.id}
           <DangerZone ondeletedactivity={() => dash.load()} onsignout={() => dash.logout()} onreauth={() => dash.signInAgain()} />
@@ -135,9 +140,11 @@
           <!-- In TOOLS order (shared/types.ts). -->
           {#each vm.tools as tool (tool)}
             {#if tool === "opencode"}
-              <div class="wide">
+              <div class="wide" class:only={!dash.widgets.length}>
                 <OpenCodeCard vm={vm.opencode} />
-                <TodayByTool today={vm.stats.today} />
+                {#if dash.widgets[0]}
+                  <ProfileWidget widget={dash.widgets[0]} {vm} hours={dash.hours} board={dash.widgetBoard} username={dash.shown.username} />
+                {/if}
               </div>
             {:else if tool === "cursor"}
               <div class="full"><ActivityToolCard tool="cursor" vm={vm.cursor} /></div>
@@ -150,6 +157,13 @@
             {/if}
           {/each}
         </div>
+        {#if dash.widgets.length > 1}
+          <div class="more-widgets">
+            {#each dash.widgets.slice(1) as widget (widget)}
+              <ProfileWidget {widget} {vm} hours={dash.hours} board={dash.widgetBoard} username={dash.shown.username} />
+            {/each}
+          </div>
+        {/if}
         {#if dash.own}
           <!-- Owner only: how the other tools get here (README.md, "One-command install"). -->
           <p class="howto">
@@ -185,7 +199,10 @@
   .full { grid-column: 1 / -1; }
   /* OpenCode (2/3) and today's split by tool (1/3) share a row. */
   .wide { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; }
+  .wide.only { grid-template-columns: 1fr; }
+  .more-widgets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 16px; }
   @media (max-width: 720px) { .wide { grid-template-columns: 1fr; } }
+  @media (max-width: 720px) { .more-widgets { grid-template-columns: 1fr; } }
   .tools { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr)); gap: 16px; }
   @media (max-width: 720px) {
     .shell { padding: 24px 16px 40px; }
