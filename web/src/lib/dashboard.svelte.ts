@@ -1,7 +1,7 @@
 // App state: sign-in, the current page (sign-in at /, a public profile at
 // /u/<username>, the fictional profile at /demo, /leaderboard, /friends,
 // /settings, /admin), session paging, and the 5 s auto-refresh
-// (skipped while hidden or already in flight).
+// (paused while hidden; skipped while already in flight).
 import { api, NotFoundError, onSessionLost, RateLimitedError, UnauthorizedError } from "./api.ts";
 import { authErrorMessage } from "./auth-errors.ts";
 import { DEMO_PROFILE, demoDashboard } from "./demo.ts";
@@ -321,13 +321,26 @@ export class Dashboard {
       if (document.hidden) return;
       if (this.status === "error" || this.route.page === "profile") void this.load();
     };
-    const id = setInterval(tick, REFRESH_MS);
-    document.addEventListener("visibilitychange", tick);
+    let id: ReturnType<typeof setInterval> | undefined;
+    const startPolling = () => {
+      if (!document.hidden && id === undefined) id = setInterval(tick, REFRESH_MS);
+    };
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        if (id !== undefined) clearInterval(id);
+        id = undefined;
+      } else {
+        startPolling();
+        tick();
+      }
+    };
+    startPolling();
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
-      clearInterval(id);
+      if (id !== undefined) clearInterval(id);
       onSessionLost(null);
       window.removeEventListener("popstate", onPop);
-      document.removeEventListener("visibilitychange", tick);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }
 }

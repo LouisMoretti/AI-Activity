@@ -42,8 +42,25 @@
   $effect(() => {
     const p = period;
     void load(p);
-    const id = setInterval(() => { if (!document.hidden) void load(p); }, REFRESH_MS);
-    return () => clearInterval(id);
+    let id: ReturnType<typeof setInterval> | undefined;
+    const startPolling = () => {
+      if (!document.hidden && id === undefined) id = setInterval(() => { if (!document.hidden) void load(p); }, REFRESH_MS);
+    };
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        if (id !== undefined) clearInterval(id);
+        id = undefined;
+      } else {
+        startPolling();
+        void load(p);
+      }
+    };
+    startPolling();
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      if (id !== undefined) clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   });
 
   const same = (a: string, b: string | null) => b !== null && a.toLowerCase() === b.toLowerCase();
