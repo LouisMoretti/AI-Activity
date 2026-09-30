@@ -9,8 +9,8 @@ import type { Context, MiddlewareHandler } from "hono";
  *     resend their whole backlog after any refusal (the Claude Code one
  *     only saves its offsets once a run is fully accepted), so replays get
  *     their own, much larger budget and pass even while rows are limited;
- *   - rows written (stored or updated). The burst covers a first import of
- *     a month of history; past it, a batch that would write is rolled back
+ *   - rows written (stored or updated). The burst allows 100,000 rows for
+ *     a history import; past it, a batch that would write is rolled back
  *     (its quotas and context are still kept) until the budget refills;
  * - public reads, per client: a profile polls 9 routes every 5 s
  *   (108/min); 300 with 5/s leaves room for two tabs behind one address;
@@ -22,7 +22,7 @@ import type { Context, MiddlewareHandler } from "hono";
 export const LIMITS = {
   ingestRequests: { capacity: 300, perSec: 5 },
   ingestReplays: { capacity: 3000, perSec: 50 },
-  ingestWrites: { capacity: 20_000, perSec: 10 },
+  ingestWrites: { capacity: 100_000, perSec: 100 },
   publicReads: { capacity: 300, perSec: 5 },
   sessionRequests: { capacity: 120, perSec: 1 },
   oauth: { capacity: 60, perSec: 0.5 },
