@@ -361,9 +361,13 @@ https://pr-123.ai-preview.example
   the PR: its code, Dockerfile and workflow run with that key. Fork pull
   requests go through `.github/workflows/preview-fork.yml` instead: the
   single sanctioned exception to the rule below. `pull_request_target`
-  there always runs the base branch's copy of the file (never the fork's),
-  PR code is only checked out into the secret-free image build, and the key
-  still waits for the `preview` environment's approval. Never
+  there always runs the base branch's copy of the file (never the fork's);
+  the image build opts in to checking out the fork's commit
+  (`allow-unsafe-pr-checkout`, only when a fork repo is passed) and runs
+  before any approval with `GITHUB_TOKEN` (contents:read, packages:write)
+  present for the GHCR push — accepted risk: the token cannot reach the
+  server or its secrets, the package is preview-only, and deploying the
+  built image still waits for the `preview` environment's approval. Never
   `pull_request_target` anywhere else, never `issue_comment` checking out
   PR code: both run PR code with secrets.
 - `deploy/ai-activity-preview` (installed as root, run by the forced command
