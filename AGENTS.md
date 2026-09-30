@@ -683,8 +683,14 @@ Components never branch on live vs demo: both sources map into the same
    (`&` is required before a quoted executable path), quoteless 8.3 short
    paths (`<short-python> <short-script> --hook`) for Antigravity (agy's
    hook runner splits the command naively on spaces and keeps the quotes,
-   so a quoted path never resolves), or the script alone for
-   Claude Code through Git Bash; use the syntax of the hook runner's shell.
+    so a quoted path never resolves). Claude Code hooks use direct
+    `command`/`args` on Windows, independent of PowerShell, cmd or Git Bash;
+    its statusLine explicitly runs a `.ps1` wrapper with PowerShell.
+    Claude's `status.json` retains pending observations per target/session
+    and the last context for 100 sessions. A short `status-state.lock`
+    protects it; `status-<target>.lock` serializes each target's uploads.
+    Busy refreshes coalesce instead of dropping the final observation;
+    hook uploads reapply stored context after inserting session usage.
 - The Codex collector (`collectors/codex.py`, copied to
   `~/.codex/ai-activity-codex.py`, run detached by `UserPromptSubmit`,
   `PostToolUse`, `Stop` and `SessionEnd` hooks in `~/.codex/hooks.json`) works the same way on

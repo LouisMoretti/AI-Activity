@@ -23,6 +23,48 @@ const ANTIGRAVITY_HOOK = JSON.parse(jsonBlocks(between("## Send Antigravity usag
 const source = (f) => fs.readFileSync(new URL(`../collectors/${f}`, import.meta.url), "utf8");
 const PLUGIN = source("opencode-plugin.js");
 
+test("Windows Claude hooks use direct arguments and upgrade shell-form handlers", async () => {
+  const home = tempHome("ai-activity Claude spaced-path-");
+  try {
+    const program = `
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("installer", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+m.WINDOWS = True
+m.sys.executable = r"C:\\Program Files\\Python312\\python.exe"
+m.CLAUDE_DIR = os.path.join(sys.argv[2], ".claude")
+m.CONFIGS["claude-code"] = os.path.join(m.CLAUDE_DIR, "settings.json")
+m.FILES["claude-code.py"] = 'SERVER = "<server>"; KEY = "<device key>"'
+other = {"type": "command", "command": "echo preserved"}
+old = {"type": "command", "command": 'python "C:/old/ai-activity-claude-code.py" --hook'}
+m.write(m.CONFIGS["claude-code"], m.dump({"hooks": {event: [{"hooks": [old, other]}] for event in m.CLAUDE_HOOKS}}))
+m.install_claude("https://example.com", "test-key")
+first = open(m.CONFIGS["claude-code"], encoding="utf-8").read()
+settings = json.loads(first)
+script = os.path.join(m.CLAUDE_DIR, "ai-activity-claude-code.py")
+for event in m.CLAUDE_HOOKS:
+    entries = settings["hooks"][event]
+    assert entries[0] == {"hooks": [other]}
+    assert entries[1]["hooks"][0] == {"type": "command", "command": m.sys.executable, "args": [script, "--hook"], "timeout": 10}
+wrapper = os.path.join(m.CLAUDE_DIR, "ai-activity-claude-code.ps1")
+assert open(wrapper, encoding="utf-8-sig").read() == "& '" + m.sys.executable + "' '" + script.replace("'", "''") + "'\\n"
+assert settings["statusLine"]["command"].endswith(' -File "' + wrapper.replace("\\\\", "/") + '"')
+m.install_claude("https://example.com", "test-key")
+assert open(m.CONFIGS["claude-code"], encoding="utf-8").read() == first
+`;
+    const result = await new Promise((resolve, reject) => {
+      const child = spawn(PYTHON, ["-c", program, fileURLToPath(new URL("../collectors/install.py", import.meta.url)), home]);
+      let output = "";
+      child.stdout.on("data", (part) => { output += part; });
+      child.stderr.on("data", (part) => { output += part; });
+      child.on("error", reject);
+      child.on("close", (code) => resolve({ code, output }));
+    });
+    assert.equal(result.code, 0, result.output);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
 test("installer generates and upgrades all Windows Codex hooks with quoted paths", async () => {
   const home = tempHome("ai-activity install-");
   try {
@@ -162,7 +204,7 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
   before(async () => {
     srv = await startServer();
     key = (await newDevice(srv.base, "installer")).key;
-    home = tempHome("ai-activity-install-");
+    home = tempHome("ai-activity install-");
     const { AI_ACTIVITY_URL, AI_ACTIVITY_KEY, AI_ACTIVITY_TOOLS, CODEX_HOME, GEMINI_CLI_HOME, XDG_CONFIG_HOME, ...inherited } = process.env;
     if (WINDOWS) {
       // PowerShell and Python need the real PATH; the runner has none of the tools.
@@ -224,14 +266,21 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
     assert.equal(settings.model, "opus");
     assert.deepEqual(settings.permissions, { allow: ["Bash(ls)"] });
     assert.equal(read(".claude", "ai-activity-claude-code.py"), filled("claude-code.py"));
-    if (WINDOWS) assert.match(settings.statusLine.command, windowsCommand(file(".claude", "ai-activity-claude-code.py")));
+    if (WINDOWS) {
+      assert.equal(settings.statusLine.command, `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${file(".claude", "ai-activity-claude-code.ps1").replaceAll("\\", "/")}"`);
+      assert.ok(read(".claude", "ai-activity-claude-code.ps1").includes("& '"));
+    }
     else assert.deepEqual(settings.statusLine, STATUS_LINE);
     assert.deepEqual(Object.keys(CLAUDE_HOOKS), CLAUDE_EVENTS);
     assert.deepEqual(settings.hooks.PostToolUse[0], theirHook);
     for (const event of CLAUDE_EVENTS) {
       const ours = settings.hooks[event].filter((h) => JSON.stringify(h).includes("ai-activity-claude-code.py"));
       assert.equal(ours.length, 1);
-      if (WINDOWS) assert.match(ours[0].hooks[0].command, windowsCommand(file(".claude", "ai-activity-claude-code.py"), "--hook"));
+      if (WINDOWS) {
+        assert.ok(path.isAbsolute(ours[0].hooks[0].command));
+        assert.ok(!ours[0].hooks[0].command.includes('"'));
+        assert.deepEqual(ours[0].hooks[0].args, [file(".claude", "ai-activity-claude-code.py"), "--hook"]);
+      }
       else assert.deepEqual(ours[0], CLAUDE_HOOKS[event][0]);
     }
 
@@ -269,8 +318,12 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
   });
 
   // Run like Claude Code does: through a shell, its JSON on stdin.
-  const runCommand = (command, stdin) => new Promise((resolve) => {
-    const p = WINDOWS
+  const runCommand = (command, stdin, shell = "cmd") => new Promise((resolve) => {
+    const p = typeof command === "object" && command.args
+      ? spawn(command.command, command.args, { env, windowsHide: true, stdio: ["pipe", "ignore", "ignore"] })
+      : WINDOWS && shell === "powershell"
+      ? spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], { env, windowsHide: true, stdio: ["pipe", "ignore", "ignore"] })
+      : WINDOWS
       ? spawn(command, { env, shell: true, windowsHide: true, stdio: ["pipe", "ignore", "ignore"] })
       : spawn("sh", ["-c", command], { env, stdio: ["pipe", "ignore", "ignore"] });
     p.stdin.on("error", () => {});
@@ -285,7 +338,8 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
     }) + "\n");
     const { hooks } = json(".claude", "settings.json");
     const ours = hooks.Stop.find((h) => JSON.stringify(h).includes("ai-activity-claude-code.py"));
-    await runCommand(ours.hooks[0].command, JSON.stringify({ hook_event_name: "Stop", session_id: "s1" }));
+    const handler = ours.hooks[0];
+    assert.equal(await runCommand(handler.args ? handler : handler.command, JSON.stringify({ hook_event_name: "Stop", session_id: "s1" })), 0);
     const tokens = async () => (await req(srv.base, "GET", "/api/u/admin/stats?days=30", { headers: asNewClient() })).json.total_tokens;
     assert.equal(await waitFor(async () => (await tokens()) === 42), true, "the upload reached the server");
   });
@@ -293,9 +347,33 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
   test("the installed statusLine uploads the quotas", async () => {
     const { statusLine } = json(".claude", "settings.json");
     const resets = Math.floor(Date.now() / 1000) + 3600;
-    await runCommand(statusLine.command, JSON.stringify({ rate_limits: { five_hour: { used_percentage: 12, resets_at: resets } } }));
+    assert.equal(await runCommand(statusLine.command, JSON.stringify({ rate_limits: { five_hour: { used_percentage: 12, resets_at: resets } } })), 0);
     const quotas = async () => (await req(srv.base, "GET", "/api/u/admin/quotas", { headers: asNewClient() })).json.quotas;
     assert.equal(await waitFor(async () => (await quotas()).some((q) => q.tool === "claude-code" && q.used_pct === 12)), true);
+    if (WINDOWS) {
+      assert.equal(await runCommand(statusLine.command, JSON.stringify({ rate_limits: { five_hour: { used_percentage: 13, resets_at: resets } } }), "powershell"), 0);
+      assert.equal(await waitFor(async () => (await quotas()).some((q) => q.tool === "claude-code" && q.used_pct === 13)), true);
+    }
+  });
+
+  test("Windows Claude exec hooks upload from both cmd and PowerShell parents", { skip: !WINDOWS }, async () => {
+    const handler = json(".claude", "settings.json").hooks.Stop.at(-1).hooks[0];
+    // Emulate Claude's documented exec form inside each parent shell. The
+    // handler itself is never reparsed as a shell command.
+    const program = `const {spawnSync}=require('node:child_process');const h=${JSON.stringify(handler)};const r=spawnSync(h.command,h.args,{stdio:'inherit',windowsHide:true});process.exit(r.status??1);`;
+    const encoded = Buffer.from(program).toString("base64");
+    const bootstrap = `"${process.execPath}" -e "eval(Buffer.from('${encoded}','base64').toString())"`;
+    for (const [index, shell] of ["cmd", "powershell"].entries()) {
+      fs.writeFileSync(file(".claude", "projects", "-work", `shell-${index}.jsonl`), JSON.stringify({
+        type: "assistant", sessionId: `shell-${index}`, timestamp: new Date().toISOString(),
+        message: { id: `msg_install_shell_${index}`, model: "claude-test", usage: { input_tokens: 2, output_tokens: 3 } },
+      }) + "\n");
+      const command = (shell === "powershell" ? "& " : "") + bootstrap;
+      assert.equal(await runCommand(command, "{}", shell), 0, `${shell} parent launches the exec hook`);
+      assert.ok(await waitFor(async () => (await req(srv.base, "GET", "/api/u/admin/sessions")).json.sessions
+        .some((s) => s.session_id === `shell-${index}` && s.tokens === 5)), `${shell} upload arrived`);
+      assert.ok(await waitFor(() => !running(file(".claude"))));
+    }
   });
 
   test("running it again changes nothing", async () => {

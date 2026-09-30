@@ -104,11 +104,11 @@ directory name (backslashes and quotes are already JSON-escaped):
 
 ```json
 "hooks": {
-  "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "python \"C:\\Users\\<user>\\.claude\\ai-activity-claude-code.py\" --hook", "timeout": 10}]}],
-  "PostToolUse": [{"hooks": [{"type": "command", "command": "python \"C:\\Users\\<user>\\.claude\\ai-activity-claude-code.py\" --hook", "timeout": 10}]}],
-  "Stop": [{"hooks": [{"type": "command", "command": "python \"C:\\Users\\<user>\\.claude\\ai-activity-claude-code.py\" --hook", "timeout": 10}]}],
-  "StopFailure": [{"hooks": [{"type": "command", "command": "python \"C:\\Users\\<user>\\.claude\\ai-activity-claude-code.py\" --hook", "timeout": 10}]}],
-  "SessionEnd": [{"hooks": [{"type": "command", "command": "python \"C:\\Users\\<user>\\.claude\\ai-activity-claude-code.py\" --hook", "timeout": 10}]}]
+  "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "python", "args": ["C:\\Users\\<user>\\.claude\\ai-activity-claude-code.py", "--hook"], "timeout": 10}]}],
+  "PostToolUse": [{"hooks": [{"type": "command", "command": "python", "args": ["C:\\Users\\<user>\\.claude\\ai-activity-claude-code.py", "--hook"], "timeout": 10}]}],
+  "Stop": [{"hooks": [{"type": "command", "command": "python", "args": ["C:\\Users\\<user>\\.claude\\ai-activity-claude-code.py", "--hook"], "timeout": 10}]}],
+  "StopFailure": [{"hooks": [{"type": "command", "command": "python", "args": ["C:\\Users\\<user>\\.claude\\ai-activity-claude-code.py", "--hook"], "timeout": 10}]}],
+  "SessionEnd": [{"hooks": [{"type": "command", "command": "python", "args": ["C:\\Users\\<user>\\.claude\\ai-activity-claude-code.py", "--hook"], "timeout": 10}]}]
 },
 "statusLine": {
   "type": "command",
@@ -121,6 +121,14 @@ nothing printed in the status line. Use the absolute path of the
 interpreter if it is not on Claude Code's PATH (`python3 -c 'import sys;
 print(sys.executable)'`, or `python -c "import sys; print(sys.executable)"`
 on Windows, JSON-escaped like the script path).
+
+Windows hooks use `command` plus `args`: Claude launches Python directly,
+so they work when Claude is started from PowerShell or cmd, with or without
+Git Bash. An absolute `command` path must have no extra shell quotes. The
+Windows installer also creates `ai-activity-claude-code.ps1` for the status
+line, calling the installing Python interpreter with PowerShell's `&` operator.
+It invokes that wrapper explicitly with `powershell.exe -NoProfile -File`,
+so spaced interpreter paths work from either shell too.
 
 **The hooks send the tokens, the status line the quotas.** Claude Code
 only gives its 5-hour and 7-day quotas and the context fill to the status
@@ -174,6 +182,11 @@ went to the same server in the last 5 minutes (`status.json` in
 `~/.cache/ai-activity`): it refreshes several times a second while Claude
 Code works, and shares the device's request budget with the hooks. It
 never reads the transcripts, and prints nothing.
+While a POST is in flight, newer observations are saved per session and
+coalesced; the active uploader sends the latest without needing another
+refresh. Failed observations stay queued for the next refresh or hook.
+The last context for each of the 100 most recent sessions is retained and
+reapplied after its tokens arrive, even if the status was uploaded first.
 
 **Days are local, like GitHub's contribution calendar.** Each entry carries
 the device's UTC offset when it happened (daylight saving included), and
@@ -259,8 +272,8 @@ in PowerShell is:
 ```
 
 If your hook runner uses `cmd.exe`, omit `&`; it is PowerShell syntax.
-Claude Code's Windows hooks and statusLine above run through Git Bash and
-keep their commands.
+Claude Code's Windows hooks above use direct executable/argument form,
+which needs neither PowerShell's `&` nor cmd-specific quoting.
 
 Codex asks you to review a new hook once (`/hooks`) before running it.
 
@@ -651,7 +664,7 @@ Each tool has one Python script in `collectors/`. They share the same design:
 
 | Script | Copy to | Run by | Reads | Progress file | Locks |
 | --- | --- | --- | --- | --- | --- |
-| `claude-code.py` | `~/.claude/ai-activity-claude-code.py` | the `UserPromptSubmit`, `PostToolUse`, `Stop`, `StopFailure` and `SessionEnd` hooks (tokens); the statusLine, every refresh (quotas, context) | `~/.claude/projects/**/*.jsonl` (sessions and subagents) | `offsets.json` (byte offset per transcript), `status.json` (last status posted) | `lock`, `waiter.lock`, `status.lock` |
+| `claude-code.py` | `~/.claude/ai-activity-claude-code.py` (Windows status wrapper: `.ps1` next to it) | the `UserPromptSubmit`, `PostToolUse`, `Stop`, `StopFailure` and `SessionEnd` hooks (tokens); the statusLine, every refresh (quotas, context) | `~/.claude/projects/**/*.jsonl` (sessions and subagents) | `offsets.json` (byte offset per transcript), `status.json` (posted/pending status and recent contexts per target) | `lock`, `waiter.lock`, `status-state.lock`, `status-<target>.lock` |
 | `codex.py` | `~/.codex/ai-activity-codex.py` | the `UserPromptSubmit`, `PostToolUse`, `Stop` and `SessionEnd` hooks | `~/.codex/sessions`, `~/.codex/archived_sessions` (`CODEX_HOME`) | `codex.json` (byte offset per rollout) | `codex.lock`, `codex-waiter.lock` |
 | `opencode.py` | `~/.config/opencode/ai-activity-opencode.py` | `opencode-plugin.js`, at start and on `session.idle` | `~/.local/share/opencode/opencode.db` (`XDG_DATA_HOME`, `OPENCODE_DB`), numeric fields only | `opencode.json` (last `time_updated` sent) | `opencode.lock` |
 | `antigravity.py` | `~/.gemini/ai-activity-antigravity.py` | the `PostInvocation` and `Stop` hooks | `~/.gemini/{antigravity,antigravity-cli,antigravity-ide}/conversations/*.db` (`GEMINI_CLI_HOME`); quotas from `agy`, opt-in | `antigravity.json` (per database), `antigravity-quota.json` | `antigravity.lock`, `antigravity-waiter.lock`, `antigravity-quota.lock` |

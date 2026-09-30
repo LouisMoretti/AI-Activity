@@ -15,9 +15,10 @@ const README = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8")
 const section = README.split("## Send Claude Code usage from a device")[1].split("## Send Codex")[0];
 const [posix, windows] = [...section.matchAll(/```json\n([\s\S]*?)\n```/g)].map((m) => JSON.parse(`{${m[1]}}`));
 const commands = (settings) => {
-  const hooks = new Set(Object.values(settings.hooks).map((entries) => entries[0].hooks[0].command));
+  const hooks = new Set(Object.values(settings.hooks).map((entries) => JSON.stringify(entries[0].hooks[0])));
   assert.equal(hooks.size, 1, "every hook runs the same command");
-  return { hook: [...hooks][0], statusLine: settings.statusLine.command };
+  const handler = JSON.parse([...hooks][0]);
+  return { hook: handler.args ? handler : handler.command, statusLine: settings.statusLine.command };
 };
 const SCRIPT = fs.readFileSync(new URL("../collectors/claude-code.py", import.meta.url), "utf8");
 // The README's commands name the interpreter and ~ or C:\Users\<user>: run
@@ -46,7 +47,9 @@ const filler = (n) => Array.from({ length: n }, () => JSON.stringify({ type: "us
  */
 function run(cmd, { stdin = "{}", env, killAfterMs } = {}) {
   return new Promise((resolve) => {
-    const p = WINDOWS
+    const p = typeof cmd === "object"
+      ? spawn(cmd.command, cmd.args, { env, windowsHide: true, stdio: ["pipe", "ignore", "ignore"] })
+      : WINDOWS
       ? spawn(cmd, { env, shell: true, windowsHide: true, stdio: ["pipe", "ignore", "ignore"] })
       : spawn("sh", ["-c", cmd], { env, detached: true, stdio: ["pipe", "ignore", "ignore"] });
     p.stdin.on("error", () => {}); // killed before reading its input (EPIPE)
@@ -108,6 +111,10 @@ describe("Claude Code collector (hooks and statusLine from README.md)", () => {
     // Rewritten only when the server or key changes: never under a run starting.
     if (installed !== `${base}\n${k}`) fs.writeFileSync(scriptPath(), SCRIPT.replace("<server>", base).replace("<device key>", k));
     installed = `${base}\n${k}`;
+    if (typeof README_COMMANDS[which] === "object") {
+      assert.deepEqual(README_COMMANDS[which].args, ['C:\\Users\\<user>\\.claude\\ai-activity-claude-code.py', "--hook"]);
+      return { command: PYTHON, args: [scriptPath(), "--hook"] };
+    }
     assert.ok(README_COMMANDS[which].startsWith(PREFIX));
     return README_COMMANDS[which].replace(PREFIX, `"${PYTHON}" "${scriptPath()}"`);
   };
@@ -256,6 +263,21 @@ describe("Claude Code collector (hooks and statusLine from README.md)", () => {
     }
   });
 
+  test("context uploaded before the first transcript survives the status cache", async () => {
+    const session = "status-before-tokens";
+    await run(statusLine(), { env, stdin: JSON.stringify({
+      session_id: session, context_window: { used_percentage: 37, context_window_size: 200000 },
+    }) });
+    await collectorsDone(marker);
+    fs.writeFileSync(path.join(project, session + ".jsonl"), entry("msg_context_first", 20, { session }) + "\n");
+    // No second status refresh: the hook must recover the earlier observation.
+    await run(cmd(srv.base), { env });
+    await collectorsDone(marker);
+    const row = (await req(srv.base, "GET", "/api/u/admin/sessions")).json.sessions.find((s) => s.session_id === session);
+    assert.equal(row.context_used_pct, 37);
+    assert.equal(row.context_window_size, 200000);
+  });
+
   test("a refused status report is retried on the next refresh", async () => {
     let attempts = 0;
     const endpoint = http.createServer(async (request, response) => {
@@ -275,7 +297,7 @@ describe("Claude Code collector (hooks and statusLine from README.md)", () => {
       await refresh();
       assert.equal(attempts, 1);
       assert.equal(JSON.parse(fs.readFileSync(path.join(home, ".cache", "ai-activity", "status.json"), "utf8"))
-        .targets?.[collectorTarget(base, key)], undefined, "429 does not mark the status as sent");
+        .targets?.[collectorTarget(base, key)]?.seen, undefined, "429 does not mark the status as sent");
       await refresh();
       assert.equal(attempts, 2, "the same status is retried");
     } finally {
@@ -284,7 +306,7 @@ describe("Claude Code collector (hooks and statusLine from README.md)", () => {
     }
   });
 
-  test("status refreshes do not queue behind a slow upload", async () => {
+  test("busy status refreshes coalesce and send the final observation without another refresh", async () => {
     const received = [];
     let releaseFirst;
     const firstDone = new Promise((resolve) => { releaseFirst = resolve; });
@@ -304,17 +326,19 @@ describe("Claude Code collector (hooks and statusLine from README.md)", () => {
     try {
       await refresh(51);
       assert.ok(await waitFor(() => received.length === 1), "the first upload started");
-      await Promise.all([52, 53, 54, 55, 56].map(refresh));
+      await Promise.all([52, 53, 54, 55].map(refresh));
       // The detached workers have time to see the held lock. They must
       // finish without waiting for the first HTTP response.
       await sleep(1000);
+      await refresh(100);
+      await sleep(500);
       assert.deepEqual(received, [51]);
       releaseFirst();
       await collectorsDone(marker);
-      assert.deepEqual(received, [51], "stale captured values were not posted after the lock was released");
-      await refresh(56);
+      assert.deepEqual(received, [51, 100], "the final snapshot is sent even when refreshes stop");
+      await refresh(100);
       await collectorsDone(marker);
-      assert.deepEqual(received, [51, 56], "the next refresh sends the latest value");
+      assert.deepEqual(received, [51, 100], "an unchanged final value stays cached");
     } finally {
       releaseFirst();
       cmd(srv.base);

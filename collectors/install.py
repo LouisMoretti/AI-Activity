@@ -174,7 +174,11 @@ def install_claude(url, key):
     run = lambda *args: command(script, "~/.claude/ai-activity-claude-code.py", *args)
     # Tokens: the hooks, next to the user's own.
     hooks = settings.setdefault("hooks", {})  # an object: preflight checked
-    ours = {"hooks": [{"type": "command", "command": run("--hook"), "timeout": 10}]}
+    # Exec form bypasses Git Bash / PowerShell on Windows, including when
+    # Claude itself was started from cmd.exe. Paths stay separate arguments.
+    handler = ({"command": sys.executable, "args": [script, "--hook"]}
+               if WINDOWS else {"command": run("--hook")})
+    ours = {"hooks": [{"type": "command", **handler, "timeout": 10}]}
     for event in CLAUDE_HOOKS:
         entries = hooks.get(event)
         entries = entries if isinstance(entries, list) else []
@@ -187,7 +191,8 @@ def install_claude(url, key):
                 continue
             handlers = [handler for handler in entry["hooks"]
                         if not (isinstance(handler, dict) and isinstance(handler.get("command"), str)
-                                and "ai-activity-claude-code.py" in handler["command"])]
+                                 and "ai-activity-claude-code.py" in
+                                 (handler["command"] + " " + json.dumps(handler.get("args", []))))]
             if len(handlers) == len(entry["hooks"]):
                 kept.append(entry)
             elif handlers:
@@ -199,7 +204,17 @@ def install_claude(url, key):
     other = isinstance(current, dict) and "ai-activity" not in str(current.get("command", ""))
     kept = current and other and os.environ.get("AI_ACTIVITY_FORCE") != "1"
     if not kept:
-        settings["statusLine"] = {"type": "command", "command": run()}
+        status_command = run()
+        if WINDOWS:
+            # statusLine has no exec form. Use an explicit PowerShell script
+            # whose invocation is valid from cmd, PowerShell and Git Bash.
+            wrapper = os.path.join(CLAUDE_DIR, "ai-activity-claude-code.ps1")
+            quoted = lambda value: "'" + value.replace("'", "''") + "'"
+            # Windows PowerShell 5 reads non-ASCII paths correctly with a BOM.
+            changed = write(wrapper, "\ufeff& " + quoted(sys.executable) + " " + quoted(script) + "\n", 0o600) or changed
+            status_command = ('powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'
+                              + wrapper.replace("\\", "/") + '"')
+        settings["statusLine"] = {"type": "command", "command": status_command}
     changed = write(path, dump(settings)) or changed
     say(f"Claude Code: {'installed' if changed else 'already up to date'} ({script}, hooks"
         f"{'' if kept else ' and statusLine'} in {path})")

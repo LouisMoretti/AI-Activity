@@ -312,13 +312,91 @@ def send():
     messages = list({mid: e for mid, _, e in sorted(found, key=lambda x: x[1])}.values())
     for i in range(0, len(messages), BATCH):
         post({"messages": messages[i:i + BATCH], "occurred_at": int(time.time())})
+    # A status can arrive before this session's first usage row exists.
+    # Reapply its measured context after insertion, including when the status
+    # is unchanged and its ordinary upload is still in the five-minute cache.
+    sessions = {m["session_id"] for m in messages}
+    if sessions:
+        # Serialize with status POSTs so reapplying an older context cannot
+        # overwrite a newer refresh that finished while tokens were uploading.
+        held = lock(status_upload_lock())
+        try:
+            with status_state() as last:
+                contexts = dict(last.get("contexts", {}))
+            for session in sessions:
+                if session in contexts:
+                    post(contexts[session])
+        finally:
+            unlock(held)
     offsets.update(moved)
     with open(path + ".tmp", "w") as out:
         json.dump(state, out)
     os.replace(path + ".tmp", path)
+    drain_status()
 
 
 STATUS_EVERY = 300  # an unchanged status is posted again after that long, not before
+
+
+def status_upload_lock():
+    return os.path.join(CACHE, "status-" + target() + ".lock")
+
+
+@contextlib.contextmanager
+def status_state():
+    """Short, disk-only critical section: never hold it during a POST."""
+    os.makedirs(CACHE, exist_ok=True)
+    held = lock(os.path.join(CACHE, "status-state.lock"))
+    try:
+        path = os.path.join(CACHE, "status.json")
+        try:
+            with open(path) as f:
+                saved = first_dict(f.read())
+        except OSError:
+            saved = {}
+        targets = saved.get("targets") if isinstance(saved.get("targets"), dict) else {}
+        targets = {k: v for k, v in targets.items() if isinstance(v, dict)}
+        fp = target()
+        last = targets.pop(fp, {})
+        targets[fp] = last
+        yield last
+        with open(path + ".tmp", "w") as out:
+            json.dump({"targets": dict(list(targets.items())[-KEPT_TARGETS:])}, out)
+        os.replace(path + ".tmp", path)
+    finally:
+        unlock(held)
+
+
+def drain_status():
+    """One uploader per target; busy refreshes persist the latest per session.
+
+    Releasing the uploader lock under the state lock closes the race between
+    checking an empty queue and a refresh deciding someone else will drain it.
+    Failed POSTs leave their observation queued for the next refresh or hook.
+    """
+    with status_state():
+        held = lock(status_upload_lock(), wait=False)
+    if held is None:
+        return
+    try:
+        while True:
+            with status_state() as last:
+                pending = last.get("pending", {})
+                if not pending:
+                    unlock(held)
+                    held = None
+                    return
+                session, observation = next(iter(pending.items()))
+            post(observation["body"])
+            with status_state() as last:
+                last["seen"] = observation["seen"]
+                last["at"] = observation["body"]["occurred_at"]
+                pending = last.get("pending", {})
+                if pending.get(session) == observation:
+                    del pending[session]
+    finally:
+        if held is not None:
+            unlock(held)
 
 
 def report(status):
@@ -337,34 +415,22 @@ def report(status):
     if not body["rate_limits"] and body["context"]["used_pct"] is None:
         return
     seen = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
-    os.makedirs(CACHE, exist_ok=True)
-    # A slow POST can hold this lock for a minute. Later refreshes should exit
-    # instead of queuing captured values; the next refresh will send the latest.
-    held = lock(os.path.join(CACHE, "status.lock"), wait=False)
-    if held is None:
-        return
-    try:
-        path = os.path.join(CACHE, "status.json")
-        try:
-            with open(path) as f:
-                saved = first_dict(f.read())
-        except OSError:
-            saved = {}
-        targets = saved.get("targets") if isinstance(saved.get("targets"), dict) else {}
-        targets = {k: v for k, v in targets.items() if isinstance(v, dict)}
-        fp = target()
-        last = targets.pop(fp, {})
+    with status_state() as last:
         now = int(time.time())
-        if last.get("seen") == seen and isinstance(last.get("at"), int) and 0 <= now - last["at"] < STATUS_EVERY:
-            targets[fp] = last
-            return
-        post(dict(body, occurred_at=now))
-        targets[fp] = {"seen": seen, "at": now}
-        with open(path + ".tmp", "w") as out:
-            json.dump({"targets": dict(list(targets.items())[-KEPT_TARGETS:])}, out)
-        os.replace(path + ".tmp", path)
-    finally:
-        unlock(held)
+        session = body["context"]["session_id"] or ""
+        if session and body["context"]["used_pct"] is not None:
+            contexts = last.setdefault("contexts", {})
+            contexts.pop(session, None)
+            contexts[session] = {"context": body["context"], "occurred_at": now}
+            last["contexts"] = dict(list(contexts.items())[-100:])
+        recent = (last.get("seen") == seen and isinstance(last.get("at"), int)
+                  and 0 <= now - last["at"] < STATUS_EVERY)
+        pending = last.setdefault("pending", {})
+        # A queued change takes precedence even when this value matches the
+        # previous successful POST (e.g. the context returns to its old value).
+        if not recent or session in pending:
+            pending[session] = {"seen": seen, "body": dict(body, occurred_at=now)}
+    drain_status()
 
 
 def launch_worker(status, *flags):

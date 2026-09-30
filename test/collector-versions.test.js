@@ -29,7 +29,7 @@ const FILES = {
  * shared/collectors.ts, then record the new version and hash here.
  */
 const RECORDED = {
-  "claude-code": { version: 3, sha256: "3f497b71fa0d6dba28f60164b2a0a3090c6097dde8e43073bbf60509212bf8f5" },
+  "claude-code": { version: 3, sha256: "cbd888fe200429a3fcf842aad2bc85ab0d32b83eb1b3356ab89ebf3b9b3b4738" },
   codex: { version: 2, sha256: "a48e3cf19fdff5ae3cd0b9d29f029bf760b49ddf7ff74a444948f67335320c6a" },
   antigravity: { version: 3, sha256: "08d3bc5ac185b28a6122208ff26fde4a4c9938ae801459b1821e09e35de2a381" },
   opencode: { version: 2, sha256: "e9a6b9c8b2b3ca16364657a72058d2b18268d0738efef4f2af1e8f61fd2ca47d" },
