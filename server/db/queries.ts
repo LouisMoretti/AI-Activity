@@ -859,46 +859,27 @@ export function leaderboard(
   };
 }
 
-/** SQL for the synthetic account exists only in the preview administration path. */
+/** SQL for the preview seed exists only in the preview administration path. */
 const PREVIEW_SEED_KEY = "preview_seed_config";
-const SAMPLE_GITHUB_ID = -2147000000;
 
 export function previewSeedSettings(db: DB): PreviewSeedConfig {
   const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(PREVIEW_SEED_KEY) as { value: string } | undefined;
   return row ? { ...DEFAULT_PREVIEW_SEED, ...JSON.parse(row.value) as Partial<PreviewSeedConfig> } : DEFAULT_PREVIEW_SEED;
 }
 
-/** Replace only generated events, leaving the chosen account's measured events intact. */
+/** Replace only generated events, leaving the admin's measured events intact. */
 export function seedPreviewData(
   db: DB, config: PreviewSeedConfig, signedInUserId: number,
 ): { username: string; events: number } {
   return db.transaction(() => {
     const now = nowSec();
-    const sample = db.prepare("SELECT id, username FROM users WHERE github_id = ?").get(SAMPLE_GITHUB_ID) as
+    const own = db.prepare("SELECT id, username FROM users WHERE id = ? AND disabled = 0").get(signedInUserId) as
       { id: number; username: string } | undefined;
-    let user: { id: number; username: string };
-    if (config.target === "self") {
-      const own = db.prepare("SELECT id, username FROM users WHERE id = ? AND disabled = 0").get(signedInUserId) as
-        { id: number; username: string } | undefined;
-      if (!own) throw new Error("signed-in account no longer exists");
-      user = own;
-    } else if (sample) {
-      user = sample;
-      db.prepare("UPDATE users SET disabled = 0, display_name = 'Preview sample' WHERE id = ?").run(user.id);
-    } else {
-      const base = "preview-sample";
-      let username = base;
-      for (let n = 2; db.prepare("SELECT 1 FROM users WHERE username = ? COLLATE NOCASE").get(username); n++) {
-        username = `${base}-${n}`;
-      }
-      const result = db.prepare(
-        "INSERT INTO users (github_id, username, display_name, avatar_url, is_admin, created_at) VALUES (?, ?, ?, NULL, 0, ?)"
-      ).run(SAMPLE_GITHUB_ID, username, "Preview sample", now);
-      user = { id: Number(result.lastInsertRowid), username };
-    }
+    if (!own) throw new Error("signed-in account no longer exists");
+    const user = own;
 
-    // The marker has no usable key. It identifies generated rows even when
-    // the device is moved between the admin and the synthetic account.
+    // The marker has no usable key. It identifies the generated rows,
+    // so regenerating replaces only them.
     const device = db.prepare("SELECT id FROM devices WHERE key_hash = 'preview-seed-device'").get() as
       { id: number } | undefined;
     let deviceId: number;
@@ -915,18 +896,6 @@ export function seedPreviewData(
       ).run(user.id, now).lastInsertRowid);
     }
 
-    // An older preview may still have the separate sample account. Remove it
-    // when the admin chooses their own profile, after moving the seed device.
-    if (sample && sample.id !== user.id) {
-      db.prepare("DELETE FROM usage_events WHERE user_id = ?").run(sample.id);
-      db.prepare("DELETE FROM quota_snapshots WHERE user_id = ?").run(sample.id);
-      db.prepare("DELETE FROM deleted_events WHERE user_id = ?").run(sample.id);
-      db.prepare("DELETE FROM collector_versions WHERE device_id IN (SELECT id FROM devices WHERE user_id = ?)").run(sample.id);
-      db.prepare("DELETE FROM devices WHERE user_id = ?").run(sample.id);
-      db.prepare("DELETE FROM viewer_sessions WHERE user_id = ?").run(sample.id);
-      db.prepare("DELETE FROM users WHERE id = ?").run(sample.id);
-    }
-
     const insert = db.prepare(`
       INSERT INTO usage_events (
         event_id, device_id, user_id, tool, session_id, prompt_id, model,
@@ -939,7 +908,7 @@ export function seedPreviewData(
       const day = Math.floor(i / config.events_per_day);
       const at = now - day * 86400 - (i % config.events_per_day) * 1800;
       insert.run(
-        `preview-sample-${i}`, deviceId, user.id, config.tools[i % config.tools.length],
+        `preview-seed-${i}`, deviceId, user.id, config.tools[i % config.tools.length],
         `preview-session-${Math.floor(i / 3)}`, `preview-prompt-${i}`,
         config.models[i % config.models.length], config.input_tokens, config.output_tokens,
         config.cache_read_tokens, config.cache_write_tokens, 200000, 30 + (i * 7) % 60, at, now,

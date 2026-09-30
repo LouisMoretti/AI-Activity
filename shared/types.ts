@@ -179,10 +179,8 @@ export interface AuthStatus {
   github_sign_in: boolean;
 }
 
-/** Preview-only sample activity, edited as JSON in the admin panel. */
+/** Preview-only sample activity on the signed-in admin's account, edited as JSON in the admin panel. */
 export interface PreviewSeedConfig {
-  /** Generate on the signed-in admin's account by default, or a separate synthetic profile. */
-  target: "self" | "preview_user";
   days: number;
   events_per_day: number;
   tools: Tool[];

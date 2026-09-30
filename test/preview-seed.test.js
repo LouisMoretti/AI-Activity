@@ -14,10 +14,9 @@ test("sample generation is preview-only, admin-only, explicit, and configurable"
     assert.equal((await req(srv.base, "POST", endpoint, { cookie: other.cookie, body: {} })).status, 403);
 
     const config = (await req(srv.base, "GET", endpoint)).json.config;
-    assert.equal(config.target, "self");
     assert.equal((await req(srv.base, "POST", endpoint, { body: { ...config, days: 0 } })).status, 400);
     assert.equal((await req(srv.base, "POST", endpoint, { body: { ...config, tools: ["bogus"] } })).status, 400);
-    assert.equal((await req(srv.base, "POST", endpoint, { body: { ...config, target: "reviewer" } })).status, 400);
+    assert.equal((await req(srv.base, "POST", endpoint, { body: { ...config, target: "preview_user" } })).status, 400);
     assert.equal((await req(srv.base, "POST", endpoint, { body: { ...config, extra: 1 } })).status, 400);
     assert.deepEqual((await req(srv.base, "GET", "/api/profiles", { anon: true })).json.profiles.map((p) => p.username), ["admin", "reviewer"]);
 
@@ -44,19 +43,6 @@ test("sample generation is preview-only, admin-only, explicit, and configurable"
     const changed = await req(srv.base, "POST", endpoint, { body: { ...edited, events_per_day: 1 } });
     assert.equal(changed.json.events, 3);
     assert.equal((await req(srv.base, "GET", `/api/u/${username}/summary`, { anon: true })).json.total.events, 4);
-
-    const separate = await req(srv.base, "POST", endpoint, { body: { ...edited, target: "preview_user", events_per_day: 1 } });
-    assert.equal(separate.status, 200, separate.text);
-    assert.equal(separate.json.username, "preview-sample");
-    assert.equal((await req(srv.base, "GET", "/api/u/admin/summary", { anon: true })).json.total.events, 1);
-    assert.equal((await req(srv.base, "GET", "/api/u/admin", { anon: true })).json.sample, undefined);
-    assert.equal((await req(srv.base, "GET", "/api/u/preview-sample/summary", { anon: true })).json.total.events, 3);
-    assert.equal((await req(srv.base, "GET", "/api/devices")).json.devices.map((d) => d.name).includes("preview"), false);
-
-    const back = await req(srv.base, "POST", endpoint, { body: { ...edited, events_per_day: 1 } });
-    assert.equal(back.status, 200, back.text);
-    assert.equal((await req(srv.base, "GET", "/api/u/admin/summary", { anon: true })).json.total.events, 4);
-    assert.equal((await req(srv.base, "GET", "/api/u/preview-sample", { anon: true })).status, 404);
   } finally {
     await srv.stop();
   }

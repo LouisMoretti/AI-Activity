@@ -40,7 +40,7 @@
 </script>
 
 <div class="panel">
-  <p>Set <code>target</code> to <code>self</code> (default) to add activity to your profile, or <code>preview_user</code> for a separate fictional profile. Events use a device named <code>preview</code>. Generating again replaces only events from that device; your measured activity stays.</p>
+  <p>Adds fictional activity to your profile. Events use a device named <code>preview</code>. Generating again replaces only events from that device; your measured activity stays.</p>
   <label for="preview-seed-json">Sample settings (JSON)</label>
   <textarea id="preview-seed-json" bind:value={json} spellcheck="false" rows="17" disabled={generating} aria-describedby="preview-seed-help"></textarea>
   <small id="preview-seed-help">1–365 days, 1–20 events per day, up to 5,000 events. Use supported tool slugs: claude-code, codex, antigravity, opencode.</small>
