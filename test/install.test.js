@@ -415,7 +415,11 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
       assert.ok(JSON.stringify(json(".claude", "settings.json").hooks[event]).includes("ai-activity-claude-code.py"));
     }
     await install({ AI_ACTIVITY_TOOLS: "claude-code", AI_ACTIVITY_FORCE: "1" });
-    assert.ok(json(".claude", "settings.json").statusLine.command.includes("ai-activity-claude-code.py"));
+    const status = json(".claude", "settings.json").statusLine;
+    if (WINDOWS) {
+      assert.equal(status.command, `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${file(".claude", "ai-activity-claude-code.ps1").replaceAll("\\", "/")}"`);
+      assert.ok(read(".claude", "ai-activity-claude-code.ps1").includes("ai-activity-claude-code.py"));
+    } else assert.deepEqual(status, STATUS_LINE);
   });
 
   test("AI_ACTIVITY_TOOLS installs a tool not found yet", async () => {
