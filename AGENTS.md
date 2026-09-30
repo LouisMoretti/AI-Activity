@@ -686,8 +686,8 @@ Components never branch on live vs demo: both sources map into the same
    so a quoted path never resolves), or the script alone for
    Claude Code through Git Bash; use the syntax of the hook runner's shell.
 - The Codex collector (`collectors/codex.py`, copied to
-  `~/.codex/ai-activity-codex.py`, run detached by `PostToolUse`, `Stop`,
-  `UserPromptSubmit` and `SessionEnd` hooks in `~/.codex/hooks.json`) works the same way on
+  `~/.codex/ai-activity-codex.py`, run detached by `UserPromptSubmit`,
+  `PostToolUse`, `Stop` and `SessionEnd` hooks in `~/.codex/hooks.json`) works the same way on
   the rollouts under `~/.codex/sessions` and `archived_sessions` (offsets in
   `~/.cache/ai-activity/codex.json`). `Stop` does not fire on rate-limit
   stops (upstream Codex bug), so `UserPromptSubmit` is the backstop that

@@ -48,7 +48,7 @@ CONFIGS = {"claude-code": os.path.join(CLAUDE_DIR, "settings.json"),
 CLAUDE_HOOKS = ("UserPromptSubmit", "PostToolUse", "Stop", "StopFailure", "SessionEnd")
 # PostToolUse sends a long turn as it runs. UserPromptSubmit catches up on
 # rollouts left by a turn whose Stop hook did not fire (e.g. a rate limit).
-CODEX_HOOKS = ("Stop", "UserPromptSubmit", "PostToolUse", "SessionEnd")
+CODEX_HOOKS = ("UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd")
 ANTIGRAVITY_HOOKS = (("PostInvocation", "--post-invocation"), ("Stop", "--hook"))
 
 

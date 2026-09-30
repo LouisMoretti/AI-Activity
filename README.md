@@ -201,13 +201,13 @@ a bare `/api/ingest` answers `404`. See `AGENTS.md` §5 for the payload contract
 ```json
 {
   "hooks": {
-    "Stop": [
-      { "hooks": [{ "type": "command", "command": "setsid -f python3 ~/.codex/ai-activity-codex.py >/dev/null 2>&1 </dev/null; echo '{}'", "timeout": 10 }] }
-    ],
     "UserPromptSubmit": [
       { "hooks": [{ "type": "command", "command": "setsid -f python3 ~/.codex/ai-activity-codex.py >/dev/null 2>&1 </dev/null; echo '{}'", "timeout": 10 }] }
     ],
     "PostToolUse": [
+      { "hooks": [{ "type": "command", "command": "setsid -f python3 ~/.codex/ai-activity-codex.py >/dev/null 2>&1 </dev/null; echo '{}'", "timeout": 10 }] }
+    ],
+    "Stop": [
       { "hooks": [{ "type": "command", "command": "setsid -f python3 ~/.codex/ai-activity-codex.py >/dev/null 2>&1 </dev/null; echo '{}'", "timeout": 10 }] }
     ],
     "SessionEnd": [
@@ -228,13 +228,13 @@ before a quoted executable path. If Python is not on Codex's PATH, replace
 ```json
 {
   "hooks": {
-    "Stop": [
-      { "hooks": [{ "type": "command", "command": "& python \"C:\\Users\\<user>\\.codex\\ai-activity-codex.py\" --hook", "timeout": 10 }] }
-    ],
     "UserPromptSubmit": [
       { "hooks": [{ "type": "command", "command": "& python \"C:\\Users\\<user>\\.codex\\ai-activity-codex.py\" --hook", "timeout": 10 }] }
     ],
     "PostToolUse": [
+      { "hooks": [{ "type": "command", "command": "& python \"C:\\Users\\<user>\\.codex\\ai-activity-codex.py\" --hook", "timeout": 10 }] }
+    ],
+    "Stop": [
       { "hooks": [{ "type": "command", "command": "& python \"C:\\Users\\<user>\\.codex\\ai-activity-codex.py\" --hook", "timeout": 10 }] }
     ],
     "SessionEnd": [
@@ -314,8 +314,9 @@ What it does after every tool call and at the end of every turn:
   recorded with each response, dated when Codex measured them. A limit
   snapshot written without token counts (e.g. when a turn failed) is sent
   too, so an exhausted quota still records its final value.
-- The `Stop` hook does not fire when Codex stops on a rate limit (upstream
-  Codex bug), which would leave that final snapshot unsent: the
+- Codex has no `StopFailure` hook. Its `Stop` hook does not fire when Codex
+  stops on a rate limit (upstream Codex bug), which would leave that final
+  snapshot unsent: the
   `UserPromptSubmit` hook runs the same script on your next prompt and picks
   it up. If Codex is driven without prompts (`codex exec`), run the script
   by hand or from cron after hitting a limit instead.
@@ -651,7 +652,7 @@ Each tool has one Python script in `collectors/`. They share the same design:
 | Script | Copy to | Run by | Reads | Progress file | Locks |
 | --- | --- | --- | --- | --- | --- |
 | `claude-code.py` | `~/.claude/ai-activity-claude-code.py` | the `UserPromptSubmit`, `PostToolUse`, `Stop`, `StopFailure` and `SessionEnd` hooks (tokens); the statusLine, every refresh (quotas, context) | `~/.claude/projects/**/*.jsonl` (sessions and subagents) | `offsets.json` (byte offset per transcript), `status.json` (last status posted) | `lock`, `waiter.lock`, `status.lock` |
-| `codex.py` | `~/.codex/ai-activity-codex.py` | the `Stop`, `UserPromptSubmit`, `PostToolUse` and `SessionEnd` hooks | `~/.codex/sessions`, `~/.codex/archived_sessions` (`CODEX_HOME`) | `codex.json` (byte offset per rollout) | `codex.lock`, `codex-waiter.lock` |
+| `codex.py` | `~/.codex/ai-activity-codex.py` | the `UserPromptSubmit`, `PostToolUse`, `Stop` and `SessionEnd` hooks | `~/.codex/sessions`, `~/.codex/archived_sessions` (`CODEX_HOME`) | `codex.json` (byte offset per rollout) | `codex.lock`, `codex-waiter.lock` |
 | `opencode.py` | `~/.config/opencode/ai-activity-opencode.py` | `opencode-plugin.js`, at start and on `session.idle` | `~/.local/share/opencode/opencode.db` (`XDG_DATA_HOME`, `OPENCODE_DB`), numeric fields only | `opencode.json` (last `time_updated` sent) | `opencode.lock` |
 | `antigravity.py` | `~/.gemini/ai-activity-antigravity.py` | the `PostInvocation` and `Stop` hooks | `~/.gemini/{antigravity,antigravity-cli,antigravity-ide}/conversations/*.db` (`GEMINI_CLI_HOME`); quotas from `agy`, opt-in | `antigravity.json` (per database), `antigravity-quota.json` | `antigravity.lock`, `antigravity-waiter.lock`, `antigravity-quota.lock` |
 

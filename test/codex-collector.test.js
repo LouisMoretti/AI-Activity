@@ -21,7 +21,7 @@ const WINDOWS_PREFIX = '& python "C:\\Users\\<user>\\.codex\\ai-activity-codex.p
 
 test("Windows README hook commands preserve PowerShell invocation and JSON escaping", () => {
   const windowsHooks = JSON.parse(README.match(/`%USERPROFILE%\\\.codex\\hooks\.json`:\n\n```json\n([\s\S]*?)\n```/)[1]);
-  for (const event of ["Stop", "UserPromptSubmit", "PostToolUse", "SessionEnd"]) {
+  for (const event of ["UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd"]) {
     assert.equal(windowsHooks.hooks[event][0].hooks[0].command, `${WINDOWS_PREFIX} --hook`);
     assert.equal(windowsHooks.hooks[event][0].hooks[0].timeout, event === "SessionEnd" ? 3 : 10);
   }

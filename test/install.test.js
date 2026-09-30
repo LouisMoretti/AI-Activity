@@ -40,7 +40,7 @@ m.FILES["codex.py"] = 'SERVER = "<server>"; KEY = "<device key>"'
 script = os.path.join(m.CODEX_HOME, "ai-activity-codex.py")
 old = m.command(script, "~/.codex/ai-activity-codex.py", "--hook")
 other = {"hooks": [{"type": "command", "command": "echo preserved"}]}
-events = ("Stop", "UserPromptSubmit", "PostToolUse", "SessionEnd")
+events = ("UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd")
 m.write(m.CONFIGS["codex"], m.dump({"hooks": {event: [other, {"hooks": [{"type": "command", "command": old}]}] for event in events}}))
 m.install_codex("https://example.com", "test-key")
 first = open(m.CONFIGS["codex"], encoding="utf-8").read()
@@ -238,7 +238,7 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
     assert.equal(read(".codex", "ai-activity-codex.py"), filled("codex.py"));
     const hooks = json(".codex", "hooks.json").hooks;
     assert.deepEqual(hooks.Stop[0], other);
-    for (const event of ["Stop", "UserPromptSubmit", "PostToolUse", "SessionEnd"]) {
+    for (const event of ["UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd"]) {
       const ours = hooks[event].filter((h) => JSON.stringify(h).includes("ai-activity-codex.py"));
       assert.equal(ours.length, 1);
       assert.equal(ours[0].hooks[0].timeout, event === "SessionEnd" ? 3 : 10);
