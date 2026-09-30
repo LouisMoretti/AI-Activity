@@ -78,8 +78,11 @@ jobs:
             org.opencontainers.image.revision=${{ env.SHA }}
           # Pushed by digest only; the merge job tags the multi-arch image.
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          # ignore-error: the cache is best-effort. Fork preview builds
+          # (pull_request_target) cannot reserve cache entries, and a full or
+          # hiccuping cache backend must never fail an image that built fine.
           cache-from: type=gha,scope=${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,ignore-error=true,scope=${{ matrix.arch }}
       - run: echo "${{ steps.build.outputs.digest }}" > digest-${{ matrix.arch }}
       - uses: actions/upload-artifact@v4
         with:
