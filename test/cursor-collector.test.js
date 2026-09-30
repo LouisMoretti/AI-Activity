@@ -172,7 +172,7 @@ describe("Cursor hook collector", () => {
     assert.equal(event.utc_offset_min % 15, 0);
     assert.equal(captured[0].url, "/api/ingest/cursor");
     assert.equal(captured[0].auth, "Bearer ak_fixture");
-    assert.equal(captured[0].body.collector.version, 3);
+    assert.equal(captured[0].body.collector.version, 4);
     assert.ok(!JSON.stringify(captured[0].body).includes("PRIVATE_"));
     assert.ok(!JSON.stringify(events()).includes("PRIVATE_"));
     assert.ok(!fs.readFileSync(database()).includes(Buffer.from("PRIVATE_")));
@@ -470,6 +470,43 @@ with m.journal() as db:
     assert db.execute("SELECT fingerprint FROM targets ORDER BY used_at DESC LIMIT 1").fetchone()[0] == fp
 `, script], { env: { ...process.env, ...env, HOME: h, USERPROFILE: h }, input: JSON.stringify(fixture), windowsHide: true });
     } finally { fs.rmSync(h, { recursive: true, force: true }); }
+  });
+
+  test("local schema upgrades preserve both early event layouts and accepted checkpoints", async () => {
+    for (const redundant of [false, true]) {
+      const h = tempHome("ai-activity-cursor-schema-");
+      const e = { ...env, HOME: h, USERPROFILE: h };
+      try {
+        execFileSync(PYTHON, ["-c", `
+import importlib.util,json,sqlite3,sys,os
+spec=importlib.util.spec_from_file_location("cursor",sys.argv[1]); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+os.makedirs(m.CACHE)
+event=m.metric_event(json.loads(sys.stdin.read()))
+extra=", output_tokens INTEGER NOT NULL" if sys.argv[2]=="true" else ""
+with sqlite3.connect(m.DATABASE) as db:
+    db.execute("CREATE TABLE events (identity TEXT PRIMARY KEY,revision INTEGER NOT NULL UNIQUE,payload TEXT NOT NULL"+extra+")")
+    db.execute("CREATE TABLE targets (fingerprint TEXT PRIMARY KEY,revision INTEGER NOT NULL DEFAULT 0,retry_at REAL NOT NULL DEFAULT 0,used_at REAL NOT NULL)")
+    db.execute("CREATE TABLE metadata (key TEXT PRIMARY KEY,value INTEGER NOT NULL)")
+    db.execute("INSERT INTO metadata VALUES ('revision',1),('legacy_migrated',1)")
+    values=[m.identity(event),1,json.dumps(event)] + ([event["usage"]["output_tokens"]] if extra else [])
+    db.execute("INSERT INTO events VALUES ("+",".join("?" for _ in values)+")",values)
+    db.execute("INSERT INTO targets VALUES (?,1,0,1)",(m.target(),))
+    db.execute("PRAGMA user_version=1")
+`, script, String(redundant)], { env: { ...process.env, ...e }, input: JSON.stringify(fixture), windowsHide: true });
+        const before = captured.length;
+        assert.equal((await run([], e)).code, 0);
+        assert.equal(captured.length, before, "accepted history is not replayed on a schema upgrade");
+        const db = new Database(path.join(h, ".cache", "ai-activity", "cursor.db"));
+        assert.equal(db.pragma("user_version", { simple: true }), 2);
+        assert.equal(db.pragma("integrity_check", { simple: true }), "ok");
+        const original = JSON.parse(db.prepare("SELECT payload FROM events").get().payload);
+        db.close();
+        record({ ...fixture, output_tokens: 120 }, e);
+        assert.equal((await run([], e)).code, 0);
+        assert.equal(captured.at(-1).body.messages[0].occurred_at, original.occurred_at);
+        assert.equal(captured.at(-1).body.messages[0].usage.output_tokens, 120);
+      } finally { fs.rmSync(h, { recursive: true, force: true }); }
+    }
   });
 
 });
