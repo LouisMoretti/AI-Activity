@@ -102,6 +102,8 @@ export class Dashboard {
   signupOpen = $state(true);
   /** Sign in with GitHub is set up on the server. */
   github = $state(true);
+  /** The isolated PR preview deployment (from the server, never a build-time flag). */
+  preview = $state(false);
   /** Why the last GitHub sign-in (or linking) failed, in words; null if it did not. */
   authError = $state<string | null>(null);
   /** The profile on screen. */
@@ -137,6 +139,7 @@ export class Dashboard {
       this.account = auth.user;
       this.signupOpen = auth.signup_open;
       this.github = auth.github_sign_in;
+      this.preview = Boolean(auth.preview);
       if (!auth.user) {
         if (route.page === "profile") await this.loadProfile(route.username);
         // Public, like profile pages: the page loads its own data.
@@ -186,6 +189,7 @@ export class Dashboard {
       if (this.route !== route) return;
       this.account = auth.user;
       this.signupOpen = auth.signup_open;
+      this.preview = Boolean(auth.preview);
     } catch {
       if (this.route === route) this.account = null;
     }

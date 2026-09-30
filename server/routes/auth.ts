@@ -82,6 +82,7 @@ function signInWithError(next: string, error: AuthError): string {
 export function authRoutes(
   db: DB, auth: ViewerAuth, client: ClientInfo, github: GithubConfig | null, publicUrl: string | null,
   setupCode: string | null,
+  preview = false,
 ) {
   let signups = new Map<string, number>(); // client → accounts created in window
   let signupWindow = Date.now();
@@ -133,6 +134,7 @@ export function authRoutes(
     .get("/status", (c) => {
       const who = auth.resolve(c);
       return c.json<AuthStatus>({
+        ...(preview ? { preview: true } : {}),
         authenticated: Boolean(who),
         user: who?.account ?? null,
         setup_required: !accountsExist(db) && !auth.limited,

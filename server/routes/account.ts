@@ -4,10 +4,11 @@ import {
 } from "../../shared/types.ts";
 import {
   adminOverview, deleteAccount, deleteUserActivity, deleteUserSessions, getUser, listAdminUsers, setUserAdmin,
-  setSignupOpen, setUserDisabled, signupOpen, type UserRow,
+  setSignupOpen, setUserDisabled, signupOpen, previewSeedSettings, seedPreviewData, type UserRow,
 } from "../db/queries.ts";
 import { nowSec, type DB } from "../db/schema.ts";
 import { readJson } from "../lib/http.ts";
+import { parsePreviewSeed } from "../lib/preview-seed.ts";
 import type { ViewerEnv } from "../lib/viewer-auth.ts";
 
 /**
@@ -90,11 +91,25 @@ export function userRoutes(db: DB) {
 }
 
 /** Admin panel: server-wide overview and settings. */
-export function adminRoutes(db: DB) {
+export function adminRoutes(db: DB, preview = false) {
   return new Hono<ViewerEnv>()
     .use(requireAdmin)
     .get("/overview", (c) => c.json<AdminOverview>(adminOverview(db)))
     .get("/settings", (c) => c.json<AdminSettings>({ signup_open: signupOpen(db) }))
+    .get("/preview-seed", (c) => preview
+      ? c.json({ config: previewSeedSettings(db) })
+      : c.json({ error: "not found" }, 404))
+    .post("/preview-seed", async (c) => {
+      if (!preview) return c.json({ error: "not found" }, 404);
+      const body = await readJson(c);
+      try {
+        const config = parsePreviewSeed(body);
+        return c.json({ ...seedPreviewData(db, config, c.get("userId")), config });
+      } catch (err) {
+        if (err instanceof Error && !("code" in err)) return c.json({ error: err.message }, 400);
+        throw err;
+      }
+    })
     .post("/settings", async (c) => {
       const body = await readJson(c);
       if (typeof body.signup_open !== "boolean") return c.json({ error: "signup_open must be true or false" }, 400);

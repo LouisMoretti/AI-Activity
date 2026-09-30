@@ -1,6 +1,6 @@
 // API response shapes shared by the server and the web client.
-// Every numeric field is a measured value; missing data is null/absent,
-// never interpolated.
+// Numeric usage is measured except for explicitly labeled preview samples;
+// missing data is null/absent, never interpolated.
 
 /** Every ingestable tool, in display order. */
 export const TOOLS = ["claude-code", "codex", "antigravity", "opencode"] as const;
@@ -186,6 +186,8 @@ export interface AdminUser extends Account {
 }
 
 export interface AuthStatus {
+  /** Isolated PR preview: enables its banner and admin sample generator. */
+  preview?: boolean;
   authenticated: boolean;
   /** The signed-in account; null when signed out. */
   user: Account | null;
@@ -199,6 +201,18 @@ export interface AuthStatus {
   signup_open: boolean;
   /** Sign in with GitHub is set up on this server (GITHUB_CLIENT_ID / _SECRET); else nobody can sign in. */
   github_sign_in: boolean;
+}
+
+/** Preview-only sample activity on the signed-in admin's account, edited as JSON in the admin panel. */
+export interface PreviewSeedConfig {
+  days: number;
+  events_per_day: number;
+  tools: Tool[];
+  models: string[];
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
 }
 
 /** Server settings an admin changes from the admin panel. */
