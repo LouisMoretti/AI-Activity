@@ -108,13 +108,6 @@ export interface SummaryResponse {
   provenance: string;
 }
 
-/** Activity cards share one public read; only today's breakdown is needed. */
-export const ACTIVITY_TOOLS = ["cursor", "antigravity", "opencode"] as const;
-export interface ToolActivityResponse {
-  day: string;
-  tools: Record<(typeof ACTIVITY_TOOLS)[number], { today: Breakdown; sessions: Session[] }>;
-}
-
 export interface Device {
   id: number;
   name: string;

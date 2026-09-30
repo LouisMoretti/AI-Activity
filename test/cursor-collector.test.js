@@ -111,23 +111,6 @@ describe("Cursor ingestion", () => {
     assert.equal((await post({ tool: "codex" })).status, 400);
     assert.equal((await post({}, "ak_unknown")).status, 401);
   });
-
-  test("batched public activity cards match scoped measured reads and reject missing profiles", async () => {
-    const result = await req(srv.base, "GET", "/api/u/admin/tool-activity", { anon: true });
-    assert.equal(result.status, 200);
-    for (const tool of ["cursor", "antigravity", "opencode"]) {
-      const summary = (await req(srv.base, "GET", `/api/u/admin/summary?tool=${tool}`, { anon: true })).json;
-      const sessions = (await req(srv.base, "GET", `/api/u/admin/sessions?tool=${tool}`, { anon: true })).json;
-      assert.equal(result.json.day, summary.day);
-      assert.deepEqual(result.json.tools[tool].today, summary.today);
-      assert.deepEqual(result.json.tools[tool].sessions, sessions.sessions);
-    }
-    const other = await req(srv.base, "GET", "/api/u/cursor-other/tool-activity", { anon: true });
-    assert.equal(other.status, 200);
-    assert.equal(other.json.tools.cursor.today.tokens, 0);
-    assert.deepEqual(other.json.tools.cursor.sessions, []);
-    assert.equal((await req(srv.base, "GET", "/api/u/not-here/tool-activity", { anon: true })).status, 404);
-  });
 });
 
 describe("Cursor hook collector", () => {

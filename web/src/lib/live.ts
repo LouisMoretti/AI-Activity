@@ -3,7 +3,7 @@
 import { QUOTA_POOLS, QUOTA_WINDOW_SEC, type QuotaWindowType } from "../../../shared/quota-pools.ts";
 import {
   TOOLS, type ActivityResponse, type Breakdown, type QuotasResponse, type Session,
-  type SessionsResponse, type SummaryResponse, type ToolActivityResponse,
+  type SessionsResponse, type SummaryResponse,
 } from "../../../shared/types.ts";
 import { denseSeries, streaks } from "./series.ts";
 import {
@@ -22,7 +22,6 @@ export interface LiveData {
   antigravity?: { summary: SummaryResponse; latest: SessionsResponse };
   /** Cursor's card: absent for callers built before Cursor support. */
   cursor?: { summary: SummaryResponse; latest: SessionsResponse };
-  activityTools?: ToolActivityResponse;
 }
 
 export const ACTIVITY_DAYS = 364;
@@ -83,11 +82,11 @@ const toSession = (s: Session): SessionVM => ({
 });
 
 /** providers: the tool stores its models as provider/model (OpenCode). */
-function activityTool(d: ToolActivityResponse["tools"]["cursor"] | undefined, providers: boolean): ActivityToolVM {
-  const t = d?.today;
+function activityTool(d: LiveData["opencode"], providers: boolean): ActivityToolVM {
+  const t = d?.summary.today;
   return {
     available: d !== undefined,
-    recent: d ? d.sessions.map(toSession) : [],
+    recent: d ? d.latest.sessions.map(toSession) : [],
     today: {
       tokens: t?.tokens ?? 0,
       sessions: t?.sessions ?? 0,
@@ -102,10 +101,6 @@ export function liveDashboard(d: LiveData, provider: Provider): DashboardVM {
   const series = denseSeries(d.activity.days, ACTIVITY_DAYS, d.summary.day);
   const hasActivity = d.summary.total.events > 0;
   const sessions = d.sessions.sessions.map(toSession);
-  const card = (tool: keyof ToolActivityResponse["tools"]) => {
-    const legacy = d[tool];
-    return d.activityTools?.tools?.[tool] ?? (legacy ? { today: legacy.summary.today, sessions: legacy.latest.sessions } : undefined);
-  };
   return {
     demo: false,
     today: d.summary.day,
@@ -120,10 +115,10 @@ export function liveDashboard(d: LiveData, provider: Provider): DashboardVM {
     tools: toolsFor(provider),
     claude: toolQuotas(d.quotas, "claude-code"),
     codex: toolQuotas(d.quotas, "codex"),
-    cursor: activityTool(card("cursor"), false),
-    opencode: activityTool(card("opencode"), true),
+    cursor: activityTool(d.cursor, false),
+    opencode: activityTool(d.opencode, true),
     antigravity: toolQuotas(d.quotas, "antigravity"),
-    antigravityActivity: activityTool(card("antigravity"), false),
+    antigravityActivity: activityTool(d.antigravity, false),
     sessions,
     sessionsTotal: d.sessions.total,
   };

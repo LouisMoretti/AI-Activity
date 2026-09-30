@@ -1315,8 +1315,8 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   `Retry-After`:
   - public reads (`/api/u/…`, `/api/leaderboard`, `/api/profiles`): 300
     per client (the client address above), refill 5/s. A dashboard polls
-    six of them every 5 s (the activity cards share `/tool-activity`), so
-    about four tabs fit behind one address. A
+    eleven of them every 5 s (five core reads plus a summary and sessions
+    per activity card), so about two tabs fit behind one address. A
     rate-limited refresh keeps the page as it was (the web client does
     not show it as "Could not reach the server");
   - signed-in routes (`/api/friends`, `/api/devices`, `/api/account`,
@@ -1345,8 +1345,6 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   - `quotas` (current window per account, tool + limit type; see §5)
   - `summary?tool=...` (`day`: the owner's today; all-time and today's
     tokens, sessions, events, each split `by_model` and `by_tool`)
-  - `tool-activity` (one read for Cursor, Antigravity and OpenCode: the
-    owner's `day` and each tool's `today` breakdown and 10 latest sessions)
   - `sessions?limit=10&offset=0&tool=...` (grouped by unique session id,
     with latest `context_used_pct` / `context_window_size`, plus `total`
     for paging)

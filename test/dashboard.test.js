@@ -69,8 +69,6 @@ const profileRoutes = (name, sessions = { sessions: [], total: 0, provenance: ""
   [`/api/u/${name}/activity`]: { days: [], provenance: "" },
   [`/api/u/${name}/quotas`]: { quotas: [], provenance: "" },
   [`/api/u/${name}/sessions`]: sessions,
-  [`/api/u/${name}/tool-activity`]: { day: emptySummary.day,
-    tools: Object.fromEntries(["cursor", "antigravity", "opencode"].map(tool => [tool, { today: emptySummary.today, sessions: [] }])) },
 });
 
 let Dashboard, api;
@@ -95,21 +93,26 @@ async function open(url, extra = {}) {
 }
 
 describe("dashboard state", () => {
-  test("activity cards share one read and a failed card refresh preserves measured data", async () => {
+  test("card reads are per tool and a failed card refresh preserves measured data", async () => {
     const { dash, stop, tick } = await open("/u/me", profileRoutes("me"));
-    assert.equal(calls.filter(c => c.startsWith("/api/u/")).length, 6);
-    assert.equal(calls.filter(c => c.includes("tool=cursor")).length, 0);
+    assert.equal(calls.filter(c => c.startsWith("/api/u/")).length, 11);
+    assert.equal(calls.filter(c => c.includes("tool-activity")).length, 0);
     assert.equal(dash.vm.cursor.available, true);
-    routes["/api/u/me/tool-activity"] = 503;
+    // Only the Cursor card's reads fail: the profile stays up and keeps
+    // the card's last measured data for the same day.
+    routes["/api/u/me/summary"] = (p) => (p.includes("tool=cursor") ? 503 : emptySummary);
+    routes["/api/u/me/sessions"] = (p) => (p.includes("tool=cursor") ? 503 : { sessions: [], total: 0, provenance: "" });
     tick(); await settle();
     assert.equal(dash.status, "ready");
     assert.equal(dash.vm.cursor.available, true);
     // Yesterday's totals never become today's after a failed card read.
-    routes["/api/u/me/summary"] = { ...emptySummary, day: "2026-09-26" };
+    routes["/api/u/me/summary"] = (p) => (p.includes("tool=cursor") ? 503 : { ...emptySummary, day: "2026-09-26" });
     tick(); await settle();
     assert.equal(dash.vm.cursor.available, false);
     stop();
-    const first = await open("/u/me", { ...profileRoutes("me"), "/api/u/me/tool-activity": 503 });
+    const first = await open("/u/me", { ...profileRoutes("me"),
+      "/api/u/me/summary": (p) => (p.includes("tool=cursor") ? 503 : emptySummary),
+      "/api/u/me/sessions": (p) => (p.includes("tool=cursor") ? 503 : { sessions: [], total: 0, provenance: "" }) });
     assert.equal(first.dash.status, "ready");
     assert.equal(first.dash.vm.cursor.available, false);
     first.stop();
@@ -117,10 +120,10 @@ describe("dashboard state", () => {
 
   test("a quick failure waits for slow siblings before permitting another refresh", async () => {
     const { dash, stop } = await open("/u/me", profileRoutes("me"));
-    const original = api.toolActivity;
+    const original = api.sessions;
     let release;
     const slow = new Promise(resolve => { release = resolve; });
-    api.toolActivity = () => slow;
+    api.sessions = (u, l, t, o) => (t === "cursor" ? slow : original(u, l, t, o));
     routes["/api/u/me/summary"] = 503;
     try {
       const first = dash.load();
@@ -129,12 +132,12 @@ describe("dashboard state", () => {
       void dash.load();
       await settle();
       assert.equal(calls.length, count, "no overlapping refresh while a sibling still runs");
-      api.toolActivity = original;
-      release(profileRoutes("me")["/api/u/me/tool-activity"]);
+      api.sessions = original;
+      release({ sessions: [], total: 0, provenance: "" });
       await first;
       await settle();
       assert.ok(calls.length > count, "queued refresh runs once after all requests settle");
-    } finally { api.toolActivity = original; release({ day: emptySummary.day, tools: {} }); stop(); }
+    } finally { api.sessions = original; release({ sessions: [], total: 0, provenance: "" }); stop(); }
   });
 
   test("preview controls follow auth status and default off when absent", async () => {
