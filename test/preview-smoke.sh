@@ -64,9 +64,29 @@ docker run -d --name preview-host --network host --entrypoint node "$APP_IMAGE" 
   -e "require('http').createServer((q,s)=>s.end('host')).listen(38987,'0.0.0.0')"
 docker exec preview-host node -e "fetch(process.argv[1]).then(r=>{if(!r.ok)process.exit(1)})" "http://$gateway:38987"
 # Public HTTPS (OAuth) remains reachable; host gateway, peer and metadata fail.
+# Any HTTP response proves egress, even 403 rate-limited from shared CI IPs;
+# only a network failure means blocked. Retry transient failures.
 "${preview[@]}" exec -T -e "PREVIEW_HOST_URL=http://$gateway:38987" app node --input-type=module -e '
-  const publicResponse = await fetch("https://api.github.com");
-  if (!publicResponse.ok) throw new Error("public HTTPS unavailable");
+  let lastError = null;
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      const publicResponse = await fetch("https://api.github.com");
+      console.log(`public HTTPS attempt ${attempt}: ${publicResponse.status}`);
+      if (publicResponse.status === 403 && publicResponse.headers.get("x-ratelimit-remaining") === "0") {
+        console.log("public HTTPS reachable (rate-limited, egress proven)");
+        lastError = null;
+        break;
+      }
+      if (!publicResponse.ok) throw new Error(`public HTTPS unavailable: ${publicResponse.status}`);
+      lastError = null;
+      break;
+    } catch (e) {
+      lastError = e;
+      console.log(`public HTTPS attempt ${attempt} failed: ${e.cause?.code || e.message}`);
+      await new Promise((r) => setTimeout(r, 2000 * attempt));
+    }
+  }
+  if (lastError) throw lastError;
   for (const url of ["http://preview-peer:3000", process.env.PREVIEW_HOST_URL, "http://169.254.169.254/latest/meta-data/"]) {
     try { await fetch(url, {signal: AbortSignal.timeout(2000)}); }
     catch { continue; }
