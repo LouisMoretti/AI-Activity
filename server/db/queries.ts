@@ -654,9 +654,9 @@ export function recentSessions(
          FROM usage_events
          WHERE user_id = ? AND session_id IS NOT NULL AND (? IS NULL OR tool = ?)
          GROUP BY session_id, tool
-         ORDER BY last_seen DESC, session_id LIMIT ? OFFSET ?
+         ORDER BY last_seen DESC, session_id, tool LIMIT ? OFFSET ?
        ) s
-       ORDER BY s.last_seen DESC, s.session_id`
+       ORDER BY s.last_seen DESC, s.session_id, s.tool`
     )
     .all(userId, tool, tool, limit, offset) as Session[];
 }

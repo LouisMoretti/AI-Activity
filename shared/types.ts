@@ -77,9 +77,16 @@ export interface Session {
   context_window_size: number | null;
 }
 
-export interface SessionsResponse {
+export interface SessionPage {
   sessions: Session[];
-  total: number; // all sessions matching the filter, for "show more"
+  total: number; // distinct (tool, session id) pairs matching the filter, before limit and offset
+}
+
+export type ActivityCardTool = "opencode" | "antigravity" | "cursor";
+
+export interface SessionsResponse extends SessionPage {
+  /** Independently selected latest 10 for each activity card. A tool filter leaves other cards empty. */
+  latest_by_tool: Record<ActivityCardTool, SessionPage>;
   provenance: string;
 }
 

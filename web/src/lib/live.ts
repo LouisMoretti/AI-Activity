@@ -3,7 +3,7 @@
 import { QUOTA_POOLS, QUOTA_WINDOW_SEC, type QuotaWindowType } from "../../../shared/quota-pools.ts";
 import {
   TOOLS, type ActivityResponse, type Breakdown, type QuotasResponse, type Session,
-  type SessionsResponse, type SummaryResponse,
+  type SessionPage, type SessionsResponse, type SummaryResponse,
 } from "../../../shared/types.ts";
 import { denseSeries, streaks } from "./series.ts";
 import {
@@ -17,11 +17,11 @@ export interface LiveData {
   quotas: QuotasResponse;
   sessions: SessionsResponse;
   /** OpenCode's card: its summary (today) and its latest sessions. */
-  opencode?: { summary: SummaryResponse; latest: SessionsResponse };
+  opencode?: { summary: SummaryResponse; latest: SessionPage };
   /** Antigravity's card without quota windows: the same as OpenCode's. */
-  antigravity?: { summary: SummaryResponse; latest: SessionsResponse };
+  antigravity?: { summary: SummaryResponse; latest: SessionPage };
   /** Cursor's card: absent for callers built before Cursor support. */
-  cursor?: { summary: SummaryResponse; latest: SessionsResponse };
+  cursor?: { summary: SummaryResponse; latest: SessionPage };
 }
 
 export const ACTIVITY_DAYS = 364;

@@ -63,7 +63,8 @@ const signedIn = { authenticated: true, user: me, setup_required: false, signup_
 const signedOut = { authenticated: false, user: null, setup_required: false, signup_open: true, github_sign_in: true };
 const AUTHORIZE = "https://github.com/login/oauth/authorize?state=s";
 const emptySummary = { tool: null, day: "2026-09-25", total: { tokens: 0, sessions: 0, events: 0, by_model: [], by_model_others_sessions: 0, by_tool: [] }, today: { tokens: 0, sessions: 0, events: 0, by_model: [], by_model_others_sessions: 0, by_tool: [] }, provenance: "" };
-const profileRoutes = (name, sessions = { sessions: [], total: 0, provenance: "" }) => ({
+const emptyLatest = () => ({ opencode: { sessions: [], total: 0 }, antigravity: { sessions: [], total: 0 }, cursor: { sessions: [], total: 0 } });
+const profileRoutes = (name, sessions = { sessions: [], total: 0, latest_by_tool: emptyLatest(), provenance: "" }) => ({
   [`/api/u/${name}`]: { username: name, display_name: name, avatar_url: null },
   [`/api/u/${name}/summary`]: emptySummary,
   [`/api/u/${name}/activity`]: { days: [], provenance: "" },
@@ -93,15 +94,15 @@ async function open(url, extra = {}) {
 }
 
 describe("dashboard state", () => {
-  test("card reads are per tool and a failed card refresh preserves measured data", async () => {
+  test("one sessions read supplies every card; a failed card summary preserves measured data", async () => {
     const { dash, stop, tick } = await open("/u/me", profileRoutes("me"));
-    assert.equal(calls.filter(c => c.startsWith("/api/u/")).length, 11);
+    assert.equal(calls.filter(c => c.startsWith("/api/u/")).length, 8);
+    assert.equal(calls.filter(c => c.startsWith("/api/u/me/sessions?")).length, 1);
     assert.equal(calls.filter(c => c.includes("tool-activity")).length, 0);
     assert.equal(dash.vm.cursor.available, true);
-    // Only the Cursor card's reads fail: the profile stays up and keeps
+    // Only the Cursor card's summary fails: the profile stays up and keeps
     // the card's last measured data for the same day.
     routes["/api/u/me/summary"] = (p) => (p.includes("tool=cursor") ? 503 : emptySummary);
-    routes["/api/u/me/sessions"] = (p) => (p.includes("tool=cursor") ? 503 : { sessions: [], total: 0, provenance: "" });
     tick(); await settle();
     assert.equal(dash.status, "ready");
     assert.equal(dash.vm.cursor.available, true);
@@ -112,7 +113,7 @@ describe("dashboard state", () => {
     stop();
     const first = await open("/u/me", { ...profileRoutes("me"),
       "/api/u/me/summary": (p) => (p.includes("tool=cursor") ? 503 : emptySummary),
-      "/api/u/me/sessions": (p) => (p.includes("tool=cursor") ? 503 : { sessions: [], total: 0, provenance: "" }) });
+    });
     assert.equal(first.dash.status, "ready");
     assert.equal(first.dash.vm.cursor.available, false);
     first.stop();
@@ -123,7 +124,7 @@ describe("dashboard state", () => {
     const original = api.sessions;
     let release;
     const slow = new Promise(resolve => { release = resolve; });
-    api.sessions = (u, l, t, o) => (t === "cursor" ? slow : original(u, l, t, o));
+    api.sessions = () => slow;
     routes["/api/u/me/summary"] = 503;
     try {
       const first = dash.load();
@@ -133,11 +134,11 @@ describe("dashboard state", () => {
       await settle();
       assert.equal(calls.length, count, "no overlapping refresh while a sibling still runs");
       api.sessions = original;
-      release({ sessions: [], total: 0, provenance: "" });
+      release({ sessions: [], total: 0, latest_by_tool: emptyLatest(), provenance: "" });
       await first;
       await settle();
       assert.ok(calls.length > count, "queued refresh runs once after all requests settle");
-    } finally { api.sessions = original; release({ sessions: [], total: 0, provenance: "" }); stop(); }
+    } finally { api.sessions = original; release({ sessions: [], total: 0, latest_by_tool: emptyLatest(), provenance: "" }); stop(); }
   });
 
   test("preview controls follow auth status and default off when absent", async () => {
@@ -365,20 +366,30 @@ describe("dashboard state", () => {
     stop();
   });
 
-  test("a session that moves between two pages is listed once", async () => {
+  test("Show more refreshes one ordered, deduplicated page and all card lists in one request", async () => {
     const s = (id, t) => ({ session_id: id, tool: "claude-code", tokens: 1, last_seen: t, events: 1, model: null, context_used_pct: null, context_window_size: null });
-    const page1 = Array.from({ length: 200 }, (_, i) => s(`s${i}`, 1000 - i));
-    // s150 became active between the two requests: it is on page 2 as well.
-    const page2 = [s("s150", 2000), ...Array.from({ length: 9 }, (_, i) => s(`t${i}`, 10 - i))];
+    const all = Array.from({ length: 210 }, (_, i) => s(`s${i}`, 1000 - i));
+    const latest = { ...emptyLatest(), opencode: { sessions: [{ ...s("oc", 2), tool: "opencode" }], total: 1 } };
     const { dash, stop } = await open("/u/me", {
       ...profileRoutes("me"),
-      "/api/u/me/sessions": (p) => ({ sessions: p.includes("offset=0") ? page1 : page2, total: 210, provenance: "" }),
+      "/api/u/me/sessions": (p) => ({ sessions: all.slice(0, Number(new URL(p, "http://x").searchParams.get("limit"))), total: 210, latest_by_tool: latest, provenance: "" }),
     });
-    for (let i = 0; i < 20; i++) dash.showMoreSessions();
+    assert.equal(dash.vm.sessions.length, 10);
+    assert.equal(dash.vm.opencode.recent[0].id, "oc");
+    let requests = calls.filter((c) => c.startsWith("/api/u/me/sessions?")).length;
+    dash.showMoreSessions(); await settle();
+    assert.equal(calls.filter((c) => c.startsWith("/api/u/me/sessions?")).length, requests + 1);
+    assert.equal(dash.vm.sessions.length, 20);
+    for (let i = 0; i < 19; i++) dash.showMoreSessions();
     await settle();
-    await settle();
-    const ids = dash.vm.sessions.map((x) => x.id ?? x.session_id);
+    const ids = dash.vm.sessions.map((x) => x.id);
+    assert.equal(ids.length, 210);
     assert.equal(new Set(ids).size, ids.length);
+    assert.deepEqual(ids, all.map((x) => x.session_id));
+    requests = calls.filter((c) => c.startsWith("/api/u/me/sessions?")).length;
+    intervals.at(-1)(); await settle();
+    assert.equal(calls.filter((c) => c.startsWith("/api/u/me/sessions?")).length, requests + 1);
+    assert.equal(dash.vm.sessions.length, 210);
     stop();
   });
 

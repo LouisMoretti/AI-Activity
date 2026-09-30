@@ -7,7 +7,7 @@ import { authErrorMessage } from "./auth-errors.ts";
 import { DEMO_PROFILE, demoDashboard } from "./demo.ts";
 import { ACTIVITY_DAYS, liveDashboard, type LiveData } from "./live.ts";
 import type { DashboardVM } from "./view-model.ts";
-import type { Account, Profile, SessionsResponse } from "../../../shared/types.ts";
+import type { Account, ActivityCardTool, Profile } from "../../../shared/types.ts";
 
 export type Route =
   | { page: "home" }
@@ -26,29 +26,8 @@ export type Status = "loading" | "ready" | "signed-out" | "setup" | "missing" | 
 
 const REFRESH_MS = 5000;
 /** Server-side cap on one sessions page (/api/u/<name>/sessions). */
-const SESSIONS_MAX_PAGE = 200;
+const SESSIONS_MAX_PAGE = 10000;
 export const SESSIONS_PAGE = 10;
-
-/**
- * The first `limit` sessions, in as many server pages as needed. A session
- * active between two page requests moves to the top and would come back on
- * a later page: keep its first copy only (the list is keyed by it).
- */
-async function fetchSessions(username: string, limit: number): Promise<SessionsResponse> {
-  const first = await api.sessions(username, Math.min(limit, SESSIONS_MAX_PAGE), null, 0);
-  const key = (s: { tool: string; session_id: string }) => `${s.tool}\u0000${s.session_id}`;
-  const seen = new Set(first.sessions.map(key));
-  const sessions = [...first.sessions];
-  let fetched = first.sessions.length;
-  // Count unique sessions, not fetched rows: a duplicate must not shorten the list.
-  while (sessions.length < limit && fetched < first.total) {
-    const page = await api.sessions(username, Math.min(limit - sessions.length, SESSIONS_MAX_PAGE), null, fetched);
-    if (!page.sessions.length) break;
-    fetched += page.sessions.length;
-    for (const s of page.sessions) if (!seen.has(key(s))) { seen.add(key(s)); sessions.push(s); }
-  }
-  return { ...first, sessions };
-}
 
 function routeFromPath(): Route {
   const path = location.pathname;
@@ -198,26 +177,19 @@ export class Dashboard {
   private async loadProfile(username: string): Promise<void> {
     const route = this.route;
     const previous = this.live;
-    // Settle every read before releasing inFlight. Card reads are per tool
-    // (every tool, always: there is no tool filter), so a future tool filter
-    // can fetch only the visible tools. A failed card read never discards a
-    // healthy profile, and a slow sibling cannot overlap the next refresh
-    // after another request failed quickly.
+    // Settle every read before releasing inFlight. A failed summary read
+    // never discards a healthy profile, and a slow sibling cannot overlap
+    // the next refresh after another request failed quickly.
     const [profile, summary, activity, quotas, sessions,
-      ocSummary, ocLatest, agSummary, agLatest, cuSummary, cuLatest] = await Promise.allSettled([
+      ocSummary, agSummary, cuSummary] = await Promise.allSettled([
       api.profile(username),
       api.summary(username, null),
       api.activity(username, ACTIVITY_DAYS, null),
       api.quotas(username),
-      fetchSessions(username, this.sessionsLimit),
+      api.sessions(username, this.sessionsLimit, null, 0),
       api.summary(username, "opencode"),
-      // Enough to count the conversations active right now.
-      api.sessions(username, 10, "opencode", 0),
-      // Antigravity's card falls back to the same view without quotas.
       api.summary(username, "antigravity"),
-      api.sessions(username, 10, "antigravity", 0),
       api.summary(username, "cursor"),
-      api.sessions(username, 10, "cursor", 0),
     ]);
     if (this.route !== route) return;
     if (profile.status === "rejected") throw profile.reason;
@@ -231,22 +203,21 @@ export class Dashboard {
       const prevCard = previous?.[tool];
       return prevCard && prevCard.summary.day === summary.value.day ? prevCard : undefined;
     };
-    const card = (tool: "opencode" | "antigravity" | "cursor",
-      sum: typeof ocSummary, lat: typeof ocLatest) =>
-      sum.status === "fulfilled" && lat.status === "fulfilled"
-        ? { summary: sum.value, latest: lat.value } : keep(tool);
+    const card = (tool: ActivityCardTool, sum: typeof ocSummary) =>
+      sum.status === "fulfilled"
+        ? { summary: sum.value, latest: sessions.value.latest_by_tool[tool] } : keep(tool);
     this.shown = profile.value;
     this.live = {
       summary: summary.value, activity: activity.value, quotas: quotas.value, sessions: sessions.value,
-      opencode: card("opencode", ocSummary, ocLatest),
-      antigravity: card("antigravity", agSummary, agLatest),
-      cursor: card("cursor", cuSummary, cuLatest),
+      opencode: card("opencode", ocSummary),
+      antigravity: card("antigravity", agSummary),
+      cursor: card("cursor", cuSummary),
     };
     this.status = "ready";
   }
 
   showMoreSessions(): void {
-    this.sessionsLimit += SESSIONS_PAGE;
+    this.sessionsLimit = Math.min(this.sessionsLimit + SESSIONS_PAGE, SESSIONS_MAX_PAGE);
     void this.load();
   }
 

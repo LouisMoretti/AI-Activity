@@ -1656,6 +1656,65 @@ describe("summary, sessions and context (redesign APIs)", () => {
     assert.equal((await req(srv.base, "GET", "/api/u/admin/sessions?tool=codex")).json.total, 0);
   });
 
+  test("one public sessions response keeps independent card lists, scoped counts and paging", async () => {
+    const isolated = await startServer();
+    try {
+      const device = await newDevice(isolated.base);
+      const db = new Database(isolated.dbPath);
+      try {
+        const userId = db.prepare("SELECT id FROM users WHERE username = 'admin'").get().id;
+        const insert = db.prepare(`INSERT INTO usage_events
+          (event_id, device_id, user_id, tool, session_id, model, input_tokens, output_tokens,
+           cache_read_tokens, cache_write_tokens, context_used_pct, context_window_size, occurred_at, received_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)`);
+        const at = Math.floor(Date.now() / 1000);
+        let id = 0;
+        const add = (tool, session, seen, model = null, context = null) =>
+          insert.run(`combined-${++id}`, device.id, userId, tool, session, model, 7, 3,
+            context, context === null ? null : 200000, seen, seen);
+        db.transaction(() => {
+          for (let i = 0; i < 12; i++) add("claude-code", `claude-${i}`, at - i);
+          add("opencode", "shared", at - 100, "anthropic/sonnet", 35);
+          add("opencode", "shared", at - 99, null, null); // same conversation, two calls
+          add("opencode", "oc-older", at - 110);
+          add("antigravity", "shared", at - 101, "gemini-3-pro");
+          add("antigravity", "ag-older", at - 111);
+          add("cursor", "cursor:one", at - 102, "composer");
+        })();
+      } finally { db.close(); }
+
+      const get = async (query = "") => (await req(isolated.base, "GET", `/api/u/admin/sessions${query}`, { anon: true })).json;
+      const first = await get("?limit=10");
+      assert.equal(first.total, 17);
+      assert.equal(first.sessions.length, 10);
+      assert.ok(first.sessions.every((s) => s.tool === "claude-code"));
+      assert.deepEqual(Object.keys(first.latest_by_tool).sort(), ["antigravity", "cursor", "opencode"]);
+      assert.deepEqual(Object.fromEntries(Object.entries(first.latest_by_tool).map(([tool, page]) => [tool, page.total])),
+        { opencode: 2, antigravity: 2, cursor: 1 });
+      assert.deepEqual(first.latest_by_tool.opencode.sessions.map((s) => s.session_id), ["shared", "oc-older"]);
+      assert.deepEqual(first.latest_by_tool.antigravity.sessions.map((s) => s.session_id), ["shared", "ag-older"]);
+      assert.equal(first.latest_by_tool.opencode.sessions[0].tokens, 20);
+      assert.equal(first.latest_by_tool.opencode.sessions[0].events, 2);
+      assert.equal(first.latest_by_tool.opencode.sessions[0].model, "anthropic/sonnet");
+      assert.equal(first.latest_by_tool.opencode.sessions[0].context_used_pct, 35);
+      assert.equal(first.latest_by_tool.opencode.sessions[0].context_window_size, 200000);
+      const second = await get("?limit=10&offset=10");
+      const all = [...first.sessions, ...second.sessions];
+      assert.equal(new Set(all.map((s) => `${s.tool}\u0000${s.session_id}`)).size, 17);
+      assert.deepEqual(all.map((s) => s.last_seen), [...all.map((s) => s.last_seen)].sort((a, b) => b - a));
+      assert.deepEqual(second.latest_by_tool, first.latest_by_tool);
+      const filtered = await get("?tool=opencode&limit=1&offset=1");
+      assert.equal(filtered.total, 2);
+      assert.deepEqual(filtered.sessions.map((s) => s.session_id), ["oc-older"]);
+      assert.equal(filtered.latest_by_tool.opencode.total, 2);
+      assert.deepEqual(filtered.latest_by_tool.antigravity, { sessions: [], total: 0 });
+      assert.deepEqual(filtered.latest_by_tool.cursor, { sessions: [], total: 0 });
+      const other = await get("?tool=claude-code&limit=1");
+      assert.equal(other.total, 12);
+      assert.ok(Object.values(other.latest_by_tool).every((page) => page.total === 0 && page.sessions.length === 0));
+    } finally { await isolated.stop(); }
+  });
+
   test("summary counts distinct sessions across model rows folded into others", async () => {
     const now = Math.floor(Date.now() / 1000);
     const messages = [];

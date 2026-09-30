@@ -1,7 +1,7 @@
 import { Hono, type Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type {
-  ActivityResponse, LeaderboardResponse, Profile, ProfilesResponse, QuotasResponse, SessionsResponse, StatsResponse,
+  ActivityResponse, ActivityCardTool, LeaderboardResponse, Profile, ProfilesResponse, QuotasResponse, SessionsResponse, StatsResponse,
   SummaryResponse,
 } from "../../shared/types.ts";
 import {
@@ -13,6 +13,9 @@ import { intParam } from "../lib/http.ts";
 
 /** Days of the leaderboard's global heatmap (one year, like a profile's). */
 const LEADERBOARD_ACTIVITY_DAYS = 364;
+const ACTIVITY_CARD_TOOLS: ActivityCardTool[] = ["opencode", "antigravity", "cursor"];
+/** Allows a loaded conversation list to refresh in one request after Show more. */
+const SESSIONS_LIMIT = 10000;
 
 /** Whose usage a request reads. */
 type Owner = (c: Context) => number;
@@ -67,11 +70,18 @@ function usage(db: DB, owner: Owner) {
     .get("/sessions", (c) => {
       const uid = owner(c);
       const tool = c.req.query("tool") || null;
+      const limit = intParam(c, "limit", 10, 1, SESSIONS_LIMIT);
+      const offset = intParam(c, "offset", 0, 0, Number.MAX_SAFE_INTEGER);
+      const latest_by_tool = Object.fromEntries(ACTIVITY_CARD_TOOLS.map((cardTool) => [
+        cardTool,
+        tool !== null && tool !== cardTool
+          ? { sessions: [], total: 0 }
+          : { sessions: recentSessions(db, uid, 10, cardTool), total: countSessions(db, uid, cardTool) },
+      ])) as SessionsResponse["latest_by_tool"];
       return c.json<SessionsResponse>({
-        sessions: recentSessions(
-          db, uid, intParam(c, "limit", 10, 1, 200), tool, intParam(c, "offset", 0, 0, Number.MAX_SAFE_INTEGER),
-        ),
+        sessions: recentSessions(db, uid, limit, tool, offset),
         total: countSessions(db, uid, tool),
+        latest_by_tool,
         provenance: "grouped by unique session id from measured messages",
       });
     });
