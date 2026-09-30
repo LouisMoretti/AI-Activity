@@ -6,7 +6,7 @@ import type {
 import { COLLECTOR_VERSIONS } from "../../shared/collectors.ts";
 import { BREAKDOWN_DISPLAY_ROWS, TOOLS } from "../../shared/types.ts";
 import { nowSec, type DB } from "./schema.ts";
-import { DEFAULT_PREVIEW_SEED } from "../lib/preview-seed.ts";
+import { DEFAULT_PREVIEW_SEED, parsePreviewSeed } from "../lib/preview-seed.ts";
 
 export interface DeviceRow extends Omit<Device, "has_key" | "collectors"> {
   user_id: number;
@@ -864,7 +864,17 @@ const PREVIEW_SEED_KEY = "preview_seed_config";
 
 export function previewSeedSettings(db: DB): PreviewSeedConfig {
   const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(PREVIEW_SEED_KEY) as { value: string } | undefined;
-  return row ? { ...DEFAULT_PREVIEW_SEED, ...JSON.parse(row.value) as Partial<PreviewSeedConfig> } : DEFAULT_PREVIEW_SEED;
+  if (!row) return DEFAULT_PREVIEW_SEED;
+  try {
+    // A stored config can predate the current shape (e.g. the removed target):
+    // drop unknown settings rather than serving values the POST refuses.
+    const known = new Set(Object.keys(DEFAULT_PREVIEW_SEED));
+    const stored = JSON.parse(row.value) as Record<string, unknown>;
+    const cleaned = Object.fromEntries(Object.entries(stored).filter(([key]) => known.has(key)));
+    return { ...DEFAULT_PREVIEW_SEED, ...parsePreviewSeed(cleaned) };
+  } catch {
+    return DEFAULT_PREVIEW_SEED;
+  }
 }
 
 /** Replace only generated events, leaving the admin's measured events intact. */

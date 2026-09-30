@@ -104,7 +104,7 @@
           <AdminOverview />
         </Section>
         {#if dash.preview}
-          <Section title="Preview data generator" subtitle="Fictional activity for your account or a separate preview profile">
+          <Section title="Preview data generator" subtitle="Fictional activity on your own account">
             <PreviewSeedPanel />
           </Section>
         {/if}

@@ -213,7 +213,7 @@ export interface Profile {
   username: string;
   display_name: string;
   avatar_url: string | null;
-  /** Synthetic account on an isolated PR preview only. */
+  /** Preview-only generated events on this profile (isolated PR preview). */
   sample?: true;
 }
 

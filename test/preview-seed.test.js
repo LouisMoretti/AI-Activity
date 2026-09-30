@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import Database from "better-sqlite3";
 import { event, githubSignIn, newDevice, req, startServer } from "./helpers.js";
 
 test("sample generation is preview-only, admin-only, explicit, and configurable", async () => {
@@ -44,6 +45,30 @@ test("sample generation is preview-only, admin-only, explicit, and configurable"
     assert.equal(changed.json.events, 3);
     assert.equal((await req(srv.base, "GET", `/api/u/${username}/summary`, { anon: true })).json.total.events, 4);
   } finally {
+    await srv.stop();
+  }
+});
+
+test("a stored seed config from an older shape is sanitized, a corrupt one reset", async () => {
+  const srv = await startServer({ env: { PREVIEW_MODE: "1" } });
+  const db = new Database(srv.dbPath);
+  try {
+    const endpoint = "/api/admin/preview-seed";
+    const legacy = { target: "preview_user", days: 3, events_per_day: 2, tools: ["codex"], models: ["model-a"], input_tokens: 100, output_tokens: 50, cache_read_tokens: 0, cache_write_tokens: 0 };
+    db.prepare("INSERT INTO settings (key, value) VALUES ('preview_seed_config', ?)").run(JSON.stringify(legacy));
+    const config = (await req(srv.base, "GET", endpoint)).json.config;
+    assert.equal(config.target, undefined);
+    assert.equal(config.days, 3);
+    assert.equal((await req(srv.base, "POST", endpoint, { body: config })).status, 200);
+    db.prepare("UPDATE settings SET value = ? WHERE key = 'preview_seed_config'").run("{bogus");
+    assert.deepEqual((await req(srv.base, "GET", endpoint)).json.config, {
+      days: 60, events_per_day: 2,
+      tools: ["claude-code", "codex", "antigravity", "opencode"],
+      models: ["claude-sonnet-4", "gpt-5", "gemini-2.5-pro", "claude-opus-4"],
+      input_tokens: 1200, output_tokens: 400, cache_read_tokens: 500, cache_write_tokens: 100,
+    });
+  } finally {
+    db.close();
     await srv.stop();
   }
 });
