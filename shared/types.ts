@@ -6,13 +6,40 @@
 export const TOOLS = ["claude-code", "codex", "cursor", "antigravity", "opencode"] as const;
 export type Tool = (typeof TOOLS)[number];
 
-/** Optional public profile widgets, stored in display order. */
+/** Optional profile panels, stored in display order. */
 export const WIDGETS = ["today-by-tool", "today-by-hour", "best-day", "leaderboard"] as const;
 export type Widget = (typeof WIDGETS)[number];
-export const DEFAULT_WIDGETS: Widget[] = ["today-by-tool"];
-export interface WidgetSettings { widgets: Widget[] }
+export type PanelId = Tool | Widget;
+export type PanelSize = "small" | "medium" | "large";
+export type PanelView = "quota" | "activity";
+export interface ProfilePanel { id: PanelId; size: PanelSize; view?: PanelView }
+/** Each quota-capable tool can appear in both modes at once. */
+export const PANEL_OPTIONS: { id: PanelId; view?: PanelView }[] = [
+  { id: "claude-code", view: "quota" }, { id: "claude-code", view: "activity" },
+  { id: "codex", view: "quota" }, { id: "codex", view: "activity" },
+  { id: "cursor", view: "activity" },
+  { id: "antigravity", view: "quota" }, { id: "antigravity", view: "activity" },
+  { id: "opencode", view: "activity" },
+  ...WIDGETS.map((id) => ({ id })),
+];
+export const DEFAULT_PANELS: ProfilePanel[] = [
+  { id: "claude-code", size: "medium", view: "quota" },
+  { id: "codex", size: "small", view: "quota" },
+  { id: "cursor", size: "large", view: "activity" },
+  { id: "antigravity", size: "large", view: "quota" },
+  { id: "opencode", size: "medium", view: "activity" },
+  { id: "today-by-tool", size: "small" },
+];
+export interface PanelSettings { panels: ProfilePanel[] }
 export interface HourBucket { hour: number; tool: Tool; tokens: number }
 export interface HoursResponse { day: string; current_hour: number; hours: HourBucket[]; provenance: string }
+export interface RankResponse {
+  rank: number;
+  accounts: number;
+  tokens: number;
+  neighbor: { username: string; tokens: number; direction: "behind" | "ahead of" } | null;
+  provenance: string;
+}
 
 /** Rows kept separate in dashboard breakdown lists (the last is the fold). */
 export const BREAKDOWN_DISPLAY_ROWS = 8;

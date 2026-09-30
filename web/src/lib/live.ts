@@ -16,6 +16,8 @@ export interface LiveData {
   activity: ActivityResponse;
   quotas: QuotasResponse;
   sessions: SessionsResponse;
+  claudeCode?: { summary: SummaryResponse; latest: SessionsResponse };
+  codex?: { summary: SummaryResponse; latest: SessionsResponse };
   /** OpenCode's card: its summary (today) and its latest sessions. */
   opencode?: { summary: SummaryResponse; latest: SessionsResponse };
   /** Antigravity's card without quota windows: the same as OpenCode's. */
@@ -114,7 +116,9 @@ export function liveDashboard(d: LiveData, provider: Provider): DashboardVM {
     },
     tools: toolsFor(provider),
     claude: toolQuotas(d.quotas, "claude-code"),
+    claudeActivity: activityTool(d.claudeCode, false),
     codex: toolQuotas(d.quotas, "codex"),
+    codexActivity: activityTool(d.codex, false),
     cursor: activityTool(d.cursor, false),
     opencode: activityTool(d.opencode, true),
     antigravity: toolQuotas(d.quotas, "antigravity"),

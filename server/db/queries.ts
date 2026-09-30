@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
   Account, ActivityDay, AdminOverview, AdminUser, Profile, Breakdown, BreakdownRow, DeletedAccount, DeletedActivity, Device, LeaderboardEntry,
-  LeaderboardResponse, PreviewSeedConfig, Quota, Session, Widget, HourBucket,
+  LeaderboardResponse, PreviewSeedConfig, Quota, Session, ProfilePanel, HourBucket, RankResponse,
 } from "../../shared/types.ts";
 import { COLLECTOR_VERSIONS } from "../../shared/collectors.ts";
-import { BREAKDOWN_DISPLAY_ROWS, DEFAULT_WIDGETS, TOOLS, WIDGETS } from "../../shared/types.ts";
+import { BREAKDOWN_DISPLAY_ROWS, DEFAULT_PANELS, PANEL_OPTIONS, TOOLS, WIDGETS } from "../../shared/types.ts";
 import { nowSec, type DB } from "./schema.ts";
 import { DEFAULT_PREVIEW_SEED, parsePreviewSeed } from "../lib/preview-seed.ts";
 
@@ -72,21 +72,34 @@ export interface UserRow {
   github_id: number;
   is_admin: number;
   disabled: number;
-  widgets: string;
+  panels: string;
 }
 
-export function widgetSettings(user: UserRow): Widget[] {
+const panelIds = new Set<string>([...TOOLS, ...WIDGETS]);
+const quotaTools = new Set<string>(["claude-code", "codex", "antigravity"]);
+
+/** Accept a complete public layout; no duplicate panels or private fields. */
+export function validPanels(value: unknown): value is ProfilePanel[] {
+  return Array.isArray(value) && value.length <= PANEL_OPTIONS.length &&
+    value.every((p) => p !== null && typeof p === "object" && !Array.isArray(p) &&
+      Object.keys(p).every((key) => ["id", "size", "view"].includes(key)) &&
+      typeof p.id === "string" && panelIds.has(p.id) &&
+      ["small", "medium", "large"].includes(p.size) &&
+      (quotaTools.has(p.id) ? ["quota", "activity"].includes(p.view)
+        : (TOOLS as readonly string[]).includes(p.id) ? p.view === "activity" : p.view === undefined)) &&
+    new Set(value.map((p) => `${p.id}:${p.view ?? ""}`)).size === value.length;
+}
+
+export function panelSettings(user: UserRow): ProfilePanel[] {
   try {
-    const value: unknown = JSON.parse(user.widgets);
-    if (Array.isArray(value) && value.length <= WIDGETS.length &&
-      value.every((v) => typeof v === "string" && WIDGETS.includes(v as Widget)) &&
-      new Set(value).size === value.length) return value as Widget[];
+    const value: unknown = JSON.parse(user.panels);
+    if (validPanels(value)) return value;
   } catch { /* Old or manually edited value: keep the default layout. */ }
-  return [...DEFAULT_WIDGETS];
+  return DEFAULT_PANELS.map((p) => ({ ...p }));
 }
 
-export function setWidgetSettings(db: DB, userId: number, widgets: Widget[]): void {
-  db.prepare("UPDATE users SET widgets = ? WHERE id = ?").run(JSON.stringify(widgets), userId);
+export function setPanelSettings(db: DB, userId: number, panels: ProfilePanel[]): void {
+  db.prepare("UPDATE users SET panels = ? WHERE id = ?").run(JSON.stringify(panels), userId);
 }
 
 export function toAccount(u: UserRow): Account {
@@ -643,6 +656,7 @@ export function dailyBuckets(db: DB, userId: number, sinceSec: number, tool: str
 
 /** Today's tokens by hour on each event's local clock, using the covering read index. */
 export function hourlyBuckets(db: DB, userId: number, day: string): HourBucket[] {
+  // UTC+14 can start this day earliest; UTC-12 can end it latest.
   return db.prepare(
     `SELECT CAST(strftime('%H', occurred_at + COALESCE(utc_offset_min, 0) * 60, 'unixepoch') AS INTEGER) AS hour,
             tool, SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens) AS tokens
@@ -650,7 +664,34 @@ export function hourlyBuckets(db: DB, userId: number, day: string): HourBucket[]
      WHERE user_id = ? AND occurred_at >= ? AND occurred_at < ?
        AND ${localDay()} = ?
      GROUP BY hour, tool ORDER BY hour, tool`
-  ).all(userId, earliestOfDay(day), earliestOfDay(addDays(day, 1)) + 28 * 3600, day) as HourBucket[];
+  ).all(userId, earliestOfDay(day), earliestOfDay(addDays(day, 1)) + 26 * 3600, day) as HourBucket[];
+}
+
+/** Seven-day rank without the leaderboard page's year of calendar/model data. */
+export function profileRank(db: DB, userId: number, sinceSec: number): Omit<RankResponse, "provenance"> {
+  const rows = db.prepare(
+    `SELECT u.id, u.username,
+            COALESCE(SUM(e.input_tokens + e.output_tokens + e.cache_read_tokens + e.cache_write_tokens), 0) AS tokens
+     FROM users u LEFT JOIN usage_events e ON e.user_id = u.id AND e.occurred_at >= ?
+     WHERE u.disabled = 0
+     GROUP BY u.id
+     ORDER BY tokens DESC, u.username COLLATE NOCASE`
+  ).all(sinceSec) as { id: number; username: string; tokens: number }[];
+  const index = rows.findIndex((row) => row.id === userId);
+  const own = rows[index];
+  if (!own) return { rank: 0, accounts: rows.length, tokens: 0, neighbor: null };
+  const above = rows[index - 1];
+  const below = rows[index + 1];
+  const other = above && below
+    ? own.tokens - below.tokens < above.tokens - own.tokens ? below : above
+    : above ?? below;
+  return {
+    rank: index + 1,
+    accounts: rows.length,
+    tokens: own.tokens,
+    neighbor: other ? { username: other.username, tokens: other.tokens,
+      direction: other === above ? "behind" : "ahead of" } : null,
+  };
 }
 
 const TOKENS = "input_tokens + output_tokens + cache_read_tokens + cache_write_tokens";

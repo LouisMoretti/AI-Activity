@@ -2,11 +2,11 @@ import { Hono, type Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type {
   ActivityResponse, LeaderboardResponse, Profile, ProfilesResponse, QuotasResponse, SessionsResponse, StatsResponse,
-  SummaryResponse, HoursResponse, WidgetSettings,
+  SummaryResponse, HoursResponse, PanelSettings, RankResponse,
 } from "../../shared/types.ts";
 import {
   addDays, breakdown, countSessions, dailyBuckets, dayAt, earliestOfDay, findUserByUsername, latestOffset, latestQuotas,
-  leaderboard, listProfiles, recentSessions, toProfile, usageTotals, hourlyBuckets, widgetSettings,
+  leaderboard, listProfiles, recentSessions, toProfile, usageTotals, hourlyBuckets, panelSettings, profileRank,
 } from "../db/queries.ts";
 import { nowSec, type DB } from "../db/schema.ts";
 import { intParam } from "../lib/http.ts";
@@ -123,6 +123,10 @@ export function publicProfileRoutes(db: DB) {
     .get("/", (c) => {
       return c.json<Profile>(toProfile(owner(c)));
     })
-    .get("/widgets", (c) => c.json<WidgetSettings>({ widgets: widgetSettings(owner(c)) }))
+    .get("/panels", (c) => c.json<PanelSettings>({ panels: panelSettings(owner(c)) }))
+    .get("/rank", (c) => c.json<RankResponse>({
+      ...profileRank(db, owner(c).id, nowSec() - 7 * 86400),
+      provenance: "measured messages over the last seven days",
+    }))
     .route("/", usage(db, (c) => owner(c).id));
 }

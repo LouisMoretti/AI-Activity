@@ -15,12 +15,13 @@ export const MIGRATIONS: ((db: DB) => void)[] = [
   activityClearedAt,
   collectorVersions,
   githubAccounts,
-  profileWidgets,
+  profilePanels,
 ];
 
-/** 6: Each account selects the public widgets and their display order. */
-function profileWidgets(db: DB): void {
-  db.exec("ALTER TABLE users ADD COLUMN widgets TEXT NOT NULL DEFAULT '[\"today-by-tool\"]'");
+/** 6: Each account selects public panels, order, widths and tool views. */
+function profilePanels(db: DB): void {
+  db.exec(`ALTER TABLE users ADD COLUMN panels TEXT NOT NULL DEFAULT
+    '[{"id":"claude-code","size":"medium","view":"quota"},{"id":"codex","size":"small","view":"quota"},{"id":"cursor","size":"large","view":"activity"},{"id":"antigravity","size":"large","view":"quota"},{"id":"opencode","size":"medium","view":"activity"},{"id":"today-by-tool","size":"small"}]'`);
 }
 
 /**

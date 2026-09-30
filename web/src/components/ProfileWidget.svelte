@@ -1,12 +1,12 @@
 <script lang="ts">
-  import { TOOLS, type HourBucket, type HoursResponse, type LeaderboardResponse, type Widget } from "../../../shared/types.ts";
+  import { TOOLS, type HourBucket, type HoursResponse, type RankResponse, type Widget } from "../../../shared/types.ts";
   import { fmtCompact, fmtDay, fmtShare } from "../lib/format.ts";
   import { TOOL_META, type DashboardVM, type ToolKey } from "../lib/view-model.ts";
   import TodayByTool from "./TodayByTool.svelte";
 
-  let { widget, vm, hours, board, username }: {
+  let { widget, vm, hours, rankInfo }: {
     widget: Widget; vm: DashboardVM; hours: HoursResponse | null;
-    board: LeaderboardResponse | null; username: string;
+    rankInfo: RankResponse | null;
   } = $props();
 
   // The demo uses fixed fictional shares. Its hourly totals add up to the
@@ -32,12 +32,13 @@
   const peakHour = $derived(hourTotals.indexOf(peak));
   const best = $derived(vm.series.reduce((a, d) => d.tokens > a.tokens ? d : a, { day: vm.today, tokens: 0 }));
   const today = $derived(vm.series.find((d) => d.day === vm.today)?.tokens ?? 0);
-  const rank = $derived(vm.demo ? 2 : (board?.entries.findIndex((e) => e.username.toLowerCase() === username.toLowerCase()) ?? -1) + 1);
-  const accountCount = $derived(vm.demo ? 5 : board?.accounts ?? 0);
+  const rank = $derived(vm.demo ? 2 : rankInfo?.rank ?? 0);
+  const accountCount = $derived(vm.demo ? 5 : rankInfo?.accounts ?? 0);
   const weeklyTokens = $derived(vm.demo ? vm.series.slice(-7).reduce((n, d) => n + d.tokens, 0)
-    : board?.entries[rank - 1]?.tokens ?? 0);
-  const neighbor = $derived(vm.demo ? { username: "sample-user", tokens: weeklyTokens + 34_000_000 }
-    : rank > 0 && board ? board.entries[rank === 1 ? 1 : rank - 2] : null);
+    : rankInfo?.tokens ?? 0);
+  const neighbor = $derived(vm.demo
+    ? { username: "sample-user", tokens: weeklyTokens + 34_000_000, direction: "behind" }
+    : rankInfo?.neighbor ?? null);
   const barColor = (tool: string) => tool in TOOL_META ? TOOL_META[tool as ToolKey].color : "var(--accent)";
 </script>
 
@@ -74,7 +75,7 @@
         <div class="big">#{rank} of {accountCount}</div>
         <p>{fmtCompact(weeklyTokens)} tokens this week</p>
         {#if neighbor}
-          <p>{fmtCompact(Math.abs(neighbor.tokens - weeklyTokens))} {rank === 1 ? "ahead of" : "behind"} @{neighbor.username}</p>
+          <p>{fmtCompact(Math.abs(neighbor.tokens - weeklyTokens))} {neighbor.direction} @{neighbor.username}</p>
         {/if}
       {:else}<p>Leaderboard unavailable</p>{/if}
     {/if}

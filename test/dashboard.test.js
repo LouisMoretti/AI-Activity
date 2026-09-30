@@ -68,7 +68,14 @@ const profileRoutes = (name, sessions = { sessions: [], total: 0, provenance: ""
   [`/api/u/${name}/summary`]: emptySummary,
   [`/api/u/${name}/activity`]: { days: [], provenance: "" },
   [`/api/u/${name}/quotas`]: { quotas: [], provenance: "" },
-  [`/api/u/${name}/widgets`]: { widgets: ["today-by-tool"] },
+  [`/api/u/${name}/panels`]: { panels: [
+    { id: "claude-code", size: "medium", view: "quota" },
+    { id: "codex", size: "small", view: "quota" },
+    { id: "cursor", size: "large", view: "activity" },
+    { id: "antigravity", size: "large", view: "quota" },
+    { id: "opencode", size: "medium", view: "activity" },
+    { id: "today-by-tool", size: "small" },
+  ] },
   [`/api/u/${name}/sessions`]: sessions,
 });
 
@@ -96,16 +103,38 @@ async function open(url, extra = {}) {
 describe("dashboard state", () => {
   test("loads optional widget data only when the profile selects it", async () => {
     const widgets = { ...profileRoutes("me"),
-      "/api/u/me/widgets": { widgets: ["leaderboard", "today-by-hour"] },
+      "/api/u/me/panels": { panels: [
+        { id: "leaderboard", size: "small" }, { id: "today-by-hour", size: "medium" },
+      ] },
       "/api/u/me/hours": { day: emptySummary.day, current_hour: 10, hours: [], provenance: "measured" },
-      "/api/leaderboard": { accounts: 1, entries: [{ username: "me", tokens: 0 }] },
+      "/api/u/me/rank": { rank: 1, accounts: 1, tokens: 0, neighbor: null, provenance: "measured" },
     };
     const { dash, stop } = await open("/u/me", widgets);
-    assert.deepEqual(dash.widgets, ["leaderboard", "today-by-hour"]);
+    assert.deepEqual(dash.panels.map((p) => p.id), ["leaderboard", "today-by-hour"]);
     assert.equal(dash.hours.current_hour, 10);
-    assert.equal(dash.widgetBoard.accounts, 1);
+    assert.equal(dash.widgetRank.accounts, 1);
     assert.ok(calls.includes("/api/u/me/hours"));
-    assert.ok(calls.includes("/api/leaderboard?days=7"));
+    assert.ok(calls.includes("/api/u/me/rank"));
+    assert.ok(!calls.some((c) => c.startsWith("/api/leaderboard")), "the panel does not fetch the full leaderboard calendar");
+    assert.ok(!calls.includes("/api/u/me/quotas"), "no quota panel needs a quota request");
+    assert.ok(!calls.some((c) => c.includes("tool=cursor")), "hidden tools have no card reads");
+    stop();
+  });
+
+  test("one tool can show quotas and details together without fetching hidden tools", async () => {
+    const layout = { ...profileRoutes("me"),
+      "/api/u/me/panels": { panels: [
+        { id: "claude-code", size: "small", view: "quota" },
+        { id: "claude-code", size: "large", view: "activity" },
+      ] },
+    };
+    const { dash, stop } = await open("/u/me", layout);
+    assert.equal(dash.status, "ready");
+    assert.equal(dash.vm.claudeActivity.available, true);
+    assert.ok(calls.includes("/api/u/me/quotas"));
+    assert.ok(calls.includes("/api/u/me/summary?x=1&tool=claude-code"));
+    assert.ok(calls.includes("/api/u/me/sessions?limit=10&offset=0&tool=claude-code"));
+    assert.ok(!calls.some((c) => c.includes("tool=opencode")));
     stop();
   });
 
@@ -140,7 +169,7 @@ describe("dashboard state", () => {
     let release;
     const slow = new Promise(resolve => { release = resolve; });
     api.sessions = (u, l, t, o) => (t === "cursor" ? slow : original(u, l, t, o));
-    routes["/api/u/me/summary"] = 503;
+    routes["/api/u/me/summary"] = (p) => p.includes("tool=opencode") ? 503 : emptySummary;
     try {
       const first = dash.load();
       await settle();
@@ -322,6 +351,7 @@ describe("dashboard state", () => {
     const { dash, stop } = await open("/leaderboard", profileRoutes("me"));
     dash.go("/");
     assert.equal(loc.pathname, "/u/me");
+    await settle();
     stop();
   });
 

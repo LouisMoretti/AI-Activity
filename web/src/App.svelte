@@ -8,22 +8,16 @@
   import Friends from "./components/Friends.svelte";
   import DevicesPanel from "./components/DevicesPanel.svelte";
   import Leaderboard from "./components/Leaderboard.svelte";
-  import OpenCodeCard from "./components/OpenCodeCard.svelte";
-  import ActivityToolCard from "./components/ActivityToolCard.svelte";
+  import ProfilePanels from "./components/ProfilePanels.svelte";
   import ProfilePanel from "./components/ProfilePanel.svelte";
   import SiteFooter from "./components/SiteFooter.svelte";
-  import QuotaCard from "./components/QuotaCard.svelte";
   import SiteHeader from "./components/SiteHeader.svelte";
   import Section from "./components/Section.svelte";
-  import ProfileWidget from "./components/ProfileWidget.svelte";
-  import WidgetSettings from "./components/WidgetSettings.svelte";
   import StatsRow from "./components/StatsRow.svelte";
   import UsersPanel from "./components/UsersPanel.svelte";
   import { untrack } from "svelte";
-  import { clock } from "./lib/clock.svelte.ts";
   import { Dashboard } from "./lib/dashboard.svelte.ts";
   import { DEMO_PROFILE } from "./lib/demo.ts";
-  import { hasLiveWindow } from "./lib/view-model.ts";
 
   const dash = new Dashboard();
   // Breadcrumb after "AI Activity" in the header: where you are.
@@ -91,10 +85,6 @@
         <DevicesPanel />
       </Section>
 
-      <Section title="Profile widgets" subtitle="Choose and order the extra cards on your public dashboard">
-        <WidgetSettings />
-      </Section>
-
       <Section title="Danger zone" subtitle="Cannot be undone">
         {#key dash.account.id}
           <DangerZone ondeletedactivity={() => dash.load()} onsignout={() => dash.logout()} onreauth={() => dash.signInAgain()} />
@@ -131,48 +121,13 @@
 
     {#if dash.vm && dash.shown}
       {@const vm = dash.vm}
-      {@const quotaCards = { "claude-code": vm.claude, codex: vm.codex, antigravity: vm.antigravity }}
       <ActivityChart series={vm.series} today={vm.today} demo={vm.demo} hasActivity={vm.hasActivity} />
       <StatsRow stats={vm.stats} />
 
-      <Section title="Tools" subtitle="Limits are per account, latest snapshot">
-        <div class="tools">
-          <!-- In TOOLS order (shared/types.ts). -->
-          {#each vm.tools as tool (tool)}
-            {#if tool === "opencode"}
-              <div class="wide" class:only={!dash.widgets.length}>
-                <OpenCodeCard vm={vm.opencode} />
-                {#if dash.widgets[0]}
-                  <ProfileWidget widget={dash.widgets[0]} {vm} hours={dash.hours} board={dash.widgetBoard} username={dash.shown.username} />
-                {/if}
-              </div>
-            {:else if tool === "cursor"}
-              <div class="full"><ActivityToolCard tool="cursor" vm={vm.cursor} /></div>
-            {:else if tool === "antigravity" && !hasLiveWindow(vm.antigravity, clock.now)}
-              <!-- No quota window running (quotas are optional): what is going on now. -->
-              <div class="full"><ActivityToolCard tool="antigravity" vm={vm.antigravityActivity} /></div>
-            {:else}
-              {@const q = quotaCards[tool]}
-              <div class="quota" class:full={q.pools.length > 1}><QuotaCard vm={q} /></div>
-            {/if}
-          {/each}
-        </div>
-        {#if dash.widgets.length > 1}
-          <div class="more-widgets">
-            {#each dash.widgets.slice(1) as widget (widget)}
-              <ProfileWidget {widget} {vm} hours={dash.hours} board={dash.widgetBoard} username={dash.shown.username} />
-            {/each}
-          </div>
-        {/if}
-        {#if dash.own}
-          <!-- Owner only: how the other tools get here (README.md, "One-command install"). -->
-          <p class="howto">
-            Add a tool: run a device's install command from
-            <button type="button" onclick={() => dash.go("/settings")}>Settings → Devices</button>
-            on that machine (Linux, macOS or Windows). It sets up every tool it finds.
-          </p>
-        {/if}
-      </Section>
+      {#key dash.route.page === "demo" ? "demo" : `profile:${dash.shown.username}`}
+        <ProfilePanels {vm} panels={dash.panels} own={dash.own} hours={dash.hours} rankInfo={dash.widgetRank}
+          onpanelschange={(panels) => dash.setPanels(panels)} ondevices={() => dash.go("/settings")} />
+      {/key}
 
       <Section title="Conversations" subtitle="Most recent first">
         <Conversations sessions={vm.sessions} total={vm.sessionsTotal} onmore={() => dash.showMoreSessions()} />
@@ -187,23 +142,10 @@
   .shell { max-width: 1080px; margin: 0 auto; padding: 44px 42px 56px; }
   .gate { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 20px; color: var(--muted); font-size: 13px; line-height: 1.6; }
   .gate button { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 4px 10px; font-size: 12px; color: var(--text); }
-  .howto { margin-top: 16px; border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 16px; color: var(--muted); font-size: 13px; line-height: 1.6; }
-  .howto button { padding: 0; color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
-  .howto button:hover { color: var(--accent); }
   .demo-link { max-width: 420px; margin: 12px auto 0; text-align: center; color: var(--muted); font-size: 13px; }
   .demo-link a { color: var(--text); text-underline-offset: 2px; }
   .demo-link a:hover { color: var(--accent); }
   .notice { color: var(--warn); margin: 12px 0; text-align: center; }
-  .quota { display: grid; } /* the card fills its grid cell */
-  /* A quota card with several pools (Antigravity) takes a whole row. */
-  .full { grid-column: 1 / -1; }
-  /* OpenCode (2/3) and today's split by tool (1/3) share a row. */
-  .wide { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; }
-  .wide.only { grid-template-columns: 1fr; }
-  .more-widgets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 16px; }
-  @media (max-width: 720px) { .wide { grid-template-columns: 1fr; } }
-  @media (max-width: 720px) { .more-widgets { grid-template-columns: 1fr; } }
-  .tools { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr)); gap: 16px; }
   @media (max-width: 720px) {
     .shell { padding: 24px 16px 40px; }
   }

@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { openDb, schemaVersion } from "../server/db/schema.ts";
 import { MIGRATIONS } from "../server/db/migrations.ts";
+import { DEFAULT_PANELS } from "../shared/types.ts";
 import { startServer } from "./helpers.js";
 
 const LATEST = MIGRATIONS.length;
@@ -112,7 +113,9 @@ describe("versioned migrations", () => {
     const db = openDb(t.file);
     try {
       assert.equal(schemaVersion(db), LATEST);
-      assert.deepEqual(db.prepare("SELECT username, widgets FROM users").get(), { username: "alice", widgets: '["today-by-tool"]' });
+      const profile = db.prepare("SELECT username, panels FROM users").get();
+      assert.equal(profile.username, "alice");
+      assert.deepEqual(JSON.parse(profile.panels), DEFAULT_PANELS);
       assert.equal(db.prepare("SELECT input_tokens FROM usage_events WHERE event_id = 'msg_a'").get().input_tokens, 7);
     } finally { db.close(); fs.rmSync(t.dir, { recursive: true, force: true }); }
   });

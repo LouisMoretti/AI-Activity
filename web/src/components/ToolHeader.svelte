@@ -24,4 +24,8 @@
   h3 { font-size: 16px; font-weight: 550; }
   .status { margin-left: auto; display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; white-space: nowrap; }
   .badge { min-width: 0; display: block; overflow: hidden; text-overflow: ellipsis; border: 1px solid var(--line); border-radius: 5px; padding: 2px 7px; }
+  @container (max-width: 350px) {
+    .head { flex-wrap: wrap; }
+    .status { margin-left: 42px; white-space: normal; }
+  }
 </style>

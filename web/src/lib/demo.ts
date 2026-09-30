@@ -98,10 +98,18 @@ export function demoDashboard(provider: Provider): DashboardVM {
       updatedAt: now - 40,
       pools: [pool(null, [72, now + 48 * 60], [86, now + 2 * 86400 + 5 * 3600])],
     },
+    claudeActivity: {
+      recent: sessions.filter((s) => s.tool === "claude-code"),
+      today: { tokens: last["claude-code"], sessions: 1, calls: 142, models: 2, providers: null },
+    },
     codex: {
       tool: "codex",
       updatedAt: now - 20 * 60,
       pools: [pool(null, [38, now + 2 * 3600 + 18 * 60], [64, now + 4 * 86400])],
+    },
+    codexActivity: {
+      recent: sessions.filter((s) => s.tool === "codex"),
+      today: { tokens: last.codex, sessions: 1, calls: 57, models: 1, providers: null },
     },
     cursor: {
       recent: sessions.filter((s) => s.tool === "cursor"),

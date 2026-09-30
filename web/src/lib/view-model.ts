@@ -74,7 +74,9 @@ export interface DashboardVM {
   stats: StatsVM;
   tools: ToolKey[]; // cards to show for the current filter
   claude: QuotaToolVM;
+  claudeActivity: ActivityToolVM;
   codex: QuotaToolVM;
+  codexActivity: ActivityToolVM;
   cursor: ActivityToolVM;
   opencode: ActivityToolVM;
   antigravity: QuotaToolVM;

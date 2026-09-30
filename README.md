@@ -19,14 +19,17 @@ following list using the OAuth app's client ID and secret, without requesting
 an OAuth scope or keeping a user's GitHub token.
 If GitHub is unavailable, the page offers a retry.
 
-## Profile widgets
+## Dashboard panels
 
-In **Settings → Profile widgets**, choose the extra cards on your public
-profile and move them into display order. The first card sits beside OpenCode;
-the remaining cards appear underneath the tool cards. Available cards are
-Today by tool, Today by hour, Best day and Leaderboard · 7 days. You can
-hide them all. New accounts show Today by tool until they change this setting.
-The public `/demo` page shows every card with fictional, labeled data.
+On your own profile, use **Edit layout** at the top right of Dashboard panels.
+The **+ Add panel** button offers every tool and four usage cards: Today by
+tool, Today by hour, Best day and Leaderboard · 7 days. Remove panels you do
+not want, move them earlier or later, and choose a small, medium or large
+width. Claude Code, Codex and Antigravity can each show quotas, conversation
+details, or both as separate panels. Save layout to publish it on your public
+profile. Visitors see the chosen layout but cannot change it. The public
+`/demo` page shows every panel
+with fictional, labeled data.
 
 ## One-command install
 
