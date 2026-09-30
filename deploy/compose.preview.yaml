@@ -32,6 +32,8 @@ services:
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:?}
       # The PR's participants: nobody else can sign in.
       ALLOWED_GITHUB_LOGINS: ${ALLOWED_GITHUB_LOGINS:?}
+      # Enables the preview banner and admin-only sample data controls.
+      PREVIEW_MODE: "1"
     volumes:
       - type: bind
         source: ${PREVIEW_DATA_ROOT:?}/pr-${PR:?}

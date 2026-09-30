@@ -1,7 +1,7 @@
 // Typed client for the dashboard JSON API (same origin, cookie session).
 import type {
   ActivityResponse, AdminOverview, AdminSettings, AdminUser, AuthStatus, DeletedAccount, DeletedActivity, LeaderboardResponse, Profile, Device, QuotasResponse,
-  SessionsResponse, SummaryResponse, FriendsResponse,
+  SessionsResponse, SummaryResponse, FriendsResponse, PreviewSeedConfig,
 } from "../../../shared/types.ts";
 
 export class UnauthorizedError extends Error {
@@ -77,6 +77,9 @@ export const api = {
   adminOverview: () => get<AdminOverview>("/api/admin/overview"),
   adminSettings: () => get<AdminSettings>("/api/admin/settings"),
   setSignupOpen: (signup_open: boolean) => post<AdminSettings>("/api/admin/settings", { signup_open }),
+  previewSeed: () => get<{ config: PreviewSeedConfig }>("/api/admin/preview-seed"),
+  generatePreviewSeed: (config: PreviewSeedConfig) =>
+    post<{ username: string; events: number; config: PreviewSeedConfig }>("/api/admin/preview-seed", config),
   /** Permanently deletes the signed-in user's usage and quotas. */
   deleteActivity: (confirm: string) =>
     post<{ ok: true; deleted: DeletedActivity }>("/api/account/delete-activity", { confirm }),

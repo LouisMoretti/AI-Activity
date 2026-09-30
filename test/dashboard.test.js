@@ -93,6 +93,19 @@ async function open(url, extra = {}) {
 }
 
 describe("dashboard state", () => {
+  test("preview controls follow auth status and default off when absent", async () => {
+    const preview = await open("/settings", { "/api/auth/status": { ...signedIn, preview: true } });
+    assert.equal(preview.dash.preview, true);
+    routes["/api/auth/status"] = signedIn;
+    preview.dash.go("/friends");
+    await settle();
+    assert.equal(preview.dash.preview, false);
+    preview.stop();
+    const production = await open("/settings");
+    assert.equal(production.dash.preview, false);
+    production.stop();
+  });
+
   test("a malformed profile link shows 'missing' instead of crashing", async () => {
     const { dash, stop } = await open("/u/%ZZ", { "/api/u/%25ZZ*": 404 });
     assert.equal(dash.route.username, "%ZZ");

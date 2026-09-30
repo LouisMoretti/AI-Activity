@@ -1,11 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
   Account, ActivityDay, AdminOverview, AdminUser, Profile, Breakdown, BreakdownRow, DeletedAccount, DeletedActivity, Device, LeaderboardEntry,
-  LeaderboardResponse, Quota, Session,
+  LeaderboardResponse, PreviewSeedConfig, Quota, Session,
 } from "../../shared/types.ts";
 import { COLLECTOR_VERSIONS } from "../../shared/collectors.ts";
 import { BREAKDOWN_DISPLAY_ROWS, TOOLS } from "../../shared/types.ts";
 import { nowSec, type DB } from "./schema.ts";
+import { DEFAULT_PREVIEW_SEED, parsePreviewSeed } from "../lib/preview-seed.ts";
+
+const PREVIEW_SEED_DEVICE = "preview-seed-device";
 
 export interface DeviceRow extends Omit<Device, "has_key" | "collectors"> {
   user_id: number;
@@ -845,4 +848,75 @@ export function leaderboard(
     activity: [...activity].sort((x, y) => (x[0] < y[0] ? -1 : 1))
       .map(([day, t]) => ({ day, tokens: t.tokens, sessions: t.sessions.size })),
   };
+}
+
+/** SQL for the preview seed exists only in the preview administration path. */
+const PREVIEW_SEED_KEY = "preview_seed_config";
+
+export function previewSeedSettings(db: DB): PreviewSeedConfig {
+  const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(PREVIEW_SEED_KEY) as { value: string } | undefined;
+  if (!row) return DEFAULT_PREVIEW_SEED;
+  try {
+    // A stored config can predate the current shape (e.g. the removed target):
+    // drop unknown settings rather than serving values the POST refuses.
+    const known = new Set(Object.keys(DEFAULT_PREVIEW_SEED));
+    const stored = JSON.parse(row.value) as Record<string, unknown>;
+    const cleaned = Object.fromEntries(Object.entries(stored).filter(([key]) => known.has(key)));
+    return { ...DEFAULT_PREVIEW_SEED, ...parsePreviewSeed(cleaned) };
+  } catch {
+    return DEFAULT_PREVIEW_SEED;
+  }
+}
+
+/** Replace only generated events, leaving the admin's measured events intact. */
+export function seedPreviewData(
+  db: DB, config: PreviewSeedConfig, signedInUserId: number,
+): { username: string; events: number } {
+  return db.transaction(() => {
+    const now = nowSec();
+    const own = db.prepare("SELECT id, username FROM users WHERE id = ? AND disabled = 0").get(signedInUserId) as
+      { id: number; username: string } | undefined;
+    if (!own) throw new Error("signed-in account no longer exists");
+    const user = own;
+
+    // The marker has no usable key. It identifies the generated rows,
+    // so regenerating replaces only them.
+    const device = db.prepare("SELECT id FROM devices WHERE key_hash = ?").get(PREVIEW_SEED_DEVICE) as
+      { id: number } | undefined;
+    let deviceId: number;
+    if (device) {
+      deviceId = device.id;
+      db.prepare("DELETE FROM quota_snapshots WHERE device_id = ?").run(deviceId);
+      db.prepare("DELETE FROM usage_events WHERE device_id = ?").run(deviceId);
+      db.prepare("DELETE FROM collector_versions WHERE device_id = ?").run(deviceId);
+      db.prepare("UPDATE devices SET user_id = ?, name = 'preview', key = NULL, key_prefix = 'preview', revoked = 0 WHERE id = ?")
+        .run(user.id, deviceId);
+    } else {
+      deviceId = Number(db.prepare(
+        "INSERT INTO devices (user_id, name, key_hash, key_prefix, revoked, created_at) VALUES (?, 'preview', ?, 'preview', 0, ?)"
+      ).run(user.id, PREVIEW_SEED_DEVICE, now).lastInsertRowid);
+    }
+
+    const insert = db.prepare(`
+      INSERT INTO usage_events (
+        event_id, device_id, user_id, tool, session_id, prompt_id, model,
+        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+        context_window_size, context_used_pct, occurred_at, received_at, source, utc_offset_min
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'message', 0)
+    `);
+    const count = config.days * config.events_per_day;
+    for (let i = 0; i < count; i++) {
+      const day = Math.floor(i / config.events_per_day);
+      const at = now - day * 86400 - (i % config.events_per_day) * 1800;
+      insert.run(
+        `preview-seed-${i}`, deviceId, user.id, config.tools[i % config.tools.length],
+        `preview-session-${Math.floor(i / 3)}`, `preview-prompt-${i}`,
+        config.models[i % config.models.length], config.input_tokens, config.output_tokens,
+        config.cache_read_tokens, config.cache_write_tokens, 200000, 30 + (i * 7) % 60, at, now,
+      );
+    }
+    db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .run(PREVIEW_SEED_KEY, JSON.stringify(config));
+    return { username: user.username, events: count };
+  })();
 }

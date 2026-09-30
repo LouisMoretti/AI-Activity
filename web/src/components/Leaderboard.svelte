@@ -64,7 +64,7 @@
 </script>
 
 <div class="head">
-  <span class="muted">Measured usage of every account, {periodText}</span>
+  <span class="muted">Usage of every account, {periodText}</span>
   <Segmented label="Period" value={period} onchange={(v) => (period = v)} options={PERIODS} />
 </div>
 

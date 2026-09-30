@@ -1,5 +1,6 @@
 <script lang="ts">
   import AdminOverview from "./components/AdminOverview.svelte";
+  import PreviewSeedPanel from "./components/PreviewSeedPanel.svelte";
   import AuthPanel from "./components/AuthPanel.svelte";
   import ActivityChart from "./components/ActivityChart.svelte";
   import Conversations from "./components/Conversations.svelte";
@@ -50,7 +51,7 @@
 <!-- Site chrome (header and footer) lives here,
      outside the page branches, so every page gets exactly the same. -->
 <div class="shell">
-  <SiteHeader account={dash.account} demo={!!dash.vm?.demo}
+  <SiteHeader account={dash.account} demo={!!dash.vm?.demo} preview={dash.preview}
     {crumb}
     signIn={dash.status !== "loading" && dash.status !== "signed-out" && dash.status !== "setup"}
     onnavigate={(p) => dash.go(p)} onlogout={() => dash.logout()} />
@@ -102,6 +103,11 @@
         <Section title="Overview" subtitle="The whole server, every account">
           <AdminOverview />
         </Section>
+        {#if dash.preview}
+          <Section title="Preview data generator" subtitle="Fictional activity on your own account">
+            <PreviewSeedPanel />
+          </Section>
+        {/if}
         <Section title="Users" subtitle="Profile pages are public; devices and settings stay private">
           <UsersPanel selfId={dash.account.id} />
         </Section>
