@@ -2043,26 +2043,35 @@ describe("rate limits", () => {
     // Replays are free: the same batch resent many times only wrote once.
     const same = batch(400, "same");
     for (let i = 0; i < 60; i++) assert.equal((await post(srv.base, a.key, same)).status, 200);
-    // The burst is 20,000 rows (400 written above): the batch that crosses it is still stored...
-    for (let i = 0; i < 50; i++) assert.equal((await post(srv.base, a.key, batch(400, `a${i}`))).status, 200);
-    const events = async () => (await req(srv.base, "GET", "/api/u/admin/summary", { anon: true })).json.total.events;
-    assert.equal(await events(), 20_400);
-    // ...and leaves the device in debt: a batch that would write is rolled back...
+    // The burst allows 100,000 rows, plus refill during the import. The batch
+    // that crosses it is stored; the next writing batch is refused.
     const quotas = { five_hour: { used_percentage: 42, resets_at: Math.floor(Date.now() / 1000) + 3600 } };
-    const over = await post(srv.base, a.key, { ...batch(400, "over"), rate_limits: quotas });
+    let accepted = 400;
+    let over;
+    for (let i = 0; i < 300; i++) {
+      quotas.five_hour.used_percentage = 42 + i / 100;
+      const result = await post(srv.base, a.key, { ...batch(400, `a${i}`), rate_limits: quotas });
+      if (result.status === 429) { over = result; break; }
+      assert.equal(result.status, 200, result.text);
+      accepted += 400;
+    }
+    assert.ok(accepted >= 100_000, `only ${accepted} rows accepted`);
+    assert.ok(over, "row budget never exhausted");
+    const events = async () => (await req(srv.base, "GET", "/api/u/admin/summary", { anon: true })).json.total.events;
+    // The refused batch was rolled back.
     assert.equal(over.status, 429);
     assert.ok(Number(over.headers.get("retry-after")) >= 1);
-    assert.equal(await events(), 20_400);
+    assert.equal(await events(), accepted);
     // ...but its quotas are kept, and replays still pass: a collector resending
     // its backlog gets as far as the new rows every run.
     const q = (await req(srv.base, "GET", "/api/u/admin/quotas", { anon: true })).json.quotas;
-    assert.deepEqual(q.map((x) => [x.tool, x.used_pct]), [["claude-code", 42]]);
+    assert.deepEqual(q.map((x) => [x.tool, x.used_pct]), [["claude-code", quotas.five_hour.used_percentage]]);
     assert.equal((await post(srv.base, a.key, same)).status, 200);
     // Other tools on the same device, and other devices, are not held up.
     const codex = await req(srv.base, "POST", "/api/ingest/codex", { key: a.key, body: { messages: [codexResponse()] } });
     assert.equal(codex.status, 200);
     assert.equal((await post(srv.base, b.key, batch(1, "b"))).status, 200);
-    assert.equal(await events(), 20_402);
+    assert.equal(await events(), accepted + 2);
   });
 
   test("ingest: requests are capped per device and tool, replays too (with a larger budget)", async (t) => {

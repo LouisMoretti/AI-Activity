@@ -928,12 +928,12 @@ machine: a Claude Code import never holds up Codex), all `429` with
   collectors resend their whole backlog after any refusal (the Claude Code
   one only saves its offsets once a run is fully accepted), so replays
   need this much larger budget.
-- 20,000 rows written (stored or updated), refill 10/s. A batch is charged
+- 100,000 rows written (stored or updated), refill 100/s. A batch is charged
   what it wrote, after the fact, so it can push the device into debt;
   while in debt, a batch that would write rows is rolled back (`429`) but
   its quotas and context are still recorded, and replays still pass. A
   backlog therefore always drains, at the refill rate once past the burst,
-  which covers a first import of about a month of history.
+  which allows 100,000 rows for a history import.
 
 The payload's `tool` is optional; when present it must equal the slug
 (`400` otherwise).
