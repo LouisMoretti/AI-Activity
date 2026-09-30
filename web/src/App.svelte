@@ -43,7 +43,7 @@
       : page === "admin" ? "Admin panel · AI Activity"
       : page === "leaderboard" ? "Leaderboard · AI Activity"
       : page === "friends" ? "Friends · AI Activity"
-      : (page === "profile" || page === "demo") && dash.shown ? `${dash.shown.display_name} · AI Activity${dash.vm?.demo ? " · Demo" : ""}`
+      : (page === "profile" || page === "demo") && dash.shown ? `${dash.shown.display_name} · AI Activity${dash.vm?.demo ? " · Demo" : dash.shown.sample ? " · Sample" : ""}`
         : "AI Activity";
   });
 </script>

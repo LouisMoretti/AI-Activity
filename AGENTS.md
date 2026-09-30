@@ -319,7 +319,9 @@ seeded on sign-in. After the first participant becomes admin, the preview-only
 admin panel can generate or replace fictional activity on the signed-in admin's
 account from validated JSON (days, events per day, tools, models and token
 counts). Events use a device named `preview`, and regenerating replaces only
-that device's events, leaving measured events intact. Fictional activity is labeled on the profile and leaderboard,
+that device's events, leaving measured events intact. The generated dataset is
+shared across the preview: generating as another admin moves it to that admin's
+profile. Fictional activity is labeled on the profile and leaderboard,
 and contributes to preview-only leaderboard totals. Production has no seed
 controls or sample data. This preview seed is distinct from the browser-only
 `/demo` dataset.

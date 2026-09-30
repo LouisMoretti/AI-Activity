@@ -163,6 +163,7 @@ export interface AdminUser extends Account {
 }
 
 export interface AuthStatus {
+  /** Isolated PR preview: enables its banner and admin sample generator. */
   preview?: boolean;
   authenticated: boolean;
   /** The signed-in account; null when signed out. */

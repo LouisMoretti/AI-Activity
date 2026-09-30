@@ -8,6 +8,8 @@ import { BREAKDOWN_DISPLAY_ROWS, TOOLS } from "../../shared/types.ts";
 import { nowSec, type DB } from "./schema.ts";
 import { DEFAULT_PREVIEW_SEED, parsePreviewSeed } from "../lib/preview-seed.ts";
 
+const PREVIEW_SEED_DEVICE = "preview-seed-device";
+
 export interface DeviceRow extends Omit<Device, "has_key" | "collectors"> {
   user_id: number;
   key_hash: string;
@@ -86,7 +88,7 @@ export function toAccount(u: UserRow): Account {
 
 export function toProfile(u: UserRow): Profile {
   const { username, display_name, avatar_url } = toAccount(u);
-  return { username, display_name, avatar_url, ...(u.github_id < 0 || u.sample ? { sample: true as const } : {}) };
+  return { username, display_name, avatar_url, ...(u.sample ? { sample: true as const } : {}) };
 }
 
 /** True once at least one account exists; before that nothing is viewable (setup). */
@@ -116,7 +118,7 @@ export function latestUsageAt(db: DB, userId: number, sinceSec: number): number 
 export function findUserByUsername(db: DB, username: string): UserRow | null {
   return (db.prepare(`SELECT u.*, EXISTS (
     SELECT 1 FROM usage_events e JOIN devices d ON d.id = e.device_id
-    WHERE e.user_id = u.id AND d.key_hash = 'preview-seed-device'
+    WHERE e.user_id = u.id AND d.key_hash = '${PREVIEW_SEED_DEVICE}'
   ) AS sample FROM users u WHERE u.username = ? COLLATE NOCASE`).get(username) as UserRow | undefined)
     ?? null;
 }
@@ -130,7 +132,7 @@ export function listProfiles(db: DB): Profile[] {
   return (db
     .prepare(`SELECT u.*, EXISTS (
       SELECT 1 FROM usage_events e JOIN devices d ON d.id = e.device_id
-      WHERE e.user_id = u.id AND d.key_hash = 'preview-seed-device'
+      WHERE e.user_id = u.id AND d.key_hash = '${PREVIEW_SEED_DEVICE}'
     ) AS sample FROM users u WHERE u.disabled = 0 ORDER BY u.username COLLATE NOCASE`)
     .all() as UserRow[]).map(toProfile);
 }
@@ -754,12 +756,12 @@ export function leaderboard(
   // Every enabled account, used or not: idle ones rank last with zeros.
   const users = db
     .prepare(
-      `SELECT u.id, u.username, u.display_name, u.avatar_url, u.github_id,
+      `SELECT u.id, u.username, u.display_name, u.avatar_url,
          EXISTS (SELECT 1 FROM usage_events e JOIN devices d ON d.id = e.device_id
-                 WHERE e.user_id = u.id AND d.key_hash = 'preview-seed-device') AS sample
+                 WHERE e.user_id = u.id AND d.key_hash = '${PREVIEW_SEED_DEVICE}') AS sample
        FROM users u WHERE u.disabled = 0`
     )
-    .all() as { id: number; username: string; display_name: string | null; avatar_url: string | null; github_id: number; sample: number }[];
+    .all() as { id: number; username: string; display_name: string | null; avatar_url: string | null; sample: number }[];
   const today = new Map(users.map((u) => [u.id, dayAt(latestOffset(db, u.id), now)]));
   // The calendar ends on the latest of those days (UTC with no account).
   const lastDay = [...today.values()].reduce((a, d) => (d > a ? d : a), dayAt(null, now));
@@ -834,7 +836,7 @@ export function leaderboard(
       username: u.username,
       display_name: u.display_name || u.username,
       avatar_url: u.avatar_url,
-      ...(u.github_id < 0 || u.sample ? { sample: true as const } : {}),
+      ...(u.sample ? { sample: true as const } : {}),
       tokens: a.tokens,
       sessions: a.sessions.size,
       events: a.events,
@@ -890,7 +892,7 @@ export function seedPreviewData(
 
     // The marker has no usable key. It identifies the generated rows,
     // so regenerating replaces only them.
-    const device = db.prepare("SELECT id FROM devices WHERE key_hash = 'preview-seed-device'").get() as
+    const device = db.prepare("SELECT id FROM devices WHERE key_hash = ?").get(PREVIEW_SEED_DEVICE) as
       { id: number } | undefined;
     let deviceId: number;
     if (device) {
@@ -902,8 +904,8 @@ export function seedPreviewData(
         .run(user.id, deviceId);
     } else {
       deviceId = Number(db.prepare(
-        "INSERT INTO devices (user_id, name, key_hash, key_prefix, revoked, created_at) VALUES (?, 'preview', 'preview-seed-device', 'preview', 0, ?)"
-      ).run(user.id, now).lastInsertRowid);
+        "INSERT INTO devices (user_id, name, key_hash, key_prefix, revoked, created_at) VALUES (?, 'preview', ?, 'preview', 0, ?)"
+      ).run(user.id, PREVIEW_SEED_DEVICE, now).lastInsertRowid);
     }
 
     const insert = db.prepare(`

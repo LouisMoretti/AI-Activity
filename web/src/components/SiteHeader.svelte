@@ -13,7 +13,9 @@
     crumb: { label: string; mono?: boolean; picture?: { name: string; url: string | null } } | null;
     /** Fictional data on screen: always labeled. */
     demo: boolean;
+    /** The current profile contains fictional preview activity. */
     sample: boolean;
+    /** Show the isolated preview deployment banner. */
     preview: boolean;
     /** Show "Sign in" when signed out (off on the sign-in screen itself). */
     signIn: boolean;

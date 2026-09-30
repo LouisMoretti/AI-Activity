@@ -7,12 +7,15 @@
   let error = $state("");
   let result = $state("");
   let generating = $state(false);
+  let loading = $state(true);
 
   onMount(async () => {
     try {
       json = JSON.stringify((await api.previewSeed()).config, null, 2);
     } catch (e) {
       error = (e as Error).message;
+    } finally {
+      loading = false;
     }
   });
 
@@ -41,7 +44,9 @@
 
 <div class="panel">
   <p>Adds fictional activity to your profile. Events use a device named <code>preview</code>. Generating again replaces only events from that device; your measured activity stays.</p>
+  <p>The preview has one shared generated dataset. Generating as another admin moves it to that admin's profile.</p>
   <label for="preview-seed-json">Sample settings (JSON)</label>
+  {#if loading}<p role="status">Loading sample settings…</p>{/if}
   <textarea id="preview-seed-json" bind:value={json} spellcheck="false" rows="17" disabled={generating} aria-describedby="preview-seed-help"></textarea>
   <small id="preview-seed-help">1–365 days, 1–20 events per day, up to 5,000 events. Use supported tool slugs: claude-code, codex, antigravity, opencode.</small>
   <button type="button" disabled={generating || !json} onclick={generate}>{generating ? "Generating…" : "Generate sample data"}</button>
