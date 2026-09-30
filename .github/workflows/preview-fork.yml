@@ -5,9 +5,13 @@
 # - pull_request_target runs THIS file from the base branch, never the fork's
 #   copy: a fork cannot change what runs with secrets, and the label stays a
 #   convenience (like in preview.yml, it is not access control).
-# - No job checks out PR code where a secret is present. The image build sees
-#   only the Dockerfile and build context (its steps come from the base
-#   branch too, via image.yml); the published image is what the server pulls.
+# - The image build checks out fork code with allow-unsafe-pr-checkout, before
+#   any approval: the fork's Dockerfile RUN steps execute on the runner, with
+#   GITHUB_TOKEN (contents:read, packages:write) present for the GHCR push.
+#   Accepted risk for this repo: the token cannot reach the server or its
+#   secrets, the package is preview-only, and deploying the built image still
+#   waits for preview approval below. All steps (base branch, via image.yml)
+#   and the forced SSH command stay out of the fork's reach.
 # - Two human gates before anything reaches the server: a maintainer puts the
 #   "preview" label on, then approves the environment run. The SSH key can
 #   only run up/down (forced command), checked server-side.

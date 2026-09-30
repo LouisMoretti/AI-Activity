@@ -52,9 +52,14 @@ jobs:
         with:
           # A fork's commit for preview-fork.yml (unset: this repository).
           # persist-credentials: the build must not keep a token in git config.
+          # allow-unsafe-pr-checkout only for fork builds: this is the single
+          # sanctioned pull_request_target exception (preview-fork.yml). The
+          # steps still come from the base branch, the package is preview-only,
+          # and deploying the built image waits for preview approval.
           repository: ${{ inputs.repo || github.repository }}
           ref: ${{ env.SHA }}
           persist-credentials: false
+          allow-unsafe-pr-checkout: ${{ inputs.repo != '' }}
       - name: Image name (lowercase)
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}$SUFFIX" >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@v3
