@@ -30,13 +30,12 @@ test("sample generation is preview-only, admin-only, explicit, and configurable"
     const username = generated.json.username;
     assert.equal(username, "admin");
     assert.deepEqual((await req(srv.base, "GET", "/api/profiles", { anon: true })).json.profiles.map((p) => p.username), ["admin", "reviewer"]);
-    assert.equal((await req(srv.base, "GET", `/api/u/${username}`, { anon: true })).json.sample, true);
     const summary = (await req(srv.base, "GET", `/api/u/${username}/summary`, { anon: true })).json;
     assert.equal(summary.total.events, 7);
     assert.deepEqual(summary.total.by_tool.map((x) => x.name).sort(), ["claude-code", "codex", "opencode"]);
     assert.deepEqual((await req(srv.base, "GET", "/api/devices")).json.devices.map((d) => d.name), ["real laptop", "preview"]);
     const board = (await req(srv.base, "GET", "/api/leaderboard?days=all", { anon: true })).json;
-    assert.equal(board.entries.find((entry) => entry.username === username).sample, true);
+    assert.equal(board.entries.find((entry) => entry.username === username).events, 7);
     assert.deepEqual((await req(srv.base, "GET", endpoint)).json.config, edited);
 
     await githubSignIn(srv.base, "admin");

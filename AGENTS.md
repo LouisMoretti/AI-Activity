@@ -314,15 +314,16 @@ in becomes the admin). Several run at once; a push updates the PR's preview
 `.github/workflows/preview.yml`, forks through `preview-fork.yml` (same
 deployments, stricter trigger: see below).
 
-Every preview page shows "This is a preview build" in the header. Nothing is
+Every preview page shows "Preview build · May include fictional data" in the header. Nothing is
 seeded on sign-in. After the first participant becomes admin, the preview-only
 admin panel can generate or replace fictional activity on the signed-in admin's
 account from validated JSON (days, events per day, tools, models and token
 counts). Events use a device named `preview`, and regenerating replaces only
 that device's events, leaving measured events intact. The generated dataset is
 shared across the preview: generating as another admin moves it to that admin's
-profile. Fictional activity is labeled on the profile and leaderboard,
-and contributes to preview-only leaderboard totals. Production has no seed
+profile. The global preview banner identifies pages that may contain fictional
+activity; profiles and leaderboard entries do not calculate per-account sample
+markers. Generated activity contributes to preview-only leaderboard totals. Production has no seed
 controls or sample data. This preview seed is distinct from the browser-only
 `/demo` dataset.
 Until the root-installed preview Compose file is reinstalled, the app also

@@ -43,7 +43,7 @@
       : page === "admin" ? "Admin panel · AI Activity"
       : page === "leaderboard" ? "Leaderboard · AI Activity"
       : page === "friends" ? "Friends · AI Activity"
-      : (page === "profile" || page === "demo") && dash.shown ? `${dash.shown.display_name} · AI Activity${dash.vm?.demo ? " · Demo" : dash.shown.sample ? " · Sample" : ""}`
+      : (page === "profile" || page === "demo") && dash.shown ? `${dash.shown.display_name} · AI Activity${dash.vm?.demo ? " · Demo" : ""}`
         : "AI Activity";
   });
 </script>
@@ -51,7 +51,7 @@
 <!-- Site chrome (header and footer) lives here,
      outside the page branches, so every page gets exactly the same. -->
 <div class="shell">
-  <SiteHeader account={dash.account} demo={!!dash.vm?.demo} sample={!!dash.shown?.sample} preview={dash.preview}
+  <SiteHeader account={dash.account} demo={!!dash.vm?.demo} preview={dash.preview}
     {crumb}
     signIn={dash.status !== "loading" && dash.status !== "signed-out" && dash.status !== "setup"}
     onnavigate={(p) => dash.go(p)} onlogout={() => dash.logout()} />
@@ -127,7 +127,7 @@
     {#if dash.vm && dash.shown}
       {@const vm = dash.vm}
       {@const quotaCards = { "claude-code": vm.claude, codex: vm.codex, antigravity: vm.antigravity }}
-      <ActivityChart series={vm.series} today={vm.today} demo={vm.demo || !!dash.shown.sample} hasActivity={vm.hasActivity} />
+      <ActivityChart series={vm.series} today={vm.today} demo={vm.demo} hasActivity={vm.hasActivity} />
       <StatsRow stats={vm.stats} />
 
       <Section title="Tools" subtitle="Limits are per account, latest snapshot">

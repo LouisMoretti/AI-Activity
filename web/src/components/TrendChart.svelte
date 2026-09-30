@@ -41,7 +41,7 @@
 </script>
 
 <div class="chart" role="group" onmouseleave={() => show(null)}
-  aria-label="{kind === 'weekly' ? 'Weekly' : 'Cumulative'} tokens, {demo ? 'fictional' : 'measured'} data">
+  aria-label="{kind === 'weekly' ? 'Weekly' : 'Cumulative'} tokens, {demo ? 'demonstration' : 'measured'} data">
   <svg viewBox="0 0 {W} {H}" preserveAspectRatio="none" aria-hidden="true">
     <path d="M0 108H{W} M0 55H{W} M0 7H{W}" stroke="var(--line)" stroke-dasharray="3 5" fill="none" />
     {#if kind === "weekly"}

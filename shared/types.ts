@@ -214,8 +214,6 @@ export interface Profile {
   username: string;
   display_name: string;
   avatar_url: string | null;
-  /** Preview-only generated events on this profile (isolated PR preview). */
-  sample?: true;
 }
 
 export interface ProfilesResponse {
@@ -266,7 +264,6 @@ export interface LeaderboardEntry {
   username: string;
   display_name: string;
   avatar_url: string | null;
-  sample?: true;
   tokens: number;
   sessions: number;
   events: number;
