@@ -23,7 +23,7 @@ test("sample generation is preview-only, admin-only, explicit, and configurable"
 
     const realDevice = await newDevice(srv.base, "real laptop");
     assert.equal((await req(srv.base, "POST", "/api/ingest/claude-code", { key: realDevice.key, body: event() })).status, 200);
-    const edited = { ...config, days: 3, events_per_day: 2, tools: ["codex", "opencode"], models: ["model-a"], input_tokens: 100, output_tokens: 50, cache_read_tokens: 0, cache_write_tokens: 0 };
+    const edited = { ...config, days: 3, events_per_day: 2, tools: ["codex", "cursor"], models: ["model-a"], input_tokens: 100, output_tokens: 50, cache_read_tokens: 0, cache_write_tokens: 0 };
     const generated = await req(srv.base, "POST", endpoint, { body: edited });
     assert.equal(generated.status, 200, generated.text);
     assert.equal(generated.json.events, 6);
@@ -32,7 +32,7 @@ test("sample generation is preview-only, admin-only, explicit, and configurable"
     assert.deepEqual((await req(srv.base, "GET", "/api/profiles", { anon: true })).json.profiles.map((p) => p.username), ["admin", "reviewer"]);
     const summary = (await req(srv.base, "GET", `/api/u/${username}/summary`, { anon: true })).json;
     assert.equal(summary.total.events, 7);
-    assert.deepEqual(summary.total.by_tool.map((x) => x.name).sort(), ["claude-code", "codex", "opencode"]);
+    assert.deepEqual(summary.total.by_tool.map((x) => x.name).sort(), ["claude-code", "codex", "cursor"]);
     assert.deepEqual((await req(srv.base, "GET", "/api/devices")).json.devices.map((d) => d.name), ["real laptop", "preview"]);
     const board = (await req(srv.base, "GET", "/api/leaderboard?days=all", { anon: true })).json;
     assert.equal(board.entries.find((entry) => entry.username === username).events, 7);

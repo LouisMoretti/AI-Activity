@@ -79,6 +79,26 @@ describe("Cursor ingestion", () => {
     assert.ok(global.by_model.some(m => m.name === "composer-2.5" && m.tokens === 2160));
   });
 
+  test("session_id, model_id and camelCase fallbacks store; bad offsets fall back to UTC, caches clamp", async () => {
+    const at = Math.floor(Date.now()/1000);
+    const camel = { session_id: "s9", generation_id: "g9", model_id: "custom-model", occurred_at: at, utc_offset_min: 9999,
+      usage: { inputTokens: 1000, outputTokens: 80, cacheReadTokens: 600, cacheWriteTokens: 100 } };
+    assert.equal((await post({ messages: [camel] })).json.stored, 1);
+    const over = { conversation_id: "c10", generation_id: "g10", occurred_at: at,
+      usage: { input_tokens: 100, output_tokens: 80, cache_read_tokens: 600, cache_write_tokens: 100 } };
+    const beforeClamp = (await req(srv.base, "GET", "/api/u/admin/stats?tool=cursor")).json;
+    assert.equal((await post({ messages: [over] })).json.stored, 1);
+    const stats = (await req(srv.base, "GET", "/api/u/admin/stats?tool=cursor")).json;
+    const models = (await req(srv.base, "GET", "/api/u/admin/summary?tool=cursor")).json.total.by_model;
+    assert.ok(models.some((m) => m.name === "custom-model"));
+    assert.equal(stats.input_tokens - beforeClamp.input_tokens, 0, "caches above input clamp to zero");
+    assert.ok(stats.total_tokens - beforeClamp.total_tokens > 0);
+    for (const over2 of [{ usage: { input_tokens: 80.9, output_tokens: 80, cache_read_tokens: 0, cache_write_tokens: 0 } },
+      { conversation_id: "", session_id: "s9" }]) {
+      assert.equal((await post({ messages: [entry(over2)] })).json.stored, 0);
+    }
+  });
+
   test("ignores unknown ids, zero usage, context, quotas and mismatched tool payloads", async () => {
     for (const over of [{ generation_id: "" }, { conversation_id: "bad:id" }, { generation_id: null },
       { usage: {} }, { usage: { input_tokens: 5, output_tokens: 5 } }]) {
@@ -130,7 +150,7 @@ describe("Cursor hook collector", () => {
     assert.equal(event.utc_offset_min % 15, 0);
     assert.equal(captured[0].url, "/api/ingest/cursor");
     assert.equal(captured[0].auth, "Bearer ak_fixture");
-    assert.equal(captured[0].body.collector.version, 1);
+    assert.equal(captured[0].body.collector.version, 2);
     assert.ok(!JSON.stringify(captured[0].body).includes("PRIVATE_"));
     for (const file of files) {
       assert.ok(!fs.readFileSync(path.join(journal(), file), "utf8").includes("PRIVATE_"));
@@ -182,5 +202,44 @@ describe("Cursor hook collector", () => {
     assert.equal(result.code, 0);
     assert.equal(result.stdout.trim(), "{}");
     assert.ok(!result.stderr.includes("PRIVATE_SECRET"));
+  });
+
+  test("numeric timestamps, id fallbacks and corrupt files", async () => {
+    mode = 200; // independent of the retry test above, wherever it got to
+    const at = 1790280600; // 2026-09-25T23:30:00Z
+    const read = (gen) => {
+      for (const f of fs.readdirSync(journal())) {
+        try {
+          const event = JSON.parse(fs.readFileSync(path.join(journal(), f)));
+          if (event.generation_id === gen) return event;
+        } catch { /* corrupt files are skipped by the collector too */ }
+      }
+      return null;
+    };
+    record({ ...fixture, conversation_id: "num-epoch", generation_id: "g-num", timestamp: at }, env);
+    record({ ...fixture, conversation_id: "num-float", generation_id: "g-float", timestamp: at + 0.9 }, env);
+    record({ ...fixture, conversation_id: "num-ms", generation_id: "g-ms", timestamp: at * 1000 }, env);
+    assert.equal(read("g-num").occurred_at, at);
+    assert.equal(read("g-float").occurred_at, at);
+    assert.equal(read("g-ms").occurred_at, at);
+    const { conversation_id: _drop, ...noConv } = fixture;
+    record({ ...noConv, session_id: "sess-fallback", generation_id: "g-sess", model_id: "model-x",
+      inputTokens: 1000, outputTokens: 80, cacheReadTokens: 600, cacheWriteTokens: 100 }, env);
+    const fell = read("g-sess");
+    assert.equal(fell.conversation_id, "sess-fallback");
+    assert.equal(fell.model, "model-x");
+    assert.equal(fell.usage.input_tokens, 1000);
+    const before = fs.readdirSync(journal()).length;
+    // An empty conversation_id does not fall back (like the server); booleans are not epochs.
+    record({ ...fixture, conversation_id: "", session_id: "sess-fallback", generation_id: "g-empty" }, env);
+    record({ ...fixture, conversation_id: "num-bool", generation_id: "g-bool", timestamp: true }, env);
+    assert.equal(fs.readdirSync(journal()).length, before);
+    // A poisoned journal file or progress file never blocks the queue.
+    fs.writeFileSync(path.join(journal(), "f".repeat(64) + ".json"), "{corrupt");
+    fs.writeFileSync(path.join(home, ".cache", "ai-activity", "cursor.json"), "{corrupt");
+    assert.equal((await run([], env)).code, 0);
+    record({ ...fixture, conversation_id: "num-after", generation_id: "g-after" }, env);
+    assert.ok(read("g-after"));
+    assert.equal((await run([], env)).code, 0);
   });
 });

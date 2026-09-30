@@ -29,7 +29,15 @@ test("Cursor's activity card keeps measured usage and identity without inventing
   assert.equal(vm.cursor.recent[0].id, "conv1");
   assert.equal(vm.sessions[0].tool, "cursor");
   assert.equal(vm.sessions[0].context, null);
+  assert.ok(!("pools" in vm.cursor), "the Cursor card has no quota pools");
   assert.deepEqual(liveDashboard(data([]), "all").cursor.recent, []);
+});
+
+test("a caller built before Cursor support gets an empty Cursor card, not a crash", () => {
+  const d = data([]);
+  delete d.cursor;
+  const vm = liveDashboard(d, "all");
+  assert.deepEqual(vm.cursor, { recent: [], today: { tokens: 0, sessions: 0, calls: 0, models: 0, providers: null } });
 });
 
 test("each tool card shows its own quota windows, never another tool's", () => {

@@ -6,7 +6,7 @@
 
   const SHOWN = 3;
   let { tool, vm }: { tool: ToolKey; vm: ActivityToolVM } = $props();
-  const callNoun = $derived(TOOL_META[tool].callNoun ?? "call");
+  const callNoun = $derived(TOOL_META[tool].callNoun ?? "API call");
 
   // Active: a reply in the last few minutes (the green dot's rule). Listed by
   // session id (creation order), not by latest reply, so parallel

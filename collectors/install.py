@@ -284,6 +284,8 @@ def install_cursor(url, key):
     # if present, keeping every other handler and event.
     for event in ("afterAgentResponse", "stop"):
         entries = hooks.get(event, [])
+        if not isinstance(entries, list):
+            entries = []
         kept = [e for e in entries if not (isinstance(e, dict)
                 and any(name in str(e.get("command", "")) for name in ("ai-activity-cursor.py", "ai-activity-cursor.ps1")))]
         if event == "afterAgentResponse":

@@ -71,6 +71,8 @@ export function demoDashboard(provider: Provider): DashboardVM {
 
   const sessions: SessionVM[] = ([
     { tool: "claude-code", id: "demo-a1b2c3d4", model: "claude-opus-5-5", calls: 142, tokens: 18_400_000, lastActive: now - 90, context: { pct: 64, size: 200000 } },
+    // calls stays 5 while last.cursor is nonzero by construction ((363*6151)%600000);
+    // keep both in step if the cursor formula above ever yields 0.
     { tool: "cursor", id: "demo-cu1a2b3c", model: "composer-2.5", calls: 5, tokens: last.cursor, lastActive: now - 120, context: null },
     { tool: "antigravity", id: "demo-g7h8i9j0", model: "gemini-3.5-flash", calls: 24, tokens: 420_000, lastActive: now - 3 * 60, context: null },
     { tool: "codex", id: "demo-e5f6a7b8", model: "gpt-5-codex", calls: 57, tokens: 6_100_000, lastActive: now - 25 * 60, context: { pct: 29, size: 258000 } },

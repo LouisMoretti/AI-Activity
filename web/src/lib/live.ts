@@ -20,7 +20,8 @@ export interface LiveData {
   opencode: { summary: SummaryResponse; latest: SessionsResponse };
   /** Antigravity's card without quota windows: the same as OpenCode's. */
   antigravity: { summary: SummaryResponse; latest: SessionsResponse };
-  cursor: { summary: SummaryResponse; latest: SessionsResponse };
+  /** Cursor's card: absent for callers built before Cursor support. */
+  cursor?: { summary: SummaryResponse; latest: SessionsResponse };
 }
 
 export const ACTIVITY_DAYS = 364;
@@ -81,13 +82,16 @@ const toSession = (s: Session): SessionVM => ({
 });
 
 /** providers: the tool stores its models as provider/model (OpenCode). */
-function activityTool(d: LiveData["opencode"], providers: boolean): ActivityToolVM {
-  const t = d.summary.today;
+function activityTool(d: LiveData["opencode"] | undefined, providers: boolean): ActivityToolVM {
+  const t = d?.summary.today;
   return {
-    recent: d.latest.sessions.map(toSession),
+    recent: d ? d.latest.sessions.map(toSession) : [],
     today: {
-      tokens: t.tokens, sessions: t.sessions, calls: t.events, models: t.by_model.length,
-      providers: providers ? new Set(t.by_model.map((m) => m.name.split("/")[0])).size : null,
+      tokens: t?.tokens ?? 0,
+      sessions: t?.sessions ?? 0,
+      calls: t?.events ?? 0,
+      models: t?.by_model.length ?? 0,
+      providers: !providers ? null : t ? new Set(t.by_model.map((m) => m.name.split("/")[0])).size : 0,
     },
   };
 }

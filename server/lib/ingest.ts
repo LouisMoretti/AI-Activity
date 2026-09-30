@@ -351,7 +351,11 @@ function normalizeOpenCode(body: unknown): NormalizedBatch {
   };
 }
 
-/** Cursor hook counts include cache in input; persist disjoint counters once per turn. */
+/** Cursor hook counts include cache in input (verified against the official
+ * Cursor agent package 2026.09.28-64d2043; see README); persist disjoint
+ * counters once per turn. If Cursor ever reports disjoint counts, the clamp
+ * below stays sane but undercounts: cache sums above input mean the build
+ * assumption changed. */
 function normalizeCursor(body: unknown): NormalizedBatch {
   const src: Obj = isObj(body) ? body : {};
   const now = nowSec();
@@ -359,8 +363,10 @@ function normalizeCursor(body: unknown): NormalizedBatch {
   const messages: NormalizedMessage[] = [];
   const validId = (v: unknown): v is string => typeof v === "string" && /^[A-Za-z0-9_-]{1,200}$/.test(v);
   for (const m of single ? [src] : src.messages as unknown[]) {
-    if (!isObj(m) || !validId(m.generation_id) || !validId(m.conversation_id ?? m.session_id) || !isObj(m.usage)) continue;
-    const session = m.conversation_id ?? m.session_id;
+    if (!isObj(m) || !validId(m.generation_id)) continue;
+    const rawSession: unknown = m.conversation_id ?? m.session_id;
+    if (!validId(rawSession) || !isObj(m.usage)) continue;
+    const session: string = rawSession;
     const u = m.usage;
     const counts = [u.input_tokens ?? u.inputTokens, u.output_tokens ?? u.outputTokens,
       u.cache_read_tokens ?? u.cacheReadTokens, u.cache_write_tokens ?? u.cacheWriteTokens];

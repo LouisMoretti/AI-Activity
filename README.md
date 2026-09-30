@@ -638,10 +638,13 @@ counters from input. Hook configuration is described in
 conversation/generation IDs, model, counts, timestamp and the local UTC
 offset in `~/.cache/ai-activity/cursor-events/` (one private JSON file per
 turn). It never retains or uploads reply/prompt text, email, paths or provider
-keys. If a hook has no timestamp, live receipt time is saved once; retries
+keys. If a hook has no timestamp, live receipt time is saved once; a numeric
+timestamp (epoch seconds, or milliseconds) is accepted too. Retries
 and partial/final updates preserve it. A detached worker uploads batches,
 with one uploader and at most one waiter. `cursor.json` keeps accepted
 metric hashes per server/device key; progress moves only after acceptance.
+Unreadable journal or progress files are skipped without blocking the queue,
+and hashes of journal files gone from the journal are pruned.
 An HTTP 429 respects `Retry-After` before another upload. A failed upload
 retries on the next hook, or by running the copied script without `--hook`.
 Schedule that command if retries are needed while Cursor is idle. Delete

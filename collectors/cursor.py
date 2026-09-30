@@ -31,7 +31,7 @@ else:
     import fcntl
 
 # Bump with shared/collectors.ts on every change to this file.
-VERSION = 1
+VERSION = 2
 COLLECTOR = {"name": "cursor", "version": VERSION}
 SERVER = os.environ.get("AI_ACTIVITY_URL", "<server>")
 KEY = os.environ.get("AI_ACTIVITY_KEY", "<device key>")
@@ -49,7 +49,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def post(body):
     req = urllib.request.Request(
-        SERVER.rstrip("/") + "/api/ingest/cursor", data=json.dumps(dict(body, collector=COLLECTOR)).encode(),
+        SERVER.strip().rstrip("/") + "/api/ingest/cursor", data=json.dumps(dict(body, collector=COLLECTOR)).encode(),
         headers={"Authorization": "Bearer " + KEY, "Content-Type": "application/json"})
     try:
         raw = urllib.request.build_opener(NoRedirect).open(req, timeout=60).read()
@@ -205,14 +205,20 @@ def metric_event(payload):
         return None
     if payload.get("hook_event_name", "afterAgentResponse") not in ("afterAgentResponse", "stop"):
         return None
-    session = payload.get("conversation_id") or payload.get("session_id")
+    # Like the server's `??`: only a missing (None) conversation_id falls back
+    # to session_id. An empty one is invalid, like on the server.
+    session = payload.get("conversation_id")
+    if session is None:
+        session = payload.get("session_id")
     generation = payload.get("generation_id")
     if not all(isinstance(v, str) and ID.fullmatch(v) for v in (session, generation)):
         return None
     usage = {}
     for snake, camel in (("input_tokens", "inputTokens"), ("output_tokens", "outputTokens"),
                          ("cache_read_tokens", "cacheReadTokens"), ("cache_write_tokens", "cacheWriteTokens")):
-        value = payload.get(snake, payload.get(camel))
+        value = payload.get(snake)
+        if value is None:
+            value = payload.get(camel)
         if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
             return None
         usage[snake] = int(value)
@@ -221,14 +227,25 @@ def metric_event(payload):
     stamp = payload.get("timestamp")
     if stamp is None:
         ts = int(time.time())  # live hook receipt, persisted before any upload
+    elif type(stamp) in (int, float) and math.isfinite(stamp):
+        # Epoch seconds (or milliseconds) when the hook sends a number.
+        ts = int(stamp // 1000) if stamp > 1e12 else int(stamp)
+        if ts < 0:
+            return None
     else:
         try:
-            ts = int(datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp())
+            text = str(stamp)
+            ts = int(datetime.datetime.fromisoformat(
+                text[:-1] + "+00:00" if text.endswith("Z") else text).timestamp())
         except (AttributeError, TypeError, ValueError, OverflowError):
             return None
     model = payload.get("model_id") or payload.get("model")
     model = model if isinstance(model, str) and model else None
-    offset = int(datetime.datetime.fromtimestamp(ts).astimezone().utcoffset().total_seconds() // 60)
+    try:
+        offset = int((datetime.datetime.fromtimestamp(ts).astimezone().utcoffset()
+                      or datetime.timedelta(0)).total_seconds() // 60)
+    except (OSError, OverflowError, ValueError):
+        return None
     return {"conversation_id": session, "generation_id": generation, "model": model,
             "occurred_at": ts, "utc_offset_min": offset, "usage": usage}
 
@@ -243,13 +260,17 @@ def record(payload):
     held = lock(os.path.join(CACHE, "cursor-state.lock"))
     try:
         path = os.path.join(JOURNAL, name + ".json")
-        old = load(path)
-        if old:
+        try:
+            old = load(path)
+        except (ValueError, OSError):
+            old = None  # corrupt entry: overwrite it below
+        if (isinstance(old, dict) and isinstance(old.get("usage"), dict)
+                and isinstance(old["usage"].get("output_tokens"), (int, float))):
             # A replay never re-dates a turn or lowers its final counts.
             if event["usage"]["output_tokens"] <= old["usage"]["output_tokens"]:
                 return
-            event["occurred_at"] = old["occurred_at"]
-            event["utc_offset_min"] = old["utc_offset_min"]
+            event["occurred_at"] = old.get("occurred_at", event["occurred_at"])
+            event["utc_offset_min"] = old.get("utc_offset_min", event["utc_offset_min"])
         save(path, event)
     finally:
         unlock(held)
@@ -270,7 +291,13 @@ def main():
             unlock(waiter)
             waiter = None
             path = os.path.join(CACHE, "cursor.json")
-            saved, state = for_target(load(path))
+            try:
+                stored = load(path)
+            except (ValueError, OSError) as error:
+                # Corrupt progress: start fresh (dedup makes the resend safe).
+                print("ai-activity cursor collector: ignoring corrupt %s (%s)" % (path, type(error).__name__), file=sys.stderr)
+                stored = {}
+            saved, state = for_target(stored)
             if state.get("retry_at", 0) > time.time():
                 return
             accepted = state.setdefault("accepted", {})
@@ -296,17 +323,32 @@ def main():
 
             if not os.path.isdir(JOURNAL):
                 return
+            seen = set()
             for name in sorted(os.listdir(JOURNAL)):
                 if not re.fullmatch(r"[0-9a-f]{64}\.json", name):
                     continue
-                event = load(os.path.join(JOURNAL, name))
+                try:
+                    event = load(os.path.join(JOURNAL, name))
+                except (ValueError, OSError) as error:
+                    # One poisoned file must not block the queue.
+                    print("ai-activity cursor collector: skipping unreadable %s (%s)" % (name, type(error).__name__), file=sys.stderr)
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                seen.add(name)
                 if accepted.get(name) == digest(event):
                     continue
                 chunk.append((name, event))
                 if len(chunk) >= BATCH:
                     upload()
+            # Forget hashes of files gone from the journal: they only grow it.
+            pruned = [name for name in accepted if name not in seen]
+            for name in pruned:
+                del accepted[name]
             if chunk:
                 upload()
+            elif pruned:
+                save(path, saved)
         finally:
             unlock(held)
     finally:
