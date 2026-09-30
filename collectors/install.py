@@ -46,6 +46,10 @@ CONFIGS = {"claude-code": os.path.join(CLAUDE_DIR, "settings.json"),
 # ended by an API error, e.g. a rate limit), before the next one (neither fires
 # on an interrupted turn) and at exit.
 CLAUDE_HOOKS = ("UserPromptSubmit", "PostToolUse", "Stop", "StopFailure", "SessionEnd")
+# PostToolUse sends a long turn as it runs. UserPromptSubmit catches up on
+# rollouts left by a turn whose Stop hook did not fire (e.g. a rate limit).
+CODEX_HOOKS = ("Stop", "UserPromptSubmit", "PostToolUse")
+ANTIGRAVITY_HOOKS = (("PostInvocation", "--post-invocation"), ("Stop", "--hook"))
 
 
 def fail(msg):
@@ -221,7 +225,7 @@ def install_codex(url, key):
     else:
         run = f"setsid -f {command(script, '~/.codex/ai-activity-codex.py')} >/dev/null 2>&1 </dev/null; echo '{{}}'"
     ours = {"hooks": [{"type": "command", "command": run, "timeout": 10}]}
-    for event in ("Stop", "UserPromptSubmit", "PostToolUse"):
+    for event in CODEX_HOOKS:
         entries = hooks.get(event)
         entries = entries if isinstance(entries, list) else []
         # Drop our earlier entries (any path), keep everyone else's.
@@ -246,7 +250,7 @@ def install_antigravity(url, key):
     else:
         run = lambda flag: {"type": "command", "command": command(script, "~/.gemini/ai-activity-antigravity.py", flag), "timeout": 10}
     # A named hook: ours is replaced whole, the others are kept.
-    config["ai-activity"] = {"enabled": True, "PostInvocation": [run("--post-invocation")], "Stop": [run("--hook")]}
+    config["ai-activity"] = {"enabled": True, **{event: [run(flag)] for event, flag in ANTIGRAVITY_HOOKS}}
     changed = write(path, dump(config)) or changed
     say(f"Antigravity: {'installed' if changed else 'already up to date'} ({script}, hook in {path})")
     return True
