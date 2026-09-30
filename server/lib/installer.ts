@@ -3,7 +3,7 @@ import path from "node:path";
 import { ROOT } from "../config.ts";
 
 /** The collectors install.py embeds, by the names it reads them under. */
-const COLLECTORS = ["claude-code.py", "codex.py", "antigravity.py", "opencode.py", "opencode-plugin.js"];
+const COLLECTORS = ["claude-code.py", "codex.py", "cursor.py", "antigravity.py", "opencode.py", "opencode-plugin.js"];
 
 export interface Installers {
   /** /install.sh: Linux and macOS (`curl … | sh`). */

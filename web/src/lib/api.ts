@@ -37,7 +37,8 @@ function unauthorized(path: string): UnauthorizedError {
 }
 
 async function get<T>(path: string): Promise<T> {
-  const r = await fetch(path);
+  // A stalled sibling must not hold a dashboard refresh open indefinitely.
+  const r = await fetch(path, { signal: AbortSignal.timeout(15000) });
   if (r.status === 401) throw unauthorized(path);
   if (r.status === 404) throw new NotFoundError();
   if (r.status === 429) throw new RateLimitedError();

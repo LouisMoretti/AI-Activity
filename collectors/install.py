@@ -12,7 +12,7 @@ a device, as the user who runs the tools:
 Installs the collectors of the tools found on this machine (or those listed
 in AI_ACTIVITY_TOOLS, e.g. "claude-code,codex"), with the server URL and
 device key filled in. The key comes from the environment, never from a URL.
-Existing ~/.claude/settings.json, ~/.codex/hooks.json and
+Existing ~/.claude/settings.json, ~/.codex/hooks.json, ~/.cursor/hooks.json and
 ~/.gemini/config/hooks.json keep their other entries; running it again only
 updates what changed. Messages stay ASCII: a Windows console may not print
 anything else.
@@ -27,19 +27,21 @@ import urllib.error
 import urllib.request
 
 # Replaced by the server: {"claude-code.py": ..., "codex.py": ..., "opencode.py": ...,
-# "opencode-plugin.js": ..., "antigravity.py": ...}
+# "opencode-plugin.js": ..., "cursor.py": ..., "antigravity.py": ...}
 FILES = {}
 
-TOOLS = ("claude-code", "codex", "antigravity", "opencode")  # TOOLS order (shared/types.ts)
-NAMES = {"claude-code": "Claude Code", "codex": "Codex", "antigravity": "Antigravity", "opencode": "OpenCode"}
+TOOLS = ("claude-code", "codex", "cursor", "antigravity", "opencode")  # TOOLS order (shared/types.ts)
+NAMES = {"claude-code": "Claude Code", "codex": "Codex", "cursor": "Cursor", "antigravity": "Antigravity", "opencode": "OpenCode"}
 WINDOWS = os.name == "nt"
 HOME = os.path.expanduser("~")
 CLAUDE_DIR = os.path.join(HOME, ".claude")
+CURSOR_DIR = os.path.join(HOME, ".cursor")
 CODEX_HOME = os.environ.get("CODEX_HOME") or os.path.join(HOME, ".codex")
 GEMINI_HOME = os.environ.get("GEMINI_CLI_HOME") or os.path.join(HOME, ".gemini")
 OPENCODE_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(HOME, ".config"), "opencode")
 # The JSON files the installs merge into (OpenCode has none).
 CONFIGS = {"claude-code": os.path.join(CLAUDE_DIR, "settings.json"),
+           "cursor": os.path.join(CURSOR_DIR, "hooks.json"),
            "codex": os.path.join(CODEX_HOME, "hooks.json"),
            "antigravity": os.path.join(GEMINI_HOME, "config", "hooks.json")}
 # Claude Code events that send the tokens: during a turn, after it (StopFailure:
@@ -148,6 +150,14 @@ def present(tool):
         return on_path("claude") or os.path.isdir(CLAUDE_DIR)
     if tool == "codex":
         return on_path("codex") or os.path.isdir(CODEX_HOME)
+    if tool == "cursor":
+        return on_path("cursor") or os.path.isdir(CURSOR_DIR) or any(os.path.isdir(p) for p in (
+            "/Applications/Cursor.app", os.path.join(HOME, "Applications", "Cursor.app"),
+            os.path.join(HOME, "Library", "Application Support", "Cursor"),
+            os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(HOME, ".config"), "Cursor"),
+            os.path.join(os.environ.get("APPDATA", HOME), "Cursor"),
+            os.path.join(os.environ.get("LOCALAPPDATA", HOME), "Programs", "cursor"),
+            os.path.join(os.environ.get("ProgramFiles", HOME), "Cursor")))
     if tool == "antigravity":
         # ~/.gemini alone is the Gemini CLI: only Antigravity's own folders count.
         return on_path("agy") or any(os.path.isdir(os.path.join(GEMINI_HOME, d))
@@ -162,8 +172,22 @@ def preflight(tools):
         if tool not in tools:
             continue
         config = load_json(path)
-        if tool in ("claude-code", "codex") and not isinstance(config.get("hooks", {}), dict):
+        if tool in ("claude-code", "codex", "cursor") and not isinstance(config.get("hooks", {}), dict):
             fail(f"{path}: \"hooks\" is not an object: fix it, then run this again (nothing was changed)")
+        if tool == "cursor":
+            validate_cursor(config, path)
+
+
+def validate_cursor(config, path):
+    if type(config.get("version", 1)) is not int or config.get("version", 1) != 1:
+        fail(f"{path}: unsupported Cursor hooks version (nothing was changed)")
+    hooks = config.get("hooks", {})
+    if not isinstance(hooks, dict):
+        fail(f'{path}: "hooks" is not an object (nothing was changed)')
+    for event in ("afterAgentResponse", "stop"):
+        if not isinstance(hooks.get(event, []), list):
+            fail(f"{path}: {event} is not a list (nothing was changed)")
+
 
 
 def install_claude(url, key):
@@ -252,6 +276,58 @@ def install_codex(url, key):
     changed = write(path, dump(config)) or changed
     say(f"Codex: {'installed' if changed else 'already up to date'} ({script}, hooks in {path})")
     return True
+
+
+def install_cursor(url, key):
+    path = CONFIGS["cursor"]
+    config = load_json(path)
+    validate_cursor(config, path)
+    config.setdefault("version", 1)
+    hooks = config.setdefault("hooks", {})
+    script = os.path.join(CURSOR_DIR, "hooks", "ai-activity-cursor.py")
+    changed = write(script, fill(FILES["cursor.py"], url, key), 0o600)
+    run = command(script, "~/.cursor/hooks/ai-activity-cursor.py", "--hook")
+    if WINDOWS:
+        wrapper = os.path.join(CURSOR_DIR, "hooks", "ai-activity-cursor.ps1")
+        quoted = lambda value: "'" + value.replace("'", "''") + "'"
+        changed = write(wrapper, "\ufeff& " + quoted(sys.executable) + " " + quoted(script) + " --hook\n", 0o600) or changed
+        run = ('powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'
+               + wrapper.replace("\\", "/") + '"')
+    # Only afterAgentResponse is installed. Remove our old stop handler too,
+    # if present, keeping every other handler and event.
+    for event in ("afterAgentResponse", "stop"):
+        entries = hooks.get(event, [])
+        if not isinstance(entries, list):
+            entries = []
+        kept = [e for e in entries if not cursor_handler(e)]
+        if event == "afterAgentResponse":
+            hooks[event] = kept + [{"command": run, "timeout": 10}]
+        elif event in hooks:
+            hooks[event] = kept
+    changed = write(path, dump(config)) or changed
+    say(f"Cursor: {'installed' if changed else 'already up to date'} ({script}, hook in {path})")
+    return True
+
+
+def cursor_handler(entry):
+    """Match our executable argument, not a filename mentioned by another hook."""
+    if not isinstance(entry, dict) or not isinstance(entry.get("command"), str):
+        return False
+    try:
+        parts = shlex.split(entry["command"], posix=False)
+    except ValueError:
+        return False
+    basename = lambda part: part.strip("\"'").replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if not parts:
+        return False
+    exe = basename(parts[0])
+    if re.fullmatch(r"(?:python(?:3(?:\.\d+)?)?|pythonw|py)(?:\.exe)?", exe):
+        return len(parts) > 1 and basename(parts[1]) == "ai-activity-cursor.py" and "--hook" in parts[2:]
+    if exe in ("powershell", "powershell.exe", "pwsh", "pwsh.exe"):
+        for i, part in enumerate(parts[:-1]):
+            if part.lower() == "-file" and basename(parts[i + 1]) == "ai-activity-cursor.ps1":
+                return True
+    return False
 
 
 def install_antigravity(url, key):
@@ -344,18 +420,21 @@ def main():
     else:
         tools = [t for t in TOOLS if present(t)]
         if not tools:
-            fail("no Claude Code, Codex, Antigravity or OpenCode found in " + HOME +
+            fail("no Claude Code, Codex, Cursor, Antigravity or OpenCode found in " + HOME +
                  "; set AI_ACTIVITY_TOOLS=" + ",".join(TOOLS) + " to install anyway")
 
     preflight(tools)
     check(url, key)
     install = {"claude-code": install_claude, "codex": install_codex,
+               "cursor": install_cursor,
                "antigravity": install_antigravity, "opencode": install_opencode}
     done = [t for t in TOOLS if t in tools and install[t](url, key)]
     if "claude-code" in done:
         say("Claude Code: restart it (or review the hooks in /hooks), then usage is sent during and after every turn")
     if "codex" in done:
         say("Codex: review the new hooks once with /hooks, then they run during and after every turn")
+    if "cursor" in done:
+        say("Cursor: check the hook in Settings > Hooks; only new Agent turns with measured token counts are collected")
     if "antigravity" in done:
         say("Antigravity: restart it and check that the ai-activity hook is enabled (/hooks)")
     if "opencode" in done:

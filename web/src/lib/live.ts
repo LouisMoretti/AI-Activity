@@ -17,9 +17,11 @@ export interface LiveData {
   quotas: QuotasResponse;
   sessions: SessionsResponse;
   /** OpenCode's card: its summary (today) and its latest sessions. */
-  opencode: { summary: SummaryResponse; latest: SessionsResponse };
+  opencode?: { summary: SummaryResponse; latest: SessionsResponse };
   /** Antigravity's card without quota windows: the same as OpenCode's. */
-  antigravity: { summary: SummaryResponse; latest: SessionsResponse };
+  antigravity?: { summary: SummaryResponse; latest: SessionsResponse };
+  /** Cursor's card: absent for callers built before Cursor support. */
+  cursor?: { summary: SummaryResponse; latest: SessionsResponse };
 }
 
 export const ACTIVITY_DAYS = 364;
@@ -65,9 +67,9 @@ function toolQuotas(q: QuotasResponse, tool: QuotaToolVM["tool"]): QuotaToolVM {
 const asTool = (t: string): ToolKey =>
   (TOOLS as readonly string[]).includes(t) ? (t as ToolKey) : "claude-code";
 
-// Antigravity ids are stored "antigravity:<id>" (never colliding with other
-// tools'); the list shows the id itself. The tool keeps rows apart.
-const displayId = (id: string) => id.replace(/^antigravity:/, "");
+// Cursor and Antigravity session ids have storage prefixes to avoid collisions;
+// the list shows the id itself. The tool keeps rows apart.
+const displayId = (id: string) => id.replace(/^(antigravity|cursor):/, "");
 
 const toSession = (s: Session): SessionVM => ({
   tool: asTool(s.tool),
@@ -81,12 +83,16 @@ const toSession = (s: Session): SessionVM => ({
 
 /** providers: the tool stores its models as provider/model (OpenCode). */
 function activityTool(d: LiveData["opencode"], providers: boolean): ActivityToolVM {
-  const t = d.summary.today;
+  const t = d?.summary.today;
   return {
-    recent: d.latest.sessions.map(toSession),
+    available: d !== undefined,
+    recent: d ? d.latest.sessions.map(toSession) : [],
     today: {
-      tokens: t.tokens, sessions: t.sessions, calls: t.events, models: t.by_model.length,
-      providers: providers ? new Set(t.by_model.map((m) => m.name.split("/")[0])).size : null,
+      tokens: t?.tokens ?? 0,
+      sessions: t?.sessions ?? 0,
+      calls: t?.events ?? 0,
+      models: t?.by_model.length ?? 0,
+      providers: !providers ? null : t ? new Set(t.by_model.map((m) => m.name.split("/")[0])).size : 0,
     },
   };
 }
@@ -109,6 +115,7 @@ export function liveDashboard(d: LiveData, provider: Provider): DashboardVM {
     tools: toolsFor(provider),
     claude: toolQuotas(d.quotas, "claude-code"),
     codex: toolQuotas(d.quotas, "codex"),
+    cursor: activityTool(d.cursor, false),
     opencode: activityTool(d.opencode, true),
     antigravity: toolQuotas(d.quotas, "antigravity"),
     antigravityActivity: activityTool(d.antigravity, false),

@@ -318,14 +318,14 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
   });
 
   // Run like Claude Code does: through a shell, its JSON on stdin.
-  const runCommand = (command, stdin, shell = "cmd") => new Promise((resolve) => {
+  const runCommand = (command, stdin, shell = "cmd", commandEnv = env) => new Promise((resolve) => {
     const p = typeof command === "object" && command.args
-      ? spawn(command.command, command.args, { env, windowsHide: true, stdio: ["pipe", "ignore", "ignore"] })
+      ? spawn(command.command, command.args, { env: commandEnv, windowsHide: true, stdio: ["pipe", "ignore", "ignore"] })
       : WINDOWS && shell === "powershell"
-      ? spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], { env, windowsHide: true, stdio: ["pipe", "ignore", "ignore"] })
+      ? spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], { env: commandEnv, windowsHide: true, stdio: ["pipe", "ignore", "ignore"] })
       : WINDOWS
-      ? spawn(command, { env, shell: true, windowsHide: true, stdio: ["pipe", "ignore", "ignore"] })
-      : spawn("sh", ["-c", command], { env, stdio: ["pipe", "ignore", "ignore"] });
+      ? spawn(command, { env: commandEnv, shell: true, windowsHide: true, stdio: ["pipe", "ignore", "ignore"] })
+      : spawn("sh", ["-c", command], { env: commandEnv, stdio: ["pipe", "ignore", "ignore"] });
     p.stdin.on("error", () => {});
     p.stdin.end(stdin);
     p.on("exit", resolve);
@@ -427,7 +427,7 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
     assert.equal(r.code, 0, r.out);
     assert.equal(read(".config", "opencode", "plugins", "ai-activity.js"), PLUGIN);
     assert.equal(read(".config", "opencode", "ai-activity-opencode.py"), filled("opencode.py"));
-    assert.notEqual((await install({ AI_ACTIVITY_TOOLS: "cursor" })).code, 0);
+    assert.notEqual((await install({ AI_ACTIVITY_TOOLS: "unknown" })).code, 0);
   });
 
   // Runs the install in a home of its own, removed afterwards.
@@ -439,6 +439,78 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
       fs.rmSync(h, { recursive: true, force: true });
     }
   }
+
+  test("detects Cursor, merges its native hook once and the installed command uploads", () =>
+    inFreshHome("ai-activity-install-cursor's spaced-", async (h, installHere) => {
+      const config = path.join(h, ".cursor", "hooks.json");
+      fs.mkdirSync(path.dirname(config));
+      const theirs = { command: "echo ai-activity-cursor.py", timeout: 20 };
+      const stop = { command: "echo keep-stop" };
+      fs.writeFileSync(config, JSON.stringify({ version: 1, custom: "keep", hooks: {
+        afterAgentResponse: [theirs, { command: "python3 /old/ai-activity-cursor.py --hook" }],
+        stop: [stop, { command: "python3 /old/ai-activity-cursor.py --hook" }],
+      } }));
+      const first = await installHere();
+      assert.equal(first.code, 0, first.out);
+      const installed = JSON.parse(fs.readFileSync(config, "utf8"));
+      assert.equal(installed.version, 1);
+      assert.equal(installed.custom, "keep");
+      assert.deepEqual(installed.hooks.stop, [stop]);
+      assert.deepEqual(installed.hooks.afterAgentResponse[0], theirs);
+      assert.equal(installed.hooks.afterAgentResponse.length, 2);
+      const scriptPath = path.join(h, ".cursor", "hooks", "ai-activity-cursor.py");
+      assert.equal(fs.readFileSync(scriptPath, "utf8"), filled("cursor.py"));
+      if (!WINDOWS) assert.equal(fs.statSync(scriptPath).mode & 0o777, 0o600);
+      const snapshot = fs.readFileSync(config, "utf8");
+      assert.equal((await installHere()).code, 0);
+      assert.equal(fs.readFileSync(config, "utf8"), snapshot);
+      const command = installed.hooks.afterAgentResponse[1].command;
+      if (WINDOWS) {
+        assert.match(command, /^powershell.exe .*ai-activity-cursor\.ps1"$/);
+        const wrapper = fs.readFileSync(path.join(h, ".cursor", "hooks", "ai-activity-cursor.ps1"), "utf8");
+        assert.ok(wrapper.startsWith("\ufeff& '"));
+        assert.ok(wrapper.includes("'" + scriptPath.replaceAll("'", "''") + "' --hook"));
+        assert.ok(!wrapper.includes(key), "wrapper has no device credential");
+      }
+      else assert.equal(command, "python3 ~/.cursor/hooks/ai-activity-cursor.py --hook");
+      const localEnv = { ...env, HOME: h, USERPROFILE: h };
+      for (const shell of WINDOWS ? ["cmd", "powershell"] : ["cmd"]) {
+        const payload = { hook_event_name: "afterAgentResponse", conversation_id: "installed-cursor", generation_id: shell,
+          model: "composer-test", input_tokens: 20, output_tokens: 3, cache_read_tokens: 8, cache_write_tokens: 2,
+          text: "private reply" };
+        assert.equal(await runCommand(command, JSON.stringify(payload), shell, localEnv), 0);
+      }
+      const wanted = WINDOWS ? 46 : 23;
+      assert.ok(await waitFor(async () => {
+        const s = (await req(srv.base, "GET", "/api/u/admin/sessions?tool=cursor", { headers: asNewClient() })).json.sessions;
+        return s.some(r => r.session_id === "cursor:installed-cursor" && r.tokens === wanted);
+      }), "installed Cursor hook sent its counts through the real ingestion API");
+      assert.ok(await waitFor(() => !running(scriptPath)));
+    }));
+
+  test("invalid Cursor hooks prevent every selected install from changing files", () =>
+    inFreshHome("ai-activity-install-cursor-invalid-", async (h, run) => {
+      fs.mkdirSync(path.join(h, ".claude"));
+      fs.mkdirSync(path.join(h, ".cursor"));
+      fs.writeFileSync(path.join(h, ".cursor", "hooks.json"), JSON.stringify({ hooks: { afterAgentResponse: {} } }));
+      const result = await run();
+      assert.notEqual(result.code, 0);
+      assert.match(result.out, /afterAgentResponse is not a list.*nothing was changed/);
+      assert.deepEqual(fs.readdirSync(path.join(h, ".claude")), []);
+      assert.deepEqual(fs.readdirSync(path.join(h, ".cursor")), ["hooks.json"]);
+    }));
+
+  test("detects a Cursor GUI configuration before any user hooks exist", () =>
+    inFreshHome("ai-activity-install-cursor-gui-", async (h, installHere) => {
+      const gui = path.join(h, "gui-config");
+      fs.mkdirSync(path.join(gui, "Cursor"), { recursive: true });
+      const result = await installHere({ APPDATA: gui, XDG_CONFIG_HOME: gui });
+      assert.equal(result.code, 0, result.out);
+      const config = JSON.parse(fs.readFileSync(path.join(h, ".cursor", "hooks.json"), "utf8"));
+      assert.equal(config.hooks.afterAgentResponse.length, 1);
+      assert.ok(!fs.existsSync(path.join(h, ".claude")));
+      assert.ok(!fs.existsSync(path.join(h, ".codex")));
+    }));
 
   test("reinstall keeps other handlers in a shared Claude Code matcher group", () =>
     inFreshHome("ai-activity-install-shared-", async (h, run) => {

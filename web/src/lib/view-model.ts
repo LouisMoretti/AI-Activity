@@ -46,8 +46,10 @@ export interface QuotaToolVM {
   pools: QuotaPoolVM[];
 }
 
-/** A tool without quota windows (OpenCode): its card shows what is going on now. */
+/** A tool without quota windows: its card shows what is going on now. */
 export interface ActivityToolVM {
+  /** False after a failed read: the card says Unavailable, never guessed zeros. */
+  available?: boolean;
   recent: SessionVM[]; // the tool's latest conversations, newest first; empty → no usage yet
   // providers: null for tools whose models are not stored as provider/model.
   today: { tokens: number; sessions: number; calls: number; models: number; providers: number | null };
@@ -73,6 +75,7 @@ export interface DashboardVM {
   tools: ToolKey[]; // cards to show for the current filter
   claude: QuotaToolVM;
   codex: QuotaToolVM;
+  cursor: ActivityToolVM;
   opencode: ActivityToolVM;
   antigravity: QuotaToolVM;
   // Shown instead of the quota windows while none is running (quotas are
@@ -83,9 +86,10 @@ export interface DashboardVM {
 }
 
 // color: the tool's design token, set as `--tool` on its elements.
-export const TOOL_META: Record<ToolKey, { name: string; color: string; logo: string }> = {
+export const TOOL_META: Record<ToolKey, { name: string; color: string; logo: string; callNoun?: string }> = {
   "claude-code": { name: "Claude Code", color: "var(--claude)", logo: "/tool-logos/claude.svg" },
   codex: { name: "Codex", color: "var(--codex)", logo: "/tool-logos/codex.svg" },
+  cursor: { name: "Cursor", color: "var(--cursor)", logo: "/tool-logos/cursor.svg", callNoun: "Agent turn" },
   opencode: { name: "OpenCode", color: "var(--opencode)", logo: "/tool-logos/opencode.svg" },
   antigravity: { name: "Antigravity", color: "var(--antigravity)", logo: "/tool-logos/antigravity.png" },
 };
