@@ -3,6 +3,7 @@ import { after, before, describe, test } from "node:test";
 import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
+import Database from "better-sqlite3";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PYTHON, tempHome, collectorTarget, startServer, newDevice, req, collector, register } from "./helpers.js";
@@ -79,22 +80,22 @@ describe("Cursor ingestion", () => {
     assert.ok(global.by_model.some(m => m.name === "composer-2.5" && m.tokens === 2160));
   });
 
-  test("session_id, model_id and camelCase fallbacks store; bad offsets fall back to UTC, caches clamp", async () => {
+  test("id and model fallbacks store; invalid cache conventions and unsafe totals are skipped", async () => {
     const at = Math.floor(Date.now()/1000);
     const camel = { session_id: "s9", generation_id: "g9", model_id: "custom-model", occurred_at: at, utc_offset_min: 9999,
       usage: { inputTokens: 1000, outputTokens: 80, cacheReadTokens: 600, cacheWriteTokens: 100 } };
     assert.equal((await post({ messages: [camel] })).json.stored, 1);
     const over = { conversation_id: "c10", generation_id: "g10", occurred_at: at,
       usage: { input_tokens: 100, output_tokens: 80, cache_read_tokens: 600, cache_write_tokens: 100 } };
-    const beforeClamp = (await req(srv.base, "GET", "/api/u/admin/stats?tool=cursor")).json;
-    assert.equal((await post({ messages: [over] })).json.stored, 1);
+    const beforeInvalid = (await req(srv.base, "GET", "/api/u/admin/stats?tool=cursor")).json;
+    assert.equal((await post({ messages: [over] })).json.stored, 0);
     const stats = (await req(srv.base, "GET", "/api/u/admin/stats?tool=cursor")).json;
     const models = (await req(srv.base, "GET", "/api/u/admin/summary?tool=cursor")).json.total.by_model;
     assert.ok(models.some((m) => m.name === "custom-model"));
-    assert.equal(stats.input_tokens - beforeClamp.input_tokens, 0, "caches above input clamp to zero");
-    assert.ok(stats.total_tokens - beforeClamp.total_tokens > 0);
+    assert.equal(stats.total_tokens, beforeInvalid.total_tokens, "invalid cache counters never invent totals");
     for (const over2 of [{ usage: { input_tokens: 80.9, output_tokens: 80, cache_read_tokens: 0, cache_write_tokens: 0 } },
-      { conversation_id: "", session_id: "s9" }]) {
+      { conversation_id: "", session_id: "s9" }, { occurred_at: -1 }, { occurred_at: true },
+      { usage: { input_tokens: Number.MAX_SAFE_INTEGER, output_tokens: 1, cache_read_tokens: 0, cache_write_tokens: 0 } }]) {
       assert.equal((await post({ messages: [entry(over2)] })).json.stored, 0);
     }
   });
@@ -109,6 +110,23 @@ describe("Cursor ingestion", () => {
     assert.deepEqual((await req(srv.base, "GET", "/api/u/admin/quotas")).json.quotas.filter(q => q.tool === "cursor"), []);
     assert.equal((await post({ tool: "codex" })).status, 400);
     assert.equal((await post({}, "ak_unknown")).status, 401);
+  });
+
+  test("batched public activity cards match scoped measured reads and reject missing profiles", async () => {
+    const result = await req(srv.base, "GET", "/api/u/admin/tool-activity", { anon: true });
+    assert.equal(result.status, 200);
+    for (const tool of ["cursor", "antigravity", "opencode"]) {
+      const summary = (await req(srv.base, "GET", `/api/u/admin/summary?tool=${tool}`, { anon: true })).json;
+      const sessions = (await req(srv.base, "GET", `/api/u/admin/sessions?tool=${tool}`, { anon: true })).json;
+      assert.equal(result.json.day, summary.day);
+      assert.deepEqual(result.json.tools[tool].today, summary.today);
+      assert.deepEqual(result.json.tools[tool].sessions, sessions.sessions);
+    }
+    const other = await req(srv.base, "GET", "/api/u/cursor-other/tool-activity", { anon: true });
+    assert.equal(other.status, 200);
+    assert.equal(other.json.tools.cursor.today.tokens, 0);
+    assert.deepEqual(other.json.tools.cursor.sessions, []);
+    assert.equal((await req(srv.base, "GET", "/api/u/not-here/tool-activity", { anon: true })).status, 404);
   });
 });
 
@@ -127,8 +145,13 @@ describe("Cursor hook collector", () => {
     env = { HOME: home, USERPROFILE: home, AI_ACTIVITY_URL: base, AI_ACTIVITY_KEY: "ak_fixture" };
   });
   after(async () => { await new Promise(r => server.close(r)); fs.rmSync(home, { recursive: true, force: true }); });
-  const progress = () => JSON.parse(fs.readFileSync(path.join(home, ".cache", "ai-activity", "cursor.json"))).targets;
-  const journal = () => path.join(home, ".cache", "ai-activity", "cursor-events");
+  const database = () => path.join(home, ".cache", "ai-activity", "cursor.db");
+  const readDB = (sql) => {
+    const db = new Database(database(), { readonly: true });
+    try { return db.prepare(sql).all(); } finally { db.close(); }
+  };
+  const events = () => readDB("SELECT payload FROM events ORDER BY revision").map(r => JSON.parse(r.payload));
+  const progress = () => Object.fromEntries(readDB("SELECT fingerprint, revision, retry_at FROM targets").map(r => [r.fingerprint, r]));
 
   test("answers before a slow upload finishes, keeps only metrics and preserves time", async () => {
     // Slow network response proves the hook itself never waits for an upload.
@@ -140,27 +163,25 @@ describe("Cursor hook collector", () => {
     assert.equal(result.code, 0);
     assert.equal(result.stdout.trim(), "{}");
     assert.ok(Date.now() - started < 1300, "hook returned before the server responded");
-    assert.ok(await waitFor(() => fs.existsSync(path.join(home, ".cache", "ai-activity", "cursor.json"))));
+    assert.ok(await waitFor(() => fs.existsSync(database()) && progress()[collectorTarget(base, "ak_fixture")]?.revision > 0));
     server.removeAllListeners("request"); server.on("request", handler);
-    const files = fs.readdirSync(journal());
-    assert.equal(files.length, 1);
-    const event = JSON.parse(fs.readFileSync(path.join(journal(), files[0])));
+    assert.equal(events().length, 1);
+    const event = events()[0];
     assert.ok(event.occurred_at >= Math.floor(started/1000)-1);
     assert.equal(event.model, fixture.model);
     assert.equal(event.utc_offset_min % 15, 0);
     assert.equal(captured[0].url, "/api/ingest/cursor");
     assert.equal(captured[0].auth, "Bearer ak_fixture");
-    assert.equal(captured[0].body.collector.version, 2);
+    assert.equal(captured[0].body.collector.version, 3);
     assert.ok(!JSON.stringify(captured[0].body).includes("PRIVATE_"));
-    for (const file of files) {
-      assert.ok(!fs.readFileSync(path.join(journal(), file), "utf8").includes("PRIVATE_"));
-      if (process.platform !== "win32") assert.equal(fs.statSync(path.join(journal(), file)).mode & 0o777, 0o600);
-    }
+    assert.ok(!JSON.stringify(events()).includes("PRIVATE_"));
+    assert.ok(!fs.readFileSync(database()).includes(Buffer.from("PRIVATE_")));
+    if (process.platform !== "win32") assert.equal(fs.statSync(database()).mode & 0o777, 0o600);
     assert.ok(!JSON.stringify(progress()).includes("ak_fixture"));
   });
 
   test("replays are quiet, partial/final keeps original time and does not lower counts", async () => {
-    const original = JSON.parse(fs.readFileSync(path.join(journal(), fs.readdirSync(journal())[0])));
+    const original = events()[0];
     const before = captured.length;
     record({ ...fixture, hook_event_name: "stop" }, env);
     assert.equal((await run([], env)).code, 0);
@@ -175,10 +196,10 @@ describe("Cursor hook collector", () => {
 
   test("refused uploads keep the queue, respect Retry-After and retry with original timestamps", async () => {
     record({ ...fixture, generation_id: "offline", timestamp: "2026-09-25T23:30:00Z" }, env);
-    const accepted = JSON.stringify(progress()[collectorTarget(base, "ak_fixture")].accepted);
+    const accepted = progress()[collectorTarget(base, "ak_fixture")].revision;
     mode = 429;
     assert.equal((await run([], env)).code, 1);
-    assert.equal(JSON.stringify(progress()[collectorTarget(base, "ak_fixture")].accepted), accepted);
+    assert.equal(progress()[collectorTarget(base, "ak_fixture")].revision, accepted);
     const count = captured.length;
     assert.equal((await run([], env)).code, 0);
     assert.equal(captured.length, count);
@@ -189,11 +210,12 @@ describe("Cursor hook collector", () => {
   });
 
   test("new targets resend retained history; malformed and missing usage are skipped", async () => {
-    const before = fs.readdirSync(journal()).length;
-    for (const payload of [{ ...fixture, input_tokens: undefined }, { ...fixture, output_tokens: "80" },
+    const before = events().length;
+    for (const payload of [{ ...fixture, input_tokens: undefined }, { ...fixture, input_tokens: 80.9 },
+      { ...fixture, input_tokens: 10 }, { ...fixture, input_tokens: Number.MAX_SAFE_INTEGER, output_tokens: 1 }, { ...fixture, output_tokens: "80" },
       { ...fixture, generation_id: "../invalid" }, { ...fixture, hook_event_name: "subagentStop" },
       { ...fixture, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 }]) record(payload, env);
-    assert.equal(fs.readdirSync(journal()).length, before);
+    assert.equal(events().length, before);
     const newer = { ...env, AI_ACTIVITY_KEY: "ak_new" };
     assert.equal((await run([], newer)).code, 0);
     assert.equal(captured.at(-1).body.messages.length, before);
@@ -207,15 +229,7 @@ describe("Cursor hook collector", () => {
   test("numeric timestamps, id fallbacks and corrupt files", async () => {
     mode = 200; // independent of the retry test above, wherever it got to
     const at = 1790280600; // 2026-09-25T23:30:00Z
-    const read = (gen) => {
-      for (const f of fs.readdirSync(journal())) {
-        try {
-          const event = JSON.parse(fs.readFileSync(path.join(journal(), f)));
-          if (event.generation_id === gen) return event;
-        } catch { /* corrupt files are skipped by the collector too */ }
-      }
-      return null;
-    };
+    const read = (gen) => events().find(e => e.generation_id === gen);
     record({ ...fixture, conversation_id: "num-epoch", generation_id: "g-num", timestamp: at }, env);
     record({ ...fixture, conversation_id: "num-float", generation_id: "g-float", timestamp: at + 0.9 }, env);
     record({ ...fixture, conversation_id: "num-ms", generation_id: "g-ms", timestamp: at * 1000 }, env);
@@ -229,17 +243,233 @@ describe("Cursor hook collector", () => {
     assert.equal(fell.conversation_id, "sess-fallback");
     assert.equal(fell.model, "model-x");
     assert.equal(fell.usage.input_tokens, 1000);
-    const before = fs.readdirSync(journal()).length;
+    const before = events().length;
     // An empty conversation_id does not fall back (like the server); booleans are not epochs.
     record({ ...fixture, conversation_id: "", session_id: "sess-fallback", generation_id: "g-empty" }, env);
     record({ ...fixture, conversation_id: "num-bool", generation_id: "g-bool", timestamp: true }, env);
-    assert.equal(fs.readdirSync(journal()).length, before);
-    // A poisoned journal file or progress file never blocks the queue.
-    fs.writeFileSync(path.join(journal(), "f".repeat(64) + ".json"), "{corrupt");
-    fs.writeFileSync(path.join(home, ".cache", "ai-activity", "cursor.json"), "{corrupt");
-    assert.equal((await run([], env)).code, 0);
+    assert.equal(events().length, before);
+    // A valid JSON row with invalid metrics cannot poison an entire batch.
+    const db = new Database(database());
+    const poisoned = db.prepare("SELECT identity FROM events LIMIT 1").get().identity;
+    db.prepare("UPDATE events SET payload = ? WHERE identity = ?").run('{"text":"PRIVATE_SECRET"}', poisoned);
+    db.prepare("UPDATE targets SET revision = 0").run();
+    db.close();
+    const result = await run([], env);
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stderr, /skipping corrupt metrics/);
     record({ ...fixture, conversation_id: "num-after", generation_id: "g-after" }, env);
     assert.ok(read("g-after"));
     assert.equal((await run([], env)).code, 0);
+    assert.ok(!JSON.stringify(captured.at(-1)).includes("PRIVATE_SECRET"));
   });
+
+  test("simultaneous first hooks and final updates retain every turn once", async () => {
+    const h = tempHome("ai-activity-cursor-race-");
+    const e = { ...env, HOME: h, USERPROFILE: h };
+    try {
+      const code = `
+import importlib.util,json,sys
+spec=importlib.util.spec_from_file_location("cursor",sys.argv[1]); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.record(json.loads(sys.stdin.read()))
+`;
+      const children = Array.from({ length: 12 }, (_, i) => new Promise((resolve, reject) => {
+        const child = spawn(PYTHON, ["-c", code, script], { env: { ...process.env, ...e }, windowsHide: true });
+        let stderr = "";
+        child.stderr.on("data", c => stderr += c);
+        child.on("error", reject);
+        child.on("close", code => resolve({ code, stderr }));
+        child.stdin.end(JSON.stringify({ ...fixture, generation_id: `race-${i}`, output_tokens: 100+i }));
+      }));
+      for (const result of await Promise.all(children)) assert.equal(result.code, 0, result.stderr);
+      const before = captured.length;
+      assert.equal((await run([], e)).code, 0);
+      assert.equal(captured[before].body.messages.length, 12);
+      assert.equal(new Set(captured[before].body.messages.map(m => m.generation_id)).size, 12);
+      const db = new Database(path.join(h, ".cache", "ai-activity", "cursor.db"));
+      assert.equal(db.pragma("integrity_check", { simple: true }), "ok");
+      db.close();
+    } finally { fs.rmSync(h, { recursive: true, force: true }); }
+  });
+
+  test("an update arriving during an upload is sent again without holding a write lock", async () => {
+    const h = tempHome("ai-activity-cursor-during-");
+    const e = { ...env, HOME: h, USERPROFILE: h };
+    const handler = server.listeners("request")[0];
+    const before = captured.length;
+    try {
+      record({ ...fixture, output_tokens: 81 }, e);
+      let changed = false;
+      server.removeAllListeners("request");
+      server.on("request", (q, res) => {
+        if (!changed) { changed = true; record({ ...fixture, output_tokens: 99 }, e); }
+        handler(q, res);
+      });
+      const result = await run([], e);
+      assert.equal(result.code, 0, result.stderr);
+      assert.deepEqual(captured.slice(before).map(r => r.body.messages[0].usage.output_tokens), [81, 99]);
+      assert.equal(captured[before].body.messages[0].occurred_at, captured[before+1].body.messages[0].occurred_at);
+    } finally {
+      server.removeAllListeners("request"); server.on("request", handler);
+      fs.rmSync(h, { recursive: true, force: true });
+    }
+  });
+
+  test("migrates legacy metrics with original days, quarantines corruption and safely replays", async () => {
+    const h = tempHome("ai-activity-cursor-legacy-");
+    const e = { ...env, HOME: h, USERPROFILE: h };
+    const cache = path.join(h, ".cache", "ai-activity");
+    try {
+      execFileSync(PYTHON, ["-c", `
+import importlib.util,json,os,sys
+spec=importlib.util.spec_from_file_location("cursor",sys.argv[1]); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+os.makedirs(m.JOURNAL)
+event=m.metric_event(json.loads(sys.stdin.read()))
+event["utc_offset_min"]=345
+event["text"]="PRIVATE_DO_NOT_MIGRATE"
+with open(os.path.join(m.JOURNAL,m.identity(event)+".json"),"w") as f: json.dump(event,f)
+with open(os.path.join(m.JOURNAL,"f"*64+".json"),"w") as f: f.write("{corrupt")
+with open(os.path.join(m.JOURNAL,"e"*64+".json"),"w") as f: f.write("["*2000+"0"+"]"*2000)
+with open(os.path.join(m.CACHE,"cursor.json"),"w") as f: f.write("{corrupt")
+`, script], { env: { ...process.env, ...e }, input: JSON.stringify({ ...fixture, timestamp: "2026-01-01T01:01:01Z" }), windowsHide: true });
+      // A newer final hook before the first migration preserves the old time.
+      record({ ...fixture, output_tokens: 100 }, e);
+      const before = captured.length;
+      const result = await run([], e);
+      assert.equal(result.code, 0, result.stderr);
+      assert.match(result.stderr, /skipping corrupt legacy metrics/);
+      const msg = captured[before].body.messages[0];
+      assert.equal(msg.occurred_at, Date.parse("2026-01-01T01:01:01Z")/1000);
+      assert.equal(msg.utc_offset_min, 345);
+      assert.equal(msg.usage.output_tokens, 100);
+      assert.ok(!JSON.stringify(captured[before]).includes("PRIVATE_"));
+      assert.deepEqual(fs.readdirSync(path.join(cache, "cursor-events")), []);
+      assert.equal(fs.existsSync(path.join(cache, "cursor.json")), false);
+      assert.equal(fs.readdirSync(path.join(cache, "cursor-invalid")).length, 2);
+      assert.equal((await run([], e)).code, 0);
+      assert.equal(captured.length, before+1, "migration and idle refresh never re-upload accepted metrics");
+    } finally { fs.rmSync(h, { recursive: true, force: true }); }
+  });
+
+  test("large history uses bounded batches, compact target checkpoints and quiet idle runs", async () => {
+    const h = tempHome("ai-activity-cursor-backlog-");
+    const e = { ...env, HOME: h, USERPROFILE: h };
+    try {
+      execFileSync(PYTHON, ["-c", `
+import importlib.util,json,sys
+spec=importlib.util.spec_from_file_location("cursor",sys.argv[1]); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+payload=json.loads(sys.stdin.read())
+with m.journal() as db:
+    db.execute("BEGIN IMMEDIATE")
+    with db:
+        for i in range(625):
+            event=m.metric_event(dict(payload,conversation_id="c"*200,generation_id=str(i)+"g"*190,model="🤖"*120))
+            m.store_event(db,event)
+`, script], { env: { ...process.env, ...e }, input: JSON.stringify(fixture), windowsHide: true });
+      const before = captured.length;
+      const result = await run([], e);
+      assert.equal(result.code, 0, result.stderr);
+      const batches = captured.slice(before);
+      assert.equal(batches.flatMap(r => r.body.messages).length, 625);
+      for (const r of batches) {
+        assert.ok(r.body.messages.length <= 200);
+        assert.ok(Buffer.byteLength(JSON.stringify(r.body)) < 256*1024);
+      }
+      const after = captured.length;
+      assert.equal((await run([], e)).code, 0);
+      assert.equal(captured.length, after);
+      assert.equal((await run(["--replay"], e)).code, 0);
+      assert.equal(captured.slice(after).flatMap(r => r.body.messages).length, 625);
+      for (let i = 0; i < 10; i++) {
+        assert.equal((await run([], { ...e, AI_ACTIVITY_KEY: `ak_target_${i}` })).code, 0);
+      }
+      const db = new Database(path.join(h, ".cache", "ai-activity", "cursor.db"));
+      assert.equal(db.prepare("SELECT count(*) n FROM targets").get().n, 8);
+      assert.equal(db.prepare("SELECT count(*) n FROM events").get().n, 625);
+      const newest = db.prepare("SELECT fingerprint, revision FROM targets ORDER BY used_at DESC LIMIT 1").get();
+      assert.equal(newest.fingerprint, collectorTarget(base, "ak_target_9"));
+      assert.equal(newest.revision, 625);
+      db.close();
+    } finally { fs.rmSync(h, { recursive: true, force: true }); }
+  });
+
+  test("redirects and invalid acknowledgements keep metrics and stop retry storms", async () => {
+    const h = tempHome("ai-activity-cursor-refusal-");
+    const e = { ...env, HOME: h, USERPROFILE: h };
+    const handler = server.listeners("request")[0];
+    let destinationCalls = 0;
+    const destination = http.createServer((q, res) => { destinationCalls++; res.end('{"ok":true}'); });
+    await new Promise(r => destination.listen(0, "127.0.0.1", r));
+    try {
+      record(fixture, e);
+      server.removeAllListeners("request");
+      server.on("request", (q, res) => { q.resume(); res.writeHead(307, { location: `http://127.0.0.1:${destination.address().port}` }); res.end(); });
+      assert.equal((await run([], e)).code, 1);
+      assert.equal(destinationCalls, 0, "a redirect never gets the device key");
+      const db = new Database(path.join(h, ".cache", "ai-activity", "cursor.db"));
+      assert.equal(db.prepare("SELECT revision FROM targets").get().revision, 0);
+      assert.equal((await run([], e)).code, 0, "backoff suppresses another request");
+      db.prepare("UPDATE targets SET retry_at = 0").run();
+      server.removeAllListeners("request");
+      server.on("request", (q, res) => { q.resume(); res.end('{"ok":false}'); });
+      assert.equal((await run([], e)).code, 1);
+      assert.equal(db.prepare("SELECT revision FROM targets").get().revision, 0);
+      db.prepare("UPDATE targets SET retry_at = 0").run();
+      server.removeAllListeners("request"); server.on("request", handler);
+      assert.equal((await run([], e)).code, 0);
+      assert.equal(db.prepare("SELECT revision FROM targets").get().revision, 1);
+      db.close();
+    } finally {
+      server.removeAllListeners("request"); server.on("request", handler);
+      await new Promise(r => destination.close(r));
+      fs.rmSync(h, { recursive: true, force: true });
+    }
+  });
+
+  test("a damaged or newer local database is preserved for recovery", async () => {
+    const h = tempHome("ai-activity-cursor-damaged-");
+    const e = { ...env, HOME: h, USERPROFILE: h };
+    const cache = path.join(h, ".cache", "ai-activity");
+    const file = path.join(cache, "cursor.db");
+    try {
+      fs.mkdirSync(cache, { recursive: true });
+      fs.writeFileSync(file, "damaged-database-retain-for-recovery");
+      const before = fs.readFileSync(file);
+      const hook = await run(["--hook"], e, JSON.stringify(fixture));
+      assert.equal(hook.code, 0);
+      assert.equal(hook.stdout.trim(), "{}");
+      assert.match(hook.stderr, /could not queue metrics \(DatabaseError\)/);
+      assert.deepEqual(fs.readFileSync(file), before);
+      fs.rmSync(file);
+      const db = new Database(file);
+      db.exec("CREATE TABLE preserved (value TEXT); INSERT INTO preserved VALUES ('history'); PRAGMA user_version = 99");
+      db.close();
+      const result = await run([], e);
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /newer than this collector/);
+      const after = new Database(file);
+      assert.equal(after.prepare("SELECT value FROM preserved").get().value, "history");
+      after.close();
+    } finally { fs.rmSync(h, { recursive: true, force: true }); }
+  });
+
+  test("clock corrections never re-date retained turns or evict the active target", () => {
+    const h = tempHome("ai-activity-cursor-clock-");
+    try {
+      execFileSync(PYTHON, ["-c", `
+import importlib.util,json,sys
+spec=importlib.util.spec_from_file_location("cursor",sys.argv[1]); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+event=m.metric_event(dict(json.loads(sys.stdin.read()),timestamp="2026-01-01T01:01:01Z"))
+m.time.time=lambda: 1
+assert m.retained_event(event)["occurred_at"] == event["occurred_at"]
+with m.journal() as db:
+    with db:
+        for i in range(8): db.execute("INSERT INTO targets (fingerprint,used_at) VALUES (?,?)",("old%d"%i,1000+i))
+    fp,state=m.select_target(db)
+    assert fp == m.target() and state == (0,0)
+    assert db.execute("SELECT count(*) FROM targets").fetchone()[0] == 8
+    assert db.execute("SELECT fingerprint FROM targets ORDER BY used_at DESC LIMIT 1").fetchone()[0] == fp
+`, script], { env: { ...process.env, ...env, HOME: h, USERPROFILE: h }, input: JSON.stringify(fixture), windowsHide: true });
+    } finally { fs.rmSync(h, { recursive: true, force: true }); }
+  });
+
 });

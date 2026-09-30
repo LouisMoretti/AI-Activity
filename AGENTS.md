@@ -679,8 +679,9 @@ Components never branch on live vs demo: both sources map into the same
   Claude Code cancelling them does not kill the upload. It replaced a
   `setsid -f python3 -c` one-liner and kept its offsets file and lock.
 - Every collector keeps its progress (`offsets.json`, `codex.json`,
-  `opencode.json`, `antigravity.json`, `cursor.json`) per target: `{"targets": {"<fp>":
-  {…}}}`, `fp` = the first 16 hex digits of SHA-256 of the normalized
+  `opencode.json`, `antigravity.json`; Cursor uses `cursor.db`) per target:
+  JSON `{"targets": {"<fp>": {…}}}`, or Cursor's `targets` table.
+  `fp` = the first 16 hex digits of SHA-256 of the normalized
   server URL (scheme and host lowercased, default port and trailing `/`
   dropped), `\n`, the
   device key (`target()` in each script; `collectorTarget` in
@@ -888,7 +889,8 @@ npm run restore -- data/backups/dashboard-20260925-134052.db   # server stopped
   and events posted after the backup are missing: the collectors only send
   what their offsets say is new. Deleting `~/.cache/ai-activity/*.json` on
   a device makes its next run resend its whole local history (dedup makes
-  that safe). A device pointed at a new server or given a new key does it
+  that safe); Cursor uses `--replay` instead (keep `cursor.db`, its local
+  history). A device pointed at a new server or given a new key does it
   on its own: offsets are kept per server and key (§3).
 
 Counting rules:
@@ -1158,10 +1160,11 @@ each conversation database under
 `afterAgentResponse` hook, installed at `~/.cursor/hooks/ai-activity-cursor.py`.
 The installed source is `afterAgentResponse` alone; the collector also
 accepts `stop` with the same dedup identity. Only metric fields are retained
-in `~/.cache/ai-activity/cursor-events/<hashed-identity>.json` before answering
-`{}` and detaching a worker (one active uploader and one waiter).
-The journal is local history, not a transcript. A short `cursor-state.lock`
-serializes updates without holding a lock during network requests.
+in a private SQLite journal, `~/.cache/ai-activity/cursor.db`, before
+answering `{}` and detaching a worker (one active uploader and one waiter).
+The journal is local history, not a transcript. Short SQLite transactions
+serialize updates without holding a transaction during network requests.
+Indexed revisions select only new/changed turns, never the whole history.
 
 | Hook source | Payload field |
 | --- | --- |
@@ -1179,14 +1182,20 @@ serializes updates without holding a lock during network requests.
   agent package `2026.09.28-64d2043`; README links the evidence). Stored
   input subtracts both caches, output includes reasoning, and caches stay
   separate. Cumulative session totals are never read.
-- All four counters must be numeric; missing usage, invalid ids and zero
-  turns are skipped. The UI labels each recorded call as an Agent turn, not every inner
-  model request. Quotas and context are never recorded, even if supplied.
-- `cursor.json` keeps accepted hashes per target, only after a successful
-  upload. Failures leave the journal intact; 429 stores `Retry-After` for
-  that target. Retry on a later hook or run the script without `--hook`.
-  A changed URL/key resends retained hook history; deleting `cursor.json`
-  does too. The journal grows until the user removes it.
+- All four counters must be nonnegative safe integers. Cache sums above
+  input and unsafe totals are rejected, never clamped into invented totals;
+  missing usage, invalid ids and zero turns are skipped. The UI labels each
+  recorded call as an Agent turn, not every inner model request. Quotas and
+  context are never recorded, even if supplied.
+- `cursor.db` keeps one checkpoint per target (eight recent targets), only
+  advanced after a successful upload. Failures leave metrics intact; 429
+  respects `Retry-After` seconds or dates, and other failures back off too.
+  Retry on a later hook or run without `--hook`. A changed URL/key or
+  `--replay` resends retained history. One compact row per turn is retained
+  for replay; history grows, but checkpoint size and per-run memory do not.
+  Legacy JSON metrics migrate once with original times/offsets; corrupt
+  entries are quarantined and never block valid metrics. A damaged SQLite
+  database stays in place for recovery, never silently reset.
 - V1 covers local IDE Agent Chat / Cmd+K after installation. No old history
   import, Tab completion capture, cloud install or guaranteed CLI usage.
   Parent hooks may omit subagent tokens. Never fill these gaps by guessing.
@@ -1306,7 +1315,8 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   `Retry-After`:
   - public reads (`/api/u/…`, `/api/leaderboard`, `/api/profiles`): 300
     per client (the client address above), refill 5/s. A dashboard polls
-    11 of them every 5 s, so about two tabs fit behind one address. A
+    six of them every 5 s (the activity cards share `/tool-activity`), so
+    about four tabs fit behind one address. A
     rate-limited refresh keeps the page as it was (the web client does
     not show it as "Could not reach the server");
   - signed-in routes (`/api/friends`, `/api/devices`, `/api/account`,
@@ -1335,6 +1345,8 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   - `quotas` (current window per account, tool + limit type; see §5)
   - `summary?tool=...` (`day`: the owner's today; all-time and today's
     tokens, sessions, events, each split `by_model` and `by_tool`)
+  - `tool-activity` (one read for Cursor, Antigravity and OpenCode: the
+    owner's `day` and each tool's `today` breakdown and 10 latest sessions)
   - `sessions?limit=10&offset=0&tool=...` (grouped by unique session id,
     with latest `context_used_pct` / `context_window_size`, plus `total`
     for paging)

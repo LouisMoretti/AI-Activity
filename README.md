@@ -620,14 +620,16 @@ conversation + generation ID counts once, with final counts replacing a
 partial turn when output rises. Each dashboard call represents one measured
 Agent turn, which can contain several model requests; the UI labels these
 as "Agent turns". It requires all four
-numeric counters: absent counts stay unavailable, never estimated.
+nonnegative integer counters: absent counts stay unavailable, never estimated.
 
 Raw hook fields are `input_tokens`, `output_tokens`, `cache_read_tokens`,
 `cache_write_tokens` (camelCase aliases are accepted). **Hook input includes
 cache reads and writes:** the server stores input minus both caches, stores
 cache separately, and retains output including reasoning. For input 1,000,
 output 80, cache read 600 and cache write 100, the total is 1,080, with 300
-uncached input. These are raw hook counts, not the disjoint SDK usage shape.
+uncached input. Cache sums above input or unsafe totals are rejected as unavailable,
+rather than silently counting a changed counter convention. These are raw
+hook counts, not the disjoint SDK usage shape.
 The mapping was checked in the official
 [Cursor agent package 2026.09.28-64d2043](https://downloads.cursor.com/lab/2026.09.28-64d2043/linux/x64/agent-cli-package.tar.gz):
 the hook forwards turn usage and its Anthropic adapter subtracts both cache
@@ -636,21 +638,29 @@ counters from input. Hook configuration is described in
 
 **Privacy and retries.** Before answering `{}`, the hook retains only
 conversation/generation IDs, model, counts, timestamp and the local UTC
-offset in `~/.cache/ai-activity/cursor-events/` (one private JSON file per
-turn). It never retains or uploads reply/prompt text, email, paths or provider
-keys. If a hook has no timestamp, live receipt time is saved once; a numeric
-timestamp (epoch seconds, or milliseconds) is accepted too. Retries
-and partial/final updates preserve it. A detached worker uploads batches,
-with one uploader and at most one waiter. `cursor.json` keeps accepted
-metric hashes per server/device key; progress moves only after acceptance.
-Unreadable journal or progress files are skipped without blocking the queue,
-and hashes of journal files gone from the journal are pruned.
-An HTTP 429 respects `Retry-After` before another upload. A failed upload
-retries on the next hook, or by running the copied script without `--hook`.
-Schedule that command if retries are needed while Cursor is idle. Delete
-`cursor.json` to replay the retained metrics; changing the URL/key also
-replays them. This journal grows with measured turns and stays local until
-you remove it; removing `cursor-events/` erases that local history.
+offset in `~/.cache/ai-activity/cursor.db` (a private SQLite metrics journal,
+using Python's standard library). It never retains or uploads reply/prompt
+text, email, paths or provider keys. If a hook has no timestamp, live receipt
+time is saved once; numeric epoch seconds/milliseconds and ISO timestamps
+are accepted. Retries and partial/final updates preserve time and offset.
+A detached worker uploads batches below the API's body-size limit, with
+one uploader and at most one waiter. Indexed revisions select only new or
+changed turns; idle runs never scan the retained history. Each of the eight
+recent server/device targets keeps one checkpoint, which advances only
+after acceptance, without a growing set of per-turn accepted hashes.
+
+An HTTP 429 respects `Retry-After` (seconds or an HTTP date); other failed
+uploads back off too. Retry on a later hook or run the copied script without
+`--hook`; schedule that command if retries are needed while Cursor is idle.
+Run it with `--replay` to resend retained history to the current target;
+changing the URL/key also replays it. The journal keeps one compact row per
+turn so history can be replayed; it grows with measured turns. Removing
+`cursor.db` while the collector is stopped erases that local history.
+Older `cursor-events/*.json` journals migrate once, preserving times and
+local days, with a safe server-deduplicated replay. Invalid legacy files
+are quarantined in `cursor-invalid/`; invalid rows cannot block other
+metrics or upload unvalidated fields. A damaged SQLite database is kept
+for recovery, never silently replaced with an empty one.
 
 **Scope and gaps.** This installs user hooks for local IDE Agent Chat / Cmd+K
 only. It collects future hook observations, with no import of pre-install
@@ -719,15 +729,17 @@ Each tool has one Python script in `collectors/`. They share the same design:
   redirect: a redirect fails the run (progress unchanged) instead of
   sending the device key somewhere else.
 - **Progress only moves on success.** How far each source was sent is kept
-  in a JSON file under `~/.cache/ai-activity/`, saved once the server
-  accepted it. While the server is down nothing moves: the next run sends
-  the backlog with its original times. Delete the file to send everything
-  again; the server stores each message once, and a message seen again with
-  more output tokens replaces its partial counts.
-- **Progress is per server and key.** The progress file keeps one set of
-  offsets per server URL and device key (`{"targets": {"<fingerprint>":
-  …}}`; the fingerprint is the first 16 hex digits of the SHA-256 of both,
-  never the key itself), for the 8 most recently used. Point a device at a
+  under `~/.cache/ai-activity/` (JSON offsets, or Cursor's SQLite
+  checkpoints), saved once the server accepted it. While the server is down
+  nothing moves: the next run sends the backlog with its original times.
+  Delete JSON offsets, or run Cursor with `--replay`, to resend history;
+  the server stores each message once, and a message seen again with more
+  output tokens replaces its partial counts.
+- **Progress is per server and key.** The progress store keeps one set of
+  offsets per server URL and device key (JSON `{"targets": {"<fingerprint>":
+  …}}`, or Cursor's `targets` table; the fingerprint is the first 16 hex
+  digits of the SHA-256 of both, never the key itself), for the 8 most
+  recently used. Point a device at a
   new server, or give it a new key, and its next run sends the whole local
   history there; switch back and it resumes where it was. With a new key
   on the same account, everything comes back as already stored. With
@@ -758,7 +770,7 @@ Each tool has one Python script in `collectors/`. They share the same design:
 | --- | --- | --- | --- | --- | --- |
 | `claude-code.py` | `~/.claude/ai-activity-claude-code.py` (Windows status wrapper: `.ps1` next to it) | the `UserPromptSubmit`, `PostToolUse`, `Stop`, `StopFailure` and `SessionEnd` hooks (tokens); the statusLine, every refresh (quotas, context) | `~/.claude/projects/**/*.jsonl` (sessions and subagents) | `offsets.json` (byte offset per transcript), `status.json` (posted/pending status and recent contexts per target) | `lock`, `waiter.lock`, `status-state.lock`, `status-<target>.lock` |
 | `codex.py` | `~/.codex/ai-activity-codex.py` | the `UserPromptSubmit`, `PostToolUse`, `Stop` and `SessionEnd` hooks | `~/.codex/sessions`, `~/.codex/archived_sessions` (`CODEX_HOME`) | `codex.json` (byte offset per rollout) | `codex.lock`, `codex-waiter.lock` |
-| `cursor.py` | `~/.cursor/hooks/ai-activity-cursor.py` (Windows: `.ps1` next to it) | `afterAgentResponse` user hook | stdin metrics, then `cursor-events/*.json` | `cursor.json` (accepted hashes per target) | `cursor-state.lock`, `cursor.lock`, `cursor-waiter.lock` |
+| `cursor.py` | `~/.cursor/hooks/ai-activity-cursor.py` (Windows: `.ps1` next to it) | `afterAgentResponse` user hook | stdin metrics, then `cursor.db` | `cursor.db` (metrics and one revision checkpoint per target; `--replay` resets the current target) | SQLite transactions, `cursor.lock`, `cursor-waiter.lock` |
 | `opencode.py` | `~/.config/opencode/ai-activity-opencode.py` | `opencode-plugin.js`, at start and on `session.idle` | `~/.local/share/opencode/opencode.db` (`XDG_DATA_HOME`, `OPENCODE_DB`), numeric fields only | `opencode.json` (last `time_updated` sent) | `opencode.lock` |
 | `antigravity.py` | `~/.gemini/ai-activity-antigravity.py` | the `PostInvocation` and `Stop` hooks | `~/.gemini/{antigravity,antigravity-cli,antigravity-ide}/conversations/*.db` (`GEMINI_CLI_HOME`); quotas from `agy`, opt-in | `antigravity.json` (per database), `antigravity-quota.json` | `antigravity.lock`, `antigravity-waiter.lock`, `antigravity-quota.lock` |
 

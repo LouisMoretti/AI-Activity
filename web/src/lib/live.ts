@@ -3,7 +3,7 @@
 import { QUOTA_POOLS, QUOTA_WINDOW_SEC, type QuotaWindowType } from "../../../shared/quota-pools.ts";
 import {
   TOOLS, type ActivityResponse, type Breakdown, type QuotasResponse, type Session,
-  type SessionsResponse, type SummaryResponse,
+  type SessionsResponse, type SummaryResponse, type ToolActivityResponse,
 } from "../../../shared/types.ts";
 import { denseSeries, streaks } from "./series.ts";
 import {
@@ -17,11 +17,12 @@ export interface LiveData {
   quotas: QuotasResponse;
   sessions: SessionsResponse;
   /** OpenCode's card: its summary (today) and its latest sessions. */
-  opencode: { summary: SummaryResponse; latest: SessionsResponse };
+  opencode?: { summary: SummaryResponse; latest: SessionsResponse };
   /** Antigravity's card without quota windows: the same as OpenCode's. */
-  antigravity: { summary: SummaryResponse; latest: SessionsResponse };
+  antigravity?: { summary: SummaryResponse; latest: SessionsResponse };
   /** Cursor's card: absent for callers built before Cursor support. */
   cursor?: { summary: SummaryResponse; latest: SessionsResponse };
+  activityTools?: ToolActivityResponse;
 }
 
 export const ACTIVITY_DAYS = 364;
@@ -82,10 +83,11 @@ const toSession = (s: Session): SessionVM => ({
 });
 
 /** providers: the tool stores its models as provider/model (OpenCode). */
-function activityTool(d: LiveData["opencode"] | undefined, providers: boolean): ActivityToolVM {
-  const t = d?.summary.today;
+function activityTool(d: ToolActivityResponse["tools"]["cursor"] | undefined, providers: boolean): ActivityToolVM {
+  const t = d?.today;
   return {
-    recent: d ? d.latest.sessions.map(toSession) : [],
+    available: d !== undefined,
+    recent: d ? d.sessions.map(toSession) : [],
     today: {
       tokens: t?.tokens ?? 0,
       sessions: t?.sessions ?? 0,
@@ -100,6 +102,10 @@ export function liveDashboard(d: LiveData, provider: Provider): DashboardVM {
   const series = denseSeries(d.activity.days, ACTIVITY_DAYS, d.summary.day);
   const hasActivity = d.summary.total.events > 0;
   const sessions = d.sessions.sessions.map(toSession);
+  const card = (tool: keyof ToolActivityResponse["tools"]) => {
+    const legacy = d[tool];
+    return d.activityTools?.tools?.[tool] ?? (legacy ? { today: legacy.summary.today, sessions: legacy.latest.sessions } : undefined);
+  };
   return {
     demo: false,
     today: d.summary.day,
@@ -114,10 +120,10 @@ export function liveDashboard(d: LiveData, provider: Provider): DashboardVM {
     tools: toolsFor(provider),
     claude: toolQuotas(d.quotas, "claude-code"),
     codex: toolQuotas(d.quotas, "codex"),
-    cursor: activityTool(d.cursor, false),
-    opencode: activityTool(d.opencode, true),
+    cursor: activityTool(card("cursor"), false),
+    opencode: activityTool(card("opencode"), true),
     antigravity: toolQuotas(d.quotas, "antigravity"),
-    antigravityActivity: activityTool(d.antigravity, false),
+    antigravityActivity: activityTool(card("antigravity"), false),
     sessions,
     sessionsTotal: d.sessions.total,
   };

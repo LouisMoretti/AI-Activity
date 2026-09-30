@@ -441,10 +441,10 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
   }
 
   test("detects Cursor, merges its native hook once and the installed command uploads", () =>
-    inFreshHome("ai-activity-install-cursor spaced-", async (h, installHere) => {
+    inFreshHome("ai-activity-install-cursor's spaced-", async (h, installHere) => {
       const config = path.join(h, ".cursor", "hooks.json");
       fs.mkdirSync(path.dirname(config));
-      const theirs = { command: "echo my-cursor-hook", timeout: 20 };
+      const theirs = { command: "echo ai-activity-cursor.py", timeout: 20 };
       const stop = { command: "echo keep-stop" };
       fs.writeFileSync(config, JSON.stringify({ version: 1, custom: "keep", hooks: {
         afterAgentResponse: [theirs, { command: "python3 /old/ai-activity-cursor.py --hook" }],
@@ -465,7 +465,13 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
       assert.equal((await installHere()).code, 0);
       assert.equal(fs.readFileSync(config, "utf8"), snapshot);
       const command = installed.hooks.afterAgentResponse[1].command;
-      if (WINDOWS) assert.match(command, /^powershell.exe .*ai-activity-cursor\.ps1"$/);
+      if (WINDOWS) {
+        assert.match(command, /^powershell.exe .*ai-activity-cursor\.ps1"$/);
+        const wrapper = fs.readFileSync(path.join(h, ".cursor", "hooks", "ai-activity-cursor.ps1"), "utf8");
+        assert.ok(wrapper.startsWith("\ufeff& '"));
+        assert.ok(wrapper.includes("'" + scriptPath.replaceAll("'", "''") + "' --hook"));
+        assert.ok(!wrapper.includes(key), "wrapper has no device credential");
+      }
       else assert.equal(command, "python3 ~/.cursor/hooks/ai-activity-cursor.py --hook");
       const localEnv = { ...env, HOME: h, USERPROFILE: h };
       for (const shell of WINDOWS ? ["cmd", "powershell"] : ["cmd"]) {
@@ -492,6 +498,18 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
       assert.match(result.out, /afterAgentResponse is not a list.*nothing was changed/);
       assert.deepEqual(fs.readdirSync(path.join(h, ".claude")), []);
       assert.deepEqual(fs.readdirSync(path.join(h, ".cursor")), ["hooks.json"]);
+    }));
+
+  test("detects a Cursor GUI configuration before any user hooks exist", () =>
+    inFreshHome("ai-activity-install-cursor-gui-", async (h, installHere) => {
+      const gui = path.join(h, "gui-config");
+      fs.mkdirSync(path.join(gui, "Cursor"), { recursive: true });
+      const result = await installHere({ APPDATA: gui, XDG_CONFIG_HOME: gui });
+      assert.equal(result.code, 0, result.out);
+      const config = JSON.parse(fs.readFileSync(path.join(h, ".cursor", "hooks.json"), "utf8"));
+      assert.equal(config.hooks.afterAgentResponse.length, 1);
+      assert.ok(!fs.existsSync(path.join(h, ".claude")));
+      assert.ok(!fs.existsSync(path.join(h, ".codex")));
     }));
 
   test("reinstall keeps other handlers in a shared Claude Code matcher group", () =>

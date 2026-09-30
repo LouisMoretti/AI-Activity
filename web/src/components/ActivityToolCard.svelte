@@ -35,7 +35,7 @@
      the left, active conversations, else the last one, on the right). -->
 <article class="card" class:empty={!last}>
   <section class="today">
-    <ToolHeader {tool} note={last ? "" : "No usage yet"} />
+    <ToolHeader {tool} note={vm.available === false ? "Unavailable" : last ? "" : "No usage yet"} />
     {#if last}
       <div class="label">Today</div>
       {#if vm.today.calls === 0}

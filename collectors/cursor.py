@@ -10,6 +10,7 @@ A stable conversation + generation pair counts once, including stop replays.
 import _thread
 import contextlib
 import datetime
+import email.utils
 import errno
 import hashlib
 import json
@@ -17,6 +18,7 @@ import math
 import os
 import re
 import signal
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -31,13 +33,16 @@ else:
     import fcntl
 
 # Bump with shared/collectors.ts on every change to this file.
-VERSION = 2
+VERSION = 3
 COLLECTOR = {"name": "cursor", "version": VERSION}
-SERVER = os.environ.get("AI_ACTIVITY_URL", "<server>")
-KEY = os.environ.get("AI_ACTIVITY_KEY", "<device key>")
+SERVER = os.environ.get("AI_ACTIVITY_URL", "<server>").strip().rstrip("/")
+KEY = os.environ.get("AI_ACTIVITY_KEY", "<device key>").strip()
 CACHE = os.path.join(os.path.expanduser("~"), ".cache", "ai-activity")
 JOURNAL = os.path.join(CACHE, "cursor-events")
+DATABASE = os.path.join(CACHE, "cursor.db")
 BATCH = 200
+BODY_LIMIT = 240 * 1024  # below the server's 256 KiB limit, including metadata
+MAX_INTEGER = (1 << 53) - 1  # the JSON server's exact integer range
 KEPT_TARGETS = 8
 BUSY = (errno.EACCES, errno.EAGAIN, errno.EDEADLK)
 ID = re.compile(r"[A-Za-z0-9_-]{1,200}\Z")
@@ -49,10 +54,11 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def post(body):
     req = urllib.request.Request(
-        SERVER.strip().rstrip("/") + "/api/ingest/cursor", data=json.dumps(dict(body, collector=COLLECTOR)).encode(),
+        SERVER.strip().rstrip("/") + "/api/ingest/cursor", data=wire(body),
         headers={"Authorization": "Bearer " + KEY, "Content-Type": "application/json"})
     try:
-        raw = urllib.request.build_opener(NoRedirect).open(req, timeout=60).read()
+        with urllib.request.build_opener(NoRedirect).open(req, timeout=60) as response:
+            raw = response.read(1 << 16)
     except urllib.error.HTTPError as error:
         if error.code == 426:  # too old for this server: nothing is accepted until updated
             report_update(answer_of(error.read(1 << 16)))
@@ -65,9 +71,12 @@ def post(body):
 def answer_of(raw):
     try:
         answer = json.loads(raw.decode("utf-8", "replace"))
-    except ValueError:
+    except (ValueError, RecursionError):
         return {}
     return answer if isinstance(answer, dict) else {}
+
+def wire(body):
+    return json.dumps(dict(body, collector=COLLECTOR), ensure_ascii=False, separators=(",", ":")).encode()
 
 def report_update(answer):
     """The server's answer says when a newer collector exists ("update"): tell
@@ -102,20 +111,6 @@ def target():
         host += ":%d" % port
     server = urllib.parse.urlunsplit((scheme, host, url.path.rstrip("/"), url.query, ""))
     return hashlib.sha256((server + "\n" + KEY.strip()).encode()).hexdigest()[:16]
-
-def for_target(saved):
-    """The offsets file to write back, and in it this target's offsets.
-
-    Offsets are kept per server and key: a new one starts empty, so its first
-    run sends the whole local history (the server stores each message once),
-    and switching back to an earlier one resumes where it was. Offsets from
-    before targets (at the top level) are dropped: one full resend."""
-    targets = saved.get("targets") if isinstance(saved, dict) else None
-    targets = {k: v for k, v in targets.items() if isinstance(v, dict)} if isinstance(targets, dict) else {}
-    fp = target()
-    offsets = targets.pop(fp, {})
-    targets[fp] = offsets  # most recently used last
-    return {"targets": dict(list(targets.items())[-KEPT_TARGETS:])}, offsets
 
 def timeout(signum, frame):
     raise TimeoutError("time limit reached; resumes next run")
@@ -183,23 +178,7 @@ def unlock(f):
     f.close()
 
 
-def load(path):
-    try:
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
-
-
-def save(path, data):
-    # The journal and progress never carry credentials; keep metrics private too.
-    fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(data, f)
-    os.replace(path + ".tmp", path)
-
-
-def metric_event(payload):
+def metric_event(payload, live=True):
     """Allowlist a turn's measured counters. Missing counters are unavailable."""
     if not isinstance(payload, dict):
         return None
@@ -219,15 +198,20 @@ def metric_event(payload):
         value = payload.get(snake)
         if value is None:
             value = payload.get(camel)
-        if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+        if (type(value) not in (int, float) or value < 0 or value > MAX_INTEGER
+                or not math.isfinite(value) or value != int(value)):
             return None
         usage[snake] = int(value)
+    # Reject a changed/invalid counter convention instead of inventing totals.
+    if (usage["cache_read_tokens"] + usage["cache_write_tokens"] > usage["input_tokens"]
+            or usage["input_tokens"] + usage["output_tokens"] > MAX_INTEGER):
+        return None
     if not any(usage.values()):
         return None
     stamp = payload.get("timestamp")
     if stamp is None:
         ts = int(time.time())  # live hook receipt, persisted before any upload
-    elif type(stamp) in (int, float) and math.isfinite(stamp):
+    elif type(stamp) in (int, float) and 0 <= stamp <= MAX_INTEGER and math.isfinite(stamp):
         # Epoch seconds (or milliseconds) when the hook sends a number.
         ts = int(stamp // 1000) if stamp > 1e12 else int(stamp)
         if ts < 0:
@@ -239,8 +223,20 @@ def metric_event(payload):
                 text[:-1] + "+00:00" if text.endswith("Z") else text).timestamp())
         except (AttributeError, TypeError, ValueError, OverflowError):
             return None
-    model = payload.get("model_id") or payload.get("model")
-    model = model if isinstance(model, str) and model else None
+    if ts < 0:
+        return None
+    # Clock skew is capped once, when observed, never on a later retry.
+    if live:
+        ts = min(ts, int(time.time()))
+    model = payload.get("model_id")
+    if model is None:
+        model = payload.get("model")
+    model = model[:120] if isinstance(model, str) and model else None
+    if model:
+        try:
+            model.encode("utf-8")
+        except UnicodeEncodeError:
+            model = None  # malformed model text must not lose measured tokens
     try:
         offset = int((datetime.datetime.fromtimestamp(ts).astimezone().utcoffset()
                       or datetime.timedelta(0)).total_seconds() // 60)
@@ -250,34 +246,226 @@ def metric_event(payload):
             "occurred_at": ts, "utc_offset_min": offset, "usage": usage}
 
 
+def identity(event):
+    return hashlib.sha256((event["conversation_id"] + "\n" + event["generation_id"]).encode()).hexdigest()
+
+
+def retained_event(raw):
+    """Revalidate local data too: corrupted files never become upload payloads."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("usage"), dict):
+        return None
+    if type(raw.get("occurred_at")) is not int:
+        return None
+    event = metric_event({**raw["usage"], "conversation_id": raw.get("conversation_id"),
+                          "generation_id": raw.get("generation_id"), "model": raw.get("model"),
+                          "timestamp": raw["occurred_at"]}, live=False)
+    if event is not None:
+        offset = raw.get("utc_offset_min")
+        # Preserve the original local day even after travel or a timezone change.
+        if offset is None:
+            event["utc_offset_min"] = 0
+        elif type(offset) is int and -720 <= offset <= 840 and offset % 15 == 0:
+            event["utc_offset_min"] = offset
+        else:
+            return None
+    return event
+
+
+@contextlib.contextmanager
+def journal():
+    os.makedirs(CACHE, mode=0o700, exist_ok=True)
+    fd = os.open(DATABASE, os.O_RDWR | os.O_CREAT, 0o600)
+    os.close(fd)
+    db = sqlite3.connect(DATABASE, timeout=2)
+    try:
+        # WAL lets a hook retain its metrics while an uploader reads. Network
+        # requests never hold a transaction. FULL keeps committed hooks durable.
+        db.execute("PRAGMA journal_mode = WAL")
+        db.execute("PRAGMA synchronous = FULL")
+        # Serialize first-run schema creation across simultaneous hooks.
+        db.execute("BEGIN IMMEDIATE")
+        with db:
+            version = db.execute("PRAGMA user_version").fetchone()[0]
+            if version not in (0, 1):
+                raise ValueError("local metrics database is newer than this collector")
+            if version == 0:
+                schema = """
+                CREATE TABLE events (
+                    identity TEXT PRIMARY KEY,
+                    revision INTEGER NOT NULL UNIQUE,
+                    payload TEXT NOT NULL
+                );
+                CREATE TABLE targets (
+                    fingerprint TEXT PRIMARY KEY,
+                    revision INTEGER NOT NULL DEFAULT 0,
+                    retry_at REAL NOT NULL DEFAULT 0,
+                    used_at REAL NOT NULL
+                );
+                CREATE TABLE metadata (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
+                INSERT INTO metadata VALUES ('revision', 0), ('legacy_migrated', 0);
+                PRAGMA user_version = 1;
+                """
+                for statement in schema.split(";"):
+                    if statement.strip():
+                        db.execute(statement)
+        yield db
+    finally:
+        db.close()
+
+
+def store_event(db, event):
+    """Caller owns a short write transaction; one compact row per generation.
+    Revisions are globally increasing, so targets need one cursor, not one
+    accepted hash for every turn. The revision index selects only new work."""
+    name = identity(event)
+    old = db.execute("SELECT payload FROM events WHERE identity = ?", (name,)).fetchone()
+    if old:
+        try:
+            previous = retained_event(json.loads(old[0]))
+        except (ValueError, TypeError, RecursionError):
+            previous = None
+        if previous:
+            if event["usage"]["output_tokens"] <= previous["usage"]["output_tokens"]:
+                return
+            event["occurred_at"] = previous["occurred_at"]
+            event["utc_offset_min"] = previous["utc_offset_min"]
+    db.execute("UPDATE metadata SET value = value + 1 WHERE key = 'revision'")
+    revision = db.execute("SELECT value FROM metadata WHERE key = 'revision'").fetchone()[0]
+    db.execute("INSERT INTO events VALUES (?, ?, ?) ON CONFLICT(identity) DO UPDATE SET "
+               "revision = excluded.revision, payload = excluded.payload",
+               (name, revision, json.dumps(event, ensure_ascii=False)))
+
+
+def read_legacy(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return retained_event(json.loads(f.read(16384)))
+    except (ValueError, OSError, TypeError, RecursionError):
+        return None
+
+
 def record(payload):
     event = metric_event(payload)
     if event is None:
         return
-    os.makedirs(JOURNAL, mode=0o700, exist_ok=True)
-    identity = event["conversation_id"] + "\n" + event["generation_id"]
-    name = hashlib.sha256(identity.encode()).hexdigest()
-    held = lock(os.path.join(CACHE, "cursor-state.lock"))
-    try:
-        path = os.path.join(JOURNAL, name + ".json")
+    with journal() as db:
+        # BEGIN IMMEDIATE prevents competing hooks reading then overwriting a
+        # newer final count. Even a replay performs only one indexed lookup.
+        db.execute("BEGIN IMMEDIATE")
+        with db:
+            # Preserve receipt time when an existing v1/v2 turn is replayed
+            # before the detached worker has migrated the JSON directory.
+            old = read_legacy(os.path.join(JOURNAL, identity(event) + ".json"))
+            if old and identity(old) == identity(event):
+                store_event(db, old)
+            store_event(db, event)
+
+
+def migrate_legacy(db):
+    if db.execute("SELECT value FROM metadata WHERE key = 'legacy_migrated'").fetchone()[0]:
+        return
+    if os.path.isdir(JOURNAL):
+        # Only the detached worker scans old files, once. A crash after the
+        # commit but before unlink is safe: the next import deduplicates it.
         try:
-            old = load(path)
-        except (ValueError, OSError):
-            old = None  # corrupt entry: overwrite it below
-        if (isinstance(old, dict) and isinstance(old.get("usage"), dict)
-                and isinstance(old["usage"].get("output_tokens"), (int, float))):
-            # A replay never re-dates a turn or lowers its final counts.
-            if event["usage"]["output_tokens"] <= old["usage"]["output_tokens"]:
-                return
-            event["occurred_at"] = old.get("occurred_at", event["occurred_at"])
-            event["utc_offset_min"] = old.get("utc_offset_min", event["utc_offset_min"])
-        save(path, event)
-    finally:
-        unlock(held)
+            with os.scandir(JOURNAL) as files:
+                for entry in files:
+                    if not re.fullmatch(r"[0-9a-f]{64}\.json", entry.name):
+                        continue
+                    try:
+                        event = read_legacy(entry.path)
+                        if event is not None and identity(event) + ".json" == entry.name:
+                            db.execute("BEGIN IMMEDIATE")
+                            with db:
+                                store_event(db, event)
+                            os.remove(entry.path)
+                        else:
+                            print("ai-activity cursor collector: skipping corrupt legacy metrics " + entry.name, file=sys.stderr)
+                            # Keep the unreadable source for manual recovery,
+                            # outside the queue. Never upload unvalidated fields.
+                            invalid = os.path.join(CACHE, "cursor-invalid")
+                            os.makedirs(invalid, mode=0o700, exist_ok=True)
+                            os.replace(entry.path, os.path.join(invalid, entry.name))
+                    except OSError as error:
+                        print("ai-activity cursor collector: skipping unreadable legacy metrics (%s)" % type(error).__name__, file=sys.stderr)
+        except OSError as error:
+            print("ai-activity cursor collector: could not read legacy directory (%s); --replay retries it" % type(error).__name__, file=sys.stderr)
+    with db:
+        db.execute("UPDATE metadata SET value = 1 WHERE key = 'legacy_migrated'")
+    # v1/v2 accepted hashes are intentionally discarded: server dedup makes
+    # the one-time replay safe, including damaged JSON progress files.
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(os.path.join(CACHE, "cursor.json"))
 
 
-def digest(event):
-    return hashlib.sha256(json.dumps(event, sort_keys=True).encode()).hexdigest()
+def select_target(db):
+    fp = target()
+    with db:
+        # A logical LRU order survives wall-clock corrections. Otherwise the
+        # just-selected target could be evicted after the clock moves back.
+        used = db.execute("SELECT COALESCE(MAX(used_at), 0) + 1 FROM targets").fetchone()[0]
+        db.execute("INSERT INTO targets (fingerprint, used_at) VALUES (?, ?) "
+                   "ON CONFLICT(fingerprint) DO UPDATE SET used_at = excluded.used_at", (fp, used))
+        db.execute("DELETE FROM targets WHERE fingerprint IN "
+                   "(SELECT fingerprint FROM targets ORDER BY used_at DESC LIMIT -1 OFFSET ?)", (KEPT_TARGETS,))
+    return fp, db.execute("SELECT revision, retry_at FROM targets WHERE fingerprint = ?", (fp,)).fetchone()
+
+
+def retry_delay(error):
+    value = error.headers.get("Retry-After", "60") if isinstance(error, urllib.error.HTTPError) else "60"
+    try:
+        delay = float(value)
+        if not math.isfinite(delay):
+            raise ValueError()
+    except (TypeError, ValueError):
+        try:
+            delay = email.utils.parsedate_to_datetime(value).timestamp() - time.time()
+        except (TypeError, ValueError, OverflowError):
+            delay = 60
+    return max(1, min(86400, delay))
+
+
+def drain(db):
+    fp, (revision, retry_at) = select_target(db)
+    if retry_at > time.time():
+        return
+    while True:
+        # The UNIQUE revision index means an idle run never scans old turns.
+        rows = db.execute("SELECT identity, revision, payload FROM events WHERE revision > ? "
+                          "ORDER BY revision LIMIT ?", (revision, BATCH)).fetchall()
+        if not rows:
+            return
+        chunk = []
+        end = revision
+        size = len(wire({"messages": []}))
+        for name, number, payload in rows:
+            try:
+                event = retained_event(json.loads(payload))
+            except (ValueError, TypeError, RecursionError):
+                event = None
+            if event is None or identity(event) != name:
+                print("ai-activity cursor collector: skipping corrupt metrics " + name, file=sys.stderr)
+                end = number
+                continue
+            added = len(json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode()) + 1
+            if chunk and size + added > BODY_LIMIT:
+                break
+            size += added
+            chunk.append(event)
+            end = number
+        if chunk:
+            try:
+                post({"messages": chunk})
+            except (urllib.error.URLError, OSError, ValueError) as error:
+                # Do not advance on redirects, malformed acknowledgements,
+                # refusal or outages. Avoid hammering the server every hook.
+                with db:
+                    db.execute("UPDATE targets SET retry_at = ? WHERE fingerprint = ?",
+                               (time.time() + retry_delay(error), fp))
+                raise
+        with db:
+            db.execute("UPDATE targets SET revision = ?, retry_at = 0 WHERE fingerprint = ?", (end, fp))
+        revision = end
 
 
 def main():
@@ -290,65 +478,13 @@ def main():
         try:
             unlock(waiter)
             waiter = None
-            path = os.path.join(CACHE, "cursor.json")
-            try:
-                stored = load(path)
-            except (ValueError, OSError) as error:
-                # Corrupt progress: start fresh (dedup makes the resend safe).
-                print("ai-activity cursor collector: ignoring corrupt %s (%s)" % (path, type(error).__name__), file=sys.stderr)
-                stored = {}
-            saved, state = for_target(stored)
-            if state.get("retry_at", 0) > time.time():
-                return
-            accepted = state.setdefault("accepted", {})
-            chunk = []
-
-            def upload():
-                try:
-                    post({"messages": [event for _, event in chunk]})
-                except urllib.error.HTTPError as error:
-                    if error.code == 429:
-                        try:
-                            delay = max(1, min(86400, int(error.headers.get("Retry-After", "60"))))
-                        except ValueError:
-                            delay = 60
-                        state["retry_at"] = int(time.time()) + delay
-                        save(path, saved)
-                    raise
-                for name, event in chunk:
-                    accepted[name] = digest(event)
-                state.pop("retry_at", None)
-                save(path, saved)
-                chunk.clear()
-
-            if not os.path.isdir(JOURNAL):
-                return
-            seen = set()
-            for name in sorted(os.listdir(JOURNAL)):
-                if not re.fullmatch(r"[0-9a-f]{64}\.json", name):
-                    continue
-                try:
-                    event = load(os.path.join(JOURNAL, name))
-                except (ValueError, OSError) as error:
-                    # One poisoned file must not block the queue.
-                    print("ai-activity cursor collector: skipping unreadable %s (%s)" % (name, type(error).__name__), file=sys.stderr)
-                    continue
-                if not isinstance(event, dict):
-                    continue
-                seen.add(name)
-                if accepted.get(name) == digest(event):
-                    continue
-                chunk.append((name, event))
-                if len(chunk) >= BATCH:
-                    upload()
-            # Forget hashes of files gone from the journal: they only grow it.
-            pruned = [name for name in accepted if name not in seen]
-            for name in pruned:
-                del accepted[name]
-            if chunk:
-                upload()
-            elif pruned:
-                save(path, saved)
+            with journal() as db:
+                if "--replay" in sys.argv:
+                    with db:
+                        db.execute("DELETE FROM targets WHERE fingerprint = ?", (target(),))
+                        db.execute("UPDATE metadata SET value = 0 WHERE key = 'legacy_migrated'")
+                migrate_legacy(db)
+                drain(db)
         finally:
             unlock(held)
     finally:

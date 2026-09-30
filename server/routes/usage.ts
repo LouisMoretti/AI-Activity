@@ -1,8 +1,9 @@
 import { Hono, type Context } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { ACTIVITY_TOOLS } from "../../shared/types.ts";
 import type {
   ActivityResponse, LeaderboardResponse, Profile, ProfilesResponse, QuotasResponse, SessionsResponse, StatsResponse,
-  SummaryResponse,
+  SummaryResponse, ToolActivityResponse,
 } from "../../shared/types.ts";
 import {
   addDays, breakdown, countSessions, dailyBuckets, dayAt, earliestOfDay, findUserByUsername, latestOffset, latestQuotas,
@@ -63,6 +64,15 @@ function usage(db: DB, owner: Owner) {
         today: breakdown(db, uid, earliestOfDay(day), tool, day),
         provenance: "measured messages (one row per Anthropic message id)",
       });
+    })
+    .get("/tool-activity", (c) => {
+      const uid = owner(c);
+      const day = dayAt(latestOffset(db, uid), nowSec());
+      const tools = Object.fromEntries(ACTIVITY_TOOLS.map((tool) => [tool, {
+        today: breakdown(db, uid, earliestOfDay(day), tool, day),
+        sessions: recentSessions(db, uid, 10, tool, 0),
+      }])) as ToolActivityResponse["tools"];
+      return c.json<ToolActivityResponse>({ day, tools });
     })
     .get("/sessions", (c) => {
       const uid = owner(c);

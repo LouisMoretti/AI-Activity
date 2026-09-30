@@ -196,27 +196,33 @@ export class Dashboard {
   }
 
   private async loadProfile(username: string): Promise<void> {
-    const [profile, summary, activity, quotas, sessions, ocSummary, ocLatest, agSummary, agLatest, cuSummary, cuLatest] = await Promise.all([
+    const route = this.route;
+    const previous = this.live;
+    // Settle every read before releasing inFlight. A failed card request
+    // never discards a healthy profile, and a slow sibling cannot overlap
+    // the next refresh after another request failed quickly.
+    const [profile, summary, activity, quotas, sessions, cards] = await Promise.allSettled([
       api.profile(username),
-      // Every tool, always: there is no tool filter.
       api.summary(username, null),
       api.activity(username, ACTIVITY_DAYS, null),
       api.quotas(username),
       fetchSessions(username, this.sessionsLimit),
-      api.summary(username, "opencode"),
-      // Enough to count the conversations active right now.
-      api.sessions(username, 10, "opencode", 0),
-      // Antigravity's card falls back to the same view without quotas.
-      api.summary(username, "antigravity"),
-      api.sessions(username, 10, "antigravity", 0),
-      api.summary(username, "cursor"),
-      api.sessions(username, 10, "cursor", 0),
+      api.toolActivity(username),
     ]);
-    // Navigated elsewhere while this was in flight: its queued reload wins.
-    if (this.route.page !== "profile" || this.route.username !== username) return;
-    this.shown = profile;
-    this.live = { summary, activity, quotas, sessions, opencode: { summary: ocSummary, latest: ocLatest },
-      antigravity: { summary: agSummary, latest: agLatest }, cursor: { summary: cuSummary, latest: cuLatest } };
+    if (this.route !== route) return;
+    if (profile.status === "rejected") throw profile.reason;
+    if (summary.status === "rejected") throw summary.reason;
+    if (activity.status === "rejected") throw activity.reason;
+    if (quotas.status === "rejected") throw quotas.reason;
+    if (sessions.status === "rejected") throw sessions.reason;
+    this.shown = profile.value;
+    this.live = {
+      summary: summary.value, activity: activity.value, quotas: quotas.value, sessions: sessions.value,
+      // Keep a failed refresh's last measured card data only for the same
+      // local day. An initial failure or midnight rollover is Unavailable.
+      activityTools: cards.status === "fulfilled" ? cards.value
+        : previous?.activityTools?.day === summary.value.day ? previous.activityTools : undefined,
+    };
     this.status = "ready";
   }
 

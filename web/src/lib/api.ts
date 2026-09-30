@@ -1,7 +1,7 @@
 // Typed client for the dashboard JSON API (same origin, cookie session).
 import type {
   ActivityResponse, AdminOverview, AdminSettings, AdminUser, AuthStatus, DeletedAccount, DeletedActivity, LeaderboardResponse, Profile, Device, QuotasResponse,
-  SessionsResponse, SummaryResponse, FriendsResponse, PreviewSeedConfig,
+  SessionsResponse, SummaryResponse, FriendsResponse, PreviewSeedConfig, ToolActivityResponse,
 } from "../../../shared/types.ts";
 
 export class UnauthorizedError extends Error {
@@ -37,7 +37,8 @@ function unauthorized(path: string): UnauthorizedError {
 }
 
 async function get<T>(path: string): Promise<T> {
-  const r = await fetch(path);
+  // A stalled sibling must not hold a dashboard refresh open indefinitely.
+  const r = await fetch(path, { signal: AbortSignal.timeout(15000) });
   if (r.status === 401) throw unauthorized(path);
   if (r.status === 404) throw new NotFoundError();
   if (r.status === 429) throw new RateLimitedError();
@@ -100,6 +101,7 @@ export const api = {
   quotas: (username: string) => get<QuotasResponse>(`${profileBase(username)}/quotas`),
   summary: (username: string, tool: string | null) =>
     get<SummaryResponse>(`${profileBase(username)}/summary?x=1${toolQuery(tool)}`),
+  toolActivity: (username: string) => get<ToolActivityResponse>(`${profileBase(username)}/tool-activity`),
   sessions: (username: string, limit: number, tool: string | null, offset: number) =>
     get<SessionsResponse>(`${profileBase(username)}/sessions?limit=${limit}&offset=${offset}${toolQuery(tool)}`),
   devices: () => get<{ devices: Device[] }>("/api/devices"),

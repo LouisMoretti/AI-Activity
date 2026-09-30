@@ -48,6 +48,8 @@ export interface QuotaToolVM {
 
 /** A tool without quota windows: its card shows what is going on now. */
 export interface ActivityToolVM {
+  /** False after a failed read: the card says Unavailable, never guessed zeros. */
+  available?: boolean;
   recent: SessionVM[]; // the tool's latest conversations, newest first; empty → no usage yet
   // providers: null for tools whose models are not stored as provider/model.
   today: { tokens: number; sessions: number; calls: number; models: number; providers: number | null };

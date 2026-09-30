@@ -153,7 +153,11 @@ def present(tool):
     if tool == "cursor":
         return on_path("cursor") or os.path.isdir(CURSOR_DIR) or any(os.path.isdir(p) for p in (
             "/Applications/Cursor.app", os.path.join(HOME, "Applications", "Cursor.app"),
-            os.path.join(os.environ.get("LOCALAPPDATA", HOME), "Programs", "cursor")))
+            os.path.join(HOME, "Library", "Application Support", "Cursor"),
+            os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(HOME, ".config"), "Cursor"),
+            os.path.join(os.environ.get("APPDATA", HOME), "Cursor"),
+            os.path.join(os.environ.get("LOCALAPPDATA", HOME), "Programs", "cursor"),
+            os.path.join(os.environ.get("ProgramFiles", HOME), "Cursor")))
     if tool == "antigravity":
         # ~/.gemini alone is the Gemini CLI: only Antigravity's own folders count.
         return on_path("agy") or any(os.path.isdir(os.path.join(GEMINI_HOME, d))
@@ -171,11 +175,19 @@ def preflight(tools):
         if tool in ("claude-code", "codex", "cursor") and not isinstance(config.get("hooks", {}), dict):
             fail(f"{path}: \"hooks\" is not an object: fix it, then run this again (nothing was changed)")
         if tool == "cursor":
-            if type(config.get("version", 1)) is not int or config.get("version", 1) != 1:
-                fail(f"{path}: unsupported Cursor hooks version (nothing was changed)")
-            for event in ("afterAgentResponse", "stop"):
-                if not isinstance(config.get("hooks", {}).get(event, []), list):
-                    fail(f"{path}: {event} is not a list (nothing was changed)")
+            validate_cursor(config, path)
+
+
+def validate_cursor(config, path):
+    if type(config.get("version", 1)) is not int or config.get("version", 1) != 1:
+        fail(f"{path}: unsupported Cursor hooks version (nothing was changed)")
+    hooks = config.get("hooks", {})
+    if not isinstance(hooks, dict):
+        fail(f'{path}: "hooks" is not an object (nothing was changed)')
+    for event in ("afterAgentResponse", "stop"):
+        if not isinstance(hooks.get(event, []), list):
+            fail(f"{path}: {event} is not a list (nothing was changed)")
+
 
 
 def install_claude(url, key):
@@ -269,6 +281,7 @@ def install_codex(url, key):
 def install_cursor(url, key):
     path = CONFIGS["cursor"]
     config = load_json(path)
+    validate_cursor(config, path)
     config.setdefault("version", 1)
     hooks = config.setdefault("hooks", {})
     script = os.path.join(CURSOR_DIR, "hooks", "ai-activity-cursor.py")
@@ -286,8 +299,7 @@ def install_cursor(url, key):
         entries = hooks.get(event, [])
         if not isinstance(entries, list):
             entries = []
-        kept = [e for e in entries if not (isinstance(e, dict)
-                and any(name in str(e.get("command", "")) for name in ("ai-activity-cursor.py", "ai-activity-cursor.ps1")))]
+        kept = [e for e in entries if not cursor_handler(e)]
         if event == "afterAgentResponse":
             hooks[event] = kept + [{"command": run, "timeout": 10}]
         elif event in hooks:
@@ -295,6 +307,27 @@ def install_cursor(url, key):
     changed = write(path, dump(config)) or changed
     say(f"Cursor: {'installed' if changed else 'already up to date'} ({script}, hook in {path})")
     return True
+
+
+def cursor_handler(entry):
+    """Match our executable argument, not a filename mentioned by another hook."""
+    if not isinstance(entry, dict) or not isinstance(entry.get("command"), str):
+        return False
+    try:
+        parts = shlex.split(entry["command"], posix=False)
+    except ValueError:
+        return False
+    basename = lambda part: part.strip("\"'").replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if not parts:
+        return False
+    exe = basename(parts[0])
+    if re.fullmatch(r"(?:python(?:3(?:\.\d+)?)?|pythonw|py)(?:\.exe)?", exe):
+        return len(parts) > 1 and basename(parts[1]) == "ai-activity-cursor.py" and "--hook" in parts[2:]
+    if exe in ("powershell", "powershell.exe", "pwsh", "pwsh.exe"):
+        for i, part in enumerate(parts[:-1]):
+            if part.lower() == "-file" and basename(parts[i + 1]) == "ai-activity-cursor.ps1":
+                return True
+    return False
 
 
 def install_antigravity(url, key):

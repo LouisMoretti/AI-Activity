@@ -30,7 +30,7 @@ const FILES = {
  * shared/collectors.ts, then record the new version and hash here.
  */
 const RECORDED = {
-  cursor: { version: 2, sha256: "ab978c7802cc3d0c5a60e8c5e2b68630b3bda877741e29e4eaf57a1ecdaed709" },
+  cursor: { version: 3, sha256: "b747ac3212e7b03f84877d4808f75d99859eeb41203e50320aa717bf1181d66c" },
   "claude-code": { version: 3, sha256: "cbd888fe200429a3fcf842aad2bc85ab0d32b83eb1b3356ab89ebf3b9b3b4738" },
   codex: { version: 2, sha256: "a48e3cf19fdff5ae3cd0b9d29f029bf760b49ddf7ff74a444948f67335320c6a" },
   antigravity: { version: 3, sha256: "08d3bc5ac185b28a6122208ff26fde4a4c9938ae801459b1821e09e35de2a381" },
@@ -201,7 +201,8 @@ kept = m.for_target(saved)
 print(json.dumps([list(kept[0]["targets"]), kept[1]]))
 `;
 
-  for (const tool of TOOLS) {
+  // Cursor's compact SQLite checkpoints have their own real-target LRU test.
+  for (const tool of TOOLS.filter(t => t !== "cursor")) {
     test(`${tool}: keeps the 8 most recent targets`, () => {
       const [kept, mine] = JSON.parse(execFileSync(PYTHON, ["-c", KEEP, fileURLToPath(new URL(scriptOf(tool), dir))],
         { encoding: "utf8", windowsHide: true }));

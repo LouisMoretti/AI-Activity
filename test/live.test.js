@@ -33,11 +33,24 @@ test("Cursor's activity card keeps measured usage and identity without inventing
   assert.deepEqual(liveDashboard(data([]), "all").cursor.recent, []);
 });
 
-test("a caller built before Cursor support gets an empty Cursor card, not a crash", () => {
+test("a caller without Cursor measurements gets an unavailable card, not guessed usage", () => {
   const d = data([]);
   delete d.cursor;
   const vm = liveDashboard(d, "all");
-  assert.deepEqual(vm.cursor, { recent: [], today: { tokens: 0, sessions: 0, calls: 0, models: 0, providers: null } });
+  assert.deepEqual(vm.cursor, { available: false, recent: [], today: { tokens: 0, sessions: 0, calls: 0, models: 0, providers: null } });
+});
+
+test("batched activity cards preserve each tool's measurements", () => {
+  const d = data([]);
+  d.activityTools = { day: d.summary.day, tools: Object.fromEntries(["cursor", "antigravity", "opencode"].map((tool, i) => [tool, {
+    today: { ...breakdown, tokens: i+10, events: i+1 }, sessions: [],
+  }])) };
+  const vm = liveDashboard(d, "all");
+  for (const [i, card] of [vm.cursor, vm.antigravityActivity, vm.opencode].entries()) {
+    assert.equal(card.available, true);
+    assert.equal(card.today.tokens, i+10);
+    assert.equal(card.today.calls, i+1);
+  }
 });
 
 test("each tool card shows its own quota windows, never another tool's", () => {
