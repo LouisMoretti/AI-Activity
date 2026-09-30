@@ -1,9 +1,10 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import type { Device } from "../../../shared/types.ts";
+  import { TOOLS, type Device, type Tool } from "../../../shared/types.ts";
   import { api } from "../lib/api.ts";
   import { copyPending, installCommand, type Platform } from "../lib/clipboard.ts";
   import { fmtAgo } from "../lib/format.ts";
+  import { setupPrompt } from "../lib/setup-prompt.ts";
   import { TOOL_META } from "../lib/view-model.ts";
 
   let devices = $state<Device[] | null>(null);
@@ -15,6 +16,47 @@
   let copied = $state(false);
   // Row and button just copied, for the "Copied" feedback.
   let copiedId = $state.raw<{ id: number; what: "key" | Platform } | null>(null);
+
+  let review = $state<{ id: number; name: string; key: string } | null>(null);
+  let loadingReview = $state<number | null>(null);
+  let reviewPlatform = $state<Platform>("unix");
+  let selectedTools = $state<Tool[]>([...TOOLS]);
+  let promptCopied = $state(false);
+  let reviewedPrompt = $derived(review && selectedTools.length
+    ? setupPrompt(review.key, reviewPlatform, selectedTools, location.origin) : "");
+
+  async function openReview(d: Device) {
+    error = "";
+    review = null;
+    loadingReview = d.id;
+    promptCopied = false;
+    try {
+      const { key } = await api.deviceKey(d.id);
+      if (loadingReview === d.id) review = { id: d.id, name: d.name, key };
+    } catch (err) {
+      error = (err as Error).message;
+      void refresh();
+    } finally {
+      if (loadingReview === d.id) loadingReview = null;
+    }
+  }
+
+  function toggleTool(tool: Tool) {
+    selectedTools = selectedTools.includes(tool)
+      ? selectedTools.filter((item) => item !== tool)
+      : [...selectedTools, tool];
+    promptCopied = false;
+  }
+
+  async function copyPrompt() {
+    if (!reviewedPrompt) return;
+    try {
+      await navigator.clipboard.writeText(reviewedPrompt);
+      promptCopied = true;
+    } catch {
+      error = "Clipboard access failed. Select and copy the prompt manually.";
+    }
+  }
 
   // `?? []`: a client newer than the server (mid-deploy) still renders.
   const collectors = (d: Device) => d.collectors ?? [];
@@ -53,6 +95,7 @@
     if (!confirm(`Revoke "${d.name}"? Its collector will stop being accepted.`)) return;
     error = "";
     try {
+      if (review?.id === d.id) review = null;
       await api.revokeDevice(d.id);
       await refresh();
     } catch (err) {
@@ -143,6 +186,7 @@
               {#if d.has_key}
                 <button type="button" onclick={() => copyKey(d, "unix")}>{copiedId?.id === d.id && copiedId.what === "unix" ? "Copied" : "Copy install (Linux/macOS)"}</button>
                 <button type="button" onclick={() => copyKey(d, "windows")}>{copiedId?.id === d.id && copiedId.what === "windows" ? "Copied" : "Copy install (Windows)"}</button>
+                <button type="button" disabled={loadingReview === d.id} onclick={() => openReview(d)}>{loadingReview === d.id ? "Loading…" : "Ask your AI to set this up"}</button>
                 <button type="button" onclick={() => copyKey(d, "key")}>{copiedId?.id === d.id && copiedId.what === "key" ? "Copied" : "Copy key"}</button>
               {/if}
               <button type="button" class="danger" onclick={() => revoke(d)}>Revoke</button>
@@ -153,6 +197,36 @@
         <li class="muted">No devices yet. Create one key per machine: it serves every tool on it.</li>
       {/each}
     </ul>
+  {/if}
+
+  {#if review}
+    <section class="review" aria-label="AI setup prompt">
+      <div class="review-heading">
+        <strong>Ask your AI to set up {review.name}</strong>
+        <button type="button" onclick={() => (review = null)}>Close</button>
+      </div>
+      <p>Choose this device's operating system and the collectors to install. Review the full prompt before copying it.</p>
+      <label class="platform">Operating system
+        <select bind:value={reviewPlatform} onchange={() => (promptCopied = false)}>
+          <option value="unix">Linux / macOS</option>
+          <option value="windows">Windows (PowerShell)</option>
+        </select>
+      </label>
+      <fieldset>
+        <legend>Collectors</legend>
+        {#each TOOLS as tool}
+          <label><input type="checkbox" checked={selectedTools.includes(tool)} onchange={() => toggleTool(tool)} /> {TOOL_META[tool].name}</label>
+        {/each}
+      </fieldset>
+      <p class="warning"><strong>Device key included.</strong> Pasting this prompt into an AI service shares the device ingestion key with that service. Use the install commands above if you prefer to set it up yourself.</p>
+      {#if reviewedPrompt}
+        <label class="prompt-label" for="setup-prompt">Full prompt</label>
+        <textarea id="setup-prompt" class="mono" readonly value={reviewedPrompt} aria-label="Full AI setup prompt"></textarea>
+        <button type="button" onclick={copyPrompt}>{promptCopied ? "Copied" : "Copy prompt"}</button>
+      {:else}
+        <p class="muted">Select at least one collector to create a prompt.</p>
+      {/if}
+    </section>
   {/if}
 
   <form onsubmit={create}>
@@ -185,4 +259,16 @@
   code { flex: 1; min-width: 0; overflow-wrap: anywhere; color: var(--text); }
   .error { color: var(--warn); margin-top: 8px; font-size: 13px; }
   .outdated { color: var(--warn); margin-top: 4px; font-size: 12px; }
+  .review { margin-top: 16px; padding: 14px; border: 1px solid var(--accent); border-radius: var(--radius-sm); background: var(--surface-2); }
+  .review-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .review p { margin: 10px 0; font-size: 13px; }
+  .review select, .review textarea { background: var(--bg); border: 1px solid var(--line); color: var(--text); border-radius: var(--radius-sm); font: inherit; }
+  .review select { margin-left: 8px; padding: 4px 8px; }
+  .review fieldset { display: flex; gap: 8px 16px; flex-wrap: wrap; margin: 12px 0; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+  .review fieldset label { white-space: nowrap; }
+  .review .warning { color: var(--warn); }
+  .review .warning strong { display: inline; }
+  .prompt-label { display: block; margin: 12px 0 6px; }
+  .review textarea { display: block; width: 100%; min-height: 300px; padding: 10px; resize: vertical; overflow-wrap: anywhere; font-family: var(--mono); font-size: 12px; }
+  .review textarea + button { margin-top: 10px; }
 </style>
