@@ -48,7 +48,7 @@ CONFIGS = {"claude-code": os.path.join(CLAUDE_DIR, "settings.json"),
 CLAUDE_HOOKS = ("UserPromptSubmit", "PostToolUse", "Stop", "StopFailure", "SessionEnd")
 # PostToolUse sends a long turn as it runs. UserPromptSubmit catches up on
 # rollouts left by a turn whose Stop hook did not fire (e.g. a rate limit).
-CODEX_HOOKS = ("Stop", "UserPromptSubmit", "PostToolUse")
+CODEX_HOOKS = ("Stop", "UserPromptSubmit", "PostToolUse", "SessionEnd")
 ANTIGRAVITY_HOOKS = (("PostInvocation", "--post-invocation"), ("Stop", "--hook"))
 
 
@@ -224,8 +224,11 @@ def install_codex(url, key):
             run = "& " + run
     else:
         run = f"setsid -f {command(script, '~/.codex/ai-activity-codex.py')} >/dev/null 2>&1 </dev/null; echo '{{}}'"
-    ours = {"hooks": [{"type": "command", "command": run, "timeout": 10}]}
     for event in CODEX_HOOKS:
+        # Codex caps SessionEnd hooks at three seconds. The command only
+        # detaches the collector, so this still leaves time for its upload.
+        ours = {"hooks": [{"type": "command", "command": run,
+                            "timeout": 3 if event == "SessionEnd" else 10}]}
         entries = hooks.get(event)
         entries = entries if isinstance(entries, list) else []
         # Drop our earlier entries (any path), keep everyone else's.

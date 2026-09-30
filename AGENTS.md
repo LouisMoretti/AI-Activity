@@ -686,12 +686,14 @@ Components never branch on live vs demo: both sources map into the same
    so a quoted path never resolves), or the script alone for
    Claude Code through Git Bash; use the syntax of the hook runner's shell.
 - The Codex collector (`collectors/codex.py`, copied to
-  `~/.codex/ai-activity-codex.py`, run detached by `PostToolUse`, `Stop`
-  and `UserPromptSubmit` hooks in `~/.codex/hooks.json`) works the same way on
+  `~/.codex/ai-activity-codex.py`, run detached by `PostToolUse`, `Stop`,
+  `UserPromptSubmit` and `SessionEnd` hooks in `~/.codex/hooks.json`) works the same way on
   the rollouts under `~/.codex/sessions` and `archived_sessions` (offsets in
   `~/.cache/ai-activity/codex.json`). `Stop` does not fire on rate-limit
   stops (upstream Codex bug), so `UserPromptSubmit` is the backstop that
-  posts the exhausted quota's final snapshot on the next prompt; standalone
+  posts the exhausted quota's final snapshot on the next prompt. `SessionEnd`
+  flushes remaining rollout lines when the main session closes (possibly
+  after 30 minutes idle), with Codex's three-second hook limit. Standalone
   `rate_limits` lines (a limit snapshot without token counts, e.g. from a
   failed turn) are recorded too. `PostToolUse` sends a long turn's usage
   while it runs; since it fires often, at most one run waits behind the

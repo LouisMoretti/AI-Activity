@@ -40,7 +40,7 @@ m.FILES["codex.py"] = 'SERVER = "<server>"; KEY = "<device key>"'
 script = os.path.join(m.CODEX_HOME, "ai-activity-codex.py")
 old = m.command(script, "~/.codex/ai-activity-codex.py", "--hook")
 other = {"hooks": [{"type": "command", "command": "echo preserved"}]}
-events = ("Stop", "UserPromptSubmit", "PostToolUse")
+events = ("Stop", "UserPromptSubmit", "PostToolUse", "SessionEnd")
 m.write(m.CONFIGS["codex"], m.dump({"hooks": {event: [other, {"hooks": [{"type": "command", "command": old}]}] for event in events}}))
 m.install_codex("https://example.com", "test-key")
 first = open(m.CONFIGS["codex"], encoding="utf-8").read()
@@ -49,6 +49,7 @@ for event in events:
     entries = config["hooks"][event]
     assert len(entries) == 2 and entries[0] == other
     assert entries[1]["hooks"][0]["command"] == r'& "C:\\Program Files\\Python312\\python.exe" "' + script + '" --hook'
+    assert entries[1]["hooks"][0]["timeout"] == (3 if event == "SessionEnd" else 10)
 m.install_codex("https://example.com", "test-key")
 assert open(m.CONFIGS["codex"], encoding="utf-8").read() == first
 # Claude Code / other shells keep their original invocation.
@@ -237,9 +238,10 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
     assert.equal(read(".codex", "ai-activity-codex.py"), filled("codex.py"));
     const hooks = json(".codex", "hooks.json").hooks;
     assert.deepEqual(hooks.Stop[0], other);
-    for (const event of ["Stop", "UserPromptSubmit", "PostToolUse"]) {
+    for (const event of ["Stop", "UserPromptSubmit", "PostToolUse", "SessionEnd"]) {
       const ours = hooks[event].filter((h) => JSON.stringify(h).includes("ai-activity-codex.py"));
       assert.equal(ours.length, 1);
+      assert.equal(ours[0].hooks[0].timeout, event === "SessionEnd" ? 3 : 10);
       if (WINDOWS) assert.match(ours[0].hooks[0].command, new RegExp("^& " + windowsCommand(file(".codex", "ai-activity-codex.py"), "--hook").source.slice(1)));
       else if (fs.existsSync(path.join(env.PATH, "setsid"))) assert.deepEqual(ours[0], CODEX_HOOKS[event][0]);
       else assert.equal(ours[0].hooks[0].command, "python3 ~/.codex/ai-activity-codex.py --hook");

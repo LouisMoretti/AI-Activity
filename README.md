@@ -194,7 +194,7 @@ a bare `/api/ingest` answers `404`. See `AGENTS.md` §5 for the payload contract
 2. Copy `collectors/codex.py` to `~/.codex/ai-activity-codex.py` on the
    device and replace `<server>` and `<device key>` at its top (or set
    `AI_ACTIVITY_URL` / `AI_ACTIVITY_KEY` in the environment Codex runs in).
-3. Add the hooks to `~/.codex/hooks.json` (the same command three times):
+3. Add the hooks to `~/.codex/hooks.json` (the same command four times):
 
 `~/.codex/hooks.json`:
 
@@ -209,6 +209,9 @@ a bare `/api/ingest` answers `404`. See `AGENTS.md` §5 for the payload contract
     ],
     "PostToolUse": [
       { "hooks": [{ "type": "command", "command": "setsid -f python3 ~/.codex/ai-activity-codex.py >/dev/null 2>&1 </dev/null; echo '{}'", "timeout": 10 }] }
+    ],
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "command": "setsid -f python3 ~/.codex/ai-activity-codex.py >/dev/null 2>&1 </dev/null; echo '{}'", "timeout": 3 }] }
     ]
   }
 }
@@ -233,13 +236,16 @@ before a quoted executable path. If Python is not on Codex's PATH, replace
     ],
     "PostToolUse": [
       { "hooks": [{ "type": "command", "command": "& python \"C:\\Users\\<user>\\.codex\\ai-activity-codex.py\" --hook", "timeout": 10 }] }
+    ],
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "command": "& python \"C:\\Users\\<user>\\.codex\\ai-activity-codex.py\" --hook", "timeout": 3 }] }
     ]
   }
 }
 ```
 
 For example, a Python installation with spaces in its path uses this JSON
-command for each of the three hooks:
+command for each of the four hooks:
 
 ```json
 { "command": "& \"C:\\Program Files\\Python312\\python.exe\" \"C:\\Users\\<user>\\.codex\\ai-activity-codex.py\" --hook" }
@@ -323,6 +329,9 @@ What it does after every tool call and at the end of every turn:
   response to the rollout as it comes), so the dashboard follows the turn
   instead of catching up at its end. A reply without any tool call waits
   for `Stop`.
+- `SessionEnd` sends any remaining rollout lines when the main session ends.
+  Codex may delay this event until the session has been idle for 30 minutes;
+  it is not an immediate replacement for `UserPromptSubmit` after a failed turn.
 - `setsid -f` detaches the upload so Codex goes on at once; `echo '{}'` is
   the (empty) JSON answer Codex expects from a hook. One run at a time,
   with at most one waiting behind it (it reads the rollouts once its turn
@@ -642,7 +651,7 @@ Each tool has one Python script in `collectors/`. They share the same design:
 | Script | Copy to | Run by | Reads | Progress file | Locks |
 | --- | --- | --- | --- | --- | --- |
 | `claude-code.py` | `~/.claude/ai-activity-claude-code.py` | the `UserPromptSubmit`, `PostToolUse`, `Stop`, `StopFailure` and `SessionEnd` hooks (tokens); the statusLine, every refresh (quotas, context) | `~/.claude/projects/**/*.jsonl` (sessions and subagents) | `offsets.json` (byte offset per transcript), `status.json` (last status posted) | `lock`, `waiter.lock`, `status.lock` |
-| `codex.py` | `~/.codex/ai-activity-codex.py` | the `Stop`, `UserPromptSubmit` and `PostToolUse` hooks | `~/.codex/sessions`, `~/.codex/archived_sessions` (`CODEX_HOME`) | `codex.json` (byte offset per rollout) | `codex.lock`, `codex-waiter.lock` |
+| `codex.py` | `~/.codex/ai-activity-codex.py` | the `Stop`, `UserPromptSubmit`, `PostToolUse` and `SessionEnd` hooks | `~/.codex/sessions`, `~/.codex/archived_sessions` (`CODEX_HOME`) | `codex.json` (byte offset per rollout) | `codex.lock`, `codex-waiter.lock` |
 | `opencode.py` | `~/.config/opencode/ai-activity-opencode.py` | `opencode-plugin.js`, at start and on `session.idle` | `~/.local/share/opencode/opencode.db` (`XDG_DATA_HOME`, `OPENCODE_DB`), numeric fields only | `opencode.json` (last `time_updated` sent) | `opencode.lock` |
 | `antigravity.py` | `~/.gemini/ai-activity-antigravity.py` | the `PostInvocation` and `Stop` hooks | `~/.gemini/{antigravity,antigravity-cli,antigravity-ide}/conversations/*.db` (`GEMINI_CLI_HOME`); quotas from `agy`, opt-in | `antigravity.json` (per database), `antigravity-quota.json` | `antigravity.lock`, `antigravity-waiter.lock`, `antigravity-quota.lock` |
 
