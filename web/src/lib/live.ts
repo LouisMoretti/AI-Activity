@@ -20,6 +20,7 @@ export interface LiveData {
   opencode: { summary: SummaryResponse; latest: SessionsResponse };
   /** Antigravity's card without quota windows: the same as OpenCode's. */
   antigravity: { summary: SummaryResponse; latest: SessionsResponse };
+  cursor: { summary: SummaryResponse; latest: SessionsResponse };
 }
 
 export const ACTIVITY_DAYS = 364;
@@ -65,9 +66,9 @@ function toolQuotas(q: QuotasResponse, tool: QuotaToolVM["tool"]): QuotaToolVM {
 const asTool = (t: string): ToolKey =>
   (TOOLS as readonly string[]).includes(t) ? (t as ToolKey) : "claude-code";
 
-// Antigravity ids are stored "antigravity:<id>" (never colliding with other
-// tools'); the list shows the id itself. The tool keeps rows apart.
-const displayId = (id: string) => id.replace(/^antigravity:/, "");
+// Cursor and Antigravity session ids have storage prefixes to avoid collisions;
+// the list shows the id itself. The tool keeps rows apart.
+const displayId = (id: string) => id.replace(/^(antigravity|cursor):/, "");
 
 const toSession = (s: Session): SessionVM => ({
   tool: asTool(s.tool),
@@ -109,6 +110,7 @@ export function liveDashboard(d: LiveData, provider: Provider): DashboardVM {
     tools: toolsFor(provider),
     claude: toolQuotas(d.quotas, "claude-code"),
     codex: toolQuotas(d.quotas, "codex"),
+    cursor: activityTool(d.cursor, false),
     opencode: activityTool(d.opencode, true),
     antigravity: toolQuotas(d.quotas, "antigravity"),
     antigravityActivity: activityTool(d.antigravity, false),

@@ -3,7 +3,7 @@
 // missing data is null/absent, never interpolated.
 
 /** Every ingestable tool, in display order. */
-export const TOOLS = ["claude-code", "codex", "antigravity", "opencode"] as const;
+export const TOOLS = ["claude-code", "codex", "cursor", "antigravity", "opencode"] as const;
 export type Tool = (typeof TOOLS)[number];
 
 /** Rows kept separate in dashboard breakdown lists (the last is the fold). */

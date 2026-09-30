@@ -62,7 +62,7 @@ test("a stored seed config from an older shape is sanitized, a corrupt one reset
     db.prepare("UPDATE settings SET value = ? WHERE key = 'preview_seed_config'").run("{bogus");
     assert.deepEqual((await req(srv.base, "GET", endpoint)).json.config, {
       days: 60, events_per_day: 2,
-      tools: ["claude-code", "codex", "antigravity", "opencode"],
+      tools: ["claude-code", "codex", "cursor", "antigravity", "opencode"],
       models: ["claude-sonnet-4", "gpt-5", "gemini-2.5-pro", "claude-opus-4"],
       input_tokens: 1200, output_tokens: 400, cache_read_tokens: 500, cache_write_tokens: 100,
     });

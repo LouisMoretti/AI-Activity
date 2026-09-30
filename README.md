@@ -1,11 +1,11 @@
 # AI Activity
 
 > **Not affiliated.** AI Activity is an independent, unofficial project. It
-> is not affiliated with, endorsed or sponsored by Anthropic, OpenAI, Google or the
-> OpenCode project. Claude, Claude Code, Codex, Antigravity, OpenCode and the other
+> is not affiliated with, endorsed or sponsored by Anthropic, OpenAI, Anysphere, Google or the
+> OpenCode project. Claude, Claude Code, Codex, Cursor, Antigravity, OpenCode and the other
 > product names used here are trademarks of their respective owners, named
 > only to identify the tools whose usage the dashboard measures. It reads
-> the files these tools already write on your own device; it does not call
+> local usage files or receives metrics through the tools' hooks; it does not call
 > their APIs on your behalf or work around their limits. Using those tools
 > stays subject to their own terms.
 
@@ -41,7 +41,7 @@ the tools). The key is passed in the environment, never in a URL, and ends
 up only in the installed collectors (files readable by you alone on
 Linux/macOS). Both scripts need Python 3 (`python3`; on Windows `python`
 or the `py` launcher) and install the collectors of the tools they find
-(`claude` / `codex` / `agy` / `opencode` on the `PATH`, or their config
+(`claude` / `codex` / `cursor` / `agy` / `opencode` on the `PATH`, or their config
 folders), as the sections below describe:
 
 - Claude Code: `~/.claude/ai-activity-claude-code.py`, its five hooks
@@ -52,6 +52,9 @@ folders), as the sections below describe:
 - Codex: `~/.codex/ai-activity-codex.py` and its three hooks in
   `~/.codex/hooks.json`, next to your other hooks. Review them once with
   `/hooks`.
+- Cursor: `~/.cursor/hooks/ai-activity-cursor.py` and `afterAgentResponse`
+  in `~/.cursor/hooks.json`, next to your other hooks. Check Settings → Hooks.
+  Only new Agent turns reporting tokens are collected.
 - Antigravity: `~/.gemini/ai-activity-antigravity.py` and the named
   `ai-activity` hook in `~/.gemini/config/hooks.json`. Restart it and check
   the hook is enabled. Quotas stay off (`AI_ACTIVITY_ANTIGRAVITY_QUOTAS`).
@@ -572,6 +575,92 @@ modification time or import time, so totals may be incomplete on
 unsupported versions. Automated tests use synthetic SQLite/protobuf
 fixtures for both the legacy and the 1.2.12 layouts.
 
+## Send Cursor usage from a device
+
+1. Create a device key as above (the same key serves every tool).
+2. Copy `collectors/cursor.py` to `~/.cursor/hooks/ai-activity-cursor.py` and
+   replace `<server>` and `<device key>` at its top (or set
+   `AI_ACTIVITY_URL` / `AI_ACTIVITY_KEY` in Cursor's environment).
+3. Merge this into the **user** `~/.cursor/hooks.json`:
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "afterAgentResponse": [
+      {"command": "python3 ~/.cursor/hooks/ai-activity-cursor.py --hook", "timeout": 10}
+    ]
+  }
+}
+```
+
+On Windows, `~` is `C:\Users\<user>`. Use `python` and an absolute script
+path in the command, with JSON-escaped backslashes and quotes:
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "afterAgentResponse": [
+      {"command": "python \"C:\\Users\\<user>\\.cursor\\hooks\\ai-activity-cursor.py\" --hook", "timeout": 10}
+    ]
+  }
+}
+```
+
+The one-command installer uses the absolute installing interpreter and a
+PowerShell wrapper on Windows, so spaced interpreter and user paths work.
+Prefer it if Python is not on Cursor's PATH. Check the hook in Cursor's
+Settings → Hooks / Hooks output channel; Cursor reloads the configuration
+on save (restart if it has not loaded).
+
+**What is measured.** `afterAgentResponse` is the installed source of truth.
+The collector also accepts a `stop` payload if wired manually; a repeated
+conversation + generation ID counts once, with final counts replacing a
+partial turn when output rises. Each dashboard call represents one measured
+Agent turn, which can contain several model requests; the UI labels these
+as "Agent turns". It requires all four
+numeric counters: absent counts stay unavailable, never estimated.
+
+Raw hook fields are `input_tokens`, `output_tokens`, `cache_read_tokens`,
+`cache_write_tokens` (camelCase aliases are accepted). **Hook input includes
+cache reads and writes:** the server stores input minus both caches, stores
+cache separately, and retains output including reasoning. For input 1,000,
+output 80, cache read 600 and cache write 100, the total is 1,080, with 300
+uncached input. These are raw hook counts, not the disjoint SDK usage shape.
+The mapping was checked in the official
+[Cursor agent package 2026.09.28-64d2043](https://downloads.cursor.com/lab/2026.09.28-64d2043/linux/x64/agent-cli-package.tar.gz):
+the hook forwards turn usage and its Anthropic adapter subtracts both cache
+counters from input. Hook configuration is described in
+[Cursor's hooks reference](https://cursor.com/docs/hooks).
+
+**Privacy and retries.** Before answering `{}`, the hook retains only
+conversation/generation IDs, model, counts, timestamp and the local UTC
+offset in `~/.cache/ai-activity/cursor-events/` (one private JSON file per
+turn). It never retains or uploads reply/prompt text, email, paths or provider
+keys. If a hook has no timestamp, live receipt time is saved once; retries
+and partial/final updates preserve it. A detached worker uploads batches,
+with one uploader and at most one waiter. `cursor.json` keeps accepted
+metric hashes per server/device key; progress moves only after acceptance.
+An HTTP 429 respects `Retry-After` before another upload. A failed upload
+retries on the next hook, or by running the copied script without `--hook`.
+Schedule that command if retries are needed while Cursor is idle. Delete
+`cursor.json` to replay the retained metrics; changing the URL/key also
+replays them. This journal grows with measured turns and stays local until
+you remove it; removing `cursor-events/` erases that local history.
+
+**Scope and gaps.** This installs user hooks for local IDE Agent Chat / Cmd+K
+only. It collects future hook observations, with no import of pre-install
+Cursor history. Tab completions are a different hook surface. Some CLI or
+non-interactive versions omit these hooks or token fields; cloud agents
+load project hooks and cannot read your user configuration. Neither is
+promised in this first version. Parent turn counts can omit subagent usage;
+no subagent tokens, quotas or context fill are inferred. Missing windows
+stay unavailable and the Cursor card shows activity, like OpenCode. See
+[Cursor's explanation of the CLI hook gaps](https://forum.cursor.com/t/cursor-cli-omits-beforesubmitprompt-afteragentresponse-and-stop-hooks-loses-token-usage-and-emits-inconsistent-generation-id-values/169059/9)
+and [parent-only token counts](https://forum.cursor.com/t/how-to-obtain-token-usage-per-request/168317/11).
+Tests use synthetic hook fixtures; a real IDE turn remains to be verified.
+
 ## Send OpenCode usage from a device
 
 1. Create a device key as above (the same key serves every tool).
@@ -619,7 +708,7 @@ Each tool has one Python script in `collectors/`. They share the same design:
   `<server>` and `<device key>` at its top, or `AI_ACTIVITY_URL` /
   `AI_ACTIVITY_KEY` in the tool's environment (the environment wins). Linux,
   macOS and Windows alike (`python3` or `python`).
-- **Metrics only.** They read the tool's local files read-only and send ids,
+- **Metrics only.** They read local usage files read-only or receive live hook metrics, and send ids,
   model, time, the machine's UTC offset and token counts (plus quotas and
   context fill where the tool has them). Prompts, replies, tool output,
   titles, paths and provider keys never leave the device.
@@ -666,6 +755,7 @@ Each tool has one Python script in `collectors/`. They share the same design:
 | --- | --- | --- | --- | --- | --- |
 | `claude-code.py` | `~/.claude/ai-activity-claude-code.py` (Windows status wrapper: `.ps1` next to it) | the `UserPromptSubmit`, `PostToolUse`, `Stop`, `StopFailure` and `SessionEnd` hooks (tokens); the statusLine, every refresh (quotas, context) | `~/.claude/projects/**/*.jsonl` (sessions and subagents) | `offsets.json` (byte offset per transcript), `status.json` (posted/pending status and recent contexts per target) | `lock`, `waiter.lock`, `status-state.lock`, `status-<target>.lock` |
 | `codex.py` | `~/.codex/ai-activity-codex.py` | the `UserPromptSubmit`, `PostToolUse`, `Stop` and `SessionEnd` hooks | `~/.codex/sessions`, `~/.codex/archived_sessions` (`CODEX_HOME`) | `codex.json` (byte offset per rollout) | `codex.lock`, `codex-waiter.lock` |
+| `cursor.py` | `~/.cursor/hooks/ai-activity-cursor.py` (Windows: `.ps1` next to it) | `afterAgentResponse` user hook | stdin metrics, then `cursor-events/*.json` | `cursor.json` (accepted hashes per target) | `cursor-state.lock`, `cursor.lock`, `cursor-waiter.lock` |
 | `opencode.py` | `~/.config/opencode/ai-activity-opencode.py` | `opencode-plugin.js`, at start and on `session.idle` | `~/.local/share/opencode/opencode.db` (`XDG_DATA_HOME`, `OPENCODE_DB`), numeric fields only | `opencode.json` (last `time_updated` sent) | `opencode.lock` |
 | `antigravity.py` | `~/.gemini/ai-activity-antigravity.py` | the `PostInvocation` and `Stop` hooks | `~/.gemini/{antigravity,antigravity-cli,antigravity-ide}/conversations/*.db` (`GEMINI_CLI_HOME`); quotas from `agy`, opt-in | `antigravity.json` (per database), `antigravity-quota.json` | `antigravity.lock`, `antigravity-waiter.lock`, `antigravity-quota.lock` |
 
@@ -682,6 +772,9 @@ How each one is started:
   and the Linux/macOS hooks, which detach it with `setsid -f`). `--hook`
   (the Windows hooks) prints `{}` for Codex and starts the script again
   detached.
+- `cursor.py`: `--hook` allowlists stdin metrics into its local journal,
+  prints `{}`, and starts itself detached. Without arguments it uploads
+  unaccepted journal entries in the foreground (also suitable for cron).
 - `opencode.py`: without arguments, collects in the foreground; the plugin
   starts it detached, one run at a time.
 - `antigravity.py`: without arguments, collects in the foreground and
@@ -690,7 +783,7 @@ How each one is started:
   `{"decision":"stop"}` for `Stop`) and start a detached worker, which
   waits 2 seconds for Antigravity to write its metadata.
 
-Claude Code, Codex and OpenCode runs give up after 15 minutes (the progress
+Claude Code, Codex, Cursor and OpenCode runs give up after 15 minutes (the progress
 already accepted is kept). The payloads each script sends are described in
 `AGENTS.md` §5.
 

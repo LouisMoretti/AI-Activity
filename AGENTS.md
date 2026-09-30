@@ -6,7 +6,8 @@
 ## 1. What this is
 
 A personal, multi-device dashboard showing **real measured usage** of AI coding
-tools. Current scope: **Claude Code, Codex, OpenCode and Antigravity ingestion**.
+tools. Current scope: **Claude Code, Codex, Cursor, OpenCode and Antigravity ingestion**.
+Cursor uses the activity card too, with no inferred quotas or context.
 OpenCode has no quota of its own: its card shows the conversations active
 now (a reply in the last 10 minutes; listed in creation order so parallel
 ones never swap places), else the last one, on the right; today's tokens, conversations,
@@ -21,7 +22,7 @@ the last 7 days or the running total unless a week is hovered, focused or
 tapped), four stats (all-time tokens, today, sessions,
 current streak; hover shows the split by tool and model, or the longest
 streak), one card per tool in `TOOLS` order (Claude Code, Codex,
-Antigravity on a full row, then OpenCode, which takes 2/3 of the last row,
+Cursor and Antigravity on full rows, then OpenCode, which takes 2/3 of the last row,
 next to "Today by tool": today's tokens split by tool), recent conversations (10 + "Show more"). No tool filter:
 every tool is always shown; on your own page, a one-line box under them
 says how to add one (the install command, Settings → Devices). No cost or subscription tracking (removed on
@@ -293,7 +294,8 @@ README's Claude Code hook and statusLine commands and
 README's Codex Stop hook; `test/opencode-collector.test.js` runs
 `collectors/opencode.py` through its plugin on a fake OpenCode database;
 `test/antigravity-collector.test.js` runs `collectors/antigravity.py` on
-synthetic Antigravity databases; `test/install.test.js` runs `/install.sh`
+synthetic Antigravity databases; `test/cursor-collector.test.js` covers
+synthetic Cursor hooks, ingestion, retries and privacy; `test/install.test.js` runs `/install.sh`
 (and, on Windows, `/install.ps1`) in a temporary home.
 Types: `npm run typecheck` (tsc for server, svelte-check for web). Node >= 22.18 runs the TypeScript server directly
 (type stripping, no build step), so only erasable TS syntax is allowed (no
@@ -574,6 +576,7 @@ git worktree prune
 ```
 Claude Code hooks (tokens) + statusLine (quotas) → collectors/claude-code.py
 Codex Stop hook → collectors/codex.py
+Cursor afterAgentResponse hook → collectors/cursor.py
 OpenCode plugin → collectors/opencode.py
 Antigravity hooks → collectors/antigravity.py
 (python3, detached, on the user's device; README.md)
@@ -676,7 +679,7 @@ Components never branch on live vs demo: both sources map into the same
   Claude Code cancelling them does not kill the upload. It replaced a
   `setsid -f python3 -c` one-liner and kept its offsets file and lock.
 - Every collector keeps its progress (`offsets.json`, `codex.json`,
-  `opencode.json`, `antigravity.json`) per target: `{"targets": {"<fp>":
+  `opencode.json`, `antigravity.json`, `cursor.json`) per target: `{"targets": {"<fp>":
   {…}}}`, `fp` = the first 16 hex digits of SHA-256 of the normalized
   server URL (scheme and host lowercased, default port and trailing `/`
   dropped), `\n`, the
@@ -688,7 +691,7 @@ Components never branch on live vs demo: both sources map into the same
   targets is dropped (one full resend), except Antigravity's
   `{"scope": sha256(url + "\n" + key), …}`, carried over when it is the
   current target's. Issue #127.
-- README.md ends with "How the collector scripts work": what the four
+- README.md ends with "How the collector scripts work": what the five
   scripts share and, per script, where it is copied, what runs it, what it
   reads, its progress and lock files, and its flags. Keep it in step.
 - The collectors run on Windows too: locks are `msvcrt.locking` on the
@@ -737,7 +740,7 @@ Components never branch on live vs demo: both sources map into the same
   `python` on Windows, `python3` elsewhere) at OpenCode start and on every
   `session.idle`, one run at a time.
 - One-command install: `GET /install.sh` and `GET /install.ps1` (no
-  session) are `collectors/install.py` with the four collectors and the
+  session) are `collectors/install.py` with the five collectors and the
   OpenCode plugin embedded (`server/lib/installer.ts`, built at start; the
   Docker image copies `collectors/` for it), wrapped for sh and for
   PowerShell (base64, ASCII only; run through `iex`, so it throws rather
@@ -914,7 +917,7 @@ Counting rules:
 
 `POST /api/ingest/<tool>` with header `Authorization: Bearer <device key>`.
 The tool slug in the URL picks the payload normalizer
-(`server/lib/ingest.ts`, one entry per slug): `claude-code`, `codex`, `antigravity` and `opencode` (`TOOLS` in
+(`server/lib/ingest.ts`, one entry per slug): `claude-code`, `codex`, `cursor`, `antigravity` and `opencode` (`TOOLS` in
 `shared/types.ts`). There is no default: a bare `/api/ingest` and unknown slugs → `404`.
 Unknown or revoked keys → `401`. Small JSON bodies only (256 KB max).
 Rate limits per device key **and tool** (one key serves every tool on a
@@ -1149,6 +1152,49 @@ each conversation database under
 - Quota uploads back off on their own (five minutes after a failure, or
   `Retry-After`), so they never delay usage uploads.
 
+### Cursor sources → payload mapping (`POST /api/ingest/cursor`)
+
+`collectors/cursor.py` runs from the user `~/.cursor/hooks.json`
+`afterAgentResponse` hook, installed at `~/.cursor/hooks/ai-activity-cursor.py`.
+The installed source is `afterAgentResponse` alone; the collector also
+accepts `stop` with the same dedup identity. Only metric fields are retained
+in `~/.cache/ai-activity/cursor-events/<hashed-identity>.json` before answering
+`{}` and detaching a worker (one active uploader and one waiter).
+The journal is local history, not a transcript. A short `cursor-state.lock`
+serializes updates without holding a lock during network requests.
+
+| Hook source | Payload field |
+| --- | --- |
+| `generation_id` | `messages[].generation_id` |
+| `conversation_id` (else `session_id`) | `messages[].conversation_id` |
+| `model_id` (else `model`) | `messages[].model` (absent → null) |
+| timestamp, else live hook receipt time, saved once | `occurred_at` |
+| device UTC offset at that time | `utc_offset_min` |
+| `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens` (camelCase aliases accepted) | `usage` with the same snake_case counters |
+
+- Stored event `cursor:<conversation>:<generation>` and session
+  `cursor:<conversation>` cannot collide with other tools or conversations.
+  Partial/final and replay rules apply; the original time/offset is retained.
+- Raw hook input includes both caches (verified against the official Cursor
+  agent package `2026.09.28-64d2043`; README links the evidence). Stored
+  input subtracts both caches, output includes reasoning, and caches stay
+  separate. Cumulative session totals are never read.
+- All four counters must be numeric; missing usage, invalid ids and zero
+  turns are skipped. The UI labels each recorded call as an Agent turn, not every inner
+  model request. Quotas and context are never recorded, even if supplied.
+- `cursor.json` keeps accepted hashes per target, only after a successful
+  upload. Failures leave the journal intact; 429 stores `Retry-After` for
+  that target. Retry on a later hook or run the script without `--hook`.
+  A changed URL/key resends retained hook history; deleting `cursor.json`
+  does too. The journal grows until the user removes it.
+- V1 covers local IDE Agent Chat / Cmd+K after installation. No old history
+  import, Tab completion capture, cloud install or guaranteed CLI usage.
+  Parent hooks may omit subagent tokens. Never fill these gaps by guessing.
+  Tests use synthetic hook payloads; real IDE triggering is unverified.
+- The installer merges user hooks only, preserves other commands, removes
+  old AI Activity stop entries and keeps one afterAgentResponse entry. On
+  Windows it writes a PowerShell wrapper for absolute Python/script paths.
+
 ## 6. Viewer + device APIs
 
 Viewer (cookie session after a GitHub sign-in; every viewer API answers
@@ -1260,7 +1306,7 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   `Retry-After`:
   - public reads (`/api/u/…`, `/api/leaderboard`, `/api/profiles`): 300
     per client (the client address above), refill 5/s. A dashboard polls
-    9 of them every 5 s, so about two tabs fit behind one address. A
+    11 of them every 5 s, so about two tabs fit behind one address. A
     rate-limited refresh keeps the page as it was (the web client does
     not show it as "Could not reach the server");
   - signed-in routes (`/api/friends`, `/api/devices`, `/api/account`,
@@ -1307,11 +1353,15 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
 
 ## 7. Testing checklist (acceptance criteria)
 
-1. Real Claude Code, Codex, OpenCode or Antigravity activity → new tokens
+1. Real Claude Code, Codex, Cursor, OpenCode or Antigravity activity → new tokens
    and sessions appear, no duplicates (Codex: after `codex exec`, or any
    turn once the hook is trusted; OpenCode: once a session goes idle;
-   Antigravity: after a turn's hook fires).
-2. Resend the same message ids (a resent history does) →
+   Antigravity: after a turn's hook fires; Cursor: after an IDE Agent
+   response reports the four measured counters).
+2. Cursor: repeat response/stop generation ids → one turn; a refused
+   upload keeps its original timestamp and retries; no prompt/reply data
+   in the journal or payload; reinstall preserves other hooks and one handler.
+   Resend the same message ids (a resent history does) →
    `deduped`, totals unchanged; a partial then final entry counts once.
 3. Two devices, same account → quota cards show the current window's value,
    not a sum, and a stale post from the other device does not lower it.
@@ -1404,6 +1454,8 @@ dev server can read to `web/`, `shared/` and `node_modules/`, so `data/`
 
 - Codex: account-level usage from the App Server (`account/usage/read`)
   if it ever reports something the rollouts do not.
+- Cursor: measured CLI/cloud and subagent coverage when the hooks expose
+  reliable counts; optional project hook installation. No usage guesses.
 - OpenCode: billing mode per session (BYOK vs OpenCode's own), once it
   can be told apart without guessing; a quota only if a provider exposes
   one.

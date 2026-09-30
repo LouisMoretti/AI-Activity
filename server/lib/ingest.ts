@@ -351,6 +351,41 @@ function normalizeOpenCode(body: unknown): NormalizedBatch {
   };
 }
 
+/** Cursor hook counts include cache in input; persist disjoint counters once per turn. */
+function normalizeCursor(body: unknown): NormalizedBatch {
+  const src: Obj = isObj(body) ? body : {};
+  const now = nowSec();
+  const single = !Array.isArray(src.messages);
+  const messages: NormalizedMessage[] = [];
+  const validId = (v: unknown): v is string => typeof v === "string" && /^[A-Za-z0-9_-]{1,200}$/.test(v);
+  for (const m of single ? [src] : src.messages as unknown[]) {
+    if (!isObj(m) || !validId(m.generation_id) || !validId(m.conversation_id ?? m.session_id) || !isObj(m.usage)) continue;
+    const session = m.conversation_id ?? m.session_id;
+    const u = m.usage;
+    const counts = [u.input_tokens ?? u.inputTokens, u.output_tokens ?? u.outputTokens,
+      u.cache_read_tokens ?? u.cacheReadTokens, u.cache_write_tokens ?? u.cacheWriteTokens];
+    if (!counts.every((v) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0)) continue;
+    const cacheRead = toInt(u.cache_read_tokens ?? u.cacheReadTokens);
+    const cacheWrite = toInt(u.cache_write_tokens ?? u.cacheWriteTokens);
+    messages.push({
+      event_id: `cursor:${session}:${m.generation_id}`,
+      session_id: `cursor:${session}`,
+      prompt_id: null,
+      model: modelOf(m.model_id ?? m.model),
+      input_tokens: Math.max(0, toInt(u.input_tokens ?? u.inputTokens) - cacheRead - cacheWrite),
+      output_tokens: toInt(u.output_tokens ?? u.outputTokens),
+      cache_read_tokens: cacheRead,
+      cache_write_tokens: cacheWrite,
+      context_window_size: null,
+      context_used_pct: null,
+      occurred_at: eventTime(m.occurred_at, now),
+      utc_offset_min: utcOffset(m.utc_offset_min),
+    });
+  }
+  return { tool: "cursor", messages, quotas: [], account_ref: accountRef(src),
+    measured_at: eventTime(src.occurred_at, now), context: null, single };
+}
+
 /** Antigravity ids (session and response) are opaque; stored prefixed so they never collide. */
 const ANTIGRAVITY_ID = /^[A-Za-z0-9_-]{1,200}$/;
 const antigravityId = (v: unknown): v is string => typeof v === "string" && ANTIGRAVITY_ID.test(v);
@@ -420,6 +455,7 @@ function normalizeAntigravity(body: unknown): NormalizedBatch {
 const normalizers: Record<Tool, (body: unknown) => NormalizedBatch> = {
   "claude-code": normalizeClaudeCode,
   codex: normalizeCodex,
+  cursor: normalizeCursor,
   opencode: normalizeOpenCode,
   antigravity: normalizeAntigravity,
 };
