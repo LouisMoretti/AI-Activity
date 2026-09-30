@@ -33,7 +33,7 @@ else:
     import fcntl
 
 # Bump with shared/collectors.ts on every change to this file.
-VERSION = 4
+VERSION = 1
 COLLECTOR = {"name": "cursor", "version": VERSION}
 SERVER = os.environ.get("AI_ACTIVITY_URL", "<server>").strip().rstrip("/")
 KEY = os.environ.get("AI_ACTIVITY_KEY", "<device key>").strip()

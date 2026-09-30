@@ -155,7 +155,7 @@ describe("Cursor hook collector", () => {
     assert.equal(event.utc_offset_min % 15, 0);
     assert.equal(captured[0].url, "/api/ingest/cursor");
     assert.equal(captured[0].auth, "Bearer ak_fixture");
-    assert.equal(captured[0].body.collector.version, 4);
+    assert.equal(captured[0].body.collector.version, 1);
     assert.ok(!JSON.stringify(captured[0].body).includes("PRIVATE_"));
     assert.ok(!JSON.stringify(events()).includes("PRIVATE_"));
     assert.ok(!fs.readFileSync(database()).includes(Buffer.from("PRIVATE_")));
