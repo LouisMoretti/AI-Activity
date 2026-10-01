@@ -132,7 +132,10 @@ native). It also builds the Docker image on both and smoke-tests it
 as a pull request preview (`deploy/compose.preview.yaml`: hardened, its
 alias on the preview network), and
 runs every collector test on Windows (`collectors (windows)`, through the
-README's Windows commands).
+README's Windows commands) and macOS (`collectors (macos)`, through
+`/install.sh` and the native hooks). The path-filtered Collector CLI smoke
+workflow also runs the real Claude Code, Codex, OpenCode and Antigravity CLIs
+on macOS, Linux and Windows against local model stubs.
 
 ### Deploy (Docker + Caddy)
 
@@ -718,6 +721,8 @@ Components never branch on live vs demo: both sources map into the same
 - The Codex collector (`collectors/codex.py`, copied to
   `~/.codex/ai-activity-codex.py`, run detached by `UserPromptSubmit`,
   `PostToolUse`, `Stop` and `SessionEnd` hooks in `~/.codex/hooks.json`) works the same way on
+  macOS through `--hook` even if a third-party `setsid` is installed, while
+  Linux uses `setsid -f` and Windows uses PowerShell's `&` with `--hook`. It reads
   the rollouts under `~/.codex/sessions` and `archived_sessions` (offsets in
   `~/.cache/ai-activity/codex.json`). `Stop` does not fire on rate-limit
   stops (upstream Codex bug), so `UserPromptSubmit` is the backstop that

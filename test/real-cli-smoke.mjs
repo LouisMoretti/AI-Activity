@@ -58,8 +58,13 @@ function run(bin, args, env, { cwd, input = "", timeout = 30000 } = {}) {
 function interactiveClaudeUnix(cli, env, cwd, uploaded) {
   return new Promise((resolve, reject) => {
     const quoted = "'" + cli.replaceAll("'", "'\\''") + "'";
-    const child = spawn("script", ["-q", "-e", "-c",
-      `${quoted} --model claude-sonnet-4-5`, "/dev/null"],
+    // macOS uses BSD script: the transcript path comes before the command,
+    // and it has no Linux -e/-c flags. Both forms provide a real PTY for
+    // Claude's interactive status line.
+    const args = process.platform === "darwin"
+      ? ["-q", "/dev/null", cli, "--model", "claude-sonnet-4-5"]
+      : ["-q", "-e", "-c", `${quoted} --model claude-sonnet-4-5`, "/dev/null"];
+    const child = spawn("script", args,
     { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
     let output = "";
     let acceptedKey = false;

@@ -11,6 +11,7 @@ on:
       - "shared/collectors.ts"
       - "test/*collector*.test.js"
       - "test/install.test.js"
+      - "test/installed-collectors.test.js"
       - "test/helpers.js"
       - "test/real-cli-smoke.mjs"
       - "test/real-antigravity-smoke.mjs"
@@ -25,6 +26,7 @@ on:
       - "shared/collectors.ts"
       - "test/*collector*.test.js"
       - "test/install.test.js"
+      - "test/installed-collectors.test.js"
       - "test/helpers.js"
       - "test/real-cli-smoke.mjs"
       - "test/real-antigravity-smoke.mjs"
@@ -55,6 +57,7 @@ jobs:
           - { runner: ubuntu-latest, name: linux x64, platform: linux-x64 }
           - { runner: ubuntu-24.04-arm, name: linux arm64, platform: linux-arm64 }
           - { runner: windows-latest, name: windows x64, platform: windows-x64 }
+          - { runner: macos-latest, name: macos, platform: macos }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
@@ -69,20 +72,19 @@ jobs:
       - run: npm ci
       - run: npm run build
       - uses: actions/cache@v4
-        if: runner.os == 'Linux'
+        if: runner.os != 'Windows'
         id: cli-cache
         with:
           path: ${{ runner.temp }}/collector-clis
           key: collector-clis-${{ matrix.platform }}-claude-${{ env.CLAUDE_CLI_VERSION }}-codex-${{ env.CODEX_CLI_VERSION }}-opencode-${{ env.OPENCODE_CLI_VERSION }}-pty-${{ env.PTY_VERSION }}
-      - name: Install pinned real CLIs (Linux)
-        if: runner.os == 'Linux' && steps.cli-cache.outputs.cache-hit != 'true'
+      - name: Install pinned real CLIs (Linux and macOS)
+        if: runner.os != 'Windows' && steps.cli-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p "$RUNNER_TEMP/collector-clis"
-          /usr/bin/time -f "Cold CLI install elapsed: %e seconds" \
-            npm install --prefix "$RUNNER_TEMP/collector-clis" --no-save \
-              "@anthropic-ai/claude-code@$CLAUDE_CLI_VERSION" \
-              "@openai/codex@$CODEX_CLI_VERSION" \
-              "opencode-ai@$OPENCODE_CLI_VERSION"
+          npm install --prefix "$RUNNER_TEMP/collector-clis" --no-save \
+            "@anthropic-ai/claude-code@$CLAUDE_CLI_VERSION" \
+            "@openai/codex@$CODEX_CLI_VERSION" \
+            "opencode-ai@$OPENCODE_CLI_VERSION"
       - name: Install pinned real CLIs and ConPTY (Windows)
         if: runner.os == 'Windows' && steps.cli-cache.outputs.cache-hit != 'true'
         shell: pwsh
@@ -109,8 +111,9 @@ jobs:
       # no provider key or account): no PTY/TUI dance like Claude Code's
       # interactive status line, and a Gemini event-stream stub instead of
       # the Anthropic/OpenAI fake model API.
-      - name: Install Antigravity CLI (Linux)
-        if: runner.os == 'Linux'
+      - name: Install Antigravity CLI (Linux and macOS)
+        if: runner.os != 'Windows'
+        shell: bash
         run: |
           curl -fsSL --compressed https://antigravity.google/cli/install.sh | bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
@@ -120,14 +123,14 @@ jobs:
         run: |
           irm https://antigravity.google/cli/install.ps1 | iex
           Add-Content $env:GITHUB_PATH "$env:LOCALAPPDATA\agy\bin"
-      - name: Chat with local model APIs and verify installed collectors
+      - name: Chat with local model APIs and verify installed collectors (Linux and macOS)
         env:
           CLI_ROOT: ${{ runner.temp }}/collector-clis/node_modules
           PYTHON: python
         shell: bash
-        if: runner.os == 'Linux'
+        if: runner.os != 'Windows'
         run: |
-          /usr/bin/time -f "CLI smoke elapsed: %e seconds" node --test test/real-cli-smoke.mjs
+          node --test test/real-cli-smoke.mjs
       - name: Chat with local model APIs and verify installed collectors (Windows)
         if: runner.os == 'Windows'
         env:
@@ -155,12 +158,12 @@ jobs:
       # Same headless agy chat on every platform of the matrix: agy --version
       # fails the step when the binary is missing, so the test below can never
       # pass as a silent skip.
-      - name: Chat with a local Gemini stub and verify the Antigravity hook (Linux)
-        if: runner.os == 'Linux'
+      - name: Chat with a local Gemini stub and verify the Antigravity hook (Linux and macOS)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           agy --version
-          /usr/bin/time -f "Antigravity smoke elapsed: %e seconds" node --test test/real-antigravity-smoke.mjs
+          node --test test/real-antigravity-smoke.mjs
       - name: Chat with a local Gemini stub and verify the Antigravity hook (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
