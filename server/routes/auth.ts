@@ -140,7 +140,7 @@ export function authRoutes(
       const who = auth.resolve(c);
       return c.json<AuthStatus>({
         ...(preview ? { preview: true } : {}),
-        site_analytics: siteAnalytics,
+        ...(siteAnalytics ? { site_analytics: true } : {}),
         authenticated: Boolean(who),
         user: who?.account ?? null,
         setup_required: !accountsExist(db) && !auth.limited,

@@ -4,6 +4,7 @@ import os from "node:os";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { COLLECTOR_VERSIONS } from "../shared/collectors.ts";
+import { MIGRATIONS } from "../server/db/migrations.ts";
 import {
   startServer, req, newDevice, event, collector, codexResponse, opencodeMessage, login, register, userId, TEST_ADMIN,
   awayFromMidnight, githubSignIn, githubUser, githubFollowing, renameGithubUser, githubRequests, githubCode,
@@ -1783,7 +1784,7 @@ describe("migrations", () => {
       assert.ok(!cols.includes("cost_estimated_usd"));
       // Migration 5 starts over for GitHub sign-in; the backup made first keeps it.
       assert.equal(db.prepare("SELECT COUNT(*) AS n FROM usage_events").get().n, 0);
-      const [backup] = fs.readdirSync(`${dir}/backups`).filter((f) => f.endsWith("-pre-v5.db"));
+      const [backup] = fs.readdirSync(`${dir}/backups`).filter((f) => f.endsWith(`-pre-v${MIGRATIONS.length}.db`));
       const kept = new Database(`${dir}/backups/${backup}`, { readonly: true });
       assert.equal(kept.prepare("SELECT input_tokens FROM usage_events WHERE event_id = 'e1'").get().input_tokens, 42);
       kept.close();

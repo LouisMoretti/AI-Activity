@@ -6,7 +6,7 @@ test("site analytics are disabled unless opted in", async (t) => {
   const srv = await startServer();
   t.after(() => srv.stop());
 
-  assert.equal((await req(srv.base, "GET", "/api/auth/status")).json.site_analytics, false);
+  assert.equal((await req(srv.base, "GET", "/api/auth/status")).json.site_analytics, undefined);
   const posted = await req(srv.base, "POST", "/api/analytics/view", { anon: true, body: { page: "profile", referrer: "https://search.example/private" } });
   assert.equal(posted.status, 204);
   assert.deepEqual((await req(srv.base, "GET", "/api/admin/analytics")).json, { days: [], pages: [], sources: [] });

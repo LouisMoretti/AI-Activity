@@ -257,7 +257,7 @@ describe("versioned migrations", () => {
       assert.throws(() => db.prepare("INSERT INTO devices (user_id, name, key_hash, key_prefix, created_at) VALUES (99, 'x', 'h', 'p', 0)").run(), /FOREIGN KEY/);
       db.prepare("INSERT INTO devices (user_id, name, key_hash, key_prefix, created_at) VALUES (1, 'x', 'h', 'p', 0)").run();
       // Everything from before is in the backup taken first (the only copy left).
-      const backups = fs.readdirSync(path.join(t.dir, "backups")).filter((f) => f.endsWith("-pre-v5.db"));
+      const backups = fs.readdirSync(path.join(t.dir, "backups")).filter((f) => f.endsWith(`-pre-v${LATEST}.db`));
       assert.equal(backups.length, 1);
       const backup = new Database(path.join(t.dir, "backups", backups[0]), { readonly: true });
       try {
