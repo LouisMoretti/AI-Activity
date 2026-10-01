@@ -132,7 +132,7 @@
           <span>Copy Windows command</span>
         </button>
       </div>
-      <span class="copy-feedback" aria-live="polite" aria-atomic="true">{copiedAction === "prompt" ? "AI setup prompt ready to paste." : copiedAction === "unix" ? "Linux/macOS command ready to paste." : copiedAction === "windows" ? "Windows command ready to paste." : copiedAction === "key" ? "Device key ready to paste." : ""}</span>
+      <span class="copy-feedback" aria-live="polite" aria-atomic="true">{copiedAction === "prompt" ? "AI setup prompt ready to paste." : copiedAction === "unix" ? "Linux/macOS command ready to paste." : copiedAction === "windows" ? "Windows command ready to paste." : ""}</span>
       <p class="key-note">The AI prompt includes this device's ingestion key. Sharing the prompt with an AI service shares that key.</p>
       <details>
         <summary>Review AI prompt</summary>
@@ -148,6 +148,7 @@
             Copy
           </button>
         </div>
+        <span class="copy-feedback key-copy-feedback" class:active={copiedAction === "key"} aria-live="polite" aria-atomic="true">{copiedAction === "key" ? "Device key ready to paste." : ""}</span>
       </div>
       {#if fallback}
         <label class="fallback-label" for="setup-fallback">{fallback.label}</label>
@@ -225,11 +226,14 @@
   .setup p { font-size: 13px; }
   .setup-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0 4px; }
   .setup-actions button, .copy-action { display: inline-flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap; }
+  .copy-action { color: var(--text); border-color: color-mix(in srgb, var(--accent) 28%, var(--line)); background: color-mix(in srgb, var(--accent) 7%, var(--surface-2)); }
   .ai-copy { border: 1px solid transparent; color: var(--text); background: linear-gradient(var(--surface-2), var(--surface-2)) padding-box, linear-gradient(120deg, var(--ai-blue), var(--ai-violet)) border-box; }
   .ai-copy:hover { background: linear-gradient(var(--raised), var(--raised)) padding-box, linear-gradient(120deg, var(--ai-blue), var(--ai-violet)) border-box; box-shadow: 0 0 15px color-mix(in srgb, var(--ai-violet) 18%, transparent); }
   .ai-mark { width: 18px; height: 18px; flex: none; }
   .copy-success, .copy-success:hover, .ai-copy.copy-success, .ai-copy.copy-success:hover { color: var(--ok); border-color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, var(--surface-2)); box-shadow: none; }
   .copy-feedback { display: block; min-height: 18px; color: var(--ok); font-size: 12px; }
+  .key-copy-feedback { min-height: 0; }
+  .key-copy-feedback.active { margin-top: 4px; }
   .key-note { color: var(--warn); }
   details { margin-top: 10px; font-size: 13px; }
   summary { cursor: pointer; }
@@ -238,8 +242,9 @@
   .key-code-block { position: relative; min-width: 0; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg); }
   .key-code-block pre { margin: 0; padding: 13px 86px 13px 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .key-code-block code { color: var(--text); }
-  .key-copy { position: absolute; top: 7px; right: 7px; display: inline-flex; align-items: center; gap: 5px; padding: 4px 7px; background: var(--surface-2); font-size: 12px; }
-  .key-copy.copy-success, .key-copy.copy-success:hover { background: color-mix(in srgb, var(--ok) 12%, var(--surface-2)); }
+  .key-copy { position: absolute; top: 7px; right: 7px; display: inline-flex; align-items: center; gap: 5px; padding: 4px 7px; color: var(--text); border-color: color-mix(in srgb, var(--accent) 28%, var(--line)); background: color-mix(in srgb, var(--accent) 7%, var(--surface-2)); font-size: 12px; }
+  .copy-action:hover:not(.copy-success), .key-copy:hover:not(.copy-success) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface-2)); }
+  .key-copy.copy-success, .key-copy.copy-success:hover { color: var(--ok); border-color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, var(--surface-2)); }
   .key-copy svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
   textarea { display: block; width: 100%; min-height: 220px; margin-top: 8px; padding: 10px; resize: vertical; overflow-wrap: anywhere; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text); font-family: var(--mono); font-size: 12px; }
   .fallback-label { display: block; margin-top: 12px; font-size: 13px; }
