@@ -105,11 +105,7 @@
           <AdminOverview />
         </Section>
         <Section title="Site analytics" subtitle="Website visits, separate from AI usage">
-          {#if dash.siteAnalytics}
-            <SiteAnalytics />
-          {:else}
-            <p class="howto">Disabled. Set <span class="mono">SITE_ANALYTICS=1</span> on the server and restart to collect privacy-friendly, first-party site analytics.</p>
-          {/if}
+          <SiteAnalytics />
         </Section>
         {#if dash.preview}
           <Section title="Preview data generator" subtitle="Fictional activity on your own account">

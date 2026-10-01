@@ -2,21 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { req, startServer } from "./helpers.js";
 
-test("site analytics are disabled unless opted in", async (t) => {
+test("site analytics are on by default and aggregate generic routes, referrer hosts, visitors and sign-ups", async (t) => {
   const srv = await startServer();
   t.after(() => srv.stop());
 
-  assert.equal((await req(srv.base, "GET", "/api/auth/status")).json.site_analytics, undefined);
-  const posted = await req(srv.base, "POST", "/api/analytics/view", { anon: true, body: { page: "profile", referrer: "https://search.example/private" } });
-  assert.equal(posted.status, 204);
-  assert.deepEqual((await req(srv.base, "GET", "/api/admin/analytics")).json, { days: [], pages: [], sources: [] });
-});
-
-test("enabled analytics aggregate generic routes, referrer hosts, visitors and sign-ups", async (t) => {
-  const srv = await startServer({ env: { SITE_ANALYTICS: "1" } });
-  t.after(() => srv.stop());
-
-  assert.equal((await req(srv.base, "GET", "/api/auth/status")).json.site_analytics, true);
+  assert.equal((await req(srv.base, "GET", "/api/admin/analytics", { anon: true })).status, 401);
   const headers = { "user-agent": "test-browser", "x-forwarded-for": "198.51.100.7" };
   for (let i = 0; i < 2; i++) {
     const posted = await req(srv.base, "POST", "/api/analytics/view", {
@@ -35,7 +25,7 @@ test("enabled analytics aggregate generic routes, referrer hosts, visitors and s
 });
 
 test("site analytics accepts only known page categories", async (t) => {
-  const srv = await startServer({ env: { SITE_ANALYTICS: "1" } });
+  const srv = await startServer();
   t.after(() => srv.stop());
   assert.equal((await req(srv.base, "POST", "/api/analytics/view", { anon: true, body: { page: "/u/private-login" } })).status, 400);
 });

@@ -30,9 +30,9 @@ purpose). Only demo data carries a badge ("Demonstration data"). Palette: the
 original dark theme; type: Geist, with Geist Mono only for ids and model
 names. Quota bars carry a mark for how far into the window we are.
 
-Optional site analytics are disabled unless `SITE_ANALYTICS=1`. When enabled,
-the app counts daily SPA page categories, external referrer hostnames, unique
-visitors, and successful account creations. It does not store full paths,
+Site analytics are enabled by default. The app counts daily SPA page
+categories, external referrer hostnames, unique visitors, and successful
+account creations. It does not store full paths,
 profile names, account ids, cookies, raw IP addresses or user-agent strings;
 daily unique visitors use an in-memory, daily rotating HMAC of the client IP
 and user agent. The aggregates are kept in separate tables from measured AI

@@ -39,7 +39,7 @@ export function recordSignup(db: DB): void {
     ON CONFLICT(day) DO UPDATE SET signups = signups + 1`).run(today);
 }
 
-export function siteAnalyticsRoutes(db: DB, client: ClientInfo, enabled: boolean) {
+export function siteAnalyticsRoutes(db: DB, client: ClientInfo) {
   const hashVisitor = visitorHasher();
   const recordView = db.transaction((date: string, page: string, source: string, visitor: string) => {
     db.prepare(`INSERT INTO site_analytics_pageviews(day, page, source, views) VALUES (?, ?, ?, 1)
@@ -53,7 +53,6 @@ export function siteAnalyticsRoutes(db: DB, client: ClientInfo, enabled: boolean
 
   return new Hono()
     .post("/view", async (c) => {
-      if (!enabled) return c.body(null, 204);
       const body = await readJson(c);
       if (typeof body.page !== "string" || !PAGES.has(body.page)) return c.json({ error: "invalid page" }, 400);
       const date = day();

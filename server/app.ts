@@ -40,8 +40,8 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
     // with a state this server just handed out.
     .on("POST", "/auth/github", oauth)
     .on("POST", "/analytics/view", publicReads)
-    .route("/auth", authRoutes(db, auth, client, config.github, config.publicUrl, setupCode, config.preview, config.siteAnalytics))
-    .route("/analytics", siteAnalyticsRoutes(db, client, config.siteAnalytics))
+    .route("/auth", authRoutes(db, auth, client, config.github, config.publicUrl, setupCode, config.preview))
+    .route("/analytics", siteAnalyticsRoutes(db, client))
     .route("/ingest", ingestRoutes(db))
     // Public, read-only: profile pages, the account list and the leaderboard.
     .use("/u/*", publicReads)

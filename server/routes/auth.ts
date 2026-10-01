@@ -84,7 +84,6 @@ export function authRoutes(
   db: DB, auth: ViewerAuth, client: ClientInfo, github: GithubConfig | null, publicUrl: string | null,
   setupCode: string | null,
   preview = false,
-  siteAnalytics = false,
 ) {
   let signups = new Map<string, number>(); // client → accounts created in window
   let signupWindow = Date.now();
@@ -114,7 +113,7 @@ export function authRoutes(
     })();
     if (typeof id === "number") {
       if (!admin) signups.set(auth.clientId(c), signupsBy(c) + 1);
-      if (siteAnalytics) recordSignup(db);
+      recordSignup(db);
     }
     return id;
   };
@@ -140,7 +139,6 @@ export function authRoutes(
       const who = auth.resolve(c);
       return c.json<AuthStatus>({
         ...(preview ? { preview: true } : {}),
-        ...(siteAnalytics ? { site_analytics: true } : {}),
         authenticated: Boolean(who),
         user: who?.account ?? null,
         setup_required: !accountsExist(db) && !auth.limited,

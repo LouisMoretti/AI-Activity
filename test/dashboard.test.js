@@ -271,7 +271,8 @@ describe("dashboard state", () => {
     routes["/api/auth/github"] = { url: AUTHORIZE };
     assert.equal(await dash.signIn(), null);
     // GitHub sends the browser back to next once signed in.
-    assert.deepEqual(sent, [{ path: "/api/auth/github", body: { next: "/u/me?tab=x" } }]);
+    assert.deepEqual(sent.filter((entry) => entry.path === "/api/auth/github"),
+      [{ path: "/api/auth/github", body: { next: "/u/me?tab=x" } }]);
     assert.deepEqual(assigned, [AUTHORIZE]);
     stop();
   });
@@ -280,7 +281,8 @@ describe("dashboard state", () => {
     const { dash, stop } = await open("/", { "/api/auth/status": { ...signedOut, setup_required: true }, "/api/auth/github": 401 });
     assert.equal(dash.status, "setup");
     assert.equal(await dash.signIn("WRONG-CODE"), "Wrong setup code: copy it from the server log.");
-    assert.deepEqual(sent, [{ path: "/api/auth/github", body: { next: "/", setup_code: "WRONG-CODE" } }]);
+    assert.deepEqual(sent.filter((entry) => entry.path === "/api/auth/github"),
+      [{ path: "/api/auth/github", body: { next: "/", setup_code: "WRONG-CODE" } }]);
     assert.deepEqual([dash.status, assigned.length], ["setup", 0]);
     stop();
   });
@@ -322,7 +324,8 @@ describe("dashboard state", () => {
   test("signing in again from Settings comes back to Settings, where a failure is told", async () => {
     const { dash, stop } = await open("/settings", { "/api/auth/github": { url: AUTHORIZE } });
     assert.equal(await dash.signInAgain(), null);
-    assert.deepEqual(sent, [{ path: "/api/auth/github", body: { next: "/settings", reauth: true } }]);
+    assert.deepEqual(sent.filter((entry) => entry.path === "/api/auth/github"),
+      [{ path: "/api/auth/github", body: { next: "/settings", reauth: true } }]);
     assert.deepEqual(assigned, [AUTHORIZE]);
     stop();
     const back = await open("/settings?auth_error=other_account");
@@ -336,6 +339,7 @@ describe("dashboard state", () => {
     const { dash, stop } = await open("/leaderboard", profileRoutes("me"));
     dash.go("/");
     assert.equal(loc.pathname, "/u/me");
+    await settle();
     stop();
   });
 
@@ -346,10 +350,10 @@ describe("dashboard state", () => {
     assert.equal(dash.own, false);
     assert.deepEqual(dash.shown, { username: "demo", display_name: "Demo preview", avatar_url: null });
     assert.equal(dash.vm.demo, true);
-    assert.deepEqual(calls, ["/api/auth/status"]);
+    assert.deepEqual(calls, ["/api/auth/status", "/api/analytics/view"]);
     tick();
     await settle();
-    assert.deepEqual(calls, ["/api/auth/status"], "no refresh");
+    assert.deepEqual(calls, ["/api/auth/status", "/api/analytics/view"], "no refresh");
     stop();
   });
 
@@ -415,9 +419,11 @@ describe("dashboard state", () => {
   test("navigating loads the new page once", async () => {
     const { dash, stop } = await open("/u/me", profileRoutes("me"));
     const before = calls.filter((c) => c === "/api/auth/status").length;
+    assert.deepEqual(sent.filter((entry) => entry.path === "/api/analytics/view").map((entry) => entry.body.page), ["profile"]);
     dash.go("/leaderboard");
     await settle();
     assert.equal(calls.filter((c) => c === "/api/auth/status").length, before + 1);
+    assert.deepEqual(sent.filter((entry) => entry.path === "/api/analytics/view").map((entry) => entry.body.page), ["profile", "leaderboard"]);
     stop();
   });
 });
