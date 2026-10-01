@@ -81,10 +81,10 @@ jobs:
         if: runner.os != 'Windows' && steps.cli-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p "$RUNNER_TEMP/collector-clis"
-          npm install --prefix "$RUNNER_TEMP/collector-clis" --no-save \
-            "@anthropic-ai/claude-code@$CLAUDE_CLI_VERSION" \
-            "@openai/codex@$CODEX_CLI_VERSION" \
-            "opencode-ai@$OPENCODE_CLI_VERSION"
+          packages=("@anthropic-ai/claude-code@$CLAUDE_CLI_VERSION"
+            "@openai/codex@$CODEX_CLI_VERSION" "opencode-ai@$OPENCODE_CLI_VERSION")
+          if [ "$RUNNER_OS" = macOS ]; then packages+=("node-pty@$PTY_VERSION"); fi
+          npm install --prefix "$RUNNER_TEMP/collector-clis" --no-save "${packages[@]}"
       - name: Install pinned real CLIs and ConPTY (Windows)
         if: runner.os == 'Windows' && steps.cli-cache.outputs.cache-hit != 'true'
         shell: pwsh

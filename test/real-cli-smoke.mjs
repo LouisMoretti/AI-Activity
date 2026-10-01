@@ -58,13 +58,8 @@ function run(bin, args, env, { cwd, input = "", timeout = 30000 } = {}) {
 function interactiveClaudeUnix(cli, env, cwd, uploaded) {
   return new Promise((resolve, reject) => {
     const quoted = "'" + cli.replaceAll("'", "'\\''") + "'";
-    // macOS uses BSD script: the transcript path comes before the command,
-    // and it has no Linux -e/-c flags. Both forms provide a real PTY for
-    // Claude's interactive status line.
-    const args = process.platform === "darwin"
-      ? ["-q", "/dev/null", cli, "--model", "claude-sonnet-4-5"]
-      : ["-q", "-e", "-c", `${quoted} --model claude-sonnet-4-5`, "/dev/null"];
-    const child = spawn("script", args,
+    const child = spawn("script", ["-q", "-e", "-c",
+      `${quoted} --model claude-sonnet-4-5`, "/dev/null"],
     { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
     let output = "";
     let acceptedKey = false;
@@ -97,11 +92,12 @@ function interactiveClaudeUnix(cli, env, cwd, uploaded) {
   });
 }
 
-function interactiveClaudeWindows(cli, env, cwd, uploaded, modelCalled) {
+function interactiveClaudePty(cli, env, cwd, uploaded, modelCalled) {
   const pty = require(path.join(process.env.CLI_ROOT, "node-pty"));
   return new Promise((resolve) => {
     const child = pty.spawn(cli, ["--model", "claude-sonnet-4-5"],
-      { cwd, env, cols: 120, rows: 40, useConptyDll: true });
+      { cwd, env, cols: 120, rows: 40,
+        ...(process.platform === "win32" ? { useConptyDll: true } : {}) });
     let output = "";
     let trusted = false;
     let acceptedKey = false;
@@ -128,7 +124,8 @@ function interactiveClaudeWindows(cli, env, cwd, uploaded, modelCalled) {
       // A cold Windows launch can redraw the terminal after accepting the
       // key. Wait for the chat screen before typing, then retry only if the
       // local model API has still received no request.
-      if (acceptedKey && !ready && (output.includes("auto mode on") || output.includes("manual mode on"))) {
+      if (acceptedKey && !ready && (process.platform === "darwin" ||
+          output.includes("auto mode on") || output.includes("manual mode on"))) {
         ready = true;
         promptStart = setTimeout(() => {
           sendPrompt();
@@ -154,7 +151,7 @@ function interactiveClaudeWindows(cli, env, cwd, uploaded, modelCalled) {
   });
 }
 
-const interactiveClaude = process.platform === "win32" ? interactiveClaudeWindows : interactiveClaudeUnix;
+const interactiveClaude = process.platform === "linux" ? interactiveClaudeUnix : interactiveClaudePty;
 
 async function localServer(handler) {
   const server = http.createServer(handler);

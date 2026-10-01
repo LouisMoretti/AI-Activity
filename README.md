@@ -822,7 +822,7 @@ Its Linux x64, Linux ARM64, Windows x64 and macOS jobs install pinned Claude Cod
 Codex and OpenCode CLIs, point each at a local fake model API, complete one
 chat, and check that the installed integration reaches the real app. Windows
 uses a temporary ConPTY for Claude Code's interactive status line; macOS uses
-its BSD `script` command for the same check and exercises Codex without
+a pseudo-terminal through `node-pty` for the same check and exercises Codex without
 `setsid`. The same jobs also install the latest Antigravity CLI, chat with a
 local Gemini stub, and verify that its installed hook uploads measured usage; see the
 Antigravity section above. `agy` stays in its own steps because it is a
