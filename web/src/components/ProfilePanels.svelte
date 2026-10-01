@@ -368,11 +368,13 @@
   .row { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
   /* Every grid child is placed explicitly, so nothing can ever land squeezed in the divider's track. */
   /* The grid holds exactly the cards (one column each); the divider floats
-     above their boundary with zero footprint, so it never pushes them. */
+     dead-center in the gap between them with zero footprint, so it never
+     pushes them. A gap g shifts the gap's middle by ±g/6 off the bare
+     fractions (half cancels out exactly). */
   .cells { position: relative; display: grid; gap: 16px; grid-template-columns: 1fr; }
-  .row.half .cells { grid-template-columns: 1fr 1fr; --split: calc(50% - 8px); }
-  .row.wide-left .cells { grid-template-columns: 2fr 1fr; --split: calc(66.6667% - 10.6667px); }
-  .row.wide-right .cells { grid-template-columns: 1fr 2fr; --split: calc(33.3333% - 5.3333px); }
+  .row.half .cells { grid-template-columns: 1fr 1fr; --split: 50%; }
+  .row.wide-left .cells { grid-template-columns: 2fr 1fr; --split: calc(66.6667% - 2.6667px); }
+  .row.wide-right .cells { grid-template-columns: 1fr 2fr; --split: calc(33.3333% + 2.6667px); }
   .cell { min-width: 0; display: flex; flex-direction: column; }
   .cell:only-child { grid-column: 1 / -1; }
   .cell :global(article) { flex: 1; }
