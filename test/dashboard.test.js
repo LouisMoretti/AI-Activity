@@ -21,12 +21,18 @@ const setUrl = (url) => {
   loc.search = u.search;
 };
 let intervals = [];
+const activeIntervals = new Set();
+const documentListeners = new Map();
 globalThis.location = loc;
 globalThis.history = { pushState: (_s, _t, url) => setUrl(url), replaceState: (_s, _t, url) => setUrl(url) };
 globalThis.window = { addEventListener() {}, removeEventListener() {} };
-globalThis.document = { hidden: false, addEventListener() {}, removeEventListener() {} };
-globalThis.setInterval = (fn) => { intervals.push(fn); return intervals.length; };
-globalThis.clearInterval = () => {};
+globalThis.document = {
+  hidden: false,
+  addEventListener: (name, fn) => documentListeners.set(name, fn),
+  removeEventListener: (name, fn) => { if (documentListeners.get(name) === fn) documentListeners.delete(name); },
+};
+globalThis.setInterval = (fn) => { intervals.push(fn); activeIntervals.add(intervals.length); return intervals.length; };
+globalThis.clearInterval = (id) => activeIntervals.delete(id);
 
 /** path → response: a JSON body, a status number, or a function of the call count. */
 let routes = {};
@@ -80,7 +86,10 @@ before(async () => {
   ({ api } = await import(path.join(LIB, "api.ts")));
 });
 after(() => fs.rmSync(BUILT, { force: true }));
-beforeEach(() => { routes = {}; calls.length = 0; sent.length = 0; assigned.length = 0; intervals = []; });
+beforeEach(() => {
+  routes = {}; calls.length = 0; sent.length = 0; assigned.length = 0;
+  intervals = []; activeIntervals.clear(); documentListeners.clear(); document.hidden = false;
+});
 
 /** A dashboard opened at url, started, and settled. */
 async function open(url, extra = {}) {
@@ -93,6 +102,27 @@ async function open(url, extra = {}) {
 }
 
 describe("dashboard state", () => {
+  test("pauses polling while hidden and refreshes immediately on return", async () => {
+    const { stop } = await open("/u/me", profileRoutes("me"));
+    assert.equal(activeIntervals.size, 1);
+    const first = intervals.at(-1);
+    document.hidden = true;
+    documentListeners.get("visibilitychange")();
+    assert.equal(activeIntervals.size, 0);
+    const before = calls.length;
+    first(); // A callback already queued by the browser may still run.
+    await settle();
+    assert.equal(calls.length, before);
+    document.hidden = false;
+    documentListeners.get("visibilitychange")();
+    await settle();
+    assert.ok(calls.length > before);
+    assert.equal(activeIntervals.size, 1);
+    stop();
+    assert.equal(activeIntervals.size, 0);
+    assert.equal(documentListeners.has("visibilitychange"), false);
+  });
+
   test("card reads are per tool and a failed card refresh preserves measured data", async () => {
     const { dash, stop, tick } = await open("/u/me", profileRoutes("me"));
     assert.equal(calls.filter(c => c.startsWith("/api/u/")).length, 11);
