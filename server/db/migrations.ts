@@ -16,7 +16,27 @@ export const MIGRATIONS: ((db: DB) => void)[] = [
   collectorVersions,
   githubAccounts,
   profilePanels,
+  profilePanelsRepair,
 ];
+
+/**
+ * 7: profilePanels first ran (on its branch) with a `widgets` column, then
+ * changed to `panels` before merge. Databases that ran the first form (PR
+ * previews, dev databases) sit at version 6 with `widgets` but no `panels`:
+ * reads silently fell back to the default layout while every save failed
+ * with "no such column: panels". Adds the missing column and drops the
+ * leftover; databases that never saw the first form pass through untouched.
+ */
+function profilePanelsRepair(db: DB): void {
+  const cols = columns(db, "users");
+  if (!cols.has("panels")) {
+    db.exec(`ALTER TABLE users ADD COLUMN panels TEXT NOT NULL DEFAULT
+    '[{"id":"claude-code","size":"medium","view":"quota"},{"id":"codex","size":"small","view":"quota"},{"id":"cursor","size":"large","view":"activity"},{"id":"antigravity","size":"large","view":"quota"},{"id":"opencode","size":"medium","view":"activity"},{"id":"today-by-tool","size":"small"}]'`);
+  }
+  if (cols.has("widgets")) {
+    db.exec("ALTER TABLE users DROP COLUMN widgets");
+  }
+}
 
 /** 6: Each account selects public panels, order, widths and tool views. */
 function profilePanels(db: DB): void {
