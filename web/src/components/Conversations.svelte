@@ -15,7 +15,7 @@
         <span class="icon" style:--tool={TOOL_META[s.tool].color}><ToolIcon tool={s.tool} size={16} /></span>
         <div>
           <strong>{TOOL_META[s.tool].name} · <span class="mono" title={s.id}>{s.id.slice(0, 8)}</span></strong>
-          <small><span class="model">{s.model ?? "model not reported"}</span> · {plural(s.calls, "API call")}</small>
+          <small><span class="model">{s.model ?? "model not reported"}</span> · {plural(s.calls, TOOL_META[s.tool].callNoun ?? "API call")}</small>
         </div>
       </div>
       <div class="side">

@@ -196,9 +196,16 @@ export class Dashboard {
   }
 
   private async loadProfile(username: string): Promise<void> {
-    const [profile, summary, activity, quotas, sessions, ocSummary, ocLatest, agSummary, agLatest] = await Promise.all([
+    const route = this.route;
+    const previous = this.live;
+    // Settle every read before releasing inFlight. Card reads are per tool
+    // (every tool, always: there is no tool filter), so a future tool filter
+    // can fetch only the visible tools. A failed card read never discards a
+    // healthy profile, and a slow sibling cannot overlap the next refresh
+    // after another request failed quickly.
+    const [profile, summary, activity, quotas, sessions,
+      ocSummary, ocLatest, agSummary, agLatest, cuSummary, cuLatest] = await Promise.allSettled([
       api.profile(username),
-      // Every tool, always: there is no tool filter.
       api.summary(username, null),
       api.activity(username, ACTIVITY_DAYS, null),
       api.quotas(username),
@@ -209,12 +216,32 @@ export class Dashboard {
       // Antigravity's card falls back to the same view without quotas.
       api.summary(username, "antigravity"),
       api.sessions(username, 10, "antigravity", 0),
+      api.summary(username, "cursor"),
+      api.sessions(username, 10, "cursor", 0),
     ]);
-    // Navigated elsewhere while this was in flight: its queued reload wins.
-    if (this.route.page !== "profile" || this.route.username !== username) return;
-    this.shown = profile;
-    this.live = { summary, activity, quotas, sessions, opencode: { summary: ocSummary, latest: ocLatest },
-      antigravity: { summary: agSummary, latest: agLatest } };
+    if (this.route !== route) return;
+    if (profile.status === "rejected") throw profile.reason;
+    if (summary.status === "rejected") throw summary.reason;
+    if (activity.status === "rejected") throw activity.reason;
+    if (quotas.status === "rejected") throw quotas.reason;
+    if (sessions.status === "rejected") throw sessions.reason;
+    // Keep a failed card's last measured data only for the same local day.
+    // An initial failure or midnight rollover is Unavailable, never guessed.
+    const keep = (tool: "opencode" | "antigravity" | "cursor") => {
+      const prevCard = previous?.[tool];
+      return prevCard && prevCard.summary.day === summary.value.day ? prevCard : undefined;
+    };
+    const card = (tool: "opencode" | "antigravity" | "cursor",
+      sum: typeof ocSummary, lat: typeof ocLatest) =>
+      sum.status === "fulfilled" && lat.status === "fulfilled"
+        ? { summary: sum.value, latest: lat.value } : keep(tool);
+    this.shown = profile.value;
+    this.live = {
+      summary: summary.value, activity: activity.value, quotas: quotas.value, sessions: sessions.value,
+      opencode: card("opencode", ocSummary, ocLatest),
+      antigravity: card("antigravity", agSummary, agLatest),
+      cursor: card("cursor", cuSummary, cuLatest),
+    };
     this.status = "ready";
   }
 

@@ -139,6 +139,8 @@
                 <OpenCodeCard vm={vm.opencode} />
                 <TodayByTool today={vm.stats.today} />
               </div>
+            {:else if tool === "cursor"}
+              <div class="full"><ActivityToolCard tool="cursor" vm={vm.cursor} /></div>
             {:else if tool === "antigravity" && !hasLiveWindow(vm.antigravity, clock.now)}
               <!-- No quota window running (quotas are optional): what is going on now. -->
               <div class="full"><ActivityToolCard tool="antigravity" vm={vm.antigravityActivity} /></div>
