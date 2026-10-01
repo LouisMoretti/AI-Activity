@@ -19,12 +19,6 @@
     "today-by-tool": "Today by tool", "today-by-hour": "Today by hour",
     "best-day": "Best day", leaderboard: "Leaderboard · 7 days",
   };
-  const RATIOS: { value: RowRatio; label: string; title: string }[] = [
-    { value: "full", label: "Full", title: "One card on the whole row" },
-    { value: "half", label: "½ + ½", title: "Two cards, half the row each" },
-    { value: "wide-left", label: "⅔ + ⅓", title: "Two cards, a wide one then a narrow one" },
-    { value: "wide-right", label: "⅓ + ⅔", title: "Two cards, a narrow one then a wide one" },
-  ];
   const nameOf = (id: PanelId) => (TOOLS as readonly string[]).includes(id) ? toolName(id) : labels[id as Widget];
   const optionName = (option: { id: PanelId; view?: PanelView }) =>
     `${nameOf(option.id)}${canSwitchView(option.id) ? option.view === "activity" ? " · Details" : " · Quotas" : ""}`;
@@ -72,19 +66,6 @@
     if (next[ri] && next[ri].panels.length < 2) next[ri].panels.push({ ...option });
     commit(next);
   }
-  function setRatio(ri: number, ratio: RowRatio): void {
-    const next = editable(draft);
-    const row = next[ri];
-    if (!row) return;
-    if (ratio === "full" && row.panels.length === 2) {
-      // The second card moves to its own full row below, nothing is lost.
-      const [first, second] = row.panels;
-      commit([...next.slice(0, ri), { ratio, panels: [first] }, { ratio: "full", panels: [second] }, ...next.slice(ri + 1)]);
-    } else {
-      row.ratio = ratio;
-      commit(next);
-    }
-  }
   function changeView(ri: number, ci: number, view: PanelView): void {
     const next = editable(draft);
     if (next[ri]?.panels[ci]) next[ri].panels[ci] = { ...next[ri].panels[ci], view };
@@ -98,7 +79,7 @@
   function removeRow(ri: number): void {
     commit(editable(draft).filter((_, i) => i !== ri));
   }
-  /** Insert a card before another (same or other row); full rows refuse a second card. */
+  /** Insert a card before another (same or other row); a full row splits in half for the guest. */
   function moveCard(fromR: number, fromC: number, toR: number, toC: number): void {
     const card = draft[fromR]?.panels[fromC];
     const target = draft[toR];
@@ -115,10 +96,11 @@
       at = toC - 1;
     }
     if (next[row].panels.length >= 2) return;
+    if (next[row].ratio === "full") next[row].ratio = "half";
     next[row].panels.splice(Math.min(at, next[row].panels.length), 0, card);
     commit(next);
   }
-  /** Send a card to the end of another row, or to a new full row; full rows refuse it. */
+  /** Send a card to the end of another row, or to a new full row; a full row splits in half for the guest. */
   function moveCardToRow(fromR: number, fromC: number, to: number | "new"): void {
     const card = draft[fromR]?.panels[fromC];
     if (!card || to === fromR) return;
@@ -138,6 +120,7 @@
       if (fromR < to) row = to - 1;
     }
     if (next[row].panels.length >= 2) return;
+    if (next[row].ratio === "full") next[row].ratio = "half";
     next[row].panels.push(card);
     commit(next);
   }
@@ -171,6 +154,43 @@
     e.preventDefault();
     moveRow(ri, ri + (e.key === "ArrowDown" ? 1 : -1));
   }
+  /** Snap a divider position to the predefined widths (bounds sit halfway between thirds and half). */
+  function snapRatio(pct: number): RowRatio {
+    return pct < 41.7 ? "wide-right" : pct < 58.4 ? "half" : "wide-left";
+  }
+  const ratioShare = (ratio: RowRatio): number => ratio === "wide-left" ? 67 : ratio === "wide-right" ? 33 : 50;
+  /** A divider drag in progress: row index and the first card's live share in percent. */
+  let resizing = $state<{ row: number; pct: number } | null>(null);
+  function dividerDown(e: PointerEvent, ri: number): void {
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    dividerMove(e, ri);
+  }
+  function dividerMove(e: PointerEvent, ri: number): void {
+    if (!e.buttons) return;
+    const cells = (e.currentTarget as HTMLElement).parentElement;
+    const rect = cells?.getBoundingClientRect();
+    if (!rect || !rect.width) return;
+    resizing = { row: ri, pct: Math.min(85, Math.max(15, (e.clientX - rect.left) / rect.width * 100)) };
+  }
+  function dividerUp(e: PointerEvent, ri: number): void {
+    if (!resizing || resizing.row !== ri) return;
+    const ratio = snapRatio(resizing.pct);
+    resizing = null;
+    const next = editable(draft);
+    if (next[ri]) next[ri].ratio = ratio;
+    commit(next);
+  }
+  function dividerKeys(e: KeyboardEvent, ri: number): void {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    const order: RowRatio[] = ["wide-right", "half", "wide-left"];
+    const at = order.indexOf(draft[ri]?.ratio ?? "half");
+    const ratio = order[Math.min(2, Math.max(0, at + (e.key === "ArrowRight" ? 1 : -1)))];
+    const next = editable(draft);
+    if (next[ri]) next[ri].ratio = ratio;
+    commit(next);
+  }
   function dragData(e: DragEvent): { kind: "card"; row: number; card: number } | { kind: "row"; row: number } | null {
     try {
       const value: unknown = JSON.parse(e.dataTransfer?.getData("text/plain") ?? "");
@@ -190,9 +210,9 @@
   }
   type DropPayload = { kind: "card"; row: number; card: number } | { kind: "row"; row: number };
   /**
-   * A pointer-only drop zone (keyboard users get the grips and the Row
-   * lists instead, so the bare div needs no ARIA role). `enabled` keeps
-   * view mode inert; drops validate their payload before acting.
+   * A pointer-only drop zone (keyboard users get the grips instead, so the
+   * bare div needs no ARIA role). `enabled` keeps view mode inert; drops
+   * validate their payload before acting.
    */
   function dropzone(node: HTMLElement, opts: { kinds: DropPayload["kind"][]; enabled: boolean; ondrop: (d: DropPayload) => void }) {
     let current = opts;
@@ -268,16 +288,11 @@
               ondragstart={(e) => startDrag(e, { kind: "row", row: ri })} ondragend={() => dragging = null}
               onkeydown={(e) => rowKeys(e, ri)}>⠿</span>
             <span class="rowname">Row {ri + 1}</span>
-            <div class="ratios" role="group" aria-label="Width of row {ri + 1}">
-              {#each RATIOS as ratio}
-                <button type="button" title={ratio.title} aria-pressed={row.ratio === ratio.value}
-                  onclick={() => setRatio(ri, ratio.value)}>{ratio.label}</button>
-              {/each}
-            </div>
             <button type="button" class="remove" aria-label="Remove row {ri + 1}" title="Remove row" onclick={() => removeRow(ri)}>×</button>
           </div>
         {/if}
-        <div class="cells">
+        <div class="cells"
+          style:grid-template-columns={resizing?.row === ri ? `${resizing.pct}fr 12px ${100 - resizing.pct}fr` : undefined}>
           {#each row.panels as panel, ci (panelKey(panel))}
             {@const tool = isTool(panel.id) ? panel.id : null}
             {@const quota = tool ? quotaFor(tool) : null}
@@ -292,17 +307,6 @@
                     ondragstart={(e) => startDrag(e, { kind: "card", row: ri, card: ci })} ondragend={() => dragging = null}
                     onkeydown={(e) => cardKeys(e, ri, ci)}>⠿</span>
                   <strong>{optionName(panel)}</strong>
-                  <label><span>Row</span><select aria-label="Move {optionName(panel)} to row"
-                    value={ri} onchange={(e) => {
-                      const value = e.currentTarget.value;
-                      // The re-render shows the card's new row; reset here for a refused move.
-                      e.currentTarget.value = String(ri);
-                      if (value === "new") moveCardToRow(ri, ci, "new");
-                      else if (Number(value) !== ri) moveCardToRow(ri, ci, Number(value));
-                    }}>
-                    {#each draft as _, n}<option value={n}>Row {n + 1}</option>{/each}
-                    <option value="new">New row</option>
-                  </select></label>
                   {#if tool && canSwitchView(tool)}
                     <label><span>View</span><select aria-label="View of {nameOf(tool)}" value={panel.view}
                       onchange={(e) => changeView(ri, ci, e.currentTarget.value as PanelView)}>
@@ -323,6 +327,16 @@
                 <ProfileWidget widget={panel.id as Widget} {vm} {hours} {rankInfo} />
               {/if}
             </div>
+            {#if editing && own && split && row.panels.length === 2}
+              {@const share = resizing?.row === ri ? Math.round(resizing.pct) : ratioShare(row.ratio)}
+              <div class="divider" role="slider" aria-orientation="vertical" tabindex="0"
+                aria-valuemin={33} aria-valuemax={67} aria-valuenow={share}
+                aria-label="Resize row {ri + 1}" aria-valuetext="First card takes {share === 50 ? "half" : share < 50 ? "one third" : "two thirds"} of the row"
+                title="Drag to resize (it snaps to half and thirds; arrow keys work too)"
+                onpointerdown={(e) => dividerDown(e, ri)} onpointermove={(e) => dividerMove(e, ri)}
+                onpointerup={(e) => dividerUp(e, ri)} onpointercancel={() => resizing = null}
+                onkeydown={(e) => dividerKeys(e, ri)}></div>
+            {/if}
           {/each}
           {#if editing && own && split && row.panels.length < 2}
             <div class="slot"
@@ -359,7 +373,7 @@
   </div>
 
   {#if own}
-    <p class="howto">Drag cards (or move them with the Row list and arrow keys) to arrange your dashboard; pick a width per row. Add a tool: run a device's install command from <button type="button" onclick={ondevices}>Settings → Devices</button> on that machine (Linux, macOS or Windows).</p>
+    <p class="howto">Drag cards by their grip (arrow keys work too) to arrange your dashboard — dropping a card next to another shares its row. Drag the bar between two cards to resize them; it snaps to half and thirds. Add a tool: run a device's install command from <button type="button" onclick={ondevices}>Settings → Devices</button> on that machine (Linux, macOS or Windows).</p>
   {/if}
 </Section>
 
@@ -378,13 +392,18 @@
   .row.half .cells { grid-template-columns: 1fr 1fr; }
   .row.wide-left .cells { grid-template-columns: 2fr 1fr; }
   .row.wide-right .cells { grid-template-columns: 1fr 2fr; }
+  .editing .row.half .cells { grid-template-columns: 1fr 12px 1fr; }
+  .editing .row.wide-left .cells { grid-template-columns: 2fr 12px 1fr; }
+  .editing .row.wide-right .cells { grid-template-columns: 1fr 12px 2fr; }
   .cell { min-width: 0; display: flex; flex-direction: column; }
   .cell:only-child { grid-column: 1 / -1; }
   .cell :global(article) { flex: 1; }
   .rowbar { display: flex; align-items: center; gap: 8px; padding: 7px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); }
   .rowname { font-size: 11px; color: var(--muted); }
-  .ratios { display: flex; gap: 4px; margin-left: auto; }
-  .ratios button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+  .divider { position: relative; cursor: col-resize; touch-action: none; border-radius: 6px; min-height: 60px; }
+  .divider::after { content: ""; position: absolute; top: 8px; bottom: 8px; left: 4px; right: 4px; background: var(--line); border-radius: 2px; }
+  .divider:hover::after, .divider:focus-visible::after { background: var(--accent); }
+  .divider:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
   .controls { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; padding: 7px; margin-bottom: 5px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); }
   .controls strong { flex: 1 1 auto; font-size: 11px; font-weight: 500; min-width: 0; }
   .controls label { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 11px; }
@@ -393,7 +412,6 @@
   .grip:active { cursor: grabbing; }
   .grip:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
   .remove { margin-left: auto; }
-  .rowbar .remove { margin-left: 0; }
   .slot { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; min-height: 120px; border: 1px dashed var(--line); border-radius: var(--radius); color: var(--muted); font-size: 12px; padding: 12px; }
   .slot label { display: flex; align-items: center; gap: 6px; }
   .endzone { border: 1px dashed var(--accent); border-radius: var(--radius); color: var(--muted); font-size: 12px; text-align: center; padding: 14px; }
