@@ -1,7 +1,7 @@
 // Typed client for the dashboard JSON API (same origin, cookie session).
 import type {
   ActivityResponse, AdminOverview, AdminSettings, AdminUser, AuthStatus, DeletedAccount, DeletedActivity, LeaderboardResponse, Profile, Device, QuotasResponse,
-  SessionsResponse, SummaryResponse, FriendsResponse, PreviewSeedConfig,
+  SessionsResponse, SummaryResponse, FriendsResponse, PreviewSeedConfig, SiteAnalyticsOverview,
 } from "../../../shared/types.ts";
 
 export class UnauthorizedError extends Error {
@@ -77,6 +77,15 @@ export const api = {
   logout: () => post<{ ok: true }>("/api/auth/logout"),
   adminOverview: () => get<AdminOverview>("/api/admin/overview"),
   adminSettings: () => get<AdminSettings>("/api/admin/settings"),
+  siteAnalytics: () => get<SiteAnalyticsOverview>("/api/admin/analytics"),
+  analyticsView: (page: string, referrer: string) => fetch("/api/analytics/view", {
+    method: "POST",
+    credentials: "omit",
+    keepalive: true,
+    referrerPolicy: "no-referrer",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ page, referrer }),
+  }).catch(() => undefined),
   setSignupOpen: (signup_open: boolean) => post<AdminSettings>("/api/admin/settings", { signup_open }),
   previewSeed: () => get<{ config: PreviewSeedConfig }>("/api/admin/preview-seed"),
   generatePreviewSeed: (config: PreviewSeedConfig) =>

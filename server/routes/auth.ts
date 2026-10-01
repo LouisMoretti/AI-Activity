@@ -10,6 +10,7 @@ import { authorizeUrl, signedInUser, type GithubConfig, type GithubUser } from "
 import { readJson } from "../lib/http.ts";
 import { setupCodeMatches } from "../lib/setup.ts";
 import type { ViewerAuth } from "../lib/viewer-auth.ts";
+import { recordSignup } from "./analytics.ts";
 
 /** Open sign-up: accounts one client may create per window (spam guard). */
 const SIGNUPS_PER_CLIENT = 5;
@@ -83,6 +84,7 @@ export function authRoutes(
   db: DB, auth: ViewerAuth, client: ClientInfo, github: GithubConfig | null, publicUrl: string | null,
   setupCode: string | null,
   preview = false,
+  siteAnalytics = false,
 ) {
   let signups = new Map<string, number>(); // client → accounts created in window
   let signupWindow = Date.now();
@@ -110,7 +112,10 @@ export function authRoutes(
       const a = { username: gh.login, display_name: gh.name, avatar_url: gh.avatar_url, github_id: gh.id, is_admin: admin };
       return admin ? createFirstAccount(db, a) ?? ("exists" as const) : createAccount(db, a);
     })();
-    if (typeof id === "number" && !admin) signups.set(auth.clientId(c), signupsBy(c) + 1);
+    if (typeof id === "number") {
+      if (!admin) signups.set(auth.clientId(c), signupsBy(c) + 1);
+      if (siteAnalytics) recordSignup(db);
+    }
     return id;
   };
 
@@ -135,6 +140,7 @@ export function authRoutes(
       const who = auth.resolve(c);
       return c.json<AuthStatus>({
         ...(preview ? { preview: true } : {}),
+        site_analytics: siteAnalytics,
         authenticated: Boolean(who),
         user: who?.account ?? null,
         setup_required: !accountsExist(db) && !auth.limited,

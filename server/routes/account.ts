@@ -10,6 +10,7 @@ import { nowSec, type DB } from "../db/schema.ts";
 import { readJson } from "../lib/http.ts";
 import { parsePreviewSeed } from "../lib/preview-seed.ts";
 import type { ViewerEnv } from "../lib/viewer-auth.ts";
+import { siteAnalyticsOverview } from "./analytics.ts";
 
 /**
  * Destructive actions need a session opened this recently: a stolen
@@ -95,6 +96,7 @@ export function adminRoutes(db: DB, preview = false) {
   return new Hono<ViewerEnv>()
     .use(requireAdmin)
     .get("/overview", (c) => c.json<AdminOverview>(adminOverview(db)))
+    .get("/analytics", (c) => c.json(siteAnalyticsOverview(db)))
     .get("/settings", (c) => c.json<AdminSettings>({ signup_open: signupOpen(db) }))
     .get("/preview-seed", (c) => preview
       ? c.json({ config: previewSeedSettings(db) })

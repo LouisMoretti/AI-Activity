@@ -11,6 +11,7 @@ import { jsonOnly, limitBody, readCache } from "./lib/http.ts";
 import { LIMITS, rateLimit, tokenBuckets } from "./lib/rate-limit.ts";
 import { createViewerAuth } from "./lib/viewer-auth.ts";
 import { accountRoutes, adminRoutes, userRoutes } from "./routes/account.ts";
+import { siteAnalyticsRoutes } from "./routes/analytics.ts";
 import { authRoutes } from "./routes/auth.ts";
 import { deviceRoutes } from "./routes/devices.ts";
 import { friendsRoutes } from "./routes/friends.ts";
@@ -38,7 +39,9 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
     // successful sign-in must not cost twice, and the callback only works
     // with a state this server just handed out.
     .on("POST", "/auth/github", oauth)
-    .route("/auth", authRoutes(db, auth, client, config.github, config.publicUrl, setupCode, config.preview))
+    .on("POST", "/analytics/view", publicReads)
+    .route("/auth", authRoutes(db, auth, client, config.github, config.publicUrl, setupCode, config.preview, config.siteAnalytics))
+    .route("/analytics", siteAnalyticsRoutes(db, client, config.siteAnalytics))
     .route("/ingest", ingestRoutes(db))
     // Public, read-only: profile pages, the account list and the leaderboard.
     .use("/u/*", publicReads)

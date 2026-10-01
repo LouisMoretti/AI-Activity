@@ -29,6 +29,8 @@ export interface Config {
   allowedLogins: ReadonlySet<string> | null;
   /** Only isolated PR previews expose sample data controls. */
   preview: boolean;
+  /** In-app site analytics are opt-in; no analytics data is collected by default. */
+  siteAnalytics: boolean;
 }
 
 const trimUrl = (v: string | undefined) => (v?.trim() ? v.trim().replace(/\/+$/, "") : null);
@@ -68,5 +70,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     publicUrl: trimUrl(env.PUBLIC_URL),
     allowedLogins: parseAllowedLogins(env.ALLOWED_GITHUB_LOGINS),
     preview: isPreview(env),
+    siteAnalytics: env.SITE_ANALYTICS === "1",
   };
 }

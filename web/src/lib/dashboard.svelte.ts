@@ -104,6 +104,7 @@ export class Dashboard {
   github = $state(true);
   /** The isolated PR preview deployment (from the server, never a build-time flag). */
   preview = $state(false);
+  siteAnalytics = $state(false);
   /** Why the last GitHub sign-in (or linking) failed, in words; null if it did not. */
   authError = $state<string | null>(null);
   /** The profile on screen. */
@@ -111,6 +112,16 @@ export class Dashboard {
   private live = $state<LiveData | null>(null);
   private inFlight = false;
   private reloadQueued = false;
+  private lastAnalyticsPath = "";
+
+  private trackView(route: Route): void {
+    if (!this.siteAnalytics || this.lastAnalyticsPath === location.pathname) return;
+    this.lastAnalyticsPath = location.pathname;
+    const page = route.page === "home" ? "signin" : route.page;
+    let referrer = "";
+    try { referrer = document.referrer ? new URL(document.referrer).hostname : ""; } catch { /* no usable referrer */ }
+    void api.analyticsView(page, referrer);
+  }
 
   /** True on the signed-in viewer's own profile. */
   own = $derived(this.route.page === "profile" && same(this.route.username, this.account?.username));
@@ -140,14 +151,15 @@ export class Dashboard {
       this.signupOpen = auth.signup_open;
       this.github = auth.github_sign_in;
       this.preview = Boolean(auth.preview);
+      this.siteAnalytics = Boolean(auth.site_analytics);
       if (!auth.user) {
-        if (route.page === "profile") await this.loadProfile(route.username);
+        if (route.page === "profile") { await this.loadProfile(route.username); this.trackView(route); }
         // Public, like profile pages: the page loads its own data.
-        else if (route.page === "leaderboard") this.status = "ready";
+        else if (route.page === "leaderboard") { this.status = "ready"; this.trackView(route); }
         else if (route.page === "settings" || route.page === "admin" || route.page === "friends") {
           this.go(`/?next=${encodeURIComponent(currentPath())}`, true);
         }
-        else this.status = auth.setup_required ? "setup" : "signed-out";
+        else { this.status = auth.setup_required ? "setup" : "signed-out"; this.trackView(route); }
         return;
       }
       if (route.page === "home") {
@@ -157,6 +169,7 @@ export class Dashboard {
       }
       if (route.page === "profile") await this.loadProfile(route.username);
       else this.status = "ready";
+      this.trackView(route);
     } catch (e) {
       // Navigated elsewhere meanwhile: the queued reload decides, not this.
       if (this.route !== route) return;
@@ -190,8 +203,10 @@ export class Dashboard {
       this.account = auth.user;
       this.signupOpen = auth.signup_open;
       this.preview = Boolean(auth.preview);
+      this.siteAnalytics = Boolean(auth.site_analytics);
+      this.trackView(route);
     } catch {
-      if (this.route === route) this.account = null;
+      if (this.route === route) { this.account = null; this.trackView(route); }
     }
   }
 

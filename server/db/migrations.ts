@@ -15,7 +15,30 @@ export const MIGRATIONS: ((db: DB) => void)[] = [
   activityClearedAt,
   collectorVersions,
   githubAccounts,
+  siteAnalytics,
 ];
+
+/** 6: privacy-first site analytics, kept apart from measured AI activity. */
+function siteAnalytics(db: DB): void {
+  db.exec(`
+    CREATE TABLE site_analytics_pageviews (
+      day TEXT NOT NULL,
+      page TEXT NOT NULL,
+      source TEXT NOT NULL,
+      views INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (day, page, source)
+    ) WITHOUT ROWID;
+    CREATE TABLE site_analytics_visitors (
+      day TEXT NOT NULL,
+      visitor_hash TEXT NOT NULL,
+      PRIMARY KEY (day, visitor_hash)
+    ) WITHOUT ROWID;
+    CREATE TABLE site_analytics_signups (
+      day TEXT PRIMARY KEY,
+      signups INTEGER NOT NULL DEFAULT 0
+    ) WITHOUT ROWID;
+  `);
+}
 
 /**
  * 5: sign in with GitHub only (issue #127). `users.github_id` is the GitHub

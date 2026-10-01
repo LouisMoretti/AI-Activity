@@ -1,5 +1,6 @@
 <script lang="ts">
   import AdminOverview from "./components/AdminOverview.svelte";
+  import SiteAnalytics from "./components/SiteAnalytics.svelte";
   import PreviewSeedPanel from "./components/PreviewSeedPanel.svelte";
   import AuthPanel from "./components/AuthPanel.svelte";
   import ActivityChart from "./components/ActivityChart.svelte";
@@ -102,6 +103,13 @@
       {#if dash.account.is_admin}
         <Section title="Overview" subtitle="The whole server, every account">
           <AdminOverview />
+        </Section>
+        <Section title="Site analytics" subtitle="Website visits, separate from AI usage">
+          {#if dash.siteAnalytics}
+            <SiteAnalytics />
+          {:else}
+            <p class="howto">Disabled. Set <span class="mono">SITE_ANALYTICS=1</span> on the server and restart to collect privacy-friendly, first-party site analytics.</p>
+          {/if}
         </Section>
         {#if dash.preview}
           <Section title="Preview data generator" subtitle="Fictional activity on your own account">

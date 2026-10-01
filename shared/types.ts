@@ -178,6 +178,14 @@ export interface AuthStatus {
   signup_open: boolean;
   /** Sign in with GitHub is set up on this server (GITHUB_CLIENT_ID / _SECRET); else nobody can sign in. */
   github_sign_in: boolean;
+  /** In-app analytics are opt-in and store only daily aggregate counts. */
+  site_analytics?: boolean;
+}
+
+export interface SiteAnalyticsOverview {
+  days: { day: string; pageviews: number; visitors: number; signups: number }[];
+  pages: { page: string; views: number }[];
+  sources: { source: string; views: number }[];
 }
 
 /** Preview-only sample activity on the signed-in admin's account, edited as JSON in the admin panel. */
