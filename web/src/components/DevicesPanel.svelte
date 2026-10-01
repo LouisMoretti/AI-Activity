@@ -14,26 +14,44 @@
   // Only the open setup panel holds a key; device rows never receive it.
   let setup = $state<{ id: number; name: string; key: string } | null>(null);
   let loadingSetup = $state<number | null>(null);
+  let setupRequest = 0;
   let copiedAction = $state<"key" | Platform | "prompt" | null>(null);
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
   let fallback = $state<{ label: string; text: string } | null>(null);
   let prompt = $derived(setup ? setupPrompt(setup.key, location.origin) : "");
 
   async function openSetup(d: Device) {
+    if (setup?.id === d.id) {
+      ++setupRequest;
+      loadingSetup = null;
+      return;
+    }
     error = "";
-    setup = null;
-    fallback = null;
-    copiedAction = null;
+    const request = ++setupRequest;
     loadingSetup = d.id;
     try {
       const { key } = await api.deviceKey(d.id);
-      if (loadingSetup === d.id) setup = { id: d.id, name: d.name, key };
+      if (request !== setupRequest) return;
+      clearTimeout(copyTimer);
+      setup = { id: d.id, name: d.name, key };
+      fallback = null;
+      copiedAction = null;
     } catch (err) {
+      if (request !== setupRequest) return;
       error = (err as Error).message;
       void refresh();
     } finally {
-      if (loadingSetup === d.id) loadingSetup = null;
+      if (request === setupRequest) loadingSetup = null;
     }
+  }
+
+  function closeSetup() {
+    ++setupRequest;
+    loadingSetup = null;
+    clearTimeout(copyTimer);
+    setup = null;
+    fallback = null;
+    copiedAction = null;
   }
 
   async function copySetup(what: "key" | Platform | "prompt") {
@@ -81,6 +99,9 @@
     error = "";
     try {
       const device = await api.createDevice(n);
+      ++setupRequest;
+      loadingSetup = null;
+      clearTimeout(copyTimer);
       setup = { id: device.id, name: n, key: device.key };
       copiedAction = null;
       fallback = null;
@@ -97,7 +118,11 @@
     if (!confirm(`Revoke "${d.name}"? Its collector will stop being accepted.`)) return;
     error = "";
     try {
-      if (setup?.id === d.id) setup = null;
+      if (loadingSetup === d.id) {
+        ++setupRequest;
+        loadingSetup = null;
+      }
+      if (setup?.id === d.id) closeSetup();
       await api.revokeDevice(d.id);
       await refresh();
     } catch (err) {
@@ -112,7 +137,7 @@
     <section class="setup" aria-label="Set up {setup.name}">
       <div class="setup-heading">
         <strong>Set up {setup.name}</strong>
-        <button type="button" onclick={() => (setup = null)}>Close</button>
+        <button type="button" onclick={closeSetup}>Close</button>
       </div>
       <p>Run the command for this device's operating system, or ask your AI to run it and explain the result. The installer finds the tools on that device.</p>
       <div class="setup-actions">
@@ -220,8 +245,7 @@
   button:disabled { opacity: .5; cursor: default; }
   .danger { color: var(--danger); border-color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
   .danger:hover { background: color-mix(in srgb, var(--danger) 18%, transparent); }
-  /* Accent, not the --demo-* palette: this is a real key, never demo data. */
-  .setup { margin: 12px 0 6px; padding: 12px 14px; border: 1px solid var(--accent); background: var(--surface-2); border-radius: var(--radius-sm); }
+  .setup { margin: 12px 0 6px; padding: 12px 14px; border: 1px solid var(--line); background: var(--surface-2); border-radius: var(--radius-sm); }
   .setup-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
   .setup p { font-size: 13px; }
   .setup-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0 4px; }
