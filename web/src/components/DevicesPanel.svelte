@@ -116,7 +116,7 @@
       </div>
       <p>Run the command for this device's operating system, or ask your AI to run it and explain the result. The installer finds the tools on that device.</p>
       <div class="setup-actions">
-        <button type="button" class="ai-copy" onclick={() => copySetup("prompt")}
+        <button type="button" class="ai-copy" class:copy-success={copiedAction === "prompt"} onclick={() => copySetup("prompt")}
           aria-label="Copy AI setup prompt to clipboard">
           <svg class="ai-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
             <defs><linearGradient id="setup-ai-gradient" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="var(--ai-blue)"/><stop offset="1" stop-color="var(--ai-violet)"/></linearGradient></defs>
@@ -124,15 +124,12 @@
             <circle cx="19.5" cy="18.5" r="1.5" fill="url(#setup-ai-gradient)"/>
           </svg>
           <span>Copy AI setup prompt</span>
-          <svg class="copy-confirm" class:shown={copiedAction === "prompt"} viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m3 8 3.2 3.2L13 4.5"/></svg>
         </button>
-        <button type="button" class="copy-action" onclick={() => copySetup("unix")}>
+        <button type="button" class="copy-action" class:copy-success={copiedAction === "unix"} onclick={() => copySetup("unix")}>
           <span>Copy Linux/macOS command</span>
-          <svg class="copy-confirm" class:shown={copiedAction === "unix"} viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m3 8 3.2 3.2L13 4.5"/></svg>
         </button>
-        <button type="button" class="copy-action" onclick={() => copySetup("windows")}>
+        <button type="button" class="copy-action" class:copy-success={copiedAction === "windows"} onclick={() => copySetup("windows")}>
           <span>Copy Windows command</span>
-          <svg class="copy-confirm" class:shown={copiedAction === "windows"} viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m3 8 3.2 3.2L13 4.5"/></svg>
         </button>
       </div>
       <span class="copy-feedback" aria-live="polite" aria-atomic="true">{copiedAction === "prompt" ? "AI setup prompt ready to paste." : copiedAction === "unix" ? "Linux/macOS command ready to paste." : copiedAction === "windows" ? "Windows command ready to paste." : copiedAction === "key" ? "Device key ready to paste." : ""}</span>
@@ -141,16 +138,17 @@
         <summary>Review AI prompt</summary>
         <textarea class="mono" readonly value={prompt} aria-label="Full AI setup prompt"></textarea>
       </details>
-      <details>
-        <summary>Device key</summary>
-        <div class="key-row">
-          <code class="mono">{setup.key}</code>
-          <button type="button" class="copy-action" onclick={() => copySetup("key")}>
-            <span>Copy key</span>
-            <svg class="copy-confirm" class:shown={copiedAction === "key"} viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m3 8 3.2 3.2L13 4.5"/></svg>
+      <div class="key-block">
+        <span class="key-label">Device key</span>
+        <div class="key-code-block">
+          <pre><code class="mono">{setup.key}</code></pre>
+          <button type="button" class="key-copy" class:copy-success={copiedAction === "key"}
+            aria-label="Copy device key to clipboard" onclick={() => copySetup("key")}>
+            <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="5" y="5" width="8" height="8" rx="1.5"/><path d="M10.5 5V3.5A1.5 1.5 0 0 0 9 2H3.5A1.5 1.5 0 0 0 2 3.5V9a1.5 1.5 0 0 0 1.5 1.5H5"/></svg>
+            Copy
           </button>
         </div>
-      </details>
+      </div>
       {#if fallback}
         <label class="fallback-label" for="setup-fallback">{fallback.label}</label>
         <textarea id="setup-fallback" class="mono" readonly value={fallback.text}></textarea>
@@ -223,21 +221,26 @@
   .danger:hover { background: color-mix(in srgb, var(--danger) 18%, transparent); }
   /* Accent, not the --demo-* palette: this is a real key, never demo data. */
   .setup { margin: 12px 0 6px; padding: 12px 14px; border: 1px solid var(--accent); background: var(--surface-2); border-radius: var(--radius-sm); }
-  .setup-heading, .key-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .setup-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
   .setup p { font-size: 13px; }
   .setup-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0 4px; }
   .setup-actions button, .copy-action { display: inline-flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap; }
   .ai-copy { border: 1px solid transparent; color: var(--text); background: linear-gradient(var(--surface-2), var(--surface-2)) padding-box, linear-gradient(120deg, var(--ai-blue), var(--ai-violet)) border-box; }
   .ai-copy:hover { background: linear-gradient(var(--raised), var(--raised)) padding-box, linear-gradient(120deg, var(--ai-blue), var(--ai-violet)) border-box; box-shadow: 0 0 15px color-mix(in srgb, var(--ai-violet) 18%, transparent); }
   .ai-mark { width: 18px; height: 18px; flex: none; }
-  .copy-confirm { width: 16px; height: 16px; flex: none; fill: none; stroke: var(--ok); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; opacity: 0; }
-  .copy-confirm.shown { opacity: 1; }
+  .copy-success, .copy-success:hover, .ai-copy.copy-success, .ai-copy.copy-success:hover { color: var(--ok); border-color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, var(--surface-2)); box-shadow: none; }
   .copy-feedback { display: block; min-height: 18px; color: var(--ok); font-size: 12px; }
   .key-note { color: var(--warn); }
   details { margin-top: 10px; font-size: 13px; }
   summary { cursor: pointer; }
-  .key-row { justify-content: flex-start; margin-top: 8px; }
-  code { min-width: 0; overflow-wrap: anywhere; color: var(--text); }
+  .key-block { margin-top: 14px; }
+  .key-label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 12px; }
+  .key-code-block { position: relative; min-width: 0; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg); }
+  .key-code-block pre { margin: 0; padding: 13px 86px 13px 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .key-code-block code { color: var(--text); }
+  .key-copy { position: absolute; top: 7px; right: 7px; display: inline-flex; align-items: center; gap: 5px; padding: 4px 7px; background: var(--surface-2); font-size: 12px; }
+  .key-copy.copy-success, .key-copy.copy-success:hover { background: color-mix(in srgb, var(--ok) 12%, var(--surface-2)); }
+  .key-copy svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
   textarea { display: block; width: 100%; min-height: 220px; margin-top: 8px; padding: 10px; resize: vertical; overflow-wrap: anywhere; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text); font-family: var(--mono); font-size: 12px; }
   .fallback-label { display: block; margin-top: 12px; font-size: 13px; }
   #setup-fallback { min-height: 85px; }
