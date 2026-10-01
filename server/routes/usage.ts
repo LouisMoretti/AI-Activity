@@ -123,7 +123,7 @@ export function publicProfileRoutes(db: DB) {
     .get("/", (c) => {
       return c.json<Profile>(toProfile(owner(c)));
     })
-    .get("/panels", (c) => c.json<PanelSettings>({ panels: panelSettings(owner(c)) }))
+    .get("/panels", (c) => c.json<PanelSettings>({ rows: panelSettings(owner(c)) }))
     .get("/rank", (c) => c.json<RankResponse>({
       ...profileRank(db, owner(c).id, nowSec() - 7 * 86400),
       provenance: "measured messages over the last seven days",

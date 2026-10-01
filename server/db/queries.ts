@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
   Account, ActivityDay, AdminOverview, AdminUser, Profile, Breakdown, BreakdownRow, DeletedAccount, DeletedActivity, Device, LeaderboardEntry,
-  LeaderboardResponse, PreviewSeedConfig, Quota, Session, ProfilePanel, HourBucket, RankResponse,
+  LeaderboardResponse, PreviewSeedConfig, Quota, Session, ProfilePanel, PanelRow, HourBucket, RankResponse,
 } from "../../shared/types.ts";
 import { COLLECTOR_VERSIONS } from "../../shared/collectors.ts";
-import { BREAKDOWN_DISPLAY_ROWS, DEFAULT_PANELS, PANEL_OPTIONS, TOOLS, WIDGETS } from "../../shared/types.ts";
+import { BREAKDOWN_DISPLAY_ROWS, DEFAULT_ROWS, PANEL_OPTIONS, TOOLS, WIDGETS, copyRows } from "../../shared/types.ts";
 import { nowSec, type DB } from "./schema.ts";
 import { DEFAULT_PREVIEW_SEED, parsePreviewSeed } from "../lib/preview-seed.ts";
 
@@ -77,29 +77,53 @@ export interface UserRow {
 
 const panelIds = new Set<string>([...TOOLS, ...WIDGETS]);
 const quotaTools = new Set<string>(["claude-code", "codex", "antigravity"]);
+const rowRatios = new Set<string>(["full", "half", "wide-left", "wide-right"]);
 
-/** Accept a complete public layout; no duplicate panels or private fields. */
-export function validPanels(value: unknown): value is ProfilePanel[] {
-  return Array.isArray(value) && value.length <= PANEL_OPTIONS.length &&
-    value.every((p) => p !== null && typeof p === "object" && !Array.isArray(p) &&
-      Object.keys(p).every((key) => ["id", "size", "view"].includes(key)) &&
-      typeof p.id === "string" && panelIds.has(p.id) &&
-      ["small", "medium", "large"].includes(p.size) &&
-      (quotaTools.has(p.id) ? ["quota", "activity"].includes(p.view)
-        : (TOOLS as readonly string[]).includes(p.id) ? p.view === "activity" : p.view === undefined)) &&
-    new Set(value.map((p) => `${p.id}:${p.view ?? ""}`)).size === value.length;
+/** One public panel: a known tool or widget, with the quota view only where one exists. */
+function validPanel(p: unknown): p is ProfilePanel {
+  const panel = p as ProfilePanel;
+  return p !== null && typeof p === "object" && !Array.isArray(p) &&
+    Object.keys(p).every((key) => ["id", "view"].includes(key)) &&
+    typeof panel.id === "string" && panelIds.has(panel.id) &&
+    (quotaTools.has(panel.id) ? (["quota", "activity"] as string[]).includes(panel.view ?? "")
+      : (TOOLS as readonly string[]).includes(panel.id) ? panel.view === "activity" : panel.view === undefined);
 }
 
-export function panelSettings(user: UserRow): ProfilePanel[] {
+/**
+ * Accept a complete public layout: rows of one card (`full`) or one to two
+ * (split ratios; a single card stretches full width), no duplicate panels
+ * or private fields. Anything else (the pre-rows flat list included) resets
+ * to the default layout on read.
+ */
+export function validLayout(value: unknown): value is PanelRow[] {
+  if (!Array.isArray(value) || value.length > PANEL_OPTIONS.length) return false;
+  const keys: string[] = [];
+  return value.every((row) => {
+    const candidate = row as PanelRow;
+    return row !== null && typeof row === "object" && !Array.isArray(row) &&
+      Object.keys(row).length === 2 &&
+      Object.keys(row).every((key) => ["ratio", "panels"].includes(key)) &&
+      rowRatios.has(candidate.ratio) &&
+      Array.isArray(candidate.panels) &&
+      (candidate.panels.length === 1 || (candidate.ratio !== "full" && candidate.panels.length === 2)) &&
+      candidate.panels.every((p) => {
+        if (!validPanel(p)) return false;
+        keys.push(`${p.id}:${p.view ?? ""}`);
+        return true;
+      });
+  }) && new Set(keys).size === keys.length;
+}
+
+export function panelSettings(user: UserRow): PanelRow[] {
   try {
     const value: unknown = JSON.parse(user.panels);
-    if (validPanels(value)) return value;
-  } catch { /* Old or manually edited value: keep the default layout. */ }
-  return DEFAULT_PANELS.map((p) => ({ ...p }));
+    if (validLayout(value)) return value;
+  } catch { /* Old, flat or manually edited value: keep the default layout. */ }
+  return copyRows(DEFAULT_ROWS);
 }
 
-export function setPanelSettings(db: DB, userId: number, panels: ProfilePanel[]): void {
-  db.prepare("UPDATE users SET panels = ? WHERE id = ?").run(JSON.stringify(panels), userId);
+export function setPanelSettings(db: DB, userId: number, rows: PanelRow[]): void {
+  db.prepare("UPDATE users SET panels = ? WHERE id = ?").run(JSON.stringify(rows), userId);
 }
 
 export function toAccount(u: UserRow): Account {

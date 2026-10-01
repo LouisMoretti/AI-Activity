@@ -125,8 +125,8 @@
       <StatsRow stats={vm.stats} />
 
       {#key dash.route.page === "demo" ? "demo" : `profile:${dash.shown.username}`}
-        <ProfilePanels {vm} panels={dash.panels} own={dash.own} hours={dash.hours} rankInfo={dash.widgetRank}
-          onpanelschange={(panels) => dash.setPanels(panels)} ondevices={() => dash.go("/settings")} />
+        <ProfilePanels {vm} rows={dash.rows} own={dash.own} hours={dash.hours} rankInfo={dash.widgetRank}
+          onrowschange={(rows) => dash.setRows(rows)} ondevices={() => dash.go("/settings")} />
       {/key}
 
       <Section title="Conversations" subtitle="Most recent first">

@@ -31,17 +31,17 @@ function profilePanelsRepair(db: DB): void {
   const cols = columns(db, "users");
   if (!cols.has("panels")) {
     db.exec(`ALTER TABLE users ADD COLUMN panels TEXT NOT NULL DEFAULT
-    '[{"id":"claude-code","size":"medium","view":"quota"},{"id":"codex","size":"small","view":"quota"},{"id":"cursor","size":"large","view":"activity"},{"id":"antigravity","size":"large","view":"quota"},{"id":"opencode","size":"medium","view":"activity"},{"id":"today-by-tool","size":"small"}]'`);
+    '[{"ratio":"wide-left","panels":[{"id":"claude-code","view":"quota"},{"id":"codex","view":"quota"}]},{"ratio":"full","panels":[{"id":"cursor","view":"activity"}]},{"ratio":"full","panels":[{"id":"antigravity","view":"quota"}]},{"ratio":"wide-left","panels":[{"id":"opencode","view":"activity"},{"id":"today-by-tool"}]}]'`);
   }
   if (cols.has("widgets")) {
     db.exec("ALTER TABLE users DROP COLUMN widgets");
   }
 }
 
-/** 6: Each account selects public panels, order, widths and tool views. */
+/** 6: Each account selects public rows of panels, ratios and tool views. */
 function profilePanels(db: DB): void {
   db.exec(`ALTER TABLE users ADD COLUMN panels TEXT NOT NULL DEFAULT
-    '[{"id":"claude-code","size":"medium","view":"quota"},{"id":"codex","size":"small","view":"quota"},{"id":"cursor","size":"large","view":"activity"},{"id":"antigravity","size":"large","view":"quota"},{"id":"opencode","size":"medium","view":"activity"},{"id":"today-by-tool","size":"small"}]'`);
+    '[{"ratio":"wide-left","panels":[{"id":"claude-code","view":"quota"},{"id":"codex","view":"quota"}]},{"ratio":"full","panels":[{"id":"cursor","view":"activity"}]},{"ratio":"full","panels":[{"id":"antigravity","view":"quota"}]},{"ratio":"wide-left","panels":[{"id":"opencode","view":"activity"},{"id":"today-by-tool"}]}]'`);
 }
 
 /**

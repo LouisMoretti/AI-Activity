@@ -7,7 +7,7 @@ import { authErrorMessage } from "./auth-errors.ts";
 import { DEMO_PROFILE, demoDashboard } from "./demo.ts";
 import { ACTIVITY_DAYS, liveDashboard, type LiveData } from "./live.ts";
 import type { DashboardVM } from "./view-model.ts";
-import { DEFAULT_PANELS, WIDGETS, type Account, type Profile, type SessionsResponse, type SummaryResponse, type HoursResponse, type RankResponse, type ProfilePanel, type Tool } from "../../../shared/types.ts";
+import { DEFAULT_ROWS, WIDGETS, copyRows, type Account, type Profile, type SessionsResponse, type SummaryResponse, type HoursResponse, type RankResponse, type PanelRow, type Tool } from "../../../shared/types.ts";
 
 export type Route =
   | { page: "home" }
@@ -108,7 +108,7 @@ export class Dashboard {
   authError = $state<string | null>(null);
   /** The profile on screen. */
   shown = $state<Profile | null>(null);
-  panels = $state<ProfilePanel[]>(DEFAULT_PANELS.map((p) => ({ ...p })));
+  rows = $state<PanelRow[]>(copyRows(DEFAULT_ROWS));
   hours = $state<HoursResponse | null>(null);
   widgetRank = $state<RankResponse | null>(null);
   private live = $state<LiveData | null>(null);
@@ -187,7 +187,8 @@ export class Dashboard {
    */
   private async loadDemo(route: Route): Promise<void> {
     this.shown = DEMO_PROFILE;
-    this.panels = [...DEFAULT_PANELS.map((p) => ({ ...p })), ...WIDGETS.filter((id) => id !== "today-by-tool").map((id) => ({ id, size: "small" as const }))];
+    this.rows = [...copyRows(DEFAULT_ROWS),
+      ...WIDGETS.filter((id) => id !== "today-by-tool").map((id) => ({ ratio: "full" as const, panels: [{ id }] as PanelRow["panels"] }))];
     this.hours = null;
     this.widgetRank = null;
     this.status = "ready";
@@ -223,11 +224,12 @@ export class Dashboard {
     if (sessions.status === "rejected") throw sessions.reason;
     if (panelSettings.status === "rejected") throw panelSettings.reason;
     // A save may complete while this refresh is reading the old layout.
-    const panels = panelRevision === this.panelRevision ? panelSettings.value.panels : this.panels;
-    const selected = (id: string, view?: string) => panels.some((p) => p.id === id && (!view || p.view === view));
+    const rows = panelRevision === this.panelRevision ? panelSettings.value.rows : this.rows;
+    const flat = rows.flatMap((r) => r.panels);
+    const selected = (id: string, view?: string) => flat.some((p) => p.id === id && (!view || p.view === view));
     const activityView = (tool: Tool) => selected(tool, "activity") ||
       (tool === "antigravity" && selected(tool, "quota"));
-    const needsQuota = panels.some((p) => p.view === "quota");
+    const needsQuota = flat.some((p) => p.view === "quota");
     const toolSummary = (tool: Tool) => activityView(tool) ? api.summary(username, tool) : Promise.resolve(null);
     const toolSessions = (tool: Tool) => activityView(tool) ? api.sessions(username, 10, tool, 0) : Promise.resolve(null);
     const [quotas, hours, rank, ccSummary, ccLatest, cdSummary, cdLatest,
@@ -256,7 +258,7 @@ export class Dashboard {
       sum.status === "fulfilled" && sum.value && lat.status === "fulfilled" && lat.value
         ? { summary: sum.value, latest: lat.value } : keep(tool);
     this.shown = profile.value;
-    this.panels = panels;
+    this.rows = rows;
     this.hours = hours.status === "fulfilled" ? hours.value : null;
     this.widgetRank = rank.status === "fulfilled" ? rank.value : null;
     this.live = {
@@ -277,9 +279,9 @@ export class Dashboard {
   }
 
   /** Apply an owner-edited layout immediately, then load its optional data. */
-  setPanels(panels: ProfilePanel[]): void {
+  setRows(rows: PanelRow[]): void {
     this.panelRevision++;
-    this.panels = panels;
+    this.rows = rows;
     void this.load();
   }
 
@@ -302,7 +304,7 @@ export class Dashboard {
   private showPath(): void {
     this.route = routeFromPath();
     this.live = null;
-    this.panels = DEFAULT_PANELS.map((p) => ({ ...p }));
+    this.rows = copyRows(DEFAULT_ROWS);
     this.hours = null;
     this.widgetRank = null;
     this.shown = null;

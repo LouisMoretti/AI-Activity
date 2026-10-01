@@ -6,7 +6,8 @@ import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { openDb, schemaVersion } from "../server/db/schema.ts";
 import { MIGRATIONS } from "../server/db/migrations.ts";
-import { DEFAULT_PANELS } from "../shared/types.ts";import { startServer } from "./helpers.js";
+import { DEFAULT_ROWS } from "../shared/types.ts";
+import { startServer } from "./helpers.js";
 
 const LATEST = MIGRATIONS.length;
 const V0_FIXTURE = fs.readFileSync(new URL("./fixtures/schema-v0.sql", import.meta.url), "utf8");
@@ -102,7 +103,7 @@ function freshSchema() {
 }
 
 describe("versioned migrations", () => {
-  test("version 6 adds widget settings without changing existing accounts or usage", () => {
+  test("version 6 adds dashboard rows without changing existing accounts or usage", () => {
     const t = tmpDb();
     const old = upgradeTo(t.file, 5);
     old.prepare("INSERT INTO users (id, github_id, username, created_at) VALUES (1, 42, 'alice', 0)").run();
@@ -114,7 +115,7 @@ describe("versioned migrations", () => {
       assert.equal(schemaVersion(db), LATEST);
       const profile = db.prepare("SELECT username, panels FROM users").get();
       assert.equal(profile.username, "alice");
-      assert.deepEqual(JSON.parse(profile.panels), DEFAULT_PANELS);
+      assert.deepEqual(JSON.parse(profile.panels), DEFAULT_ROWS);
       assert.equal(db.prepare("SELECT input_tokens FROM usage_events WHERE event_id = 'msg_a'").get().input_tokens, 7);
     } finally { db.close(); fs.rmSync(t.dir, { recursive: true, force: true }); }
   });
@@ -134,11 +135,11 @@ describe("versioned migrations", () => {
       assert.ok(!cols.includes("widgets"));
       const profile = db.prepare("SELECT username, panels FROM users").get();
       assert.equal(profile.username, "alice");
-      assert.deepEqual(JSON.parse(profile.panels), DEFAULT_PANELS);
+      assert.deepEqual(JSON.parse(profile.panels), DEFAULT_ROWS);
       // Saving the layout works again on the repaired database.
-      db.prepare("UPDATE users SET panels = ? WHERE id = 1").run(JSON.stringify([{ id: "best-day", size: "small" }]));
+      db.prepare("UPDATE users SET panels = ? WHERE id = 1").run(JSON.stringify([{ ratio: "full", panels: [{ id: "best-day" }] }]));
       assert.deepEqual(JSON.parse(db.prepare("SELECT panels FROM users WHERE id = 1").get().panels),
-        [{ id: "best-day", size: "small" }]);
+        [{ ratio: "full", panels: [{ id: "best-day" }] }]);
     } finally { db.close(); fs.rmSync(t.dir, { recursive: true, force: true }); }
   });
   test("a new database runs every migration and ends at the latest version", () => {

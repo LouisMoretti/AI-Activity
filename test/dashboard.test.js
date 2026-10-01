@@ -68,13 +68,12 @@ const profileRoutes = (name, sessions = { sessions: [], total: 0, provenance: ""
   [`/api/u/${name}/summary`]: emptySummary,
   [`/api/u/${name}/activity`]: { days: [], provenance: "" },
   [`/api/u/${name}/quotas`]: { quotas: [], provenance: "" },
-  [`/api/u/${name}/panels`]: { panels: [
-    { id: "claude-code", size: "medium", view: "quota" },
-    { id: "codex", size: "small", view: "quota" },
-    { id: "cursor", size: "large", view: "activity" },
-    { id: "antigravity", size: "large", view: "quota" },
-    { id: "opencode", size: "medium", view: "activity" },
-    { id: "today-by-tool", size: "small" },
+  [`/api/u/${name}/panels`]: { rows: [
+    { ratio: "wide-left", panels: [{ id: "claude-code", view: "quota" }, { id: "codex", view: "quota" }] },
+    { ratio: "full", panels: [{ id: "cursor", view: "activity" }] },
+    { ratio: "full", panels: [{ id: "antigravity", view: "quota" }] },
+    { ratio: "full", panels: [{ id: "opencode", view: "activity" }] },
+    { ratio: "full", panels: [{ id: "today-by-tool" }] },
   ] },
   [`/api/u/${name}/sessions`]: sessions,
 });
@@ -103,14 +102,15 @@ async function open(url, extra = {}) {
 describe("dashboard state", () => {
   test("loads optional widget data only when the profile selects it", async () => {
     const widgets = { ...profileRoutes("me"),
-      "/api/u/me/panels": { panels: [
-        { id: "leaderboard", size: "small" }, { id: "today-by-hour", size: "medium" },
+      "/api/u/me/panels": { rows: [
+        { ratio: "full", panels: [{ id: "leaderboard" }] },
+        { ratio: "half", panels: [{ id: "today-by-hour" }] },
       ] },
       "/api/u/me/hours": { day: emptySummary.day, current_hour: 10, hours: [], provenance: "measured" },
       "/api/u/me/rank": { rank: 1, accounts: 1, tokens: 0, neighbor: null, provenance: "measured" },
     };
     const { dash, stop } = await open("/u/me", widgets);
-    assert.deepEqual(dash.panels.map((p) => p.id), ["leaderboard", "today-by-hour"]);
+    assert.deepEqual(dash.rows.flatMap((r) => r.panels.map((p) => p.id)), ["leaderboard", "today-by-hour"]);
     assert.equal(dash.hours.current_hour, 10);
     assert.equal(dash.widgetRank.accounts, 1);
     assert.ok(calls.includes("/api/u/me/hours"));
@@ -123,9 +123,11 @@ describe("dashboard state", () => {
 
   test("one tool can show quotas and details together without fetching hidden tools", async () => {
     const layout = { ...profileRoutes("me"),
-      "/api/u/me/panels": { panels: [
-        { id: "claude-code", size: "small", view: "quota" },
-        { id: "claude-code", size: "large", view: "activity" },
+      "/api/u/me/panels": { rows: [
+        { ratio: "half", panels: [
+          { id: "claude-code", view: "quota" },
+          { id: "claude-code", view: "activity" },
+        ] },
       ] },
     };
     const { dash, stop } = await open("/u/me", layout);

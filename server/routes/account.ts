@@ -4,7 +4,7 @@ import {
 } from "../../shared/types.ts";
 import {
   adminOverview, deleteAccount, deleteUserActivity, deleteUserSessions, getUser, listAdminUsers, setUserAdmin,
-  setSignupOpen, setUserDisabled, signupOpen, previewSeedSettings, seedPreviewData, setPanelSettings, panelSettings, validPanels, type UserRow,
+  setSignupOpen, setUserDisabled, signupOpen, previewSeedSettings, seedPreviewData, setPanelSettings, panelSettings, validLayout, type UserRow,
 } from "../db/queries.ts";
 import { nowSec, type DB } from "../db/schema.ts";
 import { readJson } from "../lib/http.ts";
@@ -43,12 +43,12 @@ export function accountRoutes(db: DB) {
   }
 
   return new Hono<ViewerEnv>()
-    .get("/panels", (c) => c.json<PanelSettings>({ panels: panelSettings(getUser(db, c.get("userId"))!) }))
+    .get("/panels", (c) => c.json<PanelSettings>({ rows: panelSettings(getUser(db, c.get("userId"))!) }))
     .post("/panels", async (c) => {
-      const { panels } = await readJson(c);
-      if (!validPanels(panels)) return c.json({ error: "panels must be a unique list of valid panel configurations" }, 400);
-      setPanelSettings(db, c.get("userId"), panels);
-      return c.json<PanelSettings>({ panels });
+      const { rows } = await readJson(c);
+      if (!validLayout(rows)) return c.json({ error: "rows must be a unique list of valid dashboard rows" }, 400);
+      setPanelSettings(db, c.get("userId"), rows);
+      return c.json<PanelSettings>({ rows });
     })
     // Deletes the signed-in user's own usage and quotas; the account,
     // profile, devices and sessions stay.

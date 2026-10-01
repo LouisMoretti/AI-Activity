@@ -2,49 +2,60 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { startServer, req, register, newDevice, event, codexResponse } from "./helpers.js";
-import { DEFAULT_PANELS, TOOLS, WIDGETS } from "../shared/types.ts";
+import { DEFAULT_ROWS } from "../shared/types.ts";
 
-test("profile panels include tools, views and sizes; only the owner can edit them", async () => {
+test("profile rows carry tools, views and ratios; only the owner can edit them", async () => {
   const srv = await startServer();
   try {
     const bob = (await register(srv.base, "widgetbob")).cookie;
     const get = (path, cookie) => req(srv.base, "GET", path, cookie ? { cookie } : { anon: true });
-    assert.deepEqual((await get("/api/u/admin/panels")).json.panels, DEFAULT_PANELS);
-    assert.deepEqual((await req(srv.base, "GET", "/api/account/panels")).json.panels, DEFAULT_PANELS);
-    assert.deepEqual((await get("/api/account/panels", bob)).json.panels, DEFAULT_PANELS);
+    assert.deepEqual((await get("/api/u/admin/panels")).json.rows, DEFAULT_ROWS);
+    assert.deepEqual((await req(srv.base, "GET", "/api/account/panels")).json.rows, DEFAULT_ROWS);
+    assert.deepEqual((await get("/api/account/panels", bob)).json.rows, DEFAULT_ROWS);
     assert.equal((await get("/api/account/panels", null)).status, 401);
 
     const chosen = [
-      { id: "claude-code", size: "small", view: "activity" },
-      { id: "claude-code", size: "medium", view: "quota" },
-      { id: "today-by-hour", size: "medium" },
-      { id: "best-day", size: "large" },
+      { ratio: "half", panels: [
+        { id: "claude-code", view: "activity" },
+        { id: "claude-code", view: "quota" },
+      ] },
+      { ratio: "wide-right", panels: [{ id: "today-by-hour" }] },
+      { ratio: "full", panels: [{ id: "best-day" }] },
     ];
-    assert.deepEqual((await req(srv.base, "POST", "/api/account/panels", { body: { panels: chosen } })).json.panels, chosen);
-    assert.deepEqual((await get("/api/u/ADMIN/panels")).json.panels, chosen);
-    assert.deepEqual((await get("/api/u/widgetbob/panels")).json.panels, DEFAULT_PANELS);
-    for (const panels of [
-      [{ id: "bad", size: "small" }],
-      [chosen[0], chosen[0]],
+    assert.deepEqual((await req(srv.base, "POST", "/api/account/panels", { body: { rows: chosen } })).json.rows, chosen);
+    assert.deepEqual((await get("/api/u/ADMIN/panels")).json.rows, chosen);
+    assert.deepEqual((await get("/api/u/widgetbob/panels")).json.rows, DEFAULT_ROWS);
+    for (const rows of [
+      [{ ratio: "full", panels: [{ id: "bad" }] }],
+      [{ ratio: "half", panels: [{ id: "best-day" }, { id: "best-day" }] }],
       ["best-day"],
-      [{ id: "claude-code", size: "giant", view: "quota" }],
-      [{ id: "claude-code", size: "small", view: "bad" }],
-      [{ id: "opencode", size: "small", view: "quota" }],
-      [{ id: "best-day", size: "small", view: "activity" }],
-      [{ id: "best-day", size: "small", private: "secret" }],
-      [...DEFAULT_PANELS, ...WIDGETS.filter((id) => id !== "today-by-tool").map((id) => ({ id, size: "small" })), { id: TOOLS[0], size: "small", view: "quota" }],
+      [{ ratio: "full", panels: [{ id: "claude-code", view: "quota" }, { id: "codex", view: "quota" }] }],
+      [{ ratio: "half", panels: [{ id: "claude-code", view: "bad" }] }],
+      [{ ratio: "half", panels: [{ id: "opencode", view: "quota" }] }],
+      [{ ratio: "half", panels: [{ id: "best-day", view: "activity" }] }],
+      [{ ratio: "half", panels: [{ id: "best-day", private: "secret" }] }],
+      [{ ratio: "diagonal", panels: [{ id: "best-day" }] }],
+      [{ ratio: "half", panels: [{ id: "best-day" }, { id: "best-day", view: "quota" }, { id: "codex", view: "quota" }] }],
+      [{ id: "best-day", size: "small" }],
     ]) {
-      assert.equal((await req(srv.base, "POST", "/api/account/panels", { body: { panels } })).status, 400);
+      assert.equal((await req(srv.base, "POST", "/api/account/panels", { body: { rows } })).status, 400);
     }
-    assert.deepEqual((await get("/api/u/admin/panels")).json.panels, chosen);
-    assert.deepEqual((await req(srv.base, "POST", "/api/account/panels", { body: { panels: [] }, cookie: bob })).json.panels, []);
-    assert.deepEqual((await get("/api/u/widgetbob/panels")).json.panels, []);
+    assert.deepEqual((await get("/api/u/admin/panels")).json.rows, chosen);
+    assert.deepEqual((await req(srv.base, "POST", "/api/account/panels", { body: { rows: [] }, cookie: bob })).json.rows, []);
+    assert.deepEqual((await get("/api/u/widgetbob/panels")).json.rows, []);
 
     const db = new Database(srv.dbPath);
     try {
       db.prepare("UPDATE users SET panels = 'broken' WHERE username = 'admin'").run();
     } finally { db.close(); }
-    assert.deepEqual((await get("/api/u/admin/panels")).json.panels, DEFAULT_PANELS);
+    assert.deepEqual((await get("/api/u/admin/panels")).json.rows, DEFAULT_ROWS);
+    const flat = new Database(srv.dbPath);
+    try {
+      // The pre-rows flat list resets to the default rows on read.
+      flat.prepare("UPDATE users SET panels = ? WHERE username = 'admin'")
+        .run(JSON.stringify([{ id: "best-day", size: "small" }]));
+    } finally { flat.close(); }
+    assert.deepEqual((await get("/api/u/admin/panels")).json.rows, DEFAULT_ROWS);
   } finally { await srv.stop(); }
 });
 

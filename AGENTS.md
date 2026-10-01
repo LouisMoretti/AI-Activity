@@ -21,11 +21,21 @@ today unless a day is hovered; the Weekly and Cumulative tabs likewise show
 the last 7 days or the running total unless a week is hovered, focused or
 tapped), four stats (all-time tokens, today, sessions,
 current streak; hover shows the split by tool and model, or the longest
-streak), one card per tool in `TOOLS` order (Claude Code, Codex,
-Cursor and Antigravity on full rows, then OpenCode, which takes 2/3 of the last row,
-next to "Today by tool": today's tokens split by tool), recent conversations (10 + "Show more"). No tool filter:
-every tool is always shown; on your own page, a one-line box under them
-says how to add one (the install command, Settings → Devices). No cost or subscription tracking (removed on
+streak), dashboard rows, recent conversations (10 + "Show more"). The rows are the
+owner's layout (`users.panels` JSON, `{rows: [{ratio, panels}]}`): each row holds
+one card (`full`) or two (`half` = 50/50, `wide-left` = ⅔/⅓, `wide-right` = ⅓/⅔;
+a lone card in a split row stretches full width). Any tool (as its quota card,
+its activity card, or both at once for Claude Code, Codex and Antigravity) and
+any widget ("Today by tool": today's tokens split by tool, "Today by hour",
+"Best day", "Leaderboard · 7 days") can go in any row, in any order; the
+default is Claude Code + Codex, Cursor, Antigravity, then OpenCode + Today by
+tool. The owner edits it in place (Edit layout: drag cards by their grip or
+move them with the Row list and arrow keys, pick a width per row, add or remove
+rows and cards, then Save layout); visitors see the saved layout read-only.
+Hidden tool cards trigger no tool-specific reads. Antigravity's quota card
+still falls back to its activity view while no window is running. On your own
+page, a one-line box under the rows says how to add a tool (the install
+command, Settings → Devices). No cost or subscription tracking (removed on
 purpose). Only demo data carries a badge ("Demonstration data"). Palette: the
 original dark theme; type: Geist, with Geist Mono only for ids and model
 names. Quota bars carry a mark for how far into the window we are.

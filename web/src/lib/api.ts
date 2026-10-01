@@ -1,7 +1,7 @@
 // Typed client for the dashboard JSON API (same origin, cookie session).
 import type {
   ActivityResponse, AdminOverview, AdminSettings, AdminUser, AuthStatus, DeletedAccount, DeletedActivity, LeaderboardResponse, Profile, Device, QuotasResponse,
-  SessionsResponse, SummaryResponse, FriendsResponse, PreviewSeedConfig, HoursResponse, PanelSettings, ProfilePanel, RankResponse,
+  SessionsResponse, SummaryResponse, FriendsResponse, PreviewSeedConfig, HoursResponse, PanelSettings, PanelRow, RankResponse,
 } from "../../../shared/types.ts";
 
 export class UnauthorizedError extends Error {
@@ -94,7 +94,7 @@ export const api = {
   /** Everyone's usage over the last `days` days, or all time (null). */
   leaderboard: (days: number | null) => get<LeaderboardResponse>(`/api/leaderboard?days=${days ?? "all"}`),
   friends: () => get<FriendsResponse>("/api/friends"),
-  savePanels: (panels: ProfilePanel[]) => post<PanelSettings>("/api/account/panels", { panels }),
+  savePanels: (rows: PanelRow[]) => post<PanelSettings>("/api/account/panels", { rows }),
   // A profile's usage, public by username (the viewer's own page uses it too).
   profile: (username: string) => get<Profile>(profileBase(username)),
   panels: (username: string) => get<PanelSettings>(`${profileBase(username)}/panels`),
