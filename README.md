@@ -35,10 +35,19 @@ curl -fsSL <server>/install.sh | AI_ACTIVITY_URL=<server> AI_ACTIVITY_KEY=<devic
 $env:AI_ACTIVITY_URL="<server>"; $env:AI_ACTIVITY_KEY="<device key>"; irm <server>/install.ps1 | iex
 ```
 
-**Copy install (Linux/macOS)** and **Copy install (Windows)** in Settings →
-Devices copy them with the key filled in (your profile links there, under
-the tools). The key is passed in the environment, never in a URL, and ends
-up only in the installed collectors (files readable by you alone on
+After you create a key, **Settings → Devices** offers buttons to copy the
+Linux/macOS command, Windows command, or an AI setup prompt. Each existing
+device has a **Set up** action for the same options and a way to copy its key
+again. The prompt gives an AI assistant both commands, asks it to use the one
+that matches the device, and tells it to explain the installer's output and
+any follow-up steps. The installer detects tools automatically; the prompt
+does not ask you to select them. You can review the full prompt before copying.
+It includes the device ingestion key: pasting it into an AI service shares
+that key with the service. Revoke the key in Settings → Devices if it is exposed.
+
+The copy buttons include the key in each command (your profile links to
+Settings → Devices under the tools). The key is passed in the environment,
+never in a URL, and ends up only in the installed collectors (files readable by you alone on
 Linux/macOS). Both scripts need Python 3 (`python3`; on Windows `python`
 or the `py` launcher) and install the collectors of the tools they find
 (`claude` / `codex` / `cursor` / `agy` / `opencode` on the `PATH`, or their config
