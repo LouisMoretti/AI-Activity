@@ -284,13 +284,13 @@
     {#each shown as row, ri (ri)}
       {@const split = row.ratio !== "full"}
       {@const pair = editing && own && split && row.panels.length === 2}
-      <div class="row {row.ratio}" class:has-divider={pair}
+      <div class="row {row.ratio}"
         use:dropzone={{ enabled: editing && own, ondrop: (d) => moveCardToRow(d.row, d.card, ri) }}>
         <div class="cells">
           {#each row.panels as panel, ci (panelKey(panel))}
             {@const tool = isTool(panel.id) ? panel.id : null}
             {#if editing && own}
-              <div class="cell editable pos-{ci}" role="button" tabindex="0" draggable="true"
+              <div class="cell editable" role="button" tabindex="0" draggable="true"
                 aria-label="Move {optionName(panel)}: drag it, or press arrow keys (Alt moves the whole row)"
                 ondragstart={(e) => cardDragStart(e, ri, ci)} ondragend={() => dragging = null}
                 onkeydown={(e) => cardKeys(e, ri, ci)}
@@ -312,7 +312,7 @@
                 {@render cellBody(panel)}
               </div>
             {:else}
-              <div class="cell pos-{ci}">{@render cellBody(panel)}</div>
+              <div class="cell">{@render cellBody(panel)}</div>
             {/if}
           {/each}
           {#if pair}
@@ -367,17 +367,14 @@
   .rows { display: flex; flex-direction: column; gap: 16px; }
   .row { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
   /* Every grid child is placed explicitly, so nothing can ever land squeezed in the divider's track. */
-  .cells { display: grid; gap: 16px; grid-template-columns: 1fr; }
-  .row.half .cells { grid-template-columns: 1fr 1fr; }
-  .row.wide-left .cells { grid-template-columns: 2fr 1fr; }
-  .row.wide-right .cells { grid-template-columns: 1fr 2fr; }
-  .editing .row.has-divider.half .cells { grid-template-columns: 1fr 14px 1fr; }
-  .editing .row.has-divider.wide-left .cells { grid-template-columns: 2fr 14px 1fr; }
-  .editing .row.has-divider.wide-right .cells { grid-template-columns: 1fr 14px 2fr; }
+  /* The grid holds exactly the cards (one column each); the divider floats
+     above their boundary with zero footprint, so it never pushes them. */
+  .cells { position: relative; display: grid; gap: 16px; grid-template-columns: 1fr; }
+  .row.half .cells { grid-template-columns: 1fr 1fr; --split: calc(50% - 8px); }
+  .row.wide-left .cells { grid-template-columns: 2fr 1fr; --split: calc(66.6667% - 10.6667px); }
+  .row.wide-right .cells { grid-template-columns: 1fr 2fr; --split: calc(33.3333% - 5.3333px); }
   .cell { min-width: 0; display: flex; flex-direction: column; }
   .cell:only-child { grid-column: 1 / -1; }
-  .pos-0 { grid-column: 1; }
-  .has-divider .pos-1 { grid-column: 3; }
   .cell :global(article) { flex: 1; }
   .cell.editable { position: relative; cursor: grab; border-radius: var(--radius); }
   .cell.editable:active { cursor: grabbing; }
@@ -389,7 +386,7 @@
   .views { display: flex; gap: 4px; }
   .views button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
   .remove { margin-left: auto; }
-  .divider { grid-column: 2; position: relative; cursor: col-resize; touch-action: none; border-radius: 6px; min-height: 60px; }
+  .divider { position: absolute; top: 0; bottom: 0; left: var(--split); width: 17px; transform: translateX(-50%); z-index: 3; cursor: col-resize; touch-action: none; border-radius: 6px; }
   .divider::before { content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; margin-left: -1px; background: var(--line); border-radius: 1px; }
   .divider::after { content: "⠿"; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 5px 4px; font-size: 9px; line-height: 1; color: var(--muted); }
   .divider:hover::before, .divider:focus-visible::before { background: var(--accent); }
@@ -401,10 +398,8 @@
   .howto { margin-top: 16px; border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 16px; color: var(--muted); font-size: 13px; line-height: 1.6; }
   .howto button { padding: 0; border: 0; background: none; color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
   @media (max-width: 720px) {
-    .row.half .cells, .row.wide-left .cells, .row.wide-right .cells,
-    .editing .row.has-divider.half .cells, .editing .row.has-divider.wide-left .cells,
-    .editing .row.has-divider.wide-right .cells { grid-template-columns: 1fr; }
-    .pos-0, .pos-1, .slot { grid-column: auto; }
+    .row.half .cells, .row.wide-left .cells, .row.wide-right .cells { grid-template-columns: 1fr; }
+    .slot { grid-column: auto; }
     .divider { display: none; }
   }
 </style>
