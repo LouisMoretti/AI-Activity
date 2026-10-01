@@ -98,6 +98,15 @@ jobs:
             "opencode-ai@$env:OPENCODE_CLI_VERSION" "node-pty@$env:PTY_VERSION"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Write-Output "Cold CLI install elapsed: $((Get-Date) - $start)"
+      - name: Fix macOS PTY helper permissions
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          # node-pty 1.1.0 publishes spawn-helper without the executable bit.
+          for helper in "$RUNNER_TEMP/collector-clis/node_modules/node-pty"/prebuilds/darwin-*/spawn-helper; do
+            test -f "$helper"
+            chmod +x "$helper"
+          done
       - name: Report CLI cache
         run: |
           echo "CLI cache hit (warm run): ${{ steps.cli-cache.outputs.cache-hit }}"
