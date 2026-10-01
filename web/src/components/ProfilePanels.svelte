@@ -38,8 +38,8 @@
   let saving = $state(false);
   let error = $state("");
   let draft = $state<DraftRow[]>([]);
-  /** The in-flight drag (dataTransfer only exposes its payload on drop): shows the end zones. */
-  let dragging = $state<{ kind: "card"; row: number; card: number } | { kind: "row"; row: number } | null>(null);
+  /** A card drag in progress (shows the new-row zone at the end). */
+  let dragging = $state<{ row: number; card: number } | null>(null);
   const shown = $derived(editing && own ? draft : rows);
   const usedKeys = $derived(new Set(draft.flatMap((r) => r.panels.map(panelKey))));
   const available = $derived(PANEL_OPTIONS.filter((option) => !usedKeys.has(panelKey(option))));
@@ -75,9 +75,6 @@
     const next = editable(draft);
     if (next[ri]) next[ri].panels = next[ri].panels.filter((_, n) => n !== ci);
     commit(next);
-  }
-  function removeRow(ri: number): void {
-    commit(editable(draft).filter((_, i) => i !== ri));
   }
   /** Insert a card before another (same or other row); a full row splits in half for the guest. */
   function moveCard(fromR: number, fromC: number, toR: number, toC: number): void {
@@ -141,42 +138,42 @@
     commit(next);
   }
   function cardKeys(e: KeyboardEvent, ri: number, ci: number): void {
-    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight" && e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
     e.preventDefault();
+    const dir = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : -1;
     if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-      swapCard(ri, ci, e.key === "ArrowRight" ? 1 : -1);
+      if (!e.altKey) swapCard(ri, ci, dir);
+    } else if (e.altKey) {
+      moveRow(ri, ri + dir);
     } else {
-      moveCardToRow(ri, ci, ri + (e.key === "ArrowDown" ? 1 : -1));
+      moveCardToRow(ri, ci, ri + dir);
     }
   }
-  function rowKeys(e: KeyboardEvent, ri: number): void {
-    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
-    e.preventDefault();
-    moveRow(ri, ri + (e.key === "ArrowDown" ? 1 : -1));
+  /** A drag starting on the card's own controls (remove, view switch) moves nothing. */
+  function cardDragStart(e: DragEvent, ri: number, ci: number): void {
+    if ((e.target as HTMLElement | null)?.closest?.("button,select,a,input,textarea")) {
+      e.preventDefault();
+      return;
+    }
+    startDrag(e, { row: ri, card: ci });
   }
   /** Snap a divider position to the predefined widths (bounds sit halfway between thirds and half). */
   function snapRatio(pct: number): RowRatio {
     return pct < 41.7 ? "wide-right" : pct < 58.4 ? "half" : "wide-left";
   }
   const ratioShare = (ratio: RowRatio): number => ratio === "wide-left" ? 67 : ratio === "wide-right" ? 33 : 50;
-  /** A divider drag in progress: row index and the first card's live share in percent. */
-  let resizing = $state<{ row: number; pct: number } | null>(null);
-  function dividerDown(e: PointerEvent, ri: number): void {
+  function dividerDown(e: PointerEvent): void {
     e.preventDefault();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    dividerMove(e, ri);
   }
+  /** The row snaps live between the predefined widths while dragging; release changes nothing more. */
   function dividerMove(e: PointerEvent, ri: number): void {
-    if (!e.buttons) return;
+    if (!e.buttons || !(editing && own)) return;
     const cells = (e.currentTarget as HTMLElement).parentElement;
     const rect = cells?.getBoundingClientRect();
     if (!rect || !rect.width) return;
-    resizing = { row: ri, pct: Math.min(85, Math.max(15, (e.clientX - rect.left) / rect.width * 100)) };
-  }
-  function dividerUp(e: PointerEvent, ri: number): void {
-    if (!resizing || resizing.row !== ri) return;
-    const ratio = snapRatio(resizing.pct);
-    resizing = null;
+    const ratio = snapRatio(Math.min(85, Math.max(15, (e.clientX - rect.left) / rect.width * 100)));
+    if (ratio === draft[ri]?.ratio) return;
     const next = editable(draft);
     if (next[ri]) next[ri].ratio = ratio;
     commit(next);
@@ -191,15 +188,12 @@
     if (next[ri]) next[ri].ratio = ratio;
     commit(next);
   }
-  function dragData(e: DragEvent): { kind: "card"; row: number; card: number } | { kind: "row"; row: number } | null {
+  function dragData(e: DragEvent): { row: number; card: number } | null {
     try {
       const value: unknown = JSON.parse(e.dataTransfer?.getData("text/plain") ?? "");
       if (typeof value !== "object" || value === null) return null;
       const rec = value as Record<string, unknown>;
-      if (rec.kind === "row" && typeof rec.row === "number") return { kind: "row", row: rec.row };
-      if (rec.kind === "card" && typeof rec.row === "number" && typeof rec.card === "number") {
-        return { kind: "card", row: rec.row, card: rec.card };
-      }
+      if (typeof rec.row === "number" && typeof rec.card === "number") return { row: rec.row, card: rec.card };
     } catch { /* a drag from outside the dashboard: ignored */ }
     return null;
   }
@@ -208,13 +202,12 @@
     if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
     dragging = payload;
   }
-  type DropPayload = { kind: "card"; row: number; card: number } | { kind: "row"; row: number };
   /**
-   * A pointer-only drop zone (keyboard users get the grips instead, so the
-   * bare div needs no ARIA role). `enabled` keeps view mode inert; drops
+   * A pointer-only drop zone (keyboard users get the card grips instead, so
+   * the bare div needs no ARIA role). `enabled` keeps view mode inert; drops
    * validate their payload before acting.
    */
-  function dropzone(node: HTMLElement, opts: { kinds: DropPayload["kind"][]; enabled: boolean; ondrop: (d: DropPayload) => void }) {
+  function dropzone(node: HTMLElement, opts: { enabled: boolean; ondrop: (d: { row: number; card: number }) => void }) {
     let current = opts;
     const over = (e: DragEvent) => {
       if (!current.enabled || !(e.dataTransfer?.types.includes("text/plain"))) return;
@@ -223,11 +216,11 @@
     };
     const drop = (e: DragEvent) => {
       const d = dragData(e);
-      if (!current.enabled || !d || !current.kinds.includes(d.kind)) { dragging = null; return; }
+      dragging = null;
+      if (!current.enabled || !d) return;
       e.preventDefault();
       e.stopPropagation();
       current.ondrop(d);
-      dragging = null;
     };
     node.addEventListener("dragover", over);
     node.addEventListener("drop", drop);
@@ -248,6 +241,20 @@
     finally { saving = false; }
   }
 </script>
+
+{#snippet cellBody(panel: ProfilePanel)}
+  {@const tool = isTool(panel.id) ? panel.id : null}
+  {@const quota = tool ? quotaFor(tool) : null}
+  {#if tool}
+    {#if panel.view === "quota" && quota && (tool !== "antigravity" || hasLiveWindow(quota, clock.now))}
+      <QuotaCard vm={quota} />
+    {:else}
+      <ActivityToolCard {tool} vm={activityFor(tool)} />
+    {/if}
+  {:else}
+    <ProfileWidget widget={panel.id as Widget} {vm} {hours} {rankInfo} />
+  {/if}
+{/snippet}
 
 <Section title="Dashboard panels" subtitle="Your chosen tools and usage cards">
   {#snippet actions()}
@@ -276,76 +283,53 @@
   <div class="rows" class:editing={editing && own}>
     {#each shown as row, ri (ri)}
       {@const split = row.ratio !== "full"}
-      <div class="row {row.ratio}"
-        use:dropzone={{ kinds: ["row", "card"], enabled: editing && own, ondrop: (d) => {
-          if (d.kind === "row") { if (d.row !== ri) moveRow(d.row, ri); }
-          else moveCardToRow(d.row, d.card, ri);
-        } }}>
-        {#if editing && own}
-          <div class="rowbar">
-            <span class="grip" role="button" tabindex="0" title="Drag to reorder rows (arrow keys work too)"
-              aria-label="Reorder row {ri + 1}" draggable="true"
-              ondragstart={(e) => startDrag(e, { kind: "row", row: ri })} ondragend={() => dragging = null}
-              onkeydown={(e) => rowKeys(e, ri)}>⠿</span>
-            <span class="rowname">Row {ri + 1}</span>
-            <button type="button" class="remove" aria-label="Remove row {ri + 1}" title="Remove row" onclick={() => removeRow(ri)}>×</button>
-          </div>
-        {/if}
-        <div class="cells"
-          style:grid-template-columns={resizing?.row === ri ? `${resizing.pct}fr 12px ${100 - resizing.pct}fr` : undefined}>
+      {@const pair = editing && own && split && row.panels.length === 2}
+      <div class="row {row.ratio}" class:has-divider={pair}
+        use:dropzone={{ enabled: editing && own, ondrop: (d) => moveCardToRow(d.row, d.card, ri) }}>
+        <div class="cells">
           {#each row.panels as panel, ci (panelKey(panel))}
             {@const tool = isTool(panel.id) ? panel.id : null}
-            {@const quota = tool ? quotaFor(tool) : null}
-            <div class="cell"
-              use:dropzone={{ kinds: ["card"], enabled: editing && own, ondrop: (d) => {
-                if (d.kind === "card") moveCard(d.row, d.card, ri, ci);
-              } }}>
-              {#if editing && own}
-                <div class="controls">
-                  <span class="grip" role="button" tabindex="0" title="Drag to move (arrow keys work too)"
-                    aria-label="Move {optionName(panel)}" draggable="true"
-                    ondragstart={(e) => startDrag(e, { kind: "card", row: ri, card: ci })} ondragend={() => dragging = null}
-                    onkeydown={(e) => cardKeys(e, ri, ci)}>⠿</span>
-                  <strong>{optionName(panel)}</strong>
+            {#if editing && own}
+              <div class="cell editable pos-{ci}" role="button" tabindex="0" draggable="true"
+                aria-label="Move {optionName(panel)}: drag it, or press arrow keys (Alt moves the whole row)"
+                ondragstart={(e) => cardDragStart(e, ri, ci)} ondragend={() => dragging = null}
+                onkeydown={(e) => cardKeys(e, ri, ci)}
+                use:dropzone={{ enabled: true, ondrop: (d) => moveCard(d.row, d.card, ri, ci) }}>
+                <div class="overlay">
                   {#if tool && canSwitchView(tool)}
-                    <label><span>View</span><select aria-label="View of {nameOf(tool)}" value={panel.view}
-                      onchange={(e) => changeView(ri, ci, e.currentTarget.value as PanelView)}>
-                      <option value="quota" disabled={usedKeys.has(`${panel.id}:quota`) && panel.view !== "quota"}>Quotas</option>
-                      <option value="activity" disabled={usedKeys.has(`${panel.id}:activity`) && panel.view !== "activity"}>Details</option>
-                    </select></label>
+                    <div class="views" role="group" aria-label="View of {nameOf(tool)}">
+                      <button type="button" aria-pressed={panel.view === "quota"}
+                        disabled={usedKeys.has(`${panel.id}:quota`) && panel.view !== "quota"}
+                        onclick={() => changeView(ri, ci, "quota")}>Quotas</button>
+                      <button type="button" aria-pressed={panel.view === "activity"}
+                        disabled={usedKeys.has(`${panel.id}:activity`) && panel.view !== "activity"}
+                        onclick={() => changeView(ri, ci, "activity")}>Details</button>
+                    </div>
                   {/if}
-                  <button type="button" class="remove" aria-label="Remove {optionName(panel)}" title="Remove panel" onclick={() => removeCard(ri, ci)}>×</button>
+                  <button type="button" class="remove" aria-label="Remove {optionName(panel)}" title="Remove panel"
+                    onclick={() => removeCard(ri, ci)}>×</button>
                 </div>
-              {/if}
-              {#if tool}
-                {#if panel.view === "quota" && quota && (tool !== "antigravity" || hasLiveWindow(quota, clock.now))}
-                  <QuotaCard vm={quota} />
-                {:else}
-                  <ActivityToolCard {tool} vm={activityFor(tool)} />
-                {/if}
-              {:else}
-                <ProfileWidget widget={panel.id as Widget} {vm} {hours} {rankInfo} />
-              {/if}
-            </div>
-            {#if editing && own && split && row.panels.length === 2}
-              {@const share = resizing?.row === ri ? Math.round(resizing.pct) : ratioShare(row.ratio)}
-              <div class="divider" role="slider" aria-orientation="vertical" tabindex="0"
-                aria-valuemin={33} aria-valuemax={67} aria-valuenow={share}
-                aria-label="Resize row {ri + 1}" aria-valuetext="First card takes {share === 50 ? "half" : share < 50 ? "one third" : "two thirds"} of the row"
-                title="Drag to resize (it snaps to half and thirds; arrow keys work too)"
-                onpointerdown={(e) => dividerDown(e, ri)} onpointermove={(e) => dividerMove(e, ri)}
-                onpointerup={(e) => dividerUp(e, ri)} onpointercancel={() => resizing = null}
-                onkeydown={(e) => dividerKeys(e, ri)}></div>
+                {@render cellBody(panel)}
+              </div>
+            {:else}
+              <div class="cell pos-{ci}">{@render cellBody(panel)}</div>
             {/if}
           {/each}
+          {#if pair}
+            {@const share = ratioShare(row.ratio)}
+            <div class="divider" role="slider" aria-orientation="vertical" tabindex="0"
+              aria-valuemin={33} aria-valuemax={67} aria-valuenow={share}
+              aria-label="Resize row {ri + 1}" aria-valuetext="First card takes {share === 50 ? "half" : share < 50 ? "one third" : "two thirds"} of the row"
+              title="Drag to resize (it snaps to half and thirds; arrow keys work too)"
+              onpointerdown={dividerDown} onpointermove={(e) => dividerMove(e, ri)}
+              onkeydown={(e) => dividerKeys(e, ri)}></div>
+          {/if}
           {#if editing && own && split && row.panels.length < 2}
             <div class="slot"
-              use:dropzone={{ kinds: ["card"], enabled: editing && own, ondrop: (d) => {
-                if (d.kind === "card") moveCardToRow(d.row, d.card, ri);
-              } }}>
-              <label><span>Fill this half</span><select aria-label="Add a panel to row {ri + 1}" value=""
+              use:dropzone={{ enabled: true, ondrop: (d) => moveCardToRow(d.row, d.card, ri) }}>
+              <label><span>Add a card here</span><select aria-label="Add a card to row {ri + 1}" value=""
                 onchange={(e) => { if (e.currentTarget.value) fillSlot(ri, JSON.parse(e.currentTarget.value) as { id: PanelId; view?: PanelView }); e.currentTarget.value = ""; }}>
-                <option value="">+ Add a panel…</option>
+                <option value="">+ Add a card…</option>
                 {#each available as option (panelKey(option))}
                   <option value={JSON.stringify(option)}>{optionName(option)}</option>
                 {/each}
@@ -358,22 +342,16 @@
     {:else}
       <p class="empty">No panels selected.{#if own} {editing ? "Use + Add panel to choose one." : "Use Edit layout to add one."}{/if}</p>
     {/each}
-    {#if editing && own && dragging?.kind === "row"}
+    {#if editing && own && dragging}
       <div class="endzone"
-        use:dropzone={{ kinds: ["row"], enabled: true, ondrop: (d) => { if (d.kind === "row") moveRow(d.row, draft.length); } }}>
-        Drop here to move this row last
-      </div>
-    {/if}
-    {#if editing && own && dragging?.kind === "card"}
-      <div class="endzone"
-        use:dropzone={{ kinds: ["card"], enabled: true, ondrop: (d) => { if (d.kind === "card") moveCardToRow(d.row, d.card, "new"); } }}>
+        use:dropzone={{ enabled: true, ondrop: (d) => moveCardToRow(d.row, d.card, "new") }}>
         Drop here for a new row
       </div>
     {/if}
   </div>
 
   {#if own}
-    <p class="howto">Drag cards by their grip (arrow keys work too) to arrange your dashboard — dropping a card next to another shares its row. Drag the bar between two cards to resize them; it snaps to half and thirds. Add a tool: run a device's install command from <button type="button" onclick={ondevices}>Settings → Devices</button> on that machine (Linux, macOS or Windows).</p>
+    <p class="howto">Drag a card by itself (arrow keys work too; Alt moves the whole row) — dropping it next to another shares the row. Drag the thin bar between two cards to resize them; it snaps live to half and thirds. Add a tool: run a device's install command from <button type="button" onclick={ondevices}>Settings → Devices</button> on that machine (Linux, macOS or Windows).</p>
   {/if}
 </Section>
 
@@ -388,34 +366,45 @@
   .error { color: var(--warn); font-size: 13px; margin-bottom: 12px; }
   .rows { display: flex; flex-direction: column; gap: 16px; }
   .row { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+  /* Every grid child is placed explicitly, so nothing can ever land squeezed in the divider's track. */
   .cells { display: grid; gap: 16px; grid-template-columns: 1fr; }
   .row.half .cells { grid-template-columns: 1fr 1fr; }
   .row.wide-left .cells { grid-template-columns: 2fr 1fr; }
   .row.wide-right .cells { grid-template-columns: 1fr 2fr; }
-  .editing .row.half .cells { grid-template-columns: 1fr 12px 1fr; }
-  .editing .row.wide-left .cells { grid-template-columns: 2fr 12px 1fr; }
-  .editing .row.wide-right .cells { grid-template-columns: 1fr 12px 2fr; }
+  .editing .row.has-divider.half .cells { grid-template-columns: 1fr 14px 1fr; }
+  .editing .row.has-divider.wide-left .cells { grid-template-columns: 2fr 14px 1fr; }
+  .editing .row.has-divider.wide-right .cells { grid-template-columns: 1fr 14px 2fr; }
   .cell { min-width: 0; display: flex; flex-direction: column; }
   .cell:only-child { grid-column: 1 / -1; }
+  .pos-0 { grid-column: 1; }
+  .has-divider .pos-1 { grid-column: 3; }
   .cell :global(article) { flex: 1; }
-  .rowbar { display: flex; align-items: center; gap: 8px; padding: 7px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); }
-  .rowname { font-size: 11px; color: var(--muted); }
-  .divider { position: relative; cursor: col-resize; touch-action: none; border-radius: 6px; min-height: 60px; }
-  .divider::after { content: ""; position: absolute; top: 8px; bottom: 8px; left: 4px; right: 4px; background: var(--line); border-radius: 2px; }
-  .divider:hover::after, .divider:focus-visible::after { background: var(--accent); }
-  .divider:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
-  .controls { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; padding: 7px; margin-bottom: 5px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); }
-  .controls strong { flex: 1 1 auto; font-size: 11px; font-weight: 500; min-width: 0; }
-  .controls label { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 11px; }
-  .controls button { padding: 3px 7px; }
-  .grip { cursor: grab; color: var(--muted); padding: 3px 7px; border: 1px solid var(--line); border-radius: var(--radius-sm); font-size: 12px; user-select: none; }
-  .grip:active { cursor: grabbing; }
-  .grip:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+  .cell.editable { position: relative; cursor: grab; border-radius: var(--radius); }
+  .cell.editable:active { cursor: grabbing; }
+  .cell.editable:hover { outline: 1px dashed var(--line); outline-offset: -1px; }
+  .cell.editable:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+  .overlay { position: absolute; top: 8px; right: 8px; z-index: 2; display: flex; gap: 4px; opacity: 0; transition: opacity .12s; }
+  .cell.editable:hover .overlay, .cell.editable:focus-within .overlay { opacity: 1; }
+  .overlay button { padding: 3px 8px; font-size: 11px; }
+  .views { display: flex; gap: 4px; }
+  .views button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
   .remove { margin-left: auto; }
-  .slot { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; min-height: 120px; border: 1px dashed var(--line); border-radius: var(--radius); color: var(--muted); font-size: 12px; padding: 12px; }
+  .divider { grid-column: 2; position: relative; cursor: col-resize; touch-action: none; border-radius: 6px; min-height: 60px; }
+  .divider::before { content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; margin-left: -1px; background: var(--line); border-radius: 1px; }
+  .divider::after { content: "⠿"; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 5px 4px; font-size: 9px; line-height: 1; color: var(--muted); }
+  .divider:hover::before, .divider:focus-visible::before { background: var(--accent); }
+  .divider:hover::after, .divider:focus-visible::after { color: var(--accent); border-color: var(--accent); }
+  .divider:focus-visible { outline: none; }
+  .slot { grid-column: 2; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; min-height: 120px; border: 1px dashed var(--line); border-radius: var(--radius); color: var(--muted); font-size: 12px; padding: 12px; }
   .slot label { display: flex; align-items: center; gap: 6px; }
   .endzone { border: 1px dashed var(--accent); border-radius: var(--radius); color: var(--muted); font-size: 12px; text-align: center; padding: 14px; }
   .howto { margin-top: 16px; border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 16px; color: var(--muted); font-size: 13px; line-height: 1.6; }
   .howto button { padding: 0; border: 0; background: none; color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
-  @media (max-width: 720px) { .row.half .cells, .row.wide-left .cells, .row.wide-right .cells { grid-template-columns: 1fr; } }
+  @media (max-width: 720px) {
+    .row.half .cells, .row.wide-left .cells, .row.wide-right .cells,
+    .editing .row.has-divider.half .cells, .editing .row.has-divider.wide-left .cells,
+    .editing .row.has-divider.wide-right .cells { grid-template-columns: 1fr; }
+    .pos-0, .pos-1, .slot { grid-column: auto; }
+    .divider { display: none; }
+  }
 </style>

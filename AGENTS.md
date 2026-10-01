@@ -29,10 +29,11 @@ its activity card, or both at once for Claude Code, Codex and Antigravity) and
 any widget ("Today by tool": today's tokens split by tool, "Today by hour",
 "Best day", "Leaderboard · 7 days") can go in any row, in any order; the
 default is Claude Code + Codex, Cursor, Antigravity, then OpenCode + Today by
-tool. The owner edits it in place (Edit layout: drag cards by their grip, or move them with
-the arrow keys, dropping a card next to another shares its row; drag the bar
-between two cards to resize them, snapping to half and thirds; add or remove
-rows and cards, then Save layout); visitors see the saved layout read-only.
+tool. The owner edits it in place (Edit layout: drag the cards themselves, or move them with
+the arrow keys with Alt moving the whole row, dropping a card next to another
+shares its row; drag the thin bar between two cards to snap their widths live
+to half and thirds; add or remove rows and cards, then Save layout); visitors
+see the saved layout read-only.
 Hidden tool cards trigger no tool-specific reads. Antigravity's quota card
 still falls back to its activity view while no window is running. On your own
 page, a one-line box under the rows says how to add a tool (the install
