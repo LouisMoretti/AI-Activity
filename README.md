@@ -233,6 +233,10 @@ a bare `/api/ingest` answers `404`. See `AGENTS.md` §5 for the payload contract
 }
 ```
 
+On macOS, replace each `command` value above with
+`python3 ~/.codex/ai-activity-codex.py --hook`. The script answers the hook
+and starts its upload in a detached process without `setsid`.
+
 On Windows, use this instead, replacing `<user>` with your Windows user
 directory name (`--hook` answers Codex and starts the upload detached).
 These commands target PowerShell: `&` is its call operator and is required
@@ -349,8 +353,9 @@ What it does after every tool call and at the end of every turn:
 - `SessionEnd` sends any remaining rollout lines when the main session ends.
   Codex may delay this event until the session has been idle for 30 minutes;
   it is not an immediate replacement for `UserPromptSubmit` after a failed turn.
-- `setsid -f` detaches the upload so Codex goes on at once; `echo '{}'` is
-  the (empty) JSON answer Codex expects from a hook. One run at a time,
+- On Linux, `setsid -f` detaches the upload so Codex goes on at once;
+  `echo '{}'` is the (empty) JSON answer Codex expects from a hook. On macOS
+  and Windows, `--hook` prints that answer and detaches the worker. One run at a time,
   with at most one waiting behind it (it reads the rollouts once its turn
   comes, so any other run can stop at once); a run gives up after 15
   minutes. The script is idempotent: it can
@@ -784,9 +789,9 @@ How each one is started:
   `python3 ~/.claude/ai-activity-claude-code.py --worker` (on Windows,
   `python "<path>" --worker`) to see errors while setting up.
 - `codex.py`: without arguments, collects in the foreground (by hand, cron,
-  and the Linux/macOS hooks, which detach it with `setsid -f`). `--hook`
-  (the Windows hooks) prints `{}` for Codex and starts the script again
-  detached.
+  and the Linux hooks, which detach it with `setsid -f`). `--hook`
+  (the macOS and Windows hooks) prints `{}` for Codex and starts the script
+  again detached.
 - `cursor.py`: `--hook` allowlists stdin metrics into its local journal,
   prints `{}`, and starts itself detached. Without arguments it uploads
   unaccepted journal entries in the foreground (also suitable for cron).
@@ -805,7 +810,7 @@ already accepted is kept). The payloads each script sends are described in
 ## Collector CI
 
 `npm test` runs the installed collector integration tests on Linux and ARM64;
-the Windows CI job runs them explicitly. Each test starts a temporary app and
+the Windows and macOS CI jobs run them explicitly. Each test starts a temporary app and
 local HTTP receiver, runs the served installer in an isolated home, invokes
 the installed status line, hook or plugin against synthetic tool data, then
 checks the upload format, retry, deduplication and dashboard totals. No model
@@ -813,12 +818,13 @@ API or external account is needed.
 
 The **Collector CLI smoke** workflow runs on relevant collector changes, on
 pull requests and pushes to `main`, and can be started manually from Actions.
-Its Linux x64, Linux ARM64 and Windows x64 jobs install pinned Claude Code,
+Its Linux x64, Linux ARM64, Windows x64 and macOS jobs install pinned Claude Code,
 Codex and OpenCode CLIs, point each at a local fake model API, complete one
 chat, and check that the installed integration reaches the real app. Windows
-uses a temporary ConPTY for Claude Code's interactive status line. The same
-jobs also install the latest Antigravity CLI, chat with a local Gemini
-stub, and verify that its installed hook uploads measured usage; see the
+uses a temporary ConPTY for Claude Code's interactive status line; macOS uses
+a pseudo-terminal through `node-pty` for the same check and exercises Codex without
+`setsid`. The same jobs also install the latest Antigravity CLI, chat with a
+local Gemini stub, and verify that its installed hook uploads measured usage; see the
 Antigravity section above. `agy` stays in its own steps because it is a
 native binary rather than a Node CLI: it cannot be pinned with the rest and
 intentionally tracks the latest release, and its chat is headless (`agy -p`
