@@ -33,7 +33,7 @@ else:
     import fcntl
 
 # Bump with shared/collectors.ts on every change to this file.
-VERSION = 1
+VERSION = 2
 COLLECTOR = {"name": "cursor", "version": VERSION}
 SERVER = os.environ.get("AI_ACTIVITY_URL", "<server>").strip().rstrip("/")
 KEY = os.environ.get("AI_ACTIVITY_KEY", "<device key>").strip()
@@ -278,46 +278,51 @@ def journal():
     os.close(fd)
     db = sqlite3.connect(DATABASE, timeout=2)
     try:
-        # WAL lets a hook retain its metrics while an uploader reads. Network
-        # requests never hold a transaction. FULL keeps committed hooks durable.
-        db.execute("PRAGMA journal_mode = WAL")
-        db.execute("PRAGMA synchronous = FULL")
-        # Serialize first-run schema creation across simultaneous hooks.
-        db.execute("BEGIN IMMEDIATE")
-        with db:
-            version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2):
-                raise ValueError("local metrics database is newer than this collector")
-            if version == 0:
-                schema = """
-                CREATE TABLE events (
-                    identity TEXT PRIMARY KEY,
-                    revision INTEGER NOT NULL UNIQUE,
-                    payload TEXT NOT NULL
-                );
-                CREATE TABLE targets (
-                    fingerprint TEXT PRIMARY KEY,
-                    revision INTEGER NOT NULL DEFAULT 0,
-                    retry_at REAL NOT NULL DEFAULT 0,
-                    used_at REAL NOT NULL
-                );
-                CREATE TABLE metadata (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
-                INSERT INTO metadata VALUES ('revision', 0), ('legacy_migrated', 0);
-                PRAGMA user_version = 2;
-                """
-                for statement in schema.split(";"):
-                    if statement.strip():
-                        db.execute(statement)
-            elif version == 1:
-                # Early v3 previews had either three event columns or a
-                # redundant output counter. Rebuild explicitly so upgrading
-                # either shape retains every metric and target checkpoint.
-                db.execute("CREATE TABLE events_v2 (identity TEXT PRIMARY KEY, "
-                           "revision INTEGER NOT NULL UNIQUE, payload TEXT NOT NULL)")
-                db.execute("INSERT INTO events_v2 SELECT identity, revision, payload FROM events")
-                db.execute("DROP TABLE events")
-                db.execute("ALTER TABLE events_v2 RENAME TO events")
-                db.execute("PRAGMA user_version = 2")
+        startup = lock(os.path.join(CACHE, "cursor-db-init.lock"))
+        try:
+            # Changing journal mode needs an exclusive SQLite lock. Serialize
+            # it as well as first-run schema creation across simultaneous hooks.
+            # WAL lets hooks write while the uploader reads; network requests
+            # never hold a transaction. FULL keeps committed hooks durable.
+            db.execute("PRAGMA journal_mode = WAL")
+            db.execute("PRAGMA synchronous = FULL")
+            db.execute("BEGIN IMMEDIATE")
+            with db:
+                version = db.execute("PRAGMA user_version").fetchone()[0]
+                if version not in (0, 1, 2):
+                    raise ValueError("local metrics database is newer than this collector")
+                if version == 0:
+                    schema = """
+                    CREATE TABLE events (
+                        identity TEXT PRIMARY KEY,
+                        revision INTEGER NOT NULL UNIQUE,
+                        payload TEXT NOT NULL
+                    );
+                    CREATE TABLE targets (
+                        fingerprint TEXT PRIMARY KEY,
+                        revision INTEGER NOT NULL DEFAULT 0,
+                        retry_at REAL NOT NULL DEFAULT 0,
+                        used_at REAL NOT NULL
+                    );
+                    CREATE TABLE metadata (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
+                    INSERT INTO metadata VALUES ('revision', 0), ('legacy_migrated', 0);
+                    PRAGMA user_version = 2;
+                    """
+                    for statement in schema.split(";"):
+                        if statement.strip():
+                            db.execute(statement)
+                elif version == 1:
+                    # Early v3 previews had either three event columns or a
+                    # redundant output counter. Rebuild explicitly so upgrading
+                    # either shape retains every metric and target checkpoint.
+                    db.execute("CREATE TABLE events_v2 (identity TEXT PRIMARY KEY, "
+                               "revision INTEGER NOT NULL UNIQUE, payload TEXT NOT NULL)")
+                    db.execute("INSERT INTO events_v2 SELECT identity, revision, payload FROM events")
+                    db.execute("DROP TABLE events")
+                    db.execute("ALTER TABLE events_v2 RENAME TO events")
+                    db.execute("PRAGMA user_version = 2")
+        finally:
+            unlock(startup)
         yield db
     finally:
         db.close()
