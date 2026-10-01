@@ -15,6 +15,7 @@
   let setup = $state<{ id: number; name: string; key: string } | null>(null);
   let loadingSetup = $state<number | null>(null);
   let copiedAction = $state<"key" | Platform | "prompt" | null>(null);
+  let copyTimer: ReturnType<typeof setTimeout> | undefined;
   let fallback = $state<{ label: string; text: string } | null>(null);
   let prompt = $derived(setup ? setupPrompt(setup.key, location.origin) : "");
 
@@ -37,14 +38,20 @@
 
   async function copySetup(what: "key" | Platform | "prompt") {
     if (!setup) return;
-    const text = what === "key" ? setup.key
-      : what === "prompt" ? prompt : installCommand(setup.key, what);
+    const current = setup;
+    const text = what === "key" ? current.key
+      : what === "prompt" ? prompt : installCommand(current.key, what);
     fallback = null;
     try {
       await navigator.clipboard.writeText(text);
+      if (setup?.id !== current.id) return;
+      error = "";
+      clearTimeout(copyTimer);
       copiedAction = what;
-      setTimeout(() => { if (copiedAction === what) copiedAction = null; }, 2000);
+      copyTimer = setTimeout(() => { copiedAction = null; }, 2000);
     } catch {
+      if (setup?.id !== current.id) return;
+      clearTimeout(copyTimer);
       copiedAction = null;
       fallback = { label: what === "key" ? "Device key" : what === "prompt" ? "AI setup prompt" : "Install command", text };
       error = "Clipboard access failed. Select and copy the text shown below.";
@@ -109,10 +116,26 @@
       </div>
       <p>Run the command for this device's operating system, or ask your AI to run it and explain the result. The installer finds the tools on that device.</p>
       <div class="setup-actions">
-        <button type="button" onclick={() => copySetup("unix")}>{copiedAction === "unix" ? "Copied" : "Copy Linux/macOS command"}</button>
-        <button type="button" onclick={() => copySetup("windows")}>{copiedAction === "windows" ? "Copied" : "Copy Windows command"}</button>
-        <button type="button" onclick={() => copySetup("prompt")}>{copiedAction === "prompt" ? "Copied" : "Copy AI setup prompt"}</button>
+        <button type="button" class="ai-copy" onclick={() => copySetup("prompt")}
+          aria-label="Copy AI setup prompt to clipboard">
+          <svg class="ai-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <defs><linearGradient id="setup-ai-gradient" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="var(--ai-blue)"/><stop offset="1" stop-color="var(--ai-violet)"/></linearGradient></defs>
+            <path d="M12 2.5c.65 5.45 1.65 6.45 7.1 7.1-5.45.65-6.45 1.65-7.1 7.1-.65-5.45-1.65-6.45-7.1-7.1 5.45-.65 6.45-1.65 7.1-7.1Z" fill="url(#setup-ai-gradient)"/>
+            <circle cx="19.5" cy="18.5" r="1.5" fill="url(#setup-ai-gradient)"/>
+          </svg>
+          <span>Copy AI setup prompt</span>
+          <svg class="copy-confirm" class:shown={copiedAction === "prompt"} viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m3 8 3.2 3.2L13 4.5"/></svg>
+        </button>
+        <button type="button" class="copy-action" onclick={() => copySetup("unix")}>
+          <span>Copy Linux/macOS command</span>
+          <svg class="copy-confirm" class:shown={copiedAction === "unix"} viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m3 8 3.2 3.2L13 4.5"/></svg>
+        </button>
+        <button type="button" class="copy-action" onclick={() => copySetup("windows")}>
+          <span>Copy Windows command</span>
+          <svg class="copy-confirm" class:shown={copiedAction === "windows"} viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m3 8 3.2 3.2L13 4.5"/></svg>
+        </button>
       </div>
+      <span class="copy-feedback" aria-live="polite" aria-atomic="true">{copiedAction === "prompt" ? "AI setup prompt ready to paste." : copiedAction === "unix" ? "Linux/macOS command ready to paste." : copiedAction === "windows" ? "Windows command ready to paste." : copiedAction === "key" ? "Device key ready to paste." : ""}</span>
       <p class="key-note">The AI prompt includes this device's ingestion key. Sharing the prompt with an AI service shares that key.</p>
       <details>
         <summary>Review AI prompt</summary>
@@ -122,7 +145,10 @@
         <summary>Device key</summary>
         <div class="key-row">
           <code class="mono">{setup.key}</code>
-          <button type="button" onclick={() => copySetup("key")}>{copiedAction === "key" ? "Copied" : "Copy key"}</button>
+          <button type="button" class="copy-action" onclick={() => copySetup("key")}>
+            <span>Copy key</span>
+            <svg class="copy-confirm" class:shown={copiedAction === "key"} viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m3 8 3.2 3.2L13 4.5"/></svg>
+          </button>
         </div>
       </details>
       {#if fallback}
@@ -193,12 +219,20 @@
   input { flex: 1; min-width: 180px; background: var(--bg); border: 1px solid var(--line); color: var(--text); border-radius: var(--radius-sm); padding: 6px 10px; font: inherit; }
   button { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 6px 12px; }
   button:disabled { opacity: .5; cursor: default; }
-  .danger:hover { color: var(--warn); border-color: var(--warn); }
+  .danger { color: var(--danger); border-color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+  .danger:hover { background: color-mix(in srgb, var(--danger) 18%, transparent); }
   /* Accent, not the --demo-* palette: this is a real key, never demo data. */
   .setup { margin: 12px 0 6px; padding: 12px 14px; border: 1px solid var(--accent); background: var(--surface-2); border-radius: var(--radius-sm); }
   .setup-heading, .key-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
   .setup p { font-size: 13px; }
-  .setup-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+  .setup-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0 4px; }
+  .setup-actions button, .copy-action { display: inline-flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap; }
+  .ai-copy { border: 1px solid transparent; color: var(--text); background: linear-gradient(var(--surface-2), var(--surface-2)) padding-box, linear-gradient(120deg, var(--ai-blue), var(--ai-violet)) border-box; }
+  .ai-copy:hover { background: linear-gradient(var(--raised), var(--raised)) padding-box, linear-gradient(120deg, var(--ai-blue), var(--ai-violet)) border-box; box-shadow: 0 0 15px color-mix(in srgb, var(--ai-violet) 18%, transparent); }
+  .ai-mark { width: 18px; height: 18px; flex: none; }
+  .copy-confirm { width: 16px; height: 16px; flex: none; fill: none; stroke: var(--ok); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; opacity: 0; }
+  .copy-confirm.shown { opacity: 1; }
+  .copy-feedback { display: block; min-height: 18px; color: var(--ok); font-size: 12px; }
   .key-note { color: var(--warn); }
   details { margin-top: 10px; font-size: 13px; }
   summary { cursor: pointer; }
