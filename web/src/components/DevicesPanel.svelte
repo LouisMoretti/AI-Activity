@@ -137,7 +137,9 @@
     <section class="setup" aria-label="Set up {setup.name}">
       <div class="setup-heading">
         <strong>Set up {setup.name}</strong>
-        <button type="button" onclick={closeSetup}>Close</button>
+        <button type="button" class="setup-close" aria-label="Close setup" title="Close setup" onclick={closeSetup}>
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 5 19 19M19 5 5 19"/></svg>
+        </button>
       </div>
       <p>Run the command for this device's operating system, or ask your AI to run it and explain the result. The installer finds the tools on that device.</p>
       <div class="setup-actions">
@@ -247,6 +249,9 @@
   .danger:hover { background: color-mix(in srgb, var(--danger) 18%, transparent); }
   .setup { margin: 12px 0 6px; padding: 12px 14px; border: 1px solid var(--line); background: var(--surface-2); border-radius: var(--radius-sm); }
   .setup-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .setup-close { display: grid; place-items: center; flex: none; width: 32px; height: 32px; padding: 0; border: 0; background: none; }
+  .setup-close:hover { background: var(--raised); }
+  .setup-close svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
   .setup p { font-size: 13px; }
   .setup-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0 4px; }
   .setup-actions button, .copy-action { display: inline-flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap; }
