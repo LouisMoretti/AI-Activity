@@ -1,6 +1,7 @@
 // Real Antigravity CLI smoke (issue #189): the installed hook uploads measured
 // usage from a real `agy -p` chat against a local Gemini stub through the
-// local receiver and the real app API. Skips when agy is missing.
+// local receiver and the real app API. Skips when agy is missing locally;
+// CI requires the binary and a parseable version.
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -114,6 +115,7 @@ function hookLogLines(logDir, max = 3000) {
 test("real Antigravity CLI uploads measured usage through the installed hook", async (t) => {
   const version = agyVersion();
   if (!version) {
+    assert.notEqual(process.env.CI, "true", "agy must be installed and report its version in CI");
     t.skip("agy not on PATH");
     return;
   }

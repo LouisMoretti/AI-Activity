@@ -56,9 +56,30 @@ jobs:
           python-version: "3.x"
       - run: npm ci
       - run: npm run build
-      - run: node --test test/collector.test.js test/codex-collector.test.js test/opencode-collector.test.js test/antigravity-collector.test.js test/install.test.js test/installed-collectors.test.js test/collector-versions.test.js
+      - run: node --test test/collector.test.js test/codex-collector.test.js test/cursor-collector.test.js test/opencode-collector.test.js test/antigravity-collector.test.js test/install.test.js test/installed-collectors.test.js test/collector-versions.test.js
         env:
           PYTHON: python
+
+  macos:
+    # Exercise the documented /install.sh flow and every collector on macOS.
+    # In particular, Codex must use --hook because macOS has no setsid.
+    name: collectors (macos)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - run: npm ci
+      - run: npm run build
+      - run: node --test --test-concurrency=1 test/collector.test.js test/codex-collector.test.js test/cursor-collector.test.js test/opencode-collector.test.js test/antigravity-collector.test.js test/install.test.js test/installed-collectors.test.js test/collector-versions.test.js
+        env:
+          PYTHON: python3
 
   docker:
     # The image builds and runs on both platforms (nothing is pushed).

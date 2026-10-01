@@ -1,11 +1,12 @@
 <script lang="ts">
   import { clock } from "../lib/clock.svelte.ts";
   import { fmtAgo, fmtCompact, plural, RECENT_SEC } from "../lib/format.ts";
-  import type { ActivityToolVM, SessionVM, ToolKey } from "../lib/view-model.ts";
+  import { TOOL_META, type ActivityToolVM, type SessionVM, type ToolKey } from "../lib/view-model.ts";
   import ToolHeader from "./ToolHeader.svelte";
 
   const SHOWN = 3;
   let { tool, vm }: { tool: ToolKey; vm: ActivityToolVM } = $props();
+  const callNoun = $derived(TOOL_META[tool].callNoun ?? "API call");
 
   // Active: a reply in the last few minutes (the green dot's rule). Listed by
   // session id (creation order), not by latest reply, so parallel
@@ -34,14 +35,14 @@
      the left, active conversations, else the last one, on the right). -->
 <article class="card" class:empty={!last}>
   <section class="today">
-    <ToolHeader {tool} note={last ? "" : "No usage yet"} />
+    <ToolHeader {tool} note={vm.available === false ? "Unavailable" : last ? "" : "No usage yet"} />
     {#if last}
       <div class="label">Today</div>
       {#if vm.today.calls === 0}
         <div class="unused">Not used yet today</div>
       {:else}
         <div class="value">{fmtCompact(vm.today.tokens)}<small> tokens</small></div>
-        <div class="meta">{plural(vm.today.sessions, "conversation")} · {plural(vm.today.calls, "call")}</div>
+        <div class="meta">{plural(vm.today.sessions, "conversation")} · {plural(vm.today.calls, callNoun)}</div>
         {#if vm.today.models}
           <div class="meta">{plural(vm.today.models, "model")}{#if vm.today.providers !== null} · {plural(vm.today.providers, "provider")}{/if}</div>
         {/if}
@@ -60,7 +61,7 @@
           <div class="row">
             {#if active.length}<i class="dot recent" aria-hidden="true"></i>{/if}
             <span class="model" title={s.model ?? ""}><i>{m.provider}</i>{m.name}</span>
-            <span class="meta">{plural(s.calls, "call")} · {fmtCompact(s.tokens)} tokens</span>
+            <span class="meta">{plural(s.calls, callNoun)} · {fmtCompact(s.tokens)} tokens</span>
           </div>
         {/each}
         {#if more > 0}<div class="meta more">+{more} more</div>{/if}

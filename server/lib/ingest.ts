@@ -351,6 +351,48 @@ function normalizeOpenCode(body: unknown): NormalizedBatch {
   };
 }
 
+/** Cursor hook counts include cache in input (verified against the official
+ * Cursor agent package 2026.09.28-64d2043; see README); persist disjoint
+ * counters once per turn. Inconsistent counters are unavailable: never
+ * silently invent totals if a future build changes its cache convention. */
+function normalizeCursor(body: unknown): NormalizedBatch {
+  const src: Obj = isObj(body) ? body : {};
+  const now = nowSec();
+  const single = !Array.isArray(src.messages);
+  const messages: NormalizedMessage[] = [];
+  const validId = (v: unknown): v is string => typeof v === "string" && /^[A-Za-z0-9_-]{1,200}$/.test(v);
+  for (const m of single ? [src] : src.messages as unknown[]) {
+    if (!isObj(m) || !validId(m.generation_id)) continue;
+    const rawSession: unknown = m.conversation_id ?? m.session_id;
+    if (!validId(rawSession) || !isObj(m.usage)) continue;
+    const session: string = rawSession;
+    const u = m.usage;
+    const counts = [u.input_tokens ?? u.inputTokens, u.output_tokens ?? u.outputTokens,
+      u.cache_read_tokens ?? u.cacheReadTokens, u.cache_write_tokens ?? u.cacheWriteTokens];
+    if (!counts.every((v) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0)) continue;
+    const [input, output, cacheRead, cacheWrite] = counts as number[];
+    if (cacheRead + cacheWrite > input || !Number.isSafeInteger(input + output)) continue;
+    if (m.occurred_at !== undefined && (typeof m.occurred_at !== "number"
+      || !Number.isFinite(m.occurred_at) || m.occurred_at < 0 || m.occurred_at > Number.MAX_SAFE_INTEGER)) continue;
+    messages.push({
+      event_id: `cursor:${session}:${m.generation_id}`,
+      session_id: `cursor:${session}`,
+      prompt_id: null,
+      model: modelOf(m.model_id ?? m.model),
+      input_tokens: input - cacheRead - cacheWrite,
+      output_tokens: output,
+      cache_read_tokens: cacheRead,
+      cache_write_tokens: cacheWrite,
+      context_window_size: null,
+      context_used_pct: null,
+      occurred_at: eventTime(m.occurred_at, now),
+      utc_offset_min: utcOffset(m.utc_offset_min),
+    });
+  }
+  return { tool: "cursor", messages, quotas: [], account_ref: accountRef(src),
+    measured_at: eventTime(src.occurred_at, now), context: null, single };
+}
+
 /** Antigravity ids (session and response) are opaque; stored prefixed so they never collide. */
 const ANTIGRAVITY_ID = /^[A-Za-z0-9_-]{1,200}$/;
 const antigravityId = (v: unknown): v is string => typeof v === "string" && ANTIGRAVITY_ID.test(v);
@@ -420,6 +462,7 @@ function normalizeAntigravity(body: unknown): NormalizedBatch {
 const normalizers: Record<Tool, (body: unknown) => NormalizedBatch> = {
   "claude-code": normalizeClaudeCode,
   codex: normalizeCodex,
+  cursor: normalizeCursor,
   opencode: normalizeOpenCode,
   antigravity: normalizeAntigravity,
 };

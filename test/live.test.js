@@ -11,9 +11,34 @@ const data = (quotas) => ({
   sessions: { sessions: [], total: 0 },
   opencode: { summary: { day: "2026-09-25", total: breakdown, today: breakdown }, latest: { sessions: [], total: 0 } },
   antigravity: { summary: { day: "2026-09-25", total: breakdown, today: breakdown }, latest: { sessions: [], total: 0 } },
+  cursor: { summary: { day: "2026-09-25", total: breakdown, today: breakdown }, latest: { sessions: [], total: 0 } },
 });
 const q = (tool, limit_type, used_pct, measured_at) =>
   ({ account_ref: "default", tool, limit_type, used_pct, resets_at: measured_at + 3600, measured_at });
+
+test("Cursor's activity card keeps measured usage and identity without inventing quotas or providers", () => {
+  const d = data([]);
+  const session = { tool: "cursor", session_id: "cursor:conv1", model: "composer-2.5", events: 2, tokens: 1080,
+    last_seen: 1790000000, context_used_pct: null, context_window_size: null };
+  d.cursor = { summary: { ...d.summary, today: { ...breakdown, tokens: 1080, sessions: 1, events: 2,
+    by_model: [{ name: "composer-2.5", tokens: 1080 }] } }, latest: { sessions: [session], total: 1 } };
+  d.sessions = { sessions: [session], total: 1 };
+  const vm = liveDashboard(d, "all");
+  assert.deepEqual(vm.tools, ["claude-code", "codex", "cursor", "antigravity", "opencode"]);
+  assert.deepEqual(vm.cursor.today, { tokens: 1080, sessions: 1, calls: 2, models: 1, providers: null });
+  assert.equal(vm.cursor.recent[0].id, "conv1");
+  assert.equal(vm.sessions[0].tool, "cursor");
+  assert.equal(vm.sessions[0].context, null);
+  assert.ok(!("pools" in vm.cursor), "the Cursor card has no quota pools");
+  assert.deepEqual(liveDashboard(data([]), "all").cursor.recent, []);
+});
+
+test("a caller without Cursor measurements gets an unavailable card, not guessed usage", () => {
+  const d = data([]);
+  delete d.cursor;
+  const vm = liveDashboard(d, "all");
+  assert.deepEqual(vm.cursor, { available: false, recent: [], today: { tokens: 0, sessions: 0, calls: 0, models: 0, providers: null } });
+});
 
 test("each tool card shows its own quota windows, never another tool's", () => {
   const vm = liveDashboard(data([

@@ -123,6 +123,53 @@ describe("dashboard state", () => {
     assert.equal(documentListeners.has("visibilitychange"), false);
   });
 
+  test("card reads are per tool and a failed card refresh preserves measured data", async () => {
+    const { dash, stop, tick } = await open("/u/me", profileRoutes("me"));
+    assert.equal(calls.filter(c => c.startsWith("/api/u/")).length, 11);
+    assert.equal(calls.filter(c => c.includes("tool-activity")).length, 0);
+    assert.equal(dash.vm.cursor.available, true);
+    // Only the Cursor card's reads fail: the profile stays up and keeps
+    // the card's last measured data for the same day.
+    routes["/api/u/me/summary"] = (p) => (p.includes("tool=cursor") ? 503 : emptySummary);
+    routes["/api/u/me/sessions"] = (p) => (p.includes("tool=cursor") ? 503 : { sessions: [], total: 0, provenance: "" });
+    tick(); await settle();
+    assert.equal(dash.status, "ready");
+    assert.equal(dash.vm.cursor.available, true);
+    // Yesterday's totals never become today's after a failed card read.
+    routes["/api/u/me/summary"] = (p) => (p.includes("tool=cursor") ? 503 : { ...emptySummary, day: "2026-09-26" });
+    tick(); await settle();
+    assert.equal(dash.vm.cursor.available, false);
+    stop();
+    const first = await open("/u/me", { ...profileRoutes("me"),
+      "/api/u/me/summary": (p) => (p.includes("tool=cursor") ? 503 : emptySummary),
+      "/api/u/me/sessions": (p) => (p.includes("tool=cursor") ? 503 : { sessions: [], total: 0, provenance: "" }) });
+    assert.equal(first.dash.status, "ready");
+    assert.equal(first.dash.vm.cursor.available, false);
+    first.stop();
+  });
+
+  test("a quick failure waits for slow siblings before permitting another refresh", async () => {
+    const { dash, stop } = await open("/u/me", profileRoutes("me"));
+    const original = api.sessions;
+    let release;
+    const slow = new Promise(resolve => { release = resolve; });
+    api.sessions = (u, l, t, o) => (t === "cursor" ? slow : original(u, l, t, o));
+    routes["/api/u/me/summary"] = 503;
+    try {
+      const first = dash.load();
+      await settle();
+      const count = calls.length;
+      void dash.load();
+      await settle();
+      assert.equal(calls.length, count, "no overlapping refresh while a sibling still runs");
+      api.sessions = original;
+      release({ sessions: [], total: 0, provenance: "" });
+      await first;
+      await settle();
+      assert.ok(calls.length > count, "queued refresh runs once after all requests settle");
+    } finally { api.sessions = original; release({ sessions: [], total: 0, provenance: "" }); stop(); }
+  });
+
   test("preview controls follow auth status and default off when absent", async () => {
     const preview = await open("/settings", { "/api/auth/status": { ...signedIn, preview: true } });
     assert.equal(preview.dash.preview, true);

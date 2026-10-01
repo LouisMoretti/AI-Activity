@@ -135,7 +135,7 @@ describe("basics (signed in as the test admin)", () => {
     const post = (p, body = event()) => req(srv.base, "POST", p, { body, key, anon: true });
     assert.equal((await post("/api/ingest")).status, 404);
     assert.equal((await post("/api/ingest/")).status, 404);
-    assert.equal((await post("/api/ingest/cursor", event({ tool: "cursor" }))).status, 404);
+    assert.equal((await post("/api/ingest/unknown-tool", event({ tool: "unknown-tool" }))).status, 404);
     assert.equal((await post("/api/ingest/constructor")).status, 404);
     assert.equal((await req(srv.base, "GET", "/api/ingest/claude-code", { anon: true })).status, 404);
     assert.equal((await post("/api/ingest/claude-code")).json.stored, true);

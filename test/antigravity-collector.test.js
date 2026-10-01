@@ -215,7 +215,7 @@ describe("Antigravity collector", () => {
 
   test("documented hooks return promptly and automatically import persisted updates", async () => {
     const readme = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8").replaceAll("\r\n", "\n");
-    const section = readme.split("## Send Antigravity usage from a device")[1].split("## Send OpenCode")[0];
+    const section = readme.split("## Send Antigravity usage from a device")[1].split("## Send Cursor")[0];
     const configs = [...section.matchAll(/```json\n([\s\S]*?)\n```/g)].map(m => JSON.parse(m[1])["ai-activity"]);
     assert.equal(configs.length, 2);
     for (const config of configs) {

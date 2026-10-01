@@ -1,5 +1,5 @@
 // Runs the Codex collector (collectors/codex.py) through the hook
-// commands printed in README.md (the Windows ones on Windows), against a real
+// commands printed in README.md (the platform-specific ones), against a real
 // server, with fake rollouts in a temporary HOME.
 import fs from "node:fs";
 import http from "node:http";
@@ -116,6 +116,7 @@ describe("Codex collector (hooks from README.md)", () => {
     env = { ...inherited, HOME: home, USERPROFILE: home, CODEX_HOME: "", TZ: "IST-5:30" };
     const command = (event) => {
       const c = hooks.hooks[event][0].hooks[0].command;
+      if (process.platform === "darwin") return "python3 ~/.codex/ai-activity-codex.py --hook";
       if (!WINDOWS) return c;
       assert.ok(c.startsWith(WINDOWS_PREFIX));
       return c.replace(WINDOWS_PREFIX, `& "${PYTHON}" "${path.join(home, ".codex", "ai-activity-codex.py")}"`);
@@ -330,7 +331,7 @@ describe("Codex collector (hooks from README.md)", () => {
     assert.equal((await summary()).tokens - before.tokens, 304);
   });
 
-  test("--hook (the Windows command, any OS) answers at once and uploads detached", async () => {
+  test("--hook (the macOS and Windows command) answers at once and uploads detached", async () => {
     const before = await summary();
     fs.appendFileSync(current, response("resp_10", S1, usage(20, 0, 2), 6849));
     const out = await run(`${WINDOWS ? "& " : ""}"${PYTHON}" "${path.join(home, ".codex", "ai-activity-codex.py")}" --hook`, env);

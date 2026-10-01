@@ -14,11 +14,12 @@ import {
  */
 export const DEMO_PROFILE: Profile = { username: "demo", display_name: "Demo preview", avatar_url: null };
 
-type DemoTool = "claude-code" | "codex" | "antigravity";
-const DEMO_TOOLS: DemoTool[] = ["claude-code", "codex", "antigravity"];
+type DemoTool = "claude-code" | "codex" | "cursor" | "antigravity";
+const DEMO_TOOLS: DemoTool[] = ["claude-code", "codex", "cursor", "antigravity"];
 const MODELS: Record<DemoTool, [string, number][]> = {
   "claude-code": [["claude-opus-5-5", 0.7], ["claude-sonnet-5", 0.3]],
   codex: [["gpt-5-codex", 1]],
+  cursor: [["composer-2.5", 1]],
   antigravity: [["gemini-3.5-flash", 0.7], ["claude-sonnet-5", 0.3]],
 };
 
@@ -30,6 +31,7 @@ const days = lastUtcDays(364).map((day, i) => {
     codex: active ? Math.round(((i * 7919) % 1600000) * (i > 290 ? 2 : 1)) : 0,
     "claude-code": active && i % 3 !== 0 ? Math.round((i * 3571) % 1200000) : 0,
     antigravity: active && i > 290 ? Math.round((i * 4567) % 900000) : 0,
+    cursor: active && i > 310 ? Math.round((i * 6151) % 600000) : 0,
   };
 });
 
@@ -69,6 +71,9 @@ export function demoDashboard(provider: Provider): DashboardVM {
 
   const sessions: SessionVM[] = ([
     { tool: "claude-code", id: "demo-a1b2c3d4", model: "claude-opus-5-5", calls: 142, tokens: 18_400_000, lastActive: now - 90, context: { pct: 64, size: 200000 } },
+    // calls stays 5 while last.cursor is nonzero by construction ((363*6151)%600000);
+    // keep both in step if the cursor formula above ever yields 0.
+    { tool: "cursor", id: "demo-cu1a2b3c", model: "composer-2.5", calls: 5, tokens: last.cursor, lastActive: now - 120, context: null },
     { tool: "antigravity", id: "demo-g7h8i9j0", model: "gemini-3.5-flash", calls: 24, tokens: 420_000, lastActive: now - 3 * 60, context: null },
     { tool: "codex", id: "demo-e5f6a7b8", model: "gpt-5-codex", calls: 57, tokens: 6_100_000, lastActive: now - 25 * 60, context: { pct: 29, size: 258000 } },
     { tool: "claude-code", id: "demo-c9d0e1f2", model: "claude-sonnet-5", calls: 12, tokens: 940_000, lastActive: now - 5 * 3600, context: null },
@@ -84,7 +89,7 @@ export function demoDashboard(provider: Provider): DashboardVM {
     stats: {
       total: figure(tools, (t) => days.reduce((a, d) => a + d[t], 0)),
       today: figure(tools, (t) => last[t]),
-      sessions: figure(tools, (t) => ({ "claude-code": 64, codex: 38, antigravity: 18 })[t]),
+      sessions: figure(tools, (t) => ({ "claude-code": 64, codex: 38, cursor: 12, antigravity: 18 })[t]),
       streak: streaks(series),
     },
     tools: visible,
@@ -97,6 +102,10 @@ export function demoDashboard(provider: Provider): DashboardVM {
       tool: "codex",
       updatedAt: now - 20 * 60,
       pools: [pool(null, [38, now + 2 * 3600 + 18 * 60], [64, now + 4 * 86400])],
+    },
+    cursor: {
+      recent: sessions.filter((s) => s.tool === "cursor"),
+      today: { tokens: last.cursor, sessions: 1, calls: 5, models: 1, providers: null },
     },
     // Exercise the state where history exists but the tool was not used today.
     opencode: {

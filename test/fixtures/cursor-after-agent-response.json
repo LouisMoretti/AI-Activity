@@ -1,0 +1,16 @@
+{
+  "hook_event_name": "afterAgentResponse",
+  "conversation_id": "conversation-1",
+  "generation_id": "generation-1",
+  "model": "composer-2.5",
+  "input_tokens": 1000,
+  "output_tokens": 80,
+  "cache_read_tokens": 600,
+  "cache_write_tokens": 100,
+  "text": "PRIVATE_REPLY_DO_NOT_STORE",
+  "prompt": "PRIVATE_PROMPT_DO_NOT_STORE",
+  "user_email": "PRIVATE_EMAIL_DO_NOT_STORE",
+  "workspace_roots": ["PRIVATE_PATH_DO_NOT_STORE"],
+  "transcript_path": "PRIVATE_TRANSCRIPT_DO_NOT_STORE",
+  "provider_key": "PRIVATE_KEY_DO_NOT_STORE"
+}
