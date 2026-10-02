@@ -578,14 +578,51 @@ describe("locked server (first account made from the CLI)", () => {
     assert.equal((await githubSignIn(srv.base, null, { next: "/a/..//evil.example" })).location, "/?auth_error=denied");
   });
 
-  test("session and state cookies are Secure only over HTTPS", async () => {
+  test("session and state cookies: Secure and __Host- prefixed only over HTTPS", async () => {
     const plain = await githubSignIn(srv.base, "admin");
-    assert.doesNotMatch(plain.start.headers.getSetCookie()[0], /Secure/);
+    const plainState = plain.start.headers.getSetCookie()[0];
+    assert.match(plainState, /^gh_oauth=.*Path=\/api\/auth\/github/);
+    assert.doesNotMatch(plainState, /Secure/);
     assert.doesNotMatch(plain.headers.getSetCookie().find((c) => c.startsWith("dash_session=")), /Secure/);
-    const https = await githubSignIn(srv.base, "admin", { headers: { "x-forwarded-proto": "https" } });
-    assert.match(https.start.headers.getSetCookie()[0], /Secure/);
-    assert.match(https.headers.getSetCookie().find((c) => c.startsWith("dash_session=")), /Secure/);
+    assert.match(plain.cookie, /^dash_session=/);
+    assert.equal((await req(srv.base, "GET", "/api/auth/status", { cookie: plain.cookie })).json.authenticated, true);
+
+    const xfp = { "x-forwarded-proto": "https" };
+    const https = await githubSignIn(srv.base, "admin", { headers: xfp });
+    const httpsState = https.start.headers.getSetCookie()[0];
+    assert.match(httpsState, /^__Host-gh_oauth=/);
+    assert.match(httpsState, /Path=\/(;|$)/);
+    assert.match(httpsState, /Secure/);
+    assert.doesNotMatch(httpsState, /Domain=/i);
+    assert.equal(https.location, "/");
+    const session = https.headers.getSetCookie().find((c) => c.startsWith("__Host-dash_session="));
+    assert.match(session, /Secure/);
+    assert.match(session, /Path=\/(;|$)/);
+    assert.doesNotMatch(session, /Domain=/i);
     assert.equal(https.start.url.searchParams.get("redirect_uri"), `${srv.base.replace("http:", "https:")}/api/auth/github/callback`);
+
+    // Over HTTPS only the prefixed names count: an unprefixed (tossable) one is ignored.
+    const value = https.cookie.split("=")[1];
+    const status = async (cookie) => (await req(srv.base, "GET", "/api/auth/status", { cookie, headers: xfp })).json.authenticated;
+    assert.equal(await status(https.cookie), true);
+    assert.equal(await status(`dash_session=${value}`), false);
+    assert.equal(await status(plain.cookie), false);
+    // An unprefixed state cookie does not complete a sign-in over HTTPS.
+    const start = await fetch(`${srv.base}/api/auth/github`, {
+      method: "POST", headers: { ...xfp, "content-type": "application/json" }, body: "{}",
+    });
+    const st = new URL((await start.json()).url).searchParams.get("state");
+    const callback = async (cookie) => (await fetch(`${srv.base}/api/auth/github/callback?code=${await githubCode("admin")}&state=${st}`, {
+      redirect: "manual", headers: { ...xfp, cookie },
+    })).headers.get("location");
+    assert.equal(await callback(`gh_oauth=${st}`), "/?auth_error=expired");
+    assert.equal(await callback(`__Host-gh_oauth=${st}`), "/");
+    // Signing in over HTTPS drops a leftover session from before the prefix.
+    const again = await githubSignIn(srv.base, "admin", { headers: xfp, cookie: plain.cookie });
+    assert.ok(again.headers.getSetCookie().some((c) => /^dash_session=;.*Max-Age=0/i.test(c)));
+    // Signing out over HTTPS clears the prefixed cookie.
+    const out = await req(srv.base, "POST", "/api/auth/logout", { cookie: again.cookie, headers: xfp });
+    assert.ok(out.headers.getSetCookie().some((c) => /^__Host-dash_session=;.*Max-Age=0/i.test(c)));
   });
 
   test("password sign-in and profile editing are gone", async () => {
