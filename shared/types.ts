@@ -181,11 +181,22 @@ export interface AuthStatus {
 }
 
 export interface SiteAnalyticsOverview {
-  days: { day: string; pageviews: number; visitors: number; signups: number }[];
+  /** The last 30 UTC days, oldest first, zeros included. New and returning count browsers that sent their id. */
+  days: { day: string; pageviews: number; visitors: number; new_visitors: number; returning_visitors: number; signups: number }[];
+  /** Distinct visitors over those 30 days (a browser without an id counts once per day). */
+  unique_visitors: number;
   pages: { page: string; views: number }[];
   sources: { source: string; views: number }[];
   /** In memory only: visible tabs that pinged in the last minute, by page category, and per minute for the last hour (oldest first). */
   online: { now: number; pages: { page: string; visitors: number }[]; minutes: number[] };
+  /** Reads of the public API by other sites and programs (not this site's own pages). */
+  api: {
+    days: { day: string; calls: number; clients: number }[];
+    routes: { route: string; calls: number }[];
+    /** Calling site's host; "none" for servers and scripts. */
+    origins: { origin: string; calls: number }[];
+    clients: { client: string; calls: number }[];
+  };
 }
 
 /** Preview-only sample activity on the signed-in admin's account, edited as JSON in the admin panel. */

@@ -30,18 +30,36 @@ purpose). Only demo data carries a badge ("Demonstration data"). Palette: the
 original dark theme; type: Geist, with Geist Mono only for ids and model
 names. Quota bars carry a mark for how far into the window we are.
 
-Site analytics are enabled by default. The app counts daily SPA page
-categories, external referrer hostnames, unique visitors, and successful
-account creations. It does not store full paths,
-profile names, account ids, cookies, raw IP addresses or user-agent strings;
-daily unique visitors use an in-memory, daily rotating HMAC of the client IP
-and user agent. The aggregates are kept in separate tables from measured AI
-usage, shown only in the admin panel, and pruned after 90 days. No data is sent
-to a third party. The admin panel also shows who is online: open, visible
-tabs ping every 30 s (piggybacked on the refresh tick, so paused while
-hidden), and a visitor that pinged in the last minute counts. That and the
-per-minute chart of the last hour live in server memory only (never in the
-database, so pings never empty the public read cache) and reset on restart.
+Site analytics are enabled by default, shown only in the admin panel, kept
+in their own tables (apart from measured AI usage), and never sent to a
+third party. They count:
+
+- Page views of this site: page category (never the path or a profile
+  name), external referrer host, visitors, new accounts.
+- Visitors: each browser keeps a random 128-bit id in `localStorage`
+  (`web/src/lib/visitor.ts`; 13 months, then replaced; not a cookie) and
+  sends it with each view and ping. The server stores only its HMAC under
+  a permanent key, plus its first and last day seen, which tells new from
+  returning visitors and survives IP changes (mobile networks). Without
+  storage, a browser falls back to an HMAC of address + user agent under
+  a key rotated every UTC day (new each day, never "new" or "returning").
+  Both keys live in `settings` (`analytics_key`, `analytics_daily_key`), so
+  a restart counts nobody twice.
+- Who is online: visible tabs ping every 30 s (on the refresh tick, so
+  paused while hidden); a visitor that pinged in the last minute counts.
+  That and the per-minute chart of the last hour live in server memory only.
+- Reads of the public API (`/api/u/*`, `/api/leaderboard`,
+  `/api/profiles`) by other sites and programs: route category, calling
+  site host (`Origin`, else `Referer`; `none` from servers and scripts),
+  client kind guessed from the user agent (curl, node, python, browser,
+  bot…; the string is not kept) and distinct clients per day (daily
+  hash). This site's own fetches (`Sec-Fetch-Site: same-origin`) are not
+  API reads. Counted before the rate limit and the read cache.
+
+Counts are buffered in memory and written once a minute (before an admin
+read, and at shutdown), so analytics barely empty the public read cache.
+Daily rows are pruned after 90 days; first/last-seen rows 400 days after
+the last visit.
 
 **Pages:** `/` shows "Sign in with GitHub", the only way in (a GitHub
 user with no account yet gets one, unless an admin closed sign-up; while
@@ -871,6 +889,9 @@ Components never branch on live vs demo: both sources map into the same
   kept per server and key, §3).
 - Migration 6 adds the site analytics tables (`site_analytics_pageviews`,
   `site_analytics_visitors`, `site_analytics_signups`), apart from usage.
+- Migration 7 adds `site_analytics_known_visitors` (browser id HMAC, first
+  and last day seen), `site_analytics_api_calls` and
+  `site_analytics_api_clients`.
 
 ### Backups
 
@@ -1329,14 +1350,17 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   `POST /api/users/:id/disable|enable`. A disabled account cannot sign
   in and its device keys are rejected at ingest; admins cannot disable
   themselves, so one enabled admin remains.
-- Site analytics: `POST /api/analytics/view {page, referrer?}` (a page
-  category from a fixed list, else `400`; the referrer's host name only)
-  and `POST /api/analytics/ping {page}` (the online heartbeat, memory
-  only), no session, rate limited as public reads; both `204`.
-  `GET /api/admin/analytics` (admin) → `{days, pages, sources, online}`:
-  30 UTC days (zeros included), top pages and referrers, and
-  `online: {now, pages, minutes}` (`minutes`: distinct visitors per minute,
-  the last 60, oldest first).
+- Site analytics: `POST /api/analytics/view {page, referrer?, visitor?}`
+  (a page category from a fixed list, else `400`; the referrer's host name
+  only; `visitor`: the browser's id, 32 hex digits, else ignored) and
+  `POST /api/analytics/ping {page, visitor?}` (the online heartbeat,
+  memory only), no session, rate limited as public reads; both `204`.
+  `GET /api/admin/analytics` (admin) → `{days, unique_visitors, pages,
+  sources, online, api}`: 30 UTC days (zeros included; `visitors`,
+  `new_visitors`, `returning_visitors`, `pageviews`, `signups`), top pages
+  and referrers, `online: {now, pages, minutes}` (`minutes`: distinct
+  visitors per minute, the last 60, oldest first) and `api: {days (calls,
+  clients), routes, origins, clients}`.
 - Admin panel (admin only): `GET /api/admin/overview` → server-wide counts
   (accounts, disabled, live devices, events, sessions, last event).
   `GET /api/admin/settings` → `{signup_open}`, `POST /api/admin/settings

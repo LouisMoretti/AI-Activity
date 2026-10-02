@@ -3,6 +3,7 @@ import type {
   ActivityResponse, AdminOverview, AdminSettings, AdminUser, AuthStatus, DeletedAccount, DeletedActivity, LeaderboardResponse, Profile, Device, QuotasResponse,
   SessionsResponse, SummaryResponse, FriendsResponse, PreviewSeedConfig, SiteAnalyticsOverview,
 } from "../../../shared/types.ts";
+import { visitorId } from "./visitor.ts";
 
 export class UnauthorizedError extends Error {
   constructor() { super("unauthorized"); }
@@ -88,8 +89,8 @@ export const api = {
   adminOverview: () => get<AdminOverview>("/api/admin/overview"),
   adminSettings: () => get<AdminSettings>("/api/admin/settings"),
   siteAnalytics: () => get<SiteAnalyticsOverview>("/api/admin/analytics"),
-  analyticsView: (page: string, referrer: string) => beacon("/api/analytics/view", { page, referrer }),
-  analyticsPing: (page: string) => beacon("/api/analytics/ping", { page }),
+  analyticsView: (page: string, referrer: string) => beacon("/api/analytics/view", { page, referrer, visitor: visitorId() }),
+  analyticsPing: (page: string) => beacon("/api/analytics/ping", { page, visitor: visitorId() }),
   setSignupOpen: (signup_open: boolean) => post<AdminSettings>("/api/admin/settings", { signup_open }),
   previewSeed: () => get<{ config: PreviewSeedConfig }>("/api/admin/preview-seed"),
   generatePreviewSeed: (config: PreviewSeedConfig) =>

@@ -45,6 +45,10 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
     .route("/analytics", analytics.routes)
     .route("/ingest", ingestRoutes(db))
     // Public, read-only: profile pages, the account list and the leaderboard.
+    // External reads are counted first (rate-limited and cached ones too).
+    .use("/u/*", analytics.trackApi)
+    .use("/leaderboard", analytics.trackApi)
+    .use("/profiles", analytics.trackApi)
     .use("/u/*", publicReads)
     .use("/leaderboard", publicReads)
     .use("/profiles", publicReads)
@@ -105,5 +109,6 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
     return c.json({ error: "internal server error" }, 500);
   });
 
-  return app;
+  /** Writes pending analytics counts; call before closing the database. */
+  return Object.assign(app, { flushAnalytics: analytics.flush });
 }

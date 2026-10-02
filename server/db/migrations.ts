@@ -16,7 +16,38 @@ export const MIGRATIONS: ((db: DB) => void)[] = [
   collectorVersions,
   githubAccounts,
   siteAnalytics,
+  analyticsVisitorsAndApi,
 ];
+
+/**
+ * 7: returning visitors (a long-lived random id kept in the browser, stored
+ * only as an HMAC: first and last day seen) and external reads of the
+ * public API (calls by route, origin host and client kind; distinct
+ * clients per day).
+ */
+function analyticsVisitorsAndApi(db: DB): void {
+  db.exec(`
+    CREATE TABLE site_analytics_known_visitors (
+      visitor_hash TEXT PRIMARY KEY,
+      first_day TEXT NOT NULL,
+      last_day TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE INDEX idx_site_analytics_known_last ON site_analytics_known_visitors(last_day);
+    CREATE TABLE site_analytics_api_calls (
+      day TEXT NOT NULL,
+      route TEXT NOT NULL,
+      origin TEXT NOT NULL,
+      client TEXT NOT NULL,
+      calls INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (day, route, origin, client)
+    ) WITHOUT ROWID;
+    CREATE TABLE site_analytics_api_clients (
+      day TEXT NOT NULL,
+      client_hash TEXT NOT NULL,
+      PRIMARY KEY (day, client_hash)
+    ) WITHOUT ROWID;
+  `);
+}
 
 /** 6: privacy-first site analytics, kept apart from measured AI activity. */
 function siteAnalytics(db: DB): void {

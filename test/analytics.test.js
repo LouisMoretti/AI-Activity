@@ -1,5 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import Database from "better-sqlite3";
 import { req, startServer } from "./helpers.js";
 
 test("site analytics are on by default and aggregate generic routes, referrer hosts, visitors and sign-ups", async (t) => {
@@ -58,4 +62,71 @@ test("site analytics accepts only known page categories", async (t) => {
   const srv = await startServer();
   t.after(() => srv.stop());
   assert.equal((await req(srv.base, "POST", "/api/analytics/view", { anon: true, body: { page: "/u/private-login" } })).status, 400);
+});
+
+const analytics = async (base) => (await req(base, "GET", "/api/admin/analytics")).json;
+const view = (base, body, headers = {}) => req(base, "POST", "/api/analytics/view", { anon: true, headers, body });
+const ID = "0123456789abcdef0123456789abcdef";
+
+test("a browser's id counts it once across addresses, and tells new from returning visitors", async (t) => {
+  const srv = await startServer();
+  t.after(() => srv.stop());
+  // Same id, another user agent (a different address would hash alike): one visitor.
+  assert.equal((await view(srv.base, { page: "profile", visitor: ID }, { "user-agent": "phone" })).status, 204);
+  await view(srv.base, { page: "leaderboard", visitor: ID }, { "user-agent": "phone, after an update" });
+  let today = (await analytics(srv.base)).days.at(-1);
+  assert.deepEqual([today.visitors, today.new_visitors, today.returning_visitors], [1, 1, 0]);
+
+  // Seen on an earlier day: returning. Only an HMAC of the id is stored.
+  const db = new Database(srv.dbPath);
+  const known = db.prepare("SELECT visitor_hash FROM site_analytics_known_visitors").all();
+  assert.equal(known.length, 1);
+  assert.ok(!known[0].visitor_hash.includes(ID));
+  db.prepare("UPDATE site_analytics_known_visitors SET first_day = '2000-01-01'").run();
+  db.close();
+  today = (await analytics(srv.base)).days.at(-1);
+  assert.deepEqual([today.visitors, today.new_visitors, today.returning_visitors], [1, 0, 1]);
+
+  // A malformed id falls back to the address and user agent (another visitor, never "new").
+  await view(srv.base, { page: "profile", visitor: "not-an-id" }, { "user-agent": "desktop" });
+  const overview = await analytics(srv.base);
+  assert.deepEqual([overview.days.at(-1).visitors, overview.days.at(-1).new_visitors, overview.unique_visitors], [2, 0, 2]);
+});
+
+test("a restart neither loses pending counts nor counts the same visitor twice", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ai-analytics-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const env = { DB_PATH: path.join(dir, "t.db") };
+  const first = await startServer({ env });
+  await view(first.base, { page: "profile" }, { "user-agent": "no-storage" });
+  await first.stop(); // SIGTERM writes what was pending
+  const second = await startServer({ env });
+  t.after(() => second.stop());
+  await view(second.base, { page: "profile" }, { "user-agent": "no-storage" });
+  const today = (await analytics(second.base)).days.at(-1);
+  assert.deepEqual([today.pageviews, today.visitors], [2, 1]);
+});
+
+test("external reads of the public API are counted by route, origin and client, never this site's own", async (t) => {
+  const srv = await startServer();
+  t.after(() => srv.stop());
+  const get = (p, headers) => req(srv.base, "GET", p, { anon: true, headers });
+  await get("/api/leaderboard?days=7", { "user-agent": "curl/8.7.1" });
+  await get("/api/u/admin/summary", { "user-agent": "node", origin: "https://blog.example" });
+  await get("/api/u/admin", { "user-agent": "Mozilla/5.0", referer: "https://www.stats.example/me" });
+  await get("/api/profiles", { "user-agent": "python-requests/2.32" });
+  // This site's pages: same-origin fetches, not counted.
+  await get("/api/leaderboard", { "user-agent": "Mozilla/5.0", "sec-fetch-site": "same-origin" });
+  const { api } = await analytics(srv.base);
+  assert.equal(api.days.length, 30);
+  assert.deepEqual([api.days.at(-1).calls, api.days.at(-1).clients], [4, 4]);
+  assert.deepEqual(api.routes, [
+    { route: "leaderboard", calls: 1 }, { route: "profile", calls: 1 },
+    { route: "profile.summary", calls: 1 }, { route: "profiles", calls: 1 },
+  ]);
+  assert.deepEqual(api.origins, [
+    { origin: "none", calls: 2 }, { origin: "blog.example", calls: 1 }, { origin: "stats.example", calls: 1 },
+  ]);
+  assert.deepEqual(api.clients.map((c) => c.client).sort(), ["browser", "curl", "node", "python"]);
+  assert.equal(JSON.stringify(api).includes("admin"), false, "no profile names");
 });

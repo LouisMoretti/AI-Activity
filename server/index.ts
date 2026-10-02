@@ -12,7 +12,8 @@ const db = openDb(config.dbPath, config.backupDir);
 // when ALLOWED_GITHUB_LOGINS already says who may take the server.
 const setupCode = accountsExist(db) || config.allowedLogins ? null : newSetupCode();
 
-const server = serve({ fetch: createApp(db, config, setupCode).fetch, port: config.port }, () => {
+const app = createApp(db, config, setupCode);
+const server = serve({ fetch: app.fetch, port: config.port }, () => {
   console.log(`AI Activity listening on http://localhost:${config.port}`);
   console.log(`DB: ${config.dbPath}`);
   if (config.allowedLogins) {
@@ -34,6 +35,7 @@ function shutdown(signal: string): void {
   const force = setTimeout(() => process.exit(1), 5000);
   force.unref();
   server.close(() => {
+    app.flushAnalytics();
     db.close();
     process.exit(0);
   });
