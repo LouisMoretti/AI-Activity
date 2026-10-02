@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 # AI Activity server: see AGENTS.md, "Deploy (Docker + Caddy)".
-# Node 22 on Debian (glibc): better-sqlite3 ships prebuilt binaries for it on
-# amd64 and arm64, so nothing is compiled. Node >= 22.18 runs server/*.ts as is.
-ARG NODE_IMAGE=node:22-slim
+# Node 24 LTS on Debian (glibc): better-sqlite3 ships N-API prebuilt binaries
+# for amd64 and arm64, so nothing is compiled. Node 24 runs server/*.ts as is.
+ARG NODE_IMAGE=node:24-slim
 
 FROM ${NODE_IMAGE} AS build
 WORKDIR /app
