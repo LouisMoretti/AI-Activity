@@ -184,6 +184,8 @@ export interface SiteAnalyticsOverview {
   days: { day: string; pageviews: number; visitors: number; signups: number }[];
   pages: { page: string; views: number }[];
   sources: { source: string; views: number }[];
+  /** In memory only: visible tabs that pinged in the last minute, by page category, and per minute for the last hour (oldest first). */
+  online: { now: number; pages: { page: string; visitors: number }[]; minutes: number[] };
 }
 
 /** Preview-only sample activity on the signed-in admin's account, edited as JSON in the admin panel. */

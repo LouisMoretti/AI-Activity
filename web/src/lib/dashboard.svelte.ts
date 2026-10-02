@@ -25,6 +25,8 @@ export type Route =
 export type Status = "loading" | "ready" | "signed-out" | "setup" | "missing" | "error";
 
 const REFRESH_MS = 5000;
+/** Online heartbeat for site analytics, piggybacked on the refresh tick (so paused while hidden). */
+const PING_MS = 30_000;
 /** Server-side cap on one sessions page (/api/u/<name>/sessions). */
 const SESSIONS_MAX_PAGE = 200;
 export const SESSIONS_PAGE = 10;
@@ -112,14 +114,28 @@ export class Dashboard {
   private inFlight = false;
   private reloadQueued = false;
   private lastAnalyticsPath = "";
+  /** Page category of the last view counted (for the online heartbeat), and when it was last sent. */
+  private analyticsPage = "";
+  private lastPingAt = 0;
 
   private trackView(route: Route): void {
     if (this.route !== route || this.lastAnalyticsPath === location.pathname) return;
-    this.lastAnalyticsPath = location.pathname;
-    const page = route.page === "home" ? "signin" : route.page;
+    // Only the first view of a page load came from the referring site; later ones are in-app.
     let referrer = "";
-    try { referrer = document.referrer ? new URL(document.referrer).hostname : ""; } catch { /* no usable referrer */ }
-    void api.analyticsView(page, referrer);
+    if (!this.lastAnalyticsPath) {
+      try { referrer = document.referrer ? new URL(document.referrer).hostname : ""; } catch { /* no usable referrer */ }
+    }
+    this.lastAnalyticsPath = location.pathname;
+    this.analyticsPage = route.page === "home" ? "signin" : route.page;
+    this.lastPingAt = Date.now();
+    void api.analyticsView(this.analyticsPage, referrer);
+  }
+
+  /** Keeps a visible tab counted as online (admin panel), at most every 30 s. */
+  private ping(): void {
+    if (!this.analyticsPage || Date.now() - this.lastPingAt < PING_MS) return;
+    this.lastPingAt = Date.now();
+    void api.analyticsPing(this.analyticsPage);
   }
 
   /** True on the signed-in viewer's own profile. */
@@ -358,6 +374,7 @@ export class Dashboard {
     // that could not reach the server retries.
     const tick = () => {
       if (document.hidden) return;
+      this.ping();
       if (this.status === "error" || this.route.page === "profile") void this.load();
     };
     let id: ReturnType<typeof setInterval> | undefined;

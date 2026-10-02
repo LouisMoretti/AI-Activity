@@ -1,6 +1,6 @@
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import {
-  DELETE_ACCOUNT_PHRASE, DELETE_ACTIVITY_PHRASE, type AdminOverview, type AdminSettings, type AdminUser, type DeletedAccount, type DeletedActivity,
+  DELETE_ACCOUNT_PHRASE, DELETE_ACTIVITY_PHRASE, type AdminOverview, type SiteAnalyticsOverview, type AdminSettings, type AdminUser, type DeletedAccount, type DeletedActivity,
 } from "../../shared/types.ts";
 import {
   adminOverview, deleteAccount, deleteUserActivity, deleteUserSessions, getUser, listAdminUsers, setUserAdmin,
@@ -10,7 +10,7 @@ import { nowSec, type DB } from "../db/schema.ts";
 import { readJson } from "../lib/http.ts";
 import { parsePreviewSeed } from "../lib/preview-seed.ts";
 import type { ViewerEnv } from "../lib/viewer-auth.ts";
-import { siteAnalyticsOverview } from "./analytics.ts";
+import type { SiteAnalytics } from "./analytics.ts";
 
 /**
  * Destructive actions need a session opened this recently: a stolen
@@ -92,11 +92,11 @@ export function userRoutes(db: DB) {
 }
 
 /** Admin panel: server-wide overview and settings. */
-export function adminRoutes(db: DB, preview = false) {
+export function adminRoutes(db: DB, analytics: SiteAnalytics, preview = false) {
   return new Hono<ViewerEnv>()
     .use(requireAdmin)
     .get("/overview", (c) => c.json<AdminOverview>(adminOverview(db)))
-    .get("/analytics", (c) => c.json(siteAnalyticsOverview(db)))
+    .get("/analytics", (c) => c.json<SiteAnalyticsOverview>(analytics.overview()))
     .get("/settings", (c) => c.json<AdminSettings>({ signup_open: signupOpen(db) }))
     .get("/preview-seed", (c) => preview
       ? c.json({ config: previewSeedSettings(db) })

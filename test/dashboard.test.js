@@ -102,6 +102,27 @@ async function open(url, extra = {}) {
 }
 
 describe("dashboard state", () => {
+  test("a visible tab sends the online heartbeat at most every 30 s, never while hidden", async () => {
+    const { tick, stop } = await open("/leaderboard");
+    const pings = () => sent.filter((entry) => entry.path === "/api/analytics/ping").map((entry) => entry.body.page);
+    const real = Date.now;
+    try {
+      tick();
+      assert.deepEqual(pings(), [], "the page view just counted");
+      Date.now = () => real() + 31_000;
+      document.hidden = true;
+      tick();
+      assert.deepEqual(pings(), []);
+      document.hidden = false;
+      tick();
+      tick();
+      assert.deepEqual(pings(), ["leaderboard"]);
+    } finally {
+      Date.now = real;
+    }
+    stop();
+  });
+
   test("pauses polling while hidden and refreshes immediately on return", async () => {
     const { stop } = await open("/u/me", profileRoutes("me"));
     assert.equal(activeIntervals.size, 1);

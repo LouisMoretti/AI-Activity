@@ -37,7 +37,11 @@ profile names, account ids, cookies, raw IP addresses or user-agent strings;
 daily unique visitors use an in-memory, daily rotating HMAC of the client IP
 and user agent. The aggregates are kept in separate tables from measured AI
 usage, shown only in the admin panel, and pruned after 90 days. No data is sent
-to a third party.
+to a third party. The admin panel also shows who is online: open, visible
+tabs ping every 30 s (piggybacked on the refresh tick, so paused while
+hidden), and a visitor that pinged in the last minute counts. That and the
+per-minute chart of the last hour live in server memory only (never in the
+database, so pings never empty the public read cache) and reset on restart.
 
 **Pages:** `/` shows "Sign in with GitHub", the only way in (a GitHub
 user with no account yet gets one, unless an admin closed sign-up; while
@@ -865,6 +869,8 @@ Components never branch on live vs demo: both sources map into the same
   all; people sign in with GitHub, make a device key in Settings, and the
   collectors send their whole local history again (their offsets are
   kept per server and key, §3).
+- Migration 6 adds the site analytics tables (`site_analytics_pageviews`,
+  `site_analytics_visitors`, `site_analytics_signups`), apart from usage.
 
 ### Backups
 
@@ -1323,6 +1329,14 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   `POST /api/users/:id/disable|enable`. A disabled account cannot sign
   in and its device keys are rejected at ingest; admins cannot disable
   themselves, so one enabled admin remains.
+- Site analytics: `POST /api/analytics/view {page, referrer?}` (a page
+  category from a fixed list, else `400`; the referrer's host name only)
+  and `POST /api/analytics/ping {page}` (the online heartbeat, memory
+  only), no session, rate limited as public reads; both `204`.
+  `GET /api/admin/analytics` (admin) → `{days, pages, sources, online}`:
+  30 UTC days (zeros included), top pages and referrers, and
+  `online: {now, pages, minutes}` (`minutes`: distinct visitors per minute,
+  the last 60, oldest first).
 - Admin panel (admin only): `GET /api/admin/overview` → server-wide counts
   (accounts, disabled, live devices, events, sessions, last event).
   `GET /api/admin/settings` → `{signup_open}`, `POST /api/admin/settings
