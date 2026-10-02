@@ -6,7 +6,7 @@ ARG NODE_IMAGE=node:22-slim
 
 FROM ${NODE_IMAGE} AS build
 WORKDIR /app
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json .npmrc ./
 RUN npm ci --no-audit --no-fund
 COPY . .
 RUN npm run build
@@ -17,7 +17,7 @@ ENV NODE_ENV=production \
     DB_PATH=/data/dashboard.db \
     BACKUP_DIR=/data/backups
 WORKDIR /app
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json .npmrc ./
 # Installed here, not copied from the build stage or the host: the native
 # SQLite binding must match this image's platform.
 RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force

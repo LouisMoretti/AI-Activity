@@ -178,6 +178,8 @@ Upgrades are normally deployed from GitHub (Continuous deployment below).
   prebuilt binaries for amd64 and arm64 on Node 22; Node 24 would compile
   from source), runs as `node`, has a `HEALTHCHECK` on `/api/health`, and
   `npm ci` runs inside it (never copy the host's `node_modules`).
+  `.npmrc` turns install scripts off: no dependency needs one, and npm
+  would otherwise try to compile `better-sqlite3` (npm/cli#9837).
 - Data lives in the `data` volume mounted on `/data` (`DB_PATH=/data/dashboard.db`,
   `BACKUP_DIR=/data/backups`): mount the directory, never the database file
   alone (its `-wal` / `-shm` sit next to it). `docker stop` sends SIGTERM:
