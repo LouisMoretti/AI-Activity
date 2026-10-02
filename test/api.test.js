@@ -471,12 +471,18 @@ describe("basics (signed in as the test admin)", () => {
   });
 
   test("security headers on every response; HSTS only over HTTPS", async () => {
+    const asset = (await req(srv.base, "GET", "/")).text.match(/\/assets\/[^"']+\.js/)?.[0];
+    assert.ok(asset, "the built index.html links a script under /assets/");
+    const big = JSON.stringify({ pad: "x".repeat(300 * 1024) });
     const paths = [
-      ["GET", "/"], ["GET", "/u/admin"], ["GET", "/install.sh"], ["GET", "/install.ps1"],
+      ["GET", "/"], ["GET", "/u/admin"], ["GET", asset], ["GET", "/install.sh"], ["GET", "/install.ps1"],
       ["GET", "/api/health"], ["GET", "/api/nope"], ["GET", "/api/u/admin/stats"], ["POST", "/api/ingest/claude-code"],
+      ["POST", "/api/ingest/claude-code", { raw: big, key }, 413],
+      ["POST", "/api/ingest/claude-code", { raw: "{}", key, type: "text/plain" }, 415],
     ];
-    for (const [method, p] of paths) {
-      const r = await req(srv.base, method, p, { body: method === "POST" ? {} : undefined });
+    for (const [method, p, opts, status] of paths) {
+      const r = await req(srv.base, method, p, opts ?? { body: method === "POST" ? {} : undefined });
+      if (status) assert.equal(r.status, status, p);
       assert.equal(r.headers.get("x-content-type-options"), "nosniff", p);
       assert.equal(r.headers.get("referrer-policy"), "no-referrer", p);
       assert.equal(r.headers.get("x-frame-options"), "DENY", p);
