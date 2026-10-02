@@ -67,6 +67,10 @@ test("site analytics accepts only known page categories", async (t) => {
 const analytics = async (base) => (await req(base, "GET", "/api/admin/analytics")).json;
 const view = (base, body, headers = {}) => req(base, "POST", "/api/analytics/view", { anon: true, headers, body });
 const ID = "0123456789abcdef0123456789abcdef";
+function withDb(srv, fn) {
+  const db = new Database(srv.dbPath, { readonly: true });
+  try { return fn(db); } finally { db.close(); }
+}
 
 test("a browser's id counts it once across addresses, and tells new from returning visitors", async (t) => {
   const srv = await startServer();
@@ -119,7 +123,7 @@ test("external reads of the public API are counted by route, origin and client, 
   await get("/api/leaderboard", { "user-agent": "Mozilla/5.0", "sec-fetch-site": "same-origin" });
   const { api } = await analytics(srv.base);
   assert.equal(api.days.length, 30);
-  assert.deepEqual([api.days.at(-1).calls, api.days.at(-1).clients], [4, 4]);
+  assert.deepEqual([api.days.at(-1).calls, api.days.at(-1).clients], [4, 1]); // clients: one address here
   assert.deepEqual(api.routes, [
     { route: "leaderboard", calls: 1 }, { route: "profile", calls: 1 },
     { route: "profile.summary", calls: 1 }, { route: "profiles", calls: 1 },
@@ -129,4 +133,43 @@ test("external reads of the public API are counted by route, origin and client, 
   ]);
   assert.deepEqual(api.clients.map((c) => c.client).sort(), ["browser", "curl", "node", "python"]);
   assert.equal(JSON.stringify(api).includes("admin"), false, "no profile names");
+});
+
+test("sign-in returns keep their provider's host, apart from referrers", async (t) => {
+  const srv = await startServer();
+  t.after(() => srv.stop());
+  await view(srv.base, { page: "profile", referrer: "github.com", via: "sign-in" });
+  await view(srv.base, { page: "profile", referrer: "github.com" }); // a link on GitHub
+  await view(srv.base, { page: "settings", via: "sign-in" });
+  const overview = await analytics(srv.base);
+  assert.deepEqual(overview.sign_ins, [{ provider: "github.com", views: 1 }, { provider: "unknown", views: 1 }]);
+  assert.deepEqual(overview.sources, [{ source: "github.com", views: 1 }]);
+});
+
+test("refused requests are counted by limit, never as API reads, and caller-made hosts are capped", async (t) => {
+  const srv = await startServer();
+  t.after(() => srv.stop());
+  // 101 invented origins: 100 kept, the rest is "other".
+  for (let i = 0; i < 101; i++) {
+    await req(srv.base, "GET", "/api/profiles", { anon: true, headers: { origin: `https://site-${i}.example` } });
+  }
+  let { api } = await analytics(srv.base);
+  assert.equal(api.origins.length, 20, "the top 20 only");
+  assert.equal(api.days.at(-1).calls, 101);
+  withDb(srv, (db) => {
+    assert.equal(db.prepare("SELECT COUNT(DISTINCT origin) AS n FROM site_analytics_api_calls").get().n, 101);
+    assert.equal(db.prepare("SELECT calls FROM site_analytics_api_calls WHERE origin = 'other'").get().calls, 1);
+  });
+
+  // Past the public read limit (300 per client): refused requests count only as rate limited.
+  const results = await Promise.all(Array.from({ length: 400 }, () =>
+    req(srv.base, "GET", "/api/profiles", { anon: true, headers: { origin: "https://flood.example" } })));
+  const refused = results.filter((r) => r.status === 429).length;
+  assert.ok(refused > 0);
+  const overview = await analytics(srv.base);
+  api = overview.api;
+  assert.equal(api.days.at(-1).calls, 101 + 400 - refused);
+  const scope = overview.rate_limited.scopes.find((s) => s.scope === "public.profiles");
+  assert.equal(scope.hits, refused);
+  assert.deepEqual([overview.rate_limited.days.at(-1).hits, overview.rate_limited.days.at(-1).clients], [refused, 1]);
 });

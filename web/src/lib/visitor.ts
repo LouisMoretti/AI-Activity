@@ -20,3 +20,23 @@ export function visitorId(now = Date.now()): string | null {
     return null;
   }
 }
+
+const SIGN_IN_KEY = "ai-activity:signing-in";
+/** A sign-in round trip takes at most the server's 10-minute state lifetime. */
+const SIGN_IN_MS = 10 * 60_000;
+
+/** Called before leaving for a sign-in provider: the next page view is its return, not a referral. */
+export function markSignIn(now = Date.now()): void {
+  try { sessionStorage.setItem(SIGN_IN_KEY, String(now)); } catch { /* no storage: counted as a referral */ }
+}
+
+/** True once if this page load is the return from a sign-in started in this tab. */
+export function takeSignIn(now = Date.now()): boolean {
+  try {
+    const at = Number(sessionStorage.getItem(SIGN_IN_KEY));
+    sessionStorage.removeItem(SIGN_IN_KEY);
+    return at > 0 && now - at >= 0 && now - at < SIGN_IN_MS;
+  } catch {
+    return false;
+  }
+}

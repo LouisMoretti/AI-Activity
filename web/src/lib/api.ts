@@ -89,7 +89,8 @@ export const api = {
   adminOverview: () => get<AdminOverview>("/api/admin/overview"),
   adminSettings: () => get<AdminSettings>("/api/admin/settings"),
   siteAnalytics: () => get<SiteAnalyticsOverview>("/api/admin/analytics"),
-  analyticsView: (page: string, referrer: string) => beacon("/api/analytics/view", { page, referrer, visitor: visitorId() }),
+  analyticsView: (page: string, referrer: string, signIn = false) =>
+    beacon("/api/analytics/view", { page, referrer, visitor: visitorId(), ...(signIn ? { via: "sign-in" } : {}) }),
   analyticsPing: (page: string) => beacon("/api/analytics/ping", { page, visitor: visitorId() }),
   setSignupOpen: (signup_open: boolean) => post<AdminSettings>("/api/admin/settings", { signup_open }),
   previewSeed: () => get<{ config: PreviewSeedConfig }>("/api/admin/preview-seed"),

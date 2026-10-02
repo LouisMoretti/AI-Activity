@@ -35,6 +35,7 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
       await next();
       c.header("cache-control", "no-store");
     })
+    .use(analytics.trackLimited)
     .get("/health", (c) => c.json({ ok: true }))
     // Starting a GitHub sign-in, per client. Not GitHub's callback: a
     // successful sign-in must not cost twice, and the callback only works
@@ -45,7 +46,7 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
     .route("/analytics", analytics.routes)
     .route("/ingest", ingestRoutes(db))
     // Public, read-only: profile pages, the account list and the leaderboard.
-    // External reads are counted first (rate-limited and cached ones too).
+    // External reads are counted around the rate limit and the cache (cached ones count).
     .use("/u/*", analytics.trackApi)
     .use("/leaderboard", analytics.trackApi)
     .use("/profiles", analytics.trackApi)

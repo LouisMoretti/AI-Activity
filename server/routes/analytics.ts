@@ -1,6 +1,6 @@
 import { createHmac, randomBytes } from "node:crypto";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
-import type { SiteAnalyticsOverview } from "../../shared/types.ts";
+import { TOOLS, type SiteAnalyticsOverview } from "../../shared/types.ts";
 import type { DB } from "../db/schema.ts";
 import type { ClientInfo } from "../lib/client.ts";
 import { readJson } from "../lib/http.ts";
@@ -22,6 +22,10 @@ const FLUSH_MS = 60_000;
 /** The browser's random id: 128 bits, hex. */
 const VISITOR_TOKEN = /^[0-9a-f]{32}$/;
 const PROFILE_ROUTES = new Set(["stats", "activity", "quotas", "summary", "sessions"]);
+/** New referrer or origin hosts recorded per UTC day each; beyond it they count as "other" (they come from the caller). */
+const MAX_HOSTS_PER_DAY = 100;
+const SESSION_ROUTES = new Set(["friends", "devices", "account", "users", "admin"]);
+const TOOL_SLUGS = new Set<string>(TOOLS);
 const isoDay = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 const day = () => isoDay(Date.now());
 const hmac = (key: string, ...parts: string[]) => createHmac("sha256", key).update(parts.join("\0")).digest("hex");
@@ -40,9 +44,14 @@ function hostOf(value: string | undefined | null): string | null {
 
 const siteHostOf = (c: Context) => (c.req.header("host") ?? "").split(":")[0].toLowerCase().replace(/^www\./, "");
 
-/** External referrer host, or "direct". */
-function sourceHost(value: unknown, siteHost: string): string {
-  const host = typeof value === "string" ? hostOf(value) : null;
+/**
+ * Where a page view came from: "direct", an external referrer host, or
+ * "sign-in:<host>" for the return from a sign-in provider (the client
+ * marks it), kept apart so sign-ins never read as referrals.
+ */
+function sourceOf(referrer: unknown, via: unknown, siteHost: string): string {
+  const host = typeof referrer === "string" ? hostOf(referrer) : null;
+  if (via === "sign-in") return `sign-in:${host && host !== siteHost ? host : "unknown"}`;
   return !host || host === siteHost ? "direct" : host;
 }
 
@@ -59,6 +68,18 @@ export function clientKind(userAgent: string): string {
   if (ua.startsWith("bun/")) return "bun";
   if (ua.startsWith("go-http-client")) return "go";
   if (/^mozilla\//.test(ua)) return "browser";
+  return "other";
+}
+
+/** What a refused (429) request was, from a fixed set: "public.leaderboard", "ingest.codex", "auth.github"… */
+function limitedScope(path: string): string {
+  const parts = path.replace(/^\/api\//, "").split("/").filter(Boolean);
+  const [head, sub] = parts;
+  if (head === "u" || head === "leaderboard" || head === "profiles") return `public.${routeOf(path)}`;
+  if (head === "ingest") return `ingest.${sub && TOOL_SLUGS.has(sub) ? sub : "other"}`;
+  if (head === "auth") return sub === "github" ? "auth.github" : "auth.other";
+  if (head === "analytics") return sub === "view" || sub === "ping" ? `analytics.${sub}` : "analytics.other";
+  if (head && SESSION_ROUTES.has(head)) return `session.${head}`;
   return "other";
 }
 
@@ -138,9 +159,10 @@ function presence() {
 
 /** Counts waiting to be written, keyed by their row's primary key joined with "\0". */
 function pending() {
-  const counts = { pageviews: new Map<string, number>(), api: new Map<string, number>() };
-  const sets = { visitors: new Set<string>(), apiClients: new Set<string>() };
-  const full = () => counts.pageviews.size + counts.api.size + sets.visitors.size + sets.apiClients.size >= MAX_TRACKED * 5;
+  const counts = { pageviews: new Map<string, number>(), api: new Map<string, number>(), limited: new Map<string, number>() };
+  const sets = { visitors: new Set<string>(), apiClients: new Set<string>(), limitedClients: new Set<string>() };
+  const size = () => [...Object.values(counts), ...Object.values(sets)].reduce((n, m) => n + m.size, 0);
+  const full = () => size() >= MAX_TRACKED * 5;
   return {
     counts, sets,
     add(map: Map<string, number>, ...key: string[]) {
@@ -150,8 +172,9 @@ function pending() {
     put(set: Set<string>, ...key: string[]) {
       if (!full()) set.add(key.join("\0"));
     },
+    empty: () => size() === 0,
     clear() {
-      counts.pageviews.clear(); counts.api.clear(); sets.visitors.clear(); sets.apiClients.clear();
+      for (const m of [...Object.values(counts), ...Object.values(sets)]) m.clear();
     },
   };
 }
@@ -161,6 +184,26 @@ export function createSiteAnalytics(db: DB, client: ClientInfo) {
   const online = presence();
   const queue = pending();
   let prunedDay = "";
+
+  /**
+   * Hosts come from the caller (Origin, Referer, the posted referrer): at
+   * most 100 new ones per day and column, others count as "other", so
+   * nobody can grow the database by inventing hosts.
+   */
+  const hostsSeen = new Map<string, { day: string; hosts: Set<string> }>();
+  function capped(column: "source" | "origin", date: string, host: string): string {
+    if (host === "direct" || host === "none") return host;
+    let seen = hostsSeen.get(column);
+    if (seen?.day !== date) {
+      const table = column === "source" ? "site_analytics_pageviews" : "site_analytics_api_calls";
+      const rows = db.prepare(`SELECT DISTINCT ${column} AS host FROM ${table} WHERE day = ?`).all(date) as { host: string }[];
+      hostsSeen.set(column, (seen = { day: date, hosts: new Set(rows.map((row) => row.host)) }));
+    }
+    if (seen.hosts.has(host)) return host;
+    if (seen.hosts.size >= MAX_HOSTS_PER_DAY) return "other";
+    seen.hosts.add(host);
+    return host;
+  }
 
   const write = db.transaction(() => {
     const view = db.prepare(`INSERT INTO site_analytics_pageviews(day, page, source, views) VALUES (?, ?, ?, ?)
@@ -179,13 +222,18 @@ export function createSiteAnalytics(db: DB, client: ClientInfo) {
     for (const [k, n] of queue.counts.api) call.run(...k.split("\0"), n);
     const apiClient = db.prepare("INSERT OR IGNORE INTO site_analytics_api_clients(day, client_hash) VALUES (?, ?)");
     for (const k of queue.sets.apiClients) apiClient.run(...k.split("\0"));
+    const limited = db.prepare(`INSERT INTO site_analytics_rate_limited(day, scope, hits) VALUES (?, ?, ?)
+      ON CONFLICT(day, scope) DO UPDATE SET hits = hits + excluded.hits`);
+    for (const [k, n] of queue.counts.limited) limited.run(...k.split("\0"), n);
+    const limitedClient = db.prepare("INSERT OR IGNORE INTO site_analytics_rate_limited_clients(day, client_hash) VALUES (?, ?)");
+    for (const k of queue.sets.limitedClients) limitedClient.run(...k.split("\0"));
     queue.clear();
     // Retention: once a day is enough.
     const today = day();
     if (prunedDay === today) return;
     prunedDay = today;
     const cutoff = isoDay(Date.now() - RETENTION_DAYS * 86400000);
-    for (const table of ["site_analytics_pageviews", "site_analytics_visitors", "site_analytics_signups", "site_analytics_api_calls", "site_analytics_api_clients"]) {
+    for (const table of ["site_analytics_pageviews", "site_analytics_visitors", "site_analytics_signups", "site_analytics_api_calls", "site_analytics_api_clients", "site_analytics_rate_limited", "site_analytics_rate_limited_clients"]) {
       db.prepare(`DELETE FROM ${table} WHERE day < ?`).run(cutoff);
     }
     db.prepare("DELETE FROM site_analytics_known_visitors WHERE last_day < ?").run(isoDay(Date.now() - KNOWN_VISITOR_DAYS * 86400000));
@@ -193,8 +241,7 @@ export function createSiteAnalytics(db: DB, client: ClientInfo) {
   /** Writes what is pending (every minute, before the admin reads, and at shutdown). */
   function flush(): void {
     if (!db.open) return;
-    const empty = !queue.counts.pageviews.size && !queue.counts.api.size && !queue.sets.visitors.size && !queue.sets.apiClients.size;
-    if (empty && prunedDay === day()) return;
+    if (queue.empty() && prunedDay === day()) return;
     try { write(); } catch (err) { console.error("site analytics flush failed:", err); }
   }
   setInterval(flush, FLUSH_MS).unref();
@@ -207,7 +254,8 @@ export function createSiteAnalytics(db: DB, client: ClientInfo) {
 
   async function pageBody(c: Context) {
     const body = await readJson(c);
-    return typeof body.page === "string" && PAGES.has(body.page) ? { page: body.page, visitor: body.visitor, referrer: body.referrer } : null;
+    return typeof body.page === "string" && PAGES.has(body.page)
+      ? { page: body.page, visitor: body.visitor, referrer: body.referrer, via: body.via } : null;
   }
 
   const routes = new Hono()
@@ -216,7 +264,9 @@ export function createSiteAnalytics(db: DB, client: ClientInfo) {
       if (!body) return c.json({ error: "invalid page" }, 400);
       const date = day();
       const visitor = visitorOf(c, date, body.visitor);
-      queue.add(queue.counts.pageviews, date, body.page, sourceHost(body.referrer, siteHostOf(c)));
+      const source = sourceOf(body.referrer, body.via, siteHostOf(c));
+      const [kind, host] = source.startsWith("sign-in:") ? ["sign-in:", source.slice(8)] : ["", source];
+      queue.add(queue.counts.pageviews, date, body.page, kind + capped("source", date, host));
       queue.put(queue.sets.visitors, date, visitor);
       online.touch(visitor, body.page);
       return c.body(null, 204);
@@ -233,21 +283,30 @@ export function createSiteAnalytics(db: DB, client: ClientInfo) {
    * Counts reads of the public API by other programs and sites (this site's
    * own pages are same-origin and counted as page views instead): route
    * category, the calling site's host (Origin, else Referer; "none" from a
-   * server or script) and client kind. Mounted before the rate limit and
-   * the read cache, so throttled and cached answers count too.
+   * server or script; capped per day) and client kind, plus distinct client
+   * addresses per day. Cached answers count; refused ones (429) count only
+   * as rate limited (trackLimited), so a flood adds no rows.
    */
   const trackApi: MiddlewareHandler = async (c, next) => {
+    await next();
+    if (c.req.method !== "GET" || c.res.status === 429) return;
     const fetchSite = c.req.header("sec-fetch-site");
     const siteHost = siteHostOf(c);
     const from = hostOf(c.req.header("origin")) ?? hostOf(c.req.header("referer"));
-    const own = fetchSite === "same-origin" || (!fetchSite && from === siteHost);
-    if (!own && c.req.method === "GET") {
-      const date = day();
-      const ua = c.req.header("user-agent") ?? "";
-      queue.add(queue.counts.api, date, routeOf(c.req.path), from && from !== siteHost ? from : "none", clientKind(ua));
-      queue.put(queue.sets.apiClients, date, hmac(keys.daily(date), "api", client.clientId(c), ua));
-    }
+    if (fetchSite === "same-origin" || (!fetchSite && from === siteHost)) return;
+    const date = day();
+    const origin = from && from !== siteHost ? capped("origin", date, from) : "none";
+    queue.add(queue.counts.api, date, routeOf(c.req.path), origin, clientKind(c.req.header("user-agent") ?? ""));
+    queue.put(queue.sets.apiClients, date, hmac(keys.daily(date), "api", client.clientId(c)));
+  };
+
+  /** Every request the server refuses with 429 (any limiter), by scope, and distinct client addresses per day. */
+  const trackLimited: MiddlewareHandler = async (c, next) => {
     await next();
+    if (c.res.status !== 429) return;
+    const date = day();
+    queue.add(queue.counts.limited, date, limitedScope(c.req.path));
+    queue.put(queue.sets.limitedClients, date, hmac(keys.daily(date), "limited", client.clientId(c)));
   };
 
   /** 30-day aggregates (every day, zeros included) and who is online; no viewer or account dimensions. */
@@ -268,6 +327,8 @@ export function createSiteAnalytics(db: DB, client: ClientInfo) {
     const signups = byDay("SELECT day, signups AS n FROM site_analytics_signups WHERE day >= ?");
     const calls = byDay("SELECT day, SUM(calls) AS n FROM site_analytics_api_calls WHERE day >= ? GROUP BY day");
     const clients = byDay("SELECT day, COUNT(*) AS n FROM site_analytics_api_clients WHERE day >= ? GROUP BY day");
+    const limitedHits = byDay("SELECT day, SUM(hits) AS n FROM site_analytics_rate_limited WHERE day >= ? GROUP BY day");
+    const limitedClients = byDay("SELECT day, COUNT(*) AS n FROM site_analytics_rate_limited_clients WHERE day >= ? GROUP BY day");
     const dense = (f: (d: string) => object) => Array.from({ length: OVERVIEW_DAYS }, (_, i) => {
       const d = isoDay(now - (OVERVIEW_DAYS - 1 - i) * 86400000);
       return { day: d, ...f(d) };
@@ -284,7 +345,9 @@ export function createSiteAnalytics(db: DB, client: ClientInfo) {
       pages: top(`SELECT page, SUM(views) AS views FROM site_analytics_pageviews
         WHERE day >= ? GROUP BY page ORDER BY views DESC, page`),
       sources: top(`SELECT source, SUM(views) AS views FROM site_analytics_pageviews
-        WHERE day >= ? AND source != 'direct' GROUP BY source ORDER BY views DESC, source LIMIT 20`),
+        WHERE day >= ? AND source != 'direct' AND source NOT LIKE 'sign-in:%' GROUP BY source ORDER BY views DESC, source LIMIT 20`),
+      sign_ins: top(`SELECT substr(source, 9) AS provider, SUM(views) AS views FROM site_analytics_pageviews
+        WHERE day >= ? AND source LIKE 'sign-in:%' GROUP BY source ORDER BY views DESC, source`),
       online: online.snapshot(now),
       api: {
         days: dense((d) => ({ calls: calls.get(d) ?? 0, clients: clients.get(d) ?? 0 })) as SiteAnalyticsOverview["api"]["days"],
@@ -295,10 +358,15 @@ export function createSiteAnalytics(db: DB, client: ClientInfo) {
         clients: top(`SELECT client, SUM(calls) AS calls FROM site_analytics_api_calls
           WHERE day >= ? GROUP BY client ORDER BY calls DESC, client`),
       },
+      rate_limited: {
+        days: dense((d) => ({ hits: limitedHits.get(d) ?? 0, clients: limitedClients.get(d) ?? 0 })) as SiteAnalyticsOverview["rate_limited"]["days"],
+        scopes: top(`SELECT scope, SUM(hits) AS hits FROM site_analytics_rate_limited
+          WHERE day >= ? GROUP BY scope ORDER BY hits DESC, scope`),
+      },
     };
   }
 
-  return { routes, trackApi, overview, flush };
+  return { routes, trackApi, trackLimited, overview, flush };
 }
 
 export type SiteAnalytics = ReturnType<typeof createSiteAnalytics>;

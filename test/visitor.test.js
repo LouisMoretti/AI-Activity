@@ -1,7 +1,7 @@
 // The browser's analytics id (web/src/lib/visitor.ts), on a fake localStorage.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { visitorId } from "../web/src/lib/visitor.ts";
+import { markSignIn, takeSignIn, visitorId } from "../web/src/lib/visitor.ts";
 
 const DAY = 86400_000;
 const store = new Map();
@@ -29,4 +29,18 @@ test("no storage: no id (the server falls back to a daily hash)", () => {
   } finally {
     setStorage(fake);
   }
+});
+
+test("a sign-in started in this tab marks its return once, for 10 minutes", () => {
+  const session = new Map();
+  Object.defineProperty(globalThis, "sessionStorage", { configurable: true, writable: true, value: {
+    getItem: (k) => session.get(k) ?? null, setItem: (k, v) => session.set(k, String(v)), removeItem: (k) => session.delete(k),
+  } });
+  const now = Date.UTC(2026, 9, 2);
+  assert.equal(takeSignIn(now), false);
+  markSignIn(now);
+  assert.equal(takeSignIn(now + 60_000), true);
+  assert.equal(takeSignIn(now + 60_000), false, "once");
+  markSignIn(now);
+  assert.equal(takeSignIn(now + 11 * 60_000), false, "abandoned sign-in");
 });

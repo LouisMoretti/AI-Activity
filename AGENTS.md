@@ -35,7 +35,11 @@ in their own tables (apart from measured AI usage), and never sent to a
 third party. They count:
 
 - Page views of this site: page category (never the path or a profile
-  name), external referrer host, visitors, new accounts.
+  name), external referrer host, visitors, new accounts. The return from a
+  sign-in provider (marked in `sessionStorage` by the tab that left for it,
+  10 minutes) is stored as `sign-in:<its host>` and listed as "Sign-in
+  returns", never as a referral, so another provider added later shows up
+  on its own.
 - Visitors: each browser keeps a random 128-bit id in `localStorage`
   (`web/src/lib/visitor.ts`; 13 months, then replaced; not a cookie) and
   sends it with each view and ping. The server stores only its HMAC under
@@ -52,9 +56,17 @@ third party. They count:
   `/api/profiles`) by other sites and programs: route category, calling
   site host (`Origin`, else `Referer`; `none` from servers and scripts),
   client kind guessed from the user agent (curl, node, python, browser,
-  bot…; the string is not kept) and distinct clients per day (daily
-  hash). This site's own fetches (`Sec-Fetch-Site: same-origin`) are not
-  API reads. Counted before the rate limit and the read cache.
+  bot…; the string is not kept) and distinct client addresses per day
+  (daily hash). This site's own fetches (`Sec-Fetch-Site: same-origin`)
+  are not API reads. Cached answers count; refused ones count only as rate
+  limited.
+- Rate limits: every `429` the server answers (any limiter), by scope from
+  a fixed set (`public.<route>`, `ingest.<tool>`, `auth.github`,
+  `analytics.view`, `session.<route>`…) and distinct client addresses per
+  day. A flood therefore adds one counter, not rows.
+- Hosts come from callers (Origin, Referer, the posted referrer): at most
+  100 new ones per UTC day for referrers and for API origins, the rest
+  count as `other`, so nobody can grow the database by inventing them.
 
 Counts are buffered in memory and written once a minute (before an admin
 read, and at shutdown), so analytics barely empty the public read cache.
@@ -892,6 +904,8 @@ Components never branch on live vs demo: both sources map into the same
 - Migration 7 adds `site_analytics_known_visitors` (browser id HMAC, first
   and last day seen), `site_analytics_api_calls` and
   `site_analytics_api_clients`.
+- Migration 8 adds `site_analytics_rate_limited` (day, scope, hits) and
+  `site_analytics_rate_limited_clients`.
 
 ### Backups
 
@@ -1350,17 +1364,19 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   `POST /api/users/:id/disable|enable`. A disabled account cannot sign
   in and its device keys are rejected at ingest; admins cannot disable
   themselves, so one enabled admin remains.
-- Site analytics: `POST /api/analytics/view {page, referrer?, visitor?}`
+- Site analytics: `POST /api/analytics/view {page, referrer?, visitor?, via?}`
   (a page category from a fixed list, else `400`; the referrer's host name
-  only; `visitor`: the browser's id, 32 hex digits, else ignored) and
+  only; `visitor`: the browser's id, 32 hex digits, else ignored;
+  `via: "sign-in"` for the return from a sign-in provider) and
   `POST /api/analytics/ping {page, visitor?}` (the online heartbeat,
   memory only), no session, rate limited as public reads; both `204`.
   `GET /api/admin/analytics` (admin) → `{days, unique_visitors, pages,
-  sources, online, api}`: 30 UTC days (zeros included; `visitors`,
+  sources, sign_ins, online, api, rate_limited}`: 30 UTC days (zeros included; `visitors`,
   `new_visitors`, `returning_visitors`, `pageviews`, `signups`), top pages
   and referrers, `online: {now, pages, minutes}` (`minutes`: distinct
-  visitors per minute, the last 60, oldest first) and `api: {days (calls,
-  clients), routes, origins, clients}`.
+  visitors per minute, the last 60, oldest first), `api: {days (calls,
+  clients), routes, origins, clients}` and `rate_limited: {days (hits,
+  clients), scopes}`.
 - Admin panel (admin only): `GET /api/admin/overview` → server-wide counts
   (accounts, disabled, live devices, events, sessions, last event).
   `GET /api/admin/settings` → `{signup_open}`, `POST /api/admin/settings

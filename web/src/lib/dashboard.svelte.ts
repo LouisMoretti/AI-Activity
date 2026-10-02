@@ -4,6 +4,7 @@
 // (paused while hidden; skipped while already in flight).
 import { api, NotFoundError, onSessionLost, RateLimitedError, UnauthorizedError } from "./api.ts";
 import { authErrorMessage } from "./auth-errors.ts";
+import { markSignIn, takeSignIn } from "./visitor.ts";
 import { DEMO_PROFILE, demoDashboard } from "./demo.ts";
 import { ACTIVITY_DAYS, liveDashboard, type LiveData } from "./live.ts";
 import type { DashboardVM } from "./view-model.ts";
@@ -121,14 +122,17 @@ export class Dashboard {
   private trackView(route: Route): void {
     if (this.route !== route || this.lastAnalyticsPath === location.pathname) return;
     // Only the first view of a page load came from the referring site; later ones are in-app.
+    // A return from a sign-in provider is told apart (its host is still kept).
     let referrer = "";
+    let signIn = false;
     if (!this.lastAnalyticsPath) {
       try { referrer = document.referrer ? new URL(document.referrer).hostname : ""; } catch { /* no usable referrer */ }
+      signIn = takeSignIn();
     }
     this.lastAnalyticsPath = location.pathname;
     this.analyticsPage = route.page === "home" ? "signin" : route.page;
     this.lastPingAt = Date.now();
-    void api.analyticsView(this.analyticsPage, referrer);
+    void api.analyticsView(this.analyticsPage, referrer, signIn);
   }
 
   /** Keeps a visible tab counted as online (admin panel), at most every 30 s. */
@@ -324,6 +328,7 @@ export class Dashboard {
   private async toGithub(start: Parameters<typeof api.startGithub>[0]): Promise<string | null> {
     try {
       const { url } = await api.startGithub(start);
+      markSignIn();
       location.assign(url);
       return null;
     } catch (e) {

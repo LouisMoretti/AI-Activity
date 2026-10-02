@@ -17,7 +17,25 @@ export const MIGRATIONS: ((db: DB) => void)[] = [
   githubAccounts,
   siteAnalytics,
   analyticsVisitorsAndApi,
+  analyticsRateLimits,
 ];
+
+/** 8: requests refused with 429, per day and scope (a fixed set), and distinct clients (daily address hash). */
+function analyticsRateLimits(db: DB): void {
+  db.exec(`
+    CREATE TABLE site_analytics_rate_limited (
+      day TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      hits INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (day, scope)
+    ) WITHOUT ROWID;
+    CREATE TABLE site_analytics_rate_limited_clients (
+      day TEXT NOT NULL,
+      client_hash TEXT NOT NULL,
+      PRIMARY KEY (day, client_hash)
+    ) WITHOUT ROWID;
+  `);
+}
 
 /**
  * 7: returning visitors (a long-lived random id kept in the browser, stored

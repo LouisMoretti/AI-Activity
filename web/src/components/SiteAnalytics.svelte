@@ -38,6 +38,10 @@
   const apiToday = $derived(data?.api.days.at(-1) ?? null);
   const apiDayLabels = $derived(data ? data.api.days.map((d) =>
     `${fmtDay(d.day)}: ${plural(d.calls, "call")}, ${plural(d.clients, "client")}`) : []);
+  const limited = $derived(data ? data.rate_limited.days.reduce((sum, d) => sum + d.hits, 0) : 0);
+  const limitedToday = $derived(data?.rate_limited.days.at(-1) ?? null);
+  const limitedLabels = $derived(data ? data.rate_limited.days.map((d) =>
+    `${fmtDay(d.day)}: ${plural(d.hits, "refused request")}, ${plural(d.clients, "client")}`) : []);
   const originLabel = (o: string) => (o === "none" ? "No origin (servers, scripts)" : o);
   const clientLabels: Record<string, string> = {
     browser: "Browser", curl: "curl", wget: "wget", python: "Python", node: "Node.js", deno: "Deno", bun: "Bun",
@@ -100,6 +104,12 @@
         <div class="row"><span>{row.source}</span><strong>{fmtCompact(row.views)}</strong></div>
       {:else}<p class="empty">No external referrers yet.</p>{/each}
     </div>
+    <div>
+      <h3>Sign-in returns</h3>
+      {#each data.sign_ins as row (row.provider)}
+        <div class="row"><span>{row.provider}</span><strong>{fmtCompact(row.views)}</strong></div>
+      {:else}<p class="empty">No sign-ins yet.</p>{/each}
+    </div>
   </div>
 
   <h3 class="part">Public API <span>other sites and programs reading it, not this site's pages</span></h3>
@@ -132,6 +142,20 @@
       {:else}<p class="empty">No external calls yet.</p>{/each}
     </div>
   </div>
+
+  <h3 class="part">Rate limits <span>requests refused with 429, every limiter</span></h3>
+  <div class="tiles">
+    <div class="tile"><small>Refused</small><strong>{fmtCompact(limited)}</strong><span>last 30 days</span></div>
+    <div class="tile"><small>Refused today (UTC)</small><strong>{fmtCompact(limitedToday?.hits ?? 0)}</strong><span>{plural(limitedToday?.clients ?? 0, "client")}</span></div>
+  </div>
+  <AnalyticsChart bars={data.rate_limited.days.map((d) => d.hits)} line={data.rate_limited.days.map((d) => d.clients)} labels={limitedLabels}
+    label="Requests refused per day (bars) and distinct clients (line), last 30 days"
+    summary="{plural(limited, 'refused request')} in 30 days" />
+  <p class="legend"><i class="key bars"></i>Refused <i class="key line"></i>Clients</p>
+  <h3>By limit</h3>
+  {#each data.rate_limited.scopes as row (row.scope)}
+    <div class="row"><span>{row.scope}</span><strong>{fmtCompact(row.hits)}</strong></div>
+  {:else}<p class="empty">Nothing refused yet.</p>{/each}
 {:else if error}
   <p class="error" role="alert">Could not load site analytics: {error}</p>
 {/if}

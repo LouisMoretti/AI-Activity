@@ -187,6 +187,8 @@ export interface SiteAnalyticsOverview {
   unique_visitors: number;
   pages: { page: string; views: number }[];
   sources: { source: string; views: number }[];
+  /** Returns from a sign-in provider (its host), kept apart from referrers. */
+  sign_ins: { provider: string; views: number }[];
   /** In memory only: visible tabs that pinged in the last minute, by page category, and per minute for the last hour (oldest first). */
   online: { now: number; pages: { page: string; visitors: number }[]; minutes: number[] };
   /** Reads of the public API by other sites and programs (not this site's own pages). */
@@ -196,6 +198,11 @@ export interface SiteAnalyticsOverview {
     /** Calling site's host; "none" for servers and scripts. */
     origins: { origin: string; calls: number }[];
     clients: { client: string; calls: number }[];
+  };
+  /** Requests refused with 429 by any limiter: per day (with distinct client addresses) and by scope ("public.leaderboard", "ingest.codex"…). */
+  rate_limited: {
+    days: { day: string; hits: number; clients: number }[];
+    scopes: { scope: string; hits: number }[];
   };
 }
 
