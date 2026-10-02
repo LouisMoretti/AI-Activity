@@ -4,6 +4,7 @@ import os from "node:os";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { COLLECTOR_VERSIONS } from "../shared/collectors.ts";
+import { AVATAR_HOSTS } from "../server/lib/avatar.ts";
 import {
   startServer, req, newDevice, event, collector, codexResponse, opencodeMessage, login, register, userId, TEST_ADMIN,
   awayFromMidnight, githubSignIn, githubUser, githubFollowing, renameGithubUser, githubRequests, githubCode,
@@ -492,6 +493,28 @@ describe("basics (signed in as the test admin)", () => {
     }
     const https = await req(srv.base, "GET", "/", { headers: { "x-forwarded-proto": "https" } });
     assert.equal(https.headers.get("strict-transport-security"), "max-age=31536000");
+  });
+
+  test("HTML pages carry a strict Content-Security-Policy, other responses none", async () => {
+    for (const p of ["/", "/index.html", "/u/admin", "/demo", "/leaderboard", "/settings"]) {
+      const r = await req(srv.base, "GET", p);
+      assert.match(r.headers.get("content-type"), /text\/html/, p);
+      const csp = Object.fromEntries(r.headers.get("content-security-policy").split("; ").map((d) => {
+        const [name, ...values] = d.split(" ");
+        return [name, values];
+      }));
+      assert.deepEqual(csp["default-src"], ["'self'"], p);
+      assert.deepEqual(csp["script-src"], ["'self'"], p);
+      assert.deepEqual(csp["style-src"], ["'self'"], p);
+      assert.deepEqual(csp["connect-src"], ["'self'"], p);
+      assert.deepEqual(csp["frame-ancestors"], ["'none'"], p);
+      assert.deepEqual(csp["base-uri"], ["'none'"], p);
+      assert.deepEqual(csp["form-action"], ["'self'", "https://github.com"], p);
+      assert.deepEqual(csp["img-src"], ["'self'", "data:", ...AVATAR_HOSTS.map((h) => `https://${h}`)], p);
+    }
+    for (const p of ["/api/health", "/install.sh"]) {
+      assert.equal((await req(srv.base, "GET", p)).headers.get("content-security-policy"), null, p);
+    }
   });
 
   test("static serving never escapes the web root", async () => {

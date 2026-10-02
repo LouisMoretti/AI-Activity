@@ -14,6 +14,9 @@ const HOSTS: Record<string, RegExp> = {
   "i.imgur.com": /^\/[A-Za-z0-9]{5,10}\.(png|jpe?g|gif|webp)$/i,
 };
 
+/** Hosts a profile picture may come from (the page's CSP allows exactly these). */
+export const AVATAR_HOSTS = Object.keys(HOSTS);
+
 export const AVATAR_HOSTS_TEXT = "GitHub, Gravatar or Imgur";
 
 /**
