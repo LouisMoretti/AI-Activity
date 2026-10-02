@@ -663,7 +663,16 @@ Components never branch on live vs demo: both sources map into the same
   HttpOnly `gh_oauth` cookie on `/api/auth/github`; GitHub sends the
   browser to `/api/auth/github/callback`, which needs that same state in
   query and cookie (once only), exchanges the code server to server and
-  reads `/user`. A restart drops sign-ins in progress. The account is
+  reads `/user`. A restart drops sign-ins in progress.
+- Cookie names (issue #188): over HTTPS (the Secure-cookie check, §6) the
+  session cookie is `__Host-dash_session` and the state cookie
+  `__Host-gh_oauth` (on `/`: the prefix requires it, so it rides along
+  with every request for its 10 minutes). Browsers refuse a `__Host-`
+  cookie set with a `Domain`, so another host under production's parent
+  domain cannot toss in a session or a state (login CSRF). Only those
+  names are read over HTTPS; the unprefixed `dash_session` and `gh_oauth`
+  (on `/api/auth/github`) are plain HTTP's, for local dev. Deploying this
+  signed everyone out once. The account is
   found by GitHub numeric id; its username follows the login. Another
   account still holding a login GitHub gave to someone else becomes the
   first free `<name>-<id>`, `<name>-<id>-2`… until it signs in again
