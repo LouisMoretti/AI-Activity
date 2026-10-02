@@ -10,7 +10,7 @@
     "build": "vite build --config web/vite.config.ts",
     "backup": "node --env-file-if-exists=.env scripts/backup.ts",
     "restore": "node --env-file-if-exists=.env scripts/restore.ts",
-    "typecheck": "tsc -p tsconfig.json && svelte-check --tsconfig web/tsconfig.json --fail-on-warnings",
+    "typecheck": "node node_modules/typescript-7/bin/tsc -p tsconfig.json && svelte-check --tsconfig web/tsconfig.json --fail-on-warnings",
     "test": "node --test test/*.test.js"
   },
   "dependencies": {
@@ -35,6 +35,7 @@
     "svelte": "^5.57.1",
     "svelte-check": "^4.7.6",
     "typescript": "^6.0.3",
+    "typescript-7": "npm:typescript@^7.0.2",
     "vite": "^8.3.0"
   }
 }

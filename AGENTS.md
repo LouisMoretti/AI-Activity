@@ -327,7 +327,10 @@ README's Codex Stop hook; `test/opencode-collector.test.js` runs
 synthetic Antigravity databases; `test/cursor-collector.test.js` covers
 synthetic Cursor hooks, ingestion, retries and privacy; `test/install.test.js` runs `/install.sh`
 (and, on Windows, `/install.ps1`) in a temporary home.
-Types: `npm run typecheck` (tsc for server, svelte-check for web). Node >= 24 runs the TypeScript server directly
+Types: `npm run typecheck` (tsc for server, svelte-check for web). The
+server is checked by TypeScript 7 (the native compiler, installed as the
+`typescript-7` alias); `typescript` stays on 6 for `svelte-check`, which
+needs the TypeScript API that 7 does not ship yet. Node >= 24 runs the TypeScript server directly
 (type stripping, no build step), so only erasable TS syntax is allowed (no
 `enum`, no parameter properties) and relative imports keep their `.ts`
 extension.
