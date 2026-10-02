@@ -470,6 +470,24 @@ describe("basics (signed in as the test admin)", () => {
     assert.equal(deep.text, home.text);
   });
 
+  test("security headers on every response; HSTS only over HTTPS", async () => {
+    const paths = [
+      ["GET", "/"], ["GET", "/u/admin"], ["GET", "/install.sh"], ["GET", "/install.ps1"],
+      ["GET", "/api/health"], ["GET", "/api/nope"], ["GET", "/api/u/admin/stats"], ["POST", "/api/ingest/claude-code"],
+    ];
+    for (const [method, p] of paths) {
+      const r = await req(srv.base, method, p, { body: method === "POST" ? {} : undefined });
+      assert.equal(r.headers.get("x-content-type-options"), "nosniff", p);
+      assert.equal(r.headers.get("referrer-policy"), "no-referrer", p);
+      assert.equal(r.headers.get("x-frame-options"), "DENY", p);
+      assert.match(r.headers.get("permissions-policy"), /(^|, )camera=\(\)(,|$)/, p);
+      assert.match(r.headers.get("permissions-policy"), /(^|, )geolocation=\(\)(,|$)/, p);
+      assert.equal(r.headers.get("strict-transport-security"), null, p);
+    }
+    const https = await req(srv.base, "GET", "/", { headers: { "x-forwarded-proto": "https" } });
+    assert.equal(https.headers.get("strict-transport-security"), "max-age=31536000");
+  });
+
   test("static serving never escapes the web root", async () => {
     for (const p of ["/%2e%2e/package.json", "/..%2fpackage.json", "/%2e%2e%2f.env.example"]) {
       const r = await req(srv.base, "GET", p);
