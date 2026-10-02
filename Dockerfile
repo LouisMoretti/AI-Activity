@@ -2,16 +2,17 @@
 # AI Activity server: see AGENTS.md, "Deploy (Docker + Caddy)".
 # Node 24 LTS on Debian (glibc): better-sqlite3 ships N-API prebuilt binaries
 # for amd64 and arm64, so nothing is compiled. Node 24 runs server/*.ts as is.
-ARG NODE_IMAGE=node:24-slim
+# Pinned by digest (multi-arch index); Dependabot moves it when the tag does.
+FROM node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS base
 
-FROM ${NODE_IMAGE} AS build
+FROM base AS build
 WORKDIR /app
 COPY package.json package-lock.json .npmrc ./
 RUN npm ci --no-audit --no-fund
 COPY . .
 RUN npm run build
 
-FROM ${NODE_IMAGE}
+FROM base
 ENV NODE_ENV=production \
     PORT=3000 \
     DB_PATH=/data/dashboard.db \

@@ -174,10 +174,10 @@ git pull && docker compose up -d --build                  # upgrade by hand
 
 Upgrades are normally deployed from GitHub (Continuous deployment below).
 
-- The image (`Dockerfile`) is `node:24-slim` (glibc: `better-sqlite3`
-  ships N-API prebuilt binaries for amd64 and arm64 in its package, so
-  nothing compiles and no toolchain is installed), runs as `node`, has a
-  `HEALTHCHECK` on `/api/health`, and `npm ci` runs inside it (never copy
+- The image (`Dockerfile`) is `node:24-slim`, pinned by digest (glibc:
+  `better-sqlite3` ships N-API prebuilt binaries for amd64 and arm64 in
+  its package, so nothing compiles and no toolchain is installed), runs as
+  `node`, has a `HEALTHCHECK` on `/api/health`, and `npm ci` runs inside it (never copy
   the host's `node_modules`).
   `.npmrc` turns install scripts off: no dependency needs one, and npm
   would otherwise try to compile `better-sqlite3` (npm/cli#9837).
@@ -575,6 +575,13 @@ after changing them. The firewall helper accepts no arguments.
   `Closes #<issue>` in the description (`.github/pull_request_template.md`).
   Give the PR the issue's labels and assign it to its author:
   `gh pr create --assignee @me --label enhancement --label ui`.
+- Dependabot (`.github/dependabot.yml`, weekly) is the one exception: its
+  pull requests close no issue. They get `enhancement` and `infra` and are
+  assigned to the owner: npm minor and patch updates in one, each major
+  apart, the actions together (pinned SHAs and their comments), and the
+  Docker base image's digest. Majors of `typescript` (svelte-check) and of
+  the Node image (a deliberate move) are ignored. Merge one once CI passes
+  and its changelog is read.
 
 ### Worktrees
 
