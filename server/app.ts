@@ -89,10 +89,19 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
       c.header("cache-control", "no-store");
       return c.body(installers.ps1, 200, { "content-type": "text/plain; charset=utf-8" });
     })
-    .use("*", serveStatic({ root: config.staticDir }))
+    .use("*", serveStatic({
+      root: config.staticDir,
+      // Vite names everything under assets/ (bundles, fonts) by content hash:
+      // a new build means new names. The rest (index.html, tool logos) is
+      // revalidated, so a deploy shows up at once.
+      onFound: (_path, c) => {
+        c.header("cache-control", c.req.path.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-cache");
+      },
+    }))
     // SPA fallback for unknown non-API paths.
     .get("*", async (c) => {
       const html = await loadIndex();
+      c.header("cache-control", "no-cache");
       return html === null ? c.text("not found", 404) : c.html(html);
     });
 
