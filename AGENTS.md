@@ -136,6 +136,10 @@ README's Windows commands) and macOS (`collectors (macos)`, through
 `/install.sh` and the native hooks). The path-filtered Collector CLI smoke
 workflow also runs the real Claude Code, Codex, OpenCode and Antigravity CLIs
 on macOS, Linux and Windows against local model stubs.
+Every action is pinned by commit SHA, its version in a comment
+(`uses: actions/checkout@<sha> # v7.0.1`): a moved tag cannot change what
+runs next to the deploy keys or `preview-fork.yml`'s token. Change the SHA
+and the comment together, never back to a tag.
 
 ### Deploy (Docker + Caddy)
 
