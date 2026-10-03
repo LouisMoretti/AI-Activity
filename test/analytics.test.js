@@ -239,3 +239,28 @@ test("after a restart, the host cap counts each host once and ignores direct vis
     assert.ok(sources.includes("other"));
   });
 });
+
+test("a browser without Sec-Fetch-Site: this site's own reads are not API reads, another site's are", async (t) => {
+  const srv = await startServer();
+  t.after(() => srv.stop());
+  const ua = { "user-agent": "Mozilla/5.0 (Macintosh) Safari/605.1.15" };
+  await req(srv.base, "GET", "/api/leaderboard", { anon: true, headers: ua }); // own page: no Origin, no Referer
+  await req(srv.base, "GET", "/api/leaderboard", { anon: true, headers: { ...ua, origin: "https://other.example" } });
+  await req(srv.base, "GET", "/api/leaderboard", { anon: true, headers: { "user-agent": "curl/8" } });
+  const { api } = await analytics(srv.base);
+  assert.deepEqual(api.origins, [{ origin: "none", calls: 1 }, { origin: "other.example", calls: 1 }]);
+});
+
+test("a failed write keeps its counts for the next flush", async (t) => {
+  const srv = await startServer();
+  t.after(() => srv.stop());
+  const db = new Database(srv.dbPath);
+  t.after(() => db.close());
+  db.exec(`CREATE TRIGGER fail BEFORE INSERT ON site_analytics_pageviews BEGIN SELECT RAISE(ABORT, 'disk full'); END`);
+  await view(srv.base, { page: "profile", visitor: ID });
+  assert.equal((await req(srv.base, "GET", "/api/admin/analytics")).status, 200); // the flush fails, logged
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM site_analytics_visitors").get().n, 0, "rolled back");
+  db.exec("DROP TRIGGER fail");
+  const today = (await analytics(srv.base)).days.at(-1);
+  assert.deepEqual([today.pageviews, today.visitors], [1, 1]);
+});

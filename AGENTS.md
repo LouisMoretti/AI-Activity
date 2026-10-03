@@ -40,8 +40,10 @@ third party. They count:
 
 - Page views of this site: page category (never the path or a profile
   name), external referrer host, visitors, new accounts. The return from a
-  sign-in provider (marked in `sessionStorage` by the tab that left for it,
-  10 minutes) is stored as `sign-in:<its host>` and listed as "Sign-in
+  sign-in provider (marked in `sessionStorage`, with the provider's host,
+  by the tab that left for it, 10 minutes: the return itself has no
+  referrer, the callback's redirect is `no-referrer`) is stored as
+  `sign-in:<its host>` and listed as "Sign-in
   returns", never as a referral, so another provider added later shows up
   on its own.
 - Visitors: each browser keeps a random 128-bit id in `localStorage`
@@ -68,7 +70,8 @@ third party. They count:
   site host (`Origin`, else `Referer`; `none` from servers and scripts),
   client kind guessed from the user agent (curl, node, python, browser,
   bot…; the string is not kept) and distinct client addresses per day
-  (daily hash). This site's own fetches (`Sec-Fetch-Site: same-origin`)
+  (daily hash). This site's own fetches (`Sec-Fetch-Site: same-origin`;
+  without that header, a browser's request with no `Origin` or `Referer`)
   are not API reads. Cached answers count; refused ones count only as rate
   limited.
 - Rate limits: every `429` the server answers (any limiter), by scope from
@@ -85,6 +88,8 @@ third party. They count:
 
 Counts are buffered in memory and written once a minute (before an admin
 read, and at shutdown), so analytics barely empty the public read cache.
+They leave memory only once committed: a failed write is retried at the
+next flush, and dropped after three failures in a row.
 Daily rows are pruned after 90 days; first/last-seen rows 400 days after
 the last visit. Unique visitors over 30 days: browsers with an id last
 seen in them, plus each day's visitors without one.

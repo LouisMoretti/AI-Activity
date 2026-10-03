@@ -127,18 +127,21 @@ function hashKeys(db: DB) {
 /**
  * Distinct values a caller can invent (hosts, visitors, client hashes), per
  * UTC day: at most `max` are recorded, those already stored that day
- * included (`sql` lists them, reloaded when the day turns).
+ * included (`sql` lists them, reloaded when the day turns). `fits` only
+ * checks; `add` takes a slot once the value was really queued, so one the
+ * queue dropped can still be recorded later that day.
  */
 function dailyDistinct(db: DB, sql: string, max: number) {
   let today = { date: "", values: new Set<string>() };
-  return (date: string, value: string): boolean => {
+  const values = (date: string) => {
     if (today.date !== date) {
       today = { date, values: new Set((db.prepare(sql).all(date) as { v: string }[]).map((row) => row.v)) };
     }
-    if (today.values.has(value)) return true;
-    if (today.values.size >= max) return false;
-    today.values.add(value);
-    return true;
+    return today.values;
+  };
+  return {
+    fits: (date: string, value: string) => values(date).has(value) || values(date).size < max,
+    add: (date: string, value: string) => { values(date).add(value); },
   };
 }
 
@@ -194,12 +197,18 @@ function pending() {
   const full = () => size() >= MAX_TRACKED * 5;
   return {
     counts, sets,
-    add(map: Map<string, number>, ...key: string[]) {
+    /** False when the queue is full and this key is new (dropped). */
+    add(map: Map<string, number>, ...key: string[]): boolean {
       const k = key.join("\0");
-      if (map.has(k) || !full()) map.set(k, (map.get(k) ?? 0) + 1);
+      if (!map.has(k) && full()) return false;
+      map.set(k, (map.get(k) ?? 0) + 1);
+      return true;
     },
-    put(set: Set<string>, ...key: string[]) {
-      if (!full()) set.add(key.join("\0"));
+    put(set: Set<string>, ...key: string[]): boolean {
+      const k = key.join("\0");
+      if (!set.has(k) && full()) return false;
+      set.add(k);
+      return true;
     },
     empty: () => size() === 0,
     clear() {
@@ -213,6 +222,8 @@ export function createSiteAnalytics(db: DB, client: ClientInfo) {
   const online = presence();
   const queue = pending();
   let prunedDay = "";
+  /** Flushes failed in a row; after 3, the pending counts are dropped rather than retried forever. */
+  let failures = 0;
 
   /**
    * Hosts come from the caller (Origin, Referer, the posted referrer): at
@@ -226,9 +237,18 @@ export function createSiteAnalytics(db: DB, client: ClientInfo) {
     origin: dailyDistinct(db, `SELECT DISTINCT origin AS v FROM site_analytics_api_calls
       WHERE day = ? AND origin NOT IN ('none', 'other')`, MAX_HOSTS_PER_DAY),
   };
+  const uncapped = (host: string) => host === "direct" || host === "none" || host === "other";
+  /** The host to queue, or "other" when the day has no room left for it. */
   function capped(column: "source" | "origin", date: string, host: string): string {
-    if (host === "direct" || host === "none" || host === "other") return host;
-    return hostCaps[column](date, host) ? host : "other";
+    return uncapped(host) || hostCaps[column].fits(date, host) ? host : "other";
+  }
+  /** Queues a count keyed by a capped host, then takes the host's slot (only if it was queued). */
+  function addWithHost(map: Map<string, number>, column: "source" | "origin", date: string, host: string, key: string[]): void {
+    if (queue.add(map, ...key) && !uncapped(host)) hostCaps[column].add(date, host);
+  }
+  /** Queues a distinct value (visitor, client) if the day has room, then takes its slot. */
+  function putCapped(cap: ReturnType<typeof dailyDistinct>, set: Set<string>, date: string, value: string, ...rest: string[]): void {
+    if (cap.fits(date, value) && queue.put(set, date, value, ...rest)) cap.add(date, value);
   }
   const clientCaps = {
     visitors: dailyDistinct(db, "SELECT visitor_hash AS v FROM site_analytics_visitors WHERE day = ?", MAX_CLIENTS_PER_DAY),
@@ -236,7 +256,7 @@ export function createSiteAnalytics(db: DB, client: ClientInfo) {
     limited: dailyDistinct(db, "SELECT client_hash AS v FROM site_analytics_rate_limited_clients WHERE day = ?", MAX_CLIENTS_PER_DAY),
   };
 
-  const write = db.transaction(() => {
+  const write = db.transaction((today: string, prune: boolean) => {
     const view = db.prepare(`INSERT INTO site_analytics_pageviews(day, page, source, views) VALUES (?, ?, ?, ?)
       ON CONFLICT(day, page, source) DO UPDATE SET views = views + excluded.views`);
     for (const [k, n] of queue.counts.pageviews) view.run(...k.split("\0"), n);
@@ -261,11 +281,8 @@ export function createSiteAnalytics(db: DB, client: ClientInfo) {
     for (const [k, n] of queue.counts.limited) limited.run(...k.split("\0"), n);
     const limitedClient = db.prepare("INSERT OR IGNORE INTO site_analytics_rate_limited_clients(day, client_hash) VALUES (?, ?)");
     for (const k of queue.sets.limitedClients) limitedClient.run(...k.split("\0"));
-    queue.clear();
     // Retention: once a day is enough.
-    const today = day();
-    if (prunedDay === today) return;
-    prunedDay = today;
+    if (!prune) return;
     const cutoff = isoDay(Date.now() - RETENTION_DAYS * 86400000);
     for (const table of ["site_analytics_pageviews", "site_analytics_visitors", "site_analytics_signups", "site_analytics_api_calls", "site_analytics_api_clients", "site_analytics_rate_limited", "site_analytics_rate_limited_clients"]) {
       db.prepare(`DELETE FROM ${table} WHERE day < ?`).run(cutoff);
@@ -275,8 +292,22 @@ export function createSiteAnalytics(db: DB, client: ClientInfo) {
   /** Writes what is pending (every minute, before the admin reads, and at shutdown). */
   function flush(): void {
     if (!db.open) return;
-    if (queue.empty() && prunedDay === day()) return;
-    try { write(); } catch (err) { console.error("site analytics flush failed:", err); }
+    const today = day();
+    if (queue.empty() && prunedDay === today) return;
+    try {
+      write(today, prunedDay !== today);
+      // Only once committed: a failed write keeps its counts for the next flush.
+      queue.clear();
+      prunedDay = today;
+      failures = 0;
+    } catch (err) {
+      console.error("site analytics flush failed:", err);
+      if (++failures >= 3) {
+        console.error("site analytics: dropping pending counts after 3 failed flushes");
+        queue.clear();
+        failures = 0;
+      }
+    }
   }
   setInterval(flush, FLUSH_MS).unref();
 
@@ -307,8 +338,9 @@ export function createSiteAnalytics(db: DB, client: ClientInfo) {
       const visitor = visitorOf(c, date, body.visitor);
       const source = sourceOf(body.referrer, body.via, siteHostOf(c));
       const [kind, host] = source.startsWith("sign-in:") ? ["sign-in:", source.slice(8)] : ["", source];
-      queue.add(queue.counts.pageviews, date, body.page, kind + capped("source", date, host));
-      if (clientCaps.visitors(date, visitor.hash)) queue.put(queue.sets.visitors, date, visitor.hash, visitor.id);
+      const kept = capped("source", date, host);
+      addWithHost(queue.counts.pageviews, "source", date, kept, [date, body.page, kind + kept]);
+      putCapped(clientCaps.visitors, queue.sets.visitors, date, visitor.hash, visitor.id);
       online.touch(visitor.hash, body.page);
       return c.body(null, 204);
     })
@@ -334,12 +366,16 @@ export function createSiteAnalytics(db: DB, client: ClientInfo) {
     const fetchSite = c.req.header("sec-fetch-site");
     const siteHost = siteHostOf(c);
     const from = hostOf(c.req.header("origin")) ?? hostOf(c.req.header("referer"));
-    if (fetchSite === "same-origin" || (!fetchSite && from === siteHost)) return;
+    const kind = clientKind(c.req.header("user-agent") ?? "");
+    if (fetchSite === "same-origin") return;
+    // Browsers without Sec-Fetch-Site (Safari before 16.4): this site's own
+    // fetches carry no Origin (same-origin GET) and no Referer (no-referrer),
+    // while another site's always carry an Origin (CORS).
+    if (!fetchSite && (from === siteHost || (!from && kind === "browser"))) return;
     const date = day();
     const origin = from && from !== siteHost ? capped("origin", date, from) : "none";
-    queue.add(queue.counts.api, date, routeOf(c.req.path), origin, clientKind(c.req.header("user-agent") ?? ""));
-    const clientHash = hmac(keys.daily(date), "api", client.clientId(c));
-    if (clientCaps.api(date, clientHash)) queue.put(queue.sets.apiClients, date, clientHash);
+    addWithHost(queue.counts.api, "origin", date, origin, [date, routeOf(c.req.path), origin, kind]);
+    putCapped(clientCaps.api, queue.sets.apiClients, date, hmac(keys.daily(date), "api", client.clientId(c)));
   };
 
   /** Every request the server refuses with 429 (any limiter), by scope, and distinct client addresses per day. */
@@ -348,8 +384,7 @@ export function createSiteAnalytics(db: DB, client: ClientInfo) {
     if (c.res.status !== 429) return;
     const date = day();
     queue.add(queue.counts.limited, date, limitedScope(c.req.path));
-    const clientHash = hmac(keys.daily(date), "limited", client.clientId(c));
-    if (clientCaps.limited(date, clientHash)) queue.put(queue.sets.limitedClients, date, clientHash);
+    putCapped(clientCaps.limited, queue.sets.limitedClients, date, hmac(keys.daily(date), "limited", client.clientId(c)));
   };
 
   /** 30-day aggregates (every day, zeros included) and who is online; no viewer or account dimensions. */

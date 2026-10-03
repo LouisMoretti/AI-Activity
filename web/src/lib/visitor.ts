@@ -25,18 +25,24 @@ const SIGN_IN_KEY = "ai-activity:signing-in";
 /** A sign-in round trip takes at most the server's 10-minute state lifetime. */
 const SIGN_IN_MS = 10 * 60_000;
 
-/** Called before leaving for a sign-in provider: the next page view is its return, not a referral. */
-export function markSignIn(now = Date.now()): void {
-  try { sessionStorage.setItem(SIGN_IN_KEY, String(now)); } catch { /* no storage: counted as a referral */ }
+/**
+ * Called before leaving for a sign-in provider (its host name): the next
+ * page view is its return, not a referral. The host is kept here because
+ * the return has no referrer (the callback's redirect is `no-referrer`).
+ */
+export function markSignIn(provider: string, now = Date.now()): void {
+  try { sessionStorage.setItem(SIGN_IN_KEY, JSON.stringify({ at: now, provider })); } catch { /* no storage: counted as a referral */ }
 }
 
-/** True once if this page load is the return from a sign-in started in this tab. */
-export function takeSignIn(now = Date.now()): boolean {
+/** The provider's host, once, if this page load is the return from a sign-in started in this tab; else null. */
+export function takeSignIn(now = Date.now()): string | null {
   try {
-    const at = Number(sessionStorage.getItem(SIGN_IN_KEY));
+    const saved = JSON.parse(sessionStorage.getItem(SIGN_IN_KEY) ?? "null") as { at?: unknown; provider?: unknown } | null;
     sessionStorage.removeItem(SIGN_IN_KEY);
-    return at > 0 && now - at >= 0 && now - at < SIGN_IN_MS;
+    const at = typeof saved?.at === "number" ? saved.at : 0;
+    if (!(at > 0 && now - at >= 0 && now - at < SIGN_IN_MS)) return null;
+    return typeof saved?.provider === "string" ? saved.provider : "";
   } catch {
-    return false;
+    return null;
   }
 }

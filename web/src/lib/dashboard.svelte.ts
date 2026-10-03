@@ -127,7 +127,11 @@ export class Dashboard {
     let signIn = false;
     if (!this.lastAnalyticsPath) {
       try { referrer = document.referrer ? new URL(document.referrer).hostname : ""; } catch { /* no usable referrer */ }
-      signIn = takeSignIn();
+      const provider = takeSignIn();
+      if (provider !== null) {
+        signIn = true;
+        referrer = provider;
+      }
     }
     this.lastAnalyticsPath = location.pathname;
     this.analyticsPage = route.page === "home" ? "signin" : route.page;
@@ -328,7 +332,9 @@ export class Dashboard {
   private async toGithub(start: Parameters<typeof api.startGithub>[0]): Promise<string | null> {
     try {
       const { url } = await api.startGithub(start);
-      markSignIn();
+      let provider = "";
+      try { provider = new URL(url, location.href).hostname; } catch { /* unknown provider */ }
+      markSignIn(provider);
       location.assign(url);
       return null;
     } catch (e) {
