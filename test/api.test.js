@@ -4,6 +4,7 @@ import os from "node:os";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { COLLECTOR_VERSIONS } from "../shared/collectors.ts";
+import { AVATAR_HOSTS } from "../server/lib/avatar.ts";
 import {
   startServer, req, newDevice, event, collector, codexResponse, opencodeMessage, login, register, userId, TEST_ADMIN,
   awayFromMidnight, githubSignIn, githubUser, githubFollowing, renameGithubUser, githubRequests, githubCode,
@@ -470,6 +471,86 @@ describe("basics (signed in as the test admin)", () => {
     assert.equal(deep.text, home.text);
   });
 
+  test("security headers on every response; HSTS only over HTTPS", async () => {
+    const asset = (await req(srv.base, "GET", "/")).text.match(/\/assets\/[^"']+\.js/)?.[0];
+    assert.ok(asset, "the built index.html links a script under /assets/");
+    const big = JSON.stringify({ pad: "x".repeat(300 * 1024) });
+    const paths = [
+      ["GET", "/"], ["GET", "/u/admin"], ["GET", asset], ["GET", "/install.sh"], ["GET", "/install.ps1"],
+      ["GET", "/api/health"], ["GET", "/api/nope"], ["GET", "/api/u/admin/stats"], ["POST", "/api/ingest/claude-code"],
+      ["POST", "/api/ingest/claude-code", { raw: big, key }, 413],
+      ["POST", "/api/ingest/claude-code", { raw: "{}", key, type: "text/plain" }, 415],
+    ];
+    for (const [method, p, opts, status] of paths) {
+      const r = await req(srv.base, method, p, opts ?? { body: method === "POST" ? {} : undefined });
+      if (status) assert.equal(r.status, status, p);
+      assert.equal(r.headers.get("x-content-type-options"), "nosniff", p);
+      assert.equal(r.headers.get("referrer-policy"), "no-referrer", p);
+      assert.equal(r.headers.get("x-frame-options"), "DENY", p);
+      assert.match(r.headers.get("permissions-policy"), /(^|, )camera=\(\)(,|$)/, p);
+      assert.match(r.headers.get("permissions-policy"), /(^|, )geolocation=\(\)(,|$)/, p);
+      assert.equal(r.headers.get("strict-transport-security"), null, p);
+    }
+    const https = await req(srv.base, "GET", "/", { headers: { "x-forwarded-proto": "https" } });
+    assert.equal(https.headers.get("strict-transport-security"), "max-age=31536000");
+  });
+
+  test("HTML pages carry a strict Content-Security-Policy, other responses none", async () => {
+    for (const p of ["/", "/index.html", "/u/admin", "/demo", "/leaderboard", "/settings"]) {
+      const r = await req(srv.base, "GET", p);
+      assert.match(r.headers.get("content-type"), /text\/html/, p);
+      const csp = Object.fromEntries(r.headers.get("content-security-policy").split("; ").map((d) => {
+        const [name, ...values] = d.split(" ");
+        return [name, values];
+      }));
+      assert.deepEqual(csp["default-src"], ["'self'"], p);
+      assert.deepEqual(csp["script-src"], ["'self'"], p);
+      assert.deepEqual(csp["style-src"], ["'self'"], p);
+      assert.deepEqual(csp["connect-src"], ["'self'"], p);
+      assert.deepEqual(csp["frame-ancestors"], ["'none'"], p);
+      assert.deepEqual(csp["base-uri"], ["'none'"], p);
+      assert.deepEqual(csp["form-action"], ["'self'", "https://github.com"], p);
+      assert.deepEqual(csp["img-src"], ["'self'", "data:", ...AVATAR_HOSTS.map((h) => `https://${h}`)], p);
+    }
+    for (const p of ["/api/health", "/install.sh"]) {
+      assert.equal((await req(srv.base, "GET", p)).headers.get("content-security-policy"), null, p);
+    }
+  });
+
+  test("the built client has nothing inline for the CSP to block", () => {
+    // `npm run dev:web` serves the page without the CSP: an inline style or
+    // script would only break in production, so the build is checked here.
+    const dist = new URL("../web/dist/", import.meta.url);
+    const html = fs.readFileSync(new URL("index.html", dist), "utf8");
+    assert.doesNotMatch(html, /<style|\sstyle=/i, "index.html");
+    for (const tag of html.match(/<script\b[^>]*>/gi) ?? []) assert.match(tag, /\ssrc=/, tag);
+    const scripts = fs.readdirSync(new URL("assets/", dist)).filter((f) => f.endsWith(".js"));
+    assert.ok(scripts.length, "the build has scripts under /assets/");
+    for (const f of scripts) {
+      // Svelte puts static markup, a style="" attribute included, in template strings.
+      assert.doesNotMatch(fs.readFileSync(new URL(`assets/${f}`, dist), "utf8"), /<style|\sstyle=/i, f);
+    }
+  });
+
+  test("hashed assets are immutable, pages are revalidated, the API is never cached", async () => {
+    const assets = fs.readdirSync(new URL("../web/dist/assets/", import.meta.url));
+    const fonts = assets.filter((f) => f.endsWith(".woff2"));
+    assert.ok(fonts.some((f) => f.startsWith("geist-latin-")) && fonts.some((f) => f.startsWith("geist-mono-latin-")));
+    for (const f of [assets.find((a) => a.endsWith(".js")), assets.find((a) => a.endsWith(".css")), ...fonts]) {
+      const r = await req(srv.base, "GET", `/assets/${f}`);
+      assert.equal(r.status, 200, f);
+      assert.equal(r.headers.get("cache-control"), "public, max-age=31536000, immutable", f);
+    }
+    for (const p of ["/", "/index.html", "/some/client/route", "/u/admin", "/tool-logos/claude.svg"]) {
+      const r = await req(srv.base, "GET", p);
+      assert.equal(r.status, 200, p);
+      assert.equal(r.headers.get("cache-control"), "no-cache", p);
+    }
+    for (const p of ["/api/health", "/api/u/admin/stats", "/api/nope", "/install.sh"]) {
+      assert.equal((await req(srv.base, "GET", p)).headers.get("cache-control"), "no-store", p);
+    }
+  });
+
   test("static serving never escapes the web root", async () => {
     for (const p of ["/%2e%2e/package.json", "/..%2fpackage.json", "/%2e%2e%2f.env.example"]) {
       const r = await req(srv.base, "GET", p);
@@ -578,14 +659,51 @@ describe("locked server (first account made from the CLI)", () => {
     assert.equal((await githubSignIn(srv.base, null, { next: "/a/..//evil.example" })).location, "/?auth_error=denied");
   });
 
-  test("session and state cookies are Secure only over HTTPS", async () => {
+  test("session and state cookies: Secure and __Host- prefixed only over HTTPS", async () => {
     const plain = await githubSignIn(srv.base, "admin");
-    assert.doesNotMatch(plain.start.headers.getSetCookie()[0], /Secure/);
+    const plainState = plain.start.headers.getSetCookie()[0];
+    assert.match(plainState, /^gh_oauth=.*Path=\/api\/auth\/github/);
+    assert.doesNotMatch(plainState, /Secure/);
     assert.doesNotMatch(plain.headers.getSetCookie().find((c) => c.startsWith("dash_session=")), /Secure/);
-    const https = await githubSignIn(srv.base, "admin", { headers: { "x-forwarded-proto": "https" } });
-    assert.match(https.start.headers.getSetCookie()[0], /Secure/);
-    assert.match(https.headers.getSetCookie().find((c) => c.startsWith("dash_session=")), /Secure/);
+    assert.match(plain.cookie, /^dash_session=/);
+    assert.equal((await req(srv.base, "GET", "/api/auth/status", { cookie: plain.cookie })).json.authenticated, true);
+
+    const xfp = { "x-forwarded-proto": "https" };
+    const https = await githubSignIn(srv.base, "admin", { headers: xfp });
+    const httpsState = https.start.headers.getSetCookie()[0];
+    assert.match(httpsState, /^__Host-gh_oauth=/);
+    assert.match(httpsState, /Path=\/(;|$)/);
+    assert.match(httpsState, /Secure/);
+    assert.doesNotMatch(httpsState, /Domain=/i);
+    assert.equal(https.location, "/");
+    const session = https.headers.getSetCookie().find((c) => c.startsWith("__Host-dash_session="));
+    assert.match(session, /Secure/);
+    assert.match(session, /Path=\/(;|$)/);
+    assert.doesNotMatch(session, /Domain=/i);
     assert.equal(https.start.url.searchParams.get("redirect_uri"), `${srv.base.replace("http:", "https:")}/api/auth/github/callback`);
+
+    // Over HTTPS only the prefixed names count: an unprefixed (tossable) one is ignored.
+    const value = https.cookie.split("=")[1];
+    const status = async (cookie) => (await req(srv.base, "GET", "/api/auth/status", { cookie, headers: xfp })).json.authenticated;
+    assert.equal(await status(https.cookie), true);
+    assert.equal(await status(`dash_session=${value}`), false);
+    assert.equal(await status(plain.cookie), false);
+    // An unprefixed state cookie does not complete a sign-in over HTTPS.
+    const start = await fetch(`${srv.base}/api/auth/github`, {
+      method: "POST", headers: { ...xfp, "content-type": "application/json" }, body: "{}",
+    });
+    const st = new URL((await start.json()).url).searchParams.get("state");
+    const callback = async (cookie) => (await fetch(`${srv.base}/api/auth/github/callback?code=${await githubCode("admin")}&state=${st}`, {
+      redirect: "manual", headers: { ...xfp, cookie },
+    })).headers.get("location");
+    assert.equal(await callback(`gh_oauth=${st}`), "/?auth_error=expired");
+    assert.equal(await callback(`__Host-gh_oauth=${st}`), "/");
+    // Signing in over HTTPS drops a leftover session from before the prefix.
+    const again = await githubSignIn(srv.base, "admin", { headers: xfp, cookie: plain.cookie });
+    assert.ok(again.headers.getSetCookie().some((c) => /^dash_session=;.*Max-Age=0/i.test(c)));
+    // Signing out over HTTPS clears the prefixed cookie.
+    const out = await req(srv.base, "POST", "/api/auth/logout", { cookie: again.cookie, headers: xfp });
+    assert.ok(out.headers.getSetCookie().some((c) => /^__Host-dash_session=;.*Max-Age=0/i.test(c)));
   });
 
   test("password sign-in and profile editing are gone", async () => {
@@ -806,6 +924,11 @@ describe("profiles from GitHub and user management", () => {
     await login(srv.base, "admin");
     const after = (await req(srv.base, "GET", "/api/u/admin", anon)).json;
     assert.deepEqual([after.display_name, after.avatar_url], ["x".repeat(60), null]);
+    // A Gravatar default would redirect off the list (and the CSP): dropped.
+    const hash = "0".repeat(32);
+    githubUser("admin", { avatar_url: `https://www.gravatar.com/avatar/${hash}?s=80&d=https%3A%2F%2Fevil.example%2Fp.png&default=x` });
+    await login(srv.base, "admin");
+    assert.equal((await req(srv.base, "GET", "/api/u/admin", anon)).json.avatar_url, `https://www.gravatar.com/avatar/${hash}?s=80`);
     // No name: the username is shown.
     githubUser("admin", { name: null, avatar_url: null });
     await login(srv.base, "admin");

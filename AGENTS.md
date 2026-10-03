@@ -178,10 +178,17 @@ git pull && docker compose up -d --build                  # upgrade by hand
 
 Upgrades are normally deployed from GitHub (Continuous deployment below).
 
-- The image (`Dockerfile`) is `node:22-slim` (glibc: `better-sqlite3` has
-  prebuilt binaries for amd64 and arm64 on Node 22; Node 24 would compile
-  from source), runs as `node`, has a `HEALTHCHECK` on `/api/health`, and
-  `npm ci` runs inside it (never copy the host's `node_modules`).
+- The image (`Dockerfile`) is `node:24-slim`, pinned by digest (glibc:
+  `better-sqlite3` ships N-API prebuilt binaries for amd64 and arm64 in
+  its package, so nothing compiles and no toolchain is installed), runs as
+  `node`, has a `HEALTHCHECK` on `/api/health`, and `npm ci` runs inside it (never copy
+  the host's `node_modules`).
+  Install scripts run only for dependencies listed in `package.json`'s
+  `allowScripts` (`strict-allow-scripts` in `.npmrc`, npm >= 11.16): any
+  other one fails `npm ci`. `better-sqlite3` and `fsevents` are denied
+  (`false`: their binaries are in the package, and npm would otherwise
+  compile `better-sqlite3`, npm/cli#9837). A new dependency with one:
+  review it, then list it there (`true` runs it).
 - Data lives in the `data` volume mounted on `/data` (`DB_PATH=/data/dashboard.db`,
   `BACKUP_DIR=/data/backups`): mount the directory, never the database file
   alone (its `-wal` / `-shm` sit next to it). `docker stop` sends SIGTERM:
@@ -212,6 +219,26 @@ Upgrades are normally deployed from GitHub (Continuous deployment below).
 - Before going live: revoke and reissue every device key used through
   quick tunnels, then point the collectors (Claude Code hooks and
   statusLine, Codex hook, OpenCode plugin) at the new URL.
+- Security headers come from the app (`server/lib/headers.ts`), not Caddy:
+  `nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY` and a
+  `Permissions-Policy` on every response, and HSTS
+  (`max-age=31536000`, no `includeSubDomains`: other hosts under the parent
+  domain are not ours) only when the request is HTTPS by the Secure-cookie
+  check (§6), so plain HTTP in dev never pins a host. HTML responses also
+  get a strict `Content-Security-Policy`: scripts, styles, fonts and fetches
+  from the site only (no inline script or `style` attribute: Svelte sets
+  styles through the CSSOM), images from the site, `data:` (the favicon)
+  and the avatar hosts (`AVATAR_HOSTS`, `server/lib/avatar.ts`), never
+  framed (`frame-ancestors 'none'`). A new external resource must be added
+  there. In dev, Vite serves the page itself, so HMR is not affected (nor
+  is the CSP enforced: `test/api.test.js` checks `web/dist` has no inline
+  script, `<style>` or `style=""`). Gravatar's `d` default is dropped from
+  pictures (it redirects off the list). Do not add them in Caddy too.
+- Caching (`server/app.ts`): `web/dist/assets/*` (Vite's content-hashed
+  bundles and fonts) is `public, max-age=31536000, immutable`; every other
+  static file, `index.html` and the SPA fallback are `no-cache`, so a
+  deploy shows up at once; `/api` and the install scripts are `no-store`.
+  Only content-hashed files may go under `assets/`.
 - Logs rotate (`x-logging` in `compose.yaml`: 3 × 10 MB per container);
   Docker keeps them forever otherwise.
 
@@ -304,7 +331,10 @@ README's Codex Stop hook; `test/opencode-collector.test.js` runs
 synthetic Antigravity databases; `test/cursor-collector.test.js` covers
 synthetic Cursor hooks, ingestion, retries and privacy; `test/install.test.js` runs `/install.sh`
 (and, on Windows, `/install.ps1`) in a temporary home.
-Types: `npm run typecheck` (tsc for server, svelte-check for web). Node >= 22.18 runs the TypeScript server directly
+Types: `npm run typecheck` (tsc for server, svelte-check for web). The
+server is checked by TypeScript 7 (the native compiler, installed as the
+`typescript-7` alias); `typescript` stays on 6 for `svelte-check`, which
+needs the TypeScript API that 7 does not ship yet. Node >= 24 runs the TypeScript server directly
 (type stripping, no build step), so only erasable TS syntax is allowed (no
 `enum`, no parameter properties) and relative imports keep their `.ts`
 extension.
@@ -556,6 +586,13 @@ after changing them. The firewall helper accepts no arguments.
   `Closes #<issue>` in the description (`.github/pull_request_template.md`).
   Give the PR the issue's labels and assign it to its author:
   `gh pr create --assignee @me --label enhancement --label ui`.
+- Dependabot (`.github/dependabot.yml`, weekly) is the one exception: its
+  pull requests close no issue. They get `enhancement` and `infra` and are
+  assigned to the owner: npm minor and patch updates in one, each major
+  apart, the actions together (pinned SHAs and their comments), and the
+  Docker base image's digest. Majors of `typescript` (svelte-check) and of
+  the Node image (a deliberate move) are ignored. Merge one once CI passes
+  and its changelog is read.
 
 ### Worktrees
 
@@ -618,6 +655,7 @@ server/
   lib/backup.ts       consistent snapshots, retention, restore
   lib/client.ts       client address + HTTPS behind the tunnel or TRUST_PROXY
   lib/rate-limit.ts   token buckets + LIMITS (ingest, public reads, per user, OAuth)
+  lib/headers.ts      security headers on every response (HSTS over HTTPS only, CSP on HTML)
   lib/http.ts
   routes/           auth, ingest, usage (public profiles + leaderboard),
                     friends (signed-in GitHub follows), devices,
@@ -667,7 +705,16 @@ Components never branch on live vs demo: both sources map into the same
   HttpOnly `gh_oauth` cookie on `/api/auth/github`; GitHub sends the
   browser to `/api/auth/github/callback`, which needs that same state in
   query and cookie (once only), exchanges the code server to server and
-  reads `/user`. A restart drops sign-ins in progress. The account is
+  reads `/user`. A restart drops sign-ins in progress.
+- Cookie names (issue #188): over HTTPS (the Secure-cookie check, §6) the
+  session cookie is `__Host-dash_session` and the state cookie
+  `__Host-gh_oauth` (on `/`: the prefix requires it, so it rides along
+  with every request for its 10 minutes). Browsers refuse a `__Host-`
+  cookie set with a `Domain`, so another host under production's parent
+  domain cannot toss in a session or a state (login CSRF). Only those
+  names are read over HTTPS; the unprefixed `dash_session` and `gh_oauth`
+  (on `/api/auth/github`) are plain HTTP's, for local dev. Deploying this
+  signed everyone out once. The account is
   found by GitHub numeric id; its username follows the login. Another
   account still holding a login GitHub gave to someone else becomes the
   first free `<name>-<id>`, `<name>-<id>-2`… until it signs in again
