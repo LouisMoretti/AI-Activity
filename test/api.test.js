@@ -2308,6 +2308,30 @@ describe("API-equivalent value (issue #113)", () => {
     }
   });
 
+  test("each conversation gets its own value, with why tokens were left out", async () => {
+    const srv = await startServer();
+    try {
+      const cookie = (await register(srv.base, "conv")).cookie;
+      const key = (await newDevice(srv.base, "c", cookie)).key;
+      const now = Math.floor(Date.now() / 1000);
+      const usage = { input_tokens: 1000, output_tokens: 1000, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+      const m = (id, session, model) => ({ message_id: id, session_id: session, model, occurred_at: now, usage });
+      await req(srv.base, "POST", "/api/ingest/claude-code", { key, body: { collector: collector("claude-code"), messages: [
+        m("msg_conv_1", "mixed", "claude-opus-5-5"), m("msg_conv_2", "mixed", "claude-mystery-9"), m("msg_conv_3", "unknown", "claude-mystery-9"),
+      ] } });
+      const { sessions } = (await req(srv.base, "GET", "/api/u/conv/sessions", { anon: true })).json;
+      const by = Object.fromEntries(sessions.map((s) => [s.session_id, s]));
+      close(by.mixed.value.usd, (1000 * 4 + 1000 * 20) / 1e6);
+      assert.equal(by.mixed.value.priced_tokens, 2000);
+      assert.equal(by.mixed.value.unpriced_tokens, 2000);
+      assert.deepEqual(by.mixed.unpriced, [{ model: "claude-mystery-9", reason: "no known rate", tokens: 2000 }]);
+      // Nothing priced: no value, never $0.
+      assert.deepEqual(by.unknown.value, { ...NO_VALUE, unpriced_tokens: 2000 });
+    } finally {
+      await srv.stop();
+    }
+  });
+
   test("Codex: Fast mode at Fast rates; other providers and subscription-only models unpriced, unknown models too", async () => {
     const srv = await startServer();
     try {

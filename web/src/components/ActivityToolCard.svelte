@@ -2,6 +2,7 @@
   import { clock } from "../lib/clock.svelte.ts";
   import { fmtAgo, fmtCompact, plural, RECENT_SEC } from "../lib/format.ts";
   import { TOOL_META, type ActivityToolVM, type SessionVM, type ToolKey } from "../lib/view-model.ts";
+  import SessionValue from "./SessionValue.svelte";
   import ToolHeader from "./ToolHeader.svelte";
 
   const SHOWN = 3;
@@ -61,7 +62,7 @@
           <div class="row">
             {#if active.length}<i class="dot recent" aria-hidden="true"></i>{/if}
             <span class="model" title={s.model ?? ""}><i>{m.provider}</i>{m.name}</span>
-            <span class="meta">{plural(s.calls, callNoun)} · {fmtCompact(s.tokens)} tokens</span>
+            <span class="meta">{plural(s.calls, callNoun)} · {fmtCompact(s.tokens)} tokens{#if s.value.usd !== null}&nbsp;·&nbsp;{/if}<SessionValue value={s.value} unpriced={s.unpriced} /></span>
           </div>
         {/each}
         {#if more > 0}<div class="meta more">+{more} more</div>{/if}
@@ -88,7 +89,7 @@
   .row { display: flex; align-items: center; gap: 10px; min-width: 0; }
   .model { font-family: var(--mono); font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .model i { font-style: normal; color: var(--faint); }
-  .row .meta { margin-left: auto; flex-shrink: 0; white-space: nowrap; }
+  .row .meta { margin-left: auto; flex-shrink: 0; display: inline-flex; align-items: center; white-space: nowrap; }
   .meta { color: var(--muted); font-size: 12px; }
   .today .meta + .meta { margin-top: 4px; }
   @media (max-width: 720px) {

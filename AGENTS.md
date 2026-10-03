@@ -23,7 +23,10 @@ tapped), five stats (all-time tokens, today, API value, sessions,
 current streak; hover shows the split by tool and model, the value's
 coverage and assumptions, or the longest streak), one card per tool in `TOOLS` order (Claude Code, Codex,
 Cursor and Antigravity on full rows, then OpenCode, which takes 2/3 of the last row,
-next to "Today by tool": today's tokens split by tool), recent conversations (10 + "Show more"). No tool filter:
+next to "Today by tool": today's tokens split by tool), recent conversations (10 + "Show more"; each
+with its API-equivalent value inline after its tokens, nothing when none of
+them is priced, and an info icon only for a partial, lower-bound or
+older-rate value). No tool filter:
 every tool is always shown; on your own page, a one-line box under them
 says how to add one (the install command, Settings → Devices). No cost or
 subscription tracking (removed on purpose): no plans, invoices or money
@@ -1581,7 +1584,8 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
     `by_model` and `by_tool` (rows with their `value`);
     `last_event_at`: the latest measured event; `pricing_version`)
   - `sessions?limit=10&offset=0&tool=...` (grouped by unique session id,
-    with latest `context_used_pct` / `context_window_size`, plus `total`
+    with latest `context_used_pct` / `context_window_size`, each session's
+    API-equivalent `value` and reasons for unpriced tokens, plus `total`
     for paging)
 - `GET /api/devices` (never the keys, only `key_prefix` and `has_key`;
   `collectors`: per tool it posted for, `{tool, version, seen_at, newest,

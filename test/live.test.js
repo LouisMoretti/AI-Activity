@@ -60,15 +60,18 @@ test("no Codex snapshot yet: Unavailable, not zero", () => {
 test("the OpenCode card gets its latest conversations and today; none yet is empty", () => {
   assert.deepEqual(liveDashboard(data([]), "all").opencode.recent, []);
   const d = data([]);
+  const value = { usd: 0.01, priced_tokens: 1200, unpriced_tokens: 0,
+    lower_bound: false, current_rate_fallback: false, unverified: false };
   d.opencode = {
     summary: { day: "2026-09-25", total: breakdown, today: { ...breakdown, tokens: 5500, sessions: 4, events: 9,
       by_model: [{ name: "opencode/muse", tokens: 5000 }, { name: "opencode/free", tokens: 300 }, { name: "agentrouter/glm-5.3", tokens: 200 }] } },
     latest: { total: 12, sessions: [{ tool: "opencode", session_id: "ses_1", model: "opencode/muse", events: 42, tokens: 1200,
-      last_seen: 1790000000, context_used_pct: null, context_window_size: null }] },
+      last_seen: 1790000000, context_used_pct: null, context_window_size: null, value, unpriced: [] }] },
   };
   const vm = liveDashboard(d, "all").opencode;
   assert.deepEqual(vm.today, { tokens: 5500, sessions: 4, calls: 9, models: 3, providers: 2 });
-  assert.deepEqual(vm.recent[0], { tool: "opencode", id: "ses_1", model: "opencode/muse", calls: 42, tokens: 1200, lastActive: 1790000000, context: null });
+  assert.deepEqual(vm.recent[0], { tool: "opencode", id: "ses_1", model: "opencode/muse", calls: 42,
+    tokens: 1200, lastActive: 1790000000, context: null, value, unpriced: [] });
 });
 
 test("the sessions figure keeps the server's exact folded-model session count", () => {

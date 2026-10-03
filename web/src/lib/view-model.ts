@@ -3,7 +3,7 @@
 // Time-relative text (countdowns, "x ago") is derived in components from
 // timestamps here plus the shared clock.
 import type { QUOTA_POOLS, QuotaWindowType } from "../../../shared/quota-pools.ts";
-import { TOOLS, type Tool } from "../../../shared/types.ts";
+import { TOOLS, type ApiValue, type Session, type Tool } from "../../../shared/types.ts";
 import type { DayPoint } from "./series.ts";
 
 export type ToolKey = Tool;
@@ -85,6 +85,8 @@ export interface SessionVM {
   tokens: number;
   lastActive: number;
   context: { pct: number; size: number | null } | null; // only when reported
+  value: ApiValue;
+  unpriced: Session["unpriced"];
 }
 
 

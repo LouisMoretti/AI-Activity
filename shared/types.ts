@@ -78,6 +78,10 @@ export interface Session {
   /** Context fill at the latest call that reported it; null if never reported. */
   context_used_pct: number | null;
   context_window_size: number | null;
+  /** Estimated retail API value of all measured events in this conversation. */
+  value: ApiValue;
+  /** Groups omitted from the value, with the reason their tokens could not be priced. */
+  unpriced: { model: string | null; reason: string; tokens: number }[];
 }
 
 export interface SessionsResponse {
