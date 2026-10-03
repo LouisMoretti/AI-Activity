@@ -21,7 +21,12 @@
     "hono": "^4.13.9"
   },
   "engines": {
-    "node": ">=24"
+    "node": ">=24",
+    "npm": ">=11.16"
+  },
+  "allowScripts": {
+    "better-sqlite3": false,
+    "fsevents": false
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.1",
