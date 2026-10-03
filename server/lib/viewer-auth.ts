@@ -7,6 +7,11 @@ import { nowSec, type DB } from "../db/schema.ts";
 import type { ClientInfo } from "./client.ts";
 
 const COOKIE = "dash_session";
+// Over HTTPS the cookie is `__Host-` prefixed: browsers refuse one set with a
+// Domain, without Secure or off Path=/, so a host under the same parent
+// domain cannot toss a session in (#188). Plain HTTP (local dev) cannot use
+// the prefix, which requires Secure.
+const HOST_COOKIE = `__Host-${COOKIE}`;
 const SESSION_SEC = 30 * 86400;
 
 /** Failed setup code attempts allowed per client, and in total, within one window. */
@@ -46,7 +51,8 @@ export function createViewerAuth(db: DB, { clientId, isHttps }: ClientInfo, allo
     windowStart = Date.now();
   };
 
-  const cookieToken = (c: Context) => getCookie(c, COOKIE) || null;
+  const cookieName = (c: Context) => (isHttps(c) ? HOST_COOKIE : COOKIE);
+  const cookieToken = (c: Context) => getCookie(c, cookieName(c)) || null;
 
   const allows = (login: string) => !allowedLogins || allowedLogins.has(login.toLowerCase());
 
@@ -108,14 +114,16 @@ export function createViewerAuth(db: DB, { clientId, isHttps }: ClientInfo, allo
       if (previous) deleteViewerSession(db, tokenHash(previous));
       const token = randomBytes(32).toString("base64url");
       insertViewerSession(db, tokenHash(token), userId, nowSec() + SESSION_SEC);
-      setCookie(c, COOKIE, token, {
+      setCookie(c, cookieName(c), token, {
         httpOnly: true, path: "/", sameSite: "Lax", maxAge: SESSION_SEC, secure: isHttps(c),
       });
+      // A session from before the prefix is never read over HTTPS: drop it.
+      if (isHttps(c) && getCookie(c, COOKIE)) deleteCookie(c, COOKIE, { httpOnly: true, path: "/", sameSite: "Lax", secure: true });
     },
     logout(c: Context) {
       const token = cookieToken(c);
       if (token) deleteViewerSession(db, tokenHash(token));
-      deleteCookie(c, COOKIE, { httpOnly: true, path: "/", sameSite: "Lax", secure: isHttps(c) });
+      deleteCookie(c, cookieName(c), { httpOnly: true, path: "/", sameSite: "Lax", secure: isHttps(c) });
     },
     require: (async (c, next) => {
       const who = resolve(c);

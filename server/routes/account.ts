@@ -1,15 +1,18 @@
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import {
-  DELETE_ACCOUNT_PHRASE, DELETE_ACTIVITY_PHRASE, type PanelSettings, type AdminOverview, type AdminSettings, type AdminUser, type DeletedAccount, type DeletedActivity,
+  DELETE_ACCOUNT_PHRASE, DELETE_ACTIVITY_PHRASE, type PanelSettings, type AdminOverview, type AdminPricing, type SiteAnalyticsOverview, type AdminSettings, type AdminUser, type DeletedAccount, type DeletedActivity,
 } from "../../shared/types.ts";
 import {
-  adminOverview, deleteAccount, deleteUserActivity, deleteUserSessions, getUser, listAdminUsers, setUserAdmin,
+  adminOverview, unpricedModels, deleteAccount, deleteUserActivity, deleteUserSessions, getUser, listAdminUsers, setUserAdmin,
   setSignupOpen, setUserDisabled, signupOpen, previewSeedSettings, seedPreviewData, setPanelSettings, panelSettings, validLayout, type UserRow,
 } from "../db/queries.ts";
+import { PRICE_ALIASES, PRICES, PRICING_VERSION } from "../../shared/pricing.ts";
 import { nowSec, type DB } from "../db/schema.ts";
+import type { LiteLLM } from "../lib/litellm.ts";
 import { readJson } from "../lib/http.ts";
 import { parsePreviewSeed } from "../lib/preview-seed.ts";
 import type { ViewerEnv } from "../lib/viewer-auth.ts";
+import type { SiteAnalytics } from "./analytics.ts";
 
 /**
  * Destructive actions need a session opened this recently: a stolen
@@ -98,10 +101,18 @@ export function userRoutes(db: DB) {
 }
 
 /** Admin panel: server-wide overview and settings. */
-export function adminRoutes(db: DB, preview = false) {
+export function adminRoutes(db: DB, analytics: SiteAnalytics, preview = false, litellm: LiteLLM | null = null) {
   return new Hono<ViewerEnv>()
     .use(requireAdmin)
     .get("/overview", (c) => c.json<AdminOverview>(adminOverview(db)))
+    .get("/analytics", (c) => c.json<SiteAnalyticsOverview>(analytics.overview()))
+    // Where API-equivalent values come from, and the models still unpriced.
+    .get("/pricing", (c) => c.json<AdminPricing>({
+      pricing_version: PRICING_VERSION,
+      priority: { prices: PRICES.length, aliases: PRICE_ALIASES.length },
+      litellm: litellm?.status() ?? { url: null, fetched_at: null, models: 0, error: null },
+      unpriced: unpricedModels(db, litellm?.catalog() ?? null),
+    }))
     .get("/settings", (c) => c.json<AdminSettings>({ signup_open: signupOpen(db) }))
     .get("/preview-seed", (c) => preview
       ? c.json({ config: previewSeedSettings(db) })

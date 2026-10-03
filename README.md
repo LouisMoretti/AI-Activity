@@ -9,6 +9,20 @@
 > their APIs on your behalf or work around their limits. Using those tools
 > stays subject to their own terms.
 
+## Site analytics
+
+The server counts visits to its own pages, for the admin panel only, and
+sends nothing to a third party. No cookie is set for it. Each browser
+keeps a random id in `localStorage` for 13 months, so a return visit is
+told apart from a new one; the server stores only keyed hashes of it, one
+per day that cannot be linked to the next, plus the first and last day
+seen. What is counted: the page category (never the address or the
+profile name), the referring site's host name, sign-ups, and reads of the
+public API by other sites and programs. IP addresses and user-agent
+strings are never stored: without the id, a hash of them under a key that
+changes every day and is never written to disk stands for the visitor.
+Daily counts are deleted after 90 days.
+
 ## Friends
 
 Sign in and open **Friends** from the avatar menu to see the people you
@@ -18,6 +32,63 @@ last activity for the past seven days. The server reads GitHub's public
 following list using the OAuth app's client ID and secret, without requesting
 an OAuth scope or keeping a user's GitHub token.
 If GitHub is unavailable, the page offers a retry.
+
+## API-equivalent value
+
+Next to the token totals, profiles and the leaderboard show an **estimated
+API-equivalent value**: what the measured tokens would cost at the
+providers' published retail API rates, in USD. It is a valuation of usage,
+whatever paid for it (a subscription or an API key): not what you paid, not
+a saving, not what serving it costs the provider. Nothing new is asked of
+you; no plan, invoice or key is needed.
+
+- **Where rates come from**, first match wins:
+  1. [`shared/pricing.json`](shared/pricing.json), the priority file:
+     verified official rates, each with its source and the day it took
+     effect, and aliases that price a model as another one (OpenCode's free
+     `opencode/muse-spark-1.3-contributor-free` at Meta's paid
+     `meta/muse-spark-1.3-contributor` rate). Edit this file to add a rate or
+     an alias; the server refuses to start on an invalid one (`npm test`
+     checks it too).
+  2. [LiteLLM's price list](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json)
+     for every other model: the server downloads it at most once a day and
+     keeps it next to the database (`litellm-prices.json`), so a restart or
+     GitHub being down changes nothing. Only the provider's own rate is used,
+     never a reseller's for the same model name. These are community rates:
+     values using them say so. They have no effective dates: the copy in use
+     prices all of a model's history, so a LiteLLM price change moves that
+     model's past values too (verified rates in the priority file do not). `LITELLM_PRICES_URL` points elsewhere, or
+     empty turns it off.
+  3. Nothing: models without a known rate (Codex's `codex-auto-review`, a
+     ChatGPT-only model; a local model) are counted as *unpriced*, never
+     valued at $0: a figure that leaves some out shows the share of tokens
+     priced ("93 % priced"), and one with nothing priced shows "—". **Admin panel → Pricing** lists them,
+     with their tokens and why, and the LiteLLM copy in use.
+- **What it is computed from:** each message's model, input, output, cache
+  read and cache write tokens (cached input and reasoning are never counted
+  twice), Anthropic's 5-minute and 1-hour cache writes (2× input instead of
+  1.25×), Claude Code's fast mode, Anthropic's US-only inference (1.1×), Codex's
+  service tier (Fast/priority, Flex) and the long-context rates where a
+  model has them (Sonnet 4 and 4.5 above 200K prompt tokens; GPT-5.4,
+  GPT-5.5, GPT-5.6 and GPT-6 above 272K).
+- **Versions:** the priority file has a `version` (shown with the values),
+  changed with every edit. Usage is priced at the rate
+  of its day; usage older than a model's oldest published rate is priced at
+  that rate and flagged. The dashboard and the leaderboard use the same
+  rates, so their figures for a period agree.
+- **Assumptions it flags:** messages recorded before the collectors sent
+  the cache durations (Claude Code collector 4) are priced at the cheaper
+  5-minute rate, shown as "≥" (a lower bound). Updated collectors send
+  their history once more, which fills that in. Batch discounts, Codex
+  data residency surcharges, server tool fees (web search) and negotiated
+  discounts are not measured, so not included.
+- **Codex Fast mode is valued as requested.** Under load, OpenAI can serve
+  a Fast (priority) request at Standard speed and bill it at Standard
+  rates, but the rollout only records the tier Codex asked for. Such
+  responses are valued at Fast rates: the value can be slightly too high.
+  Nothing in the local files tells them apart today.
+- **Leaderboard:** rank by tokens (the default) or by API value over the
+  same period; accounts with nothing priced rank last.
 
 ## Dashboard panels
 
@@ -47,10 +118,19 @@ curl -fsSL <server>/install.sh | AI_ACTIVITY_URL=<server> AI_ACTIVITY_KEY=<devic
 $env:AI_ACTIVITY_URL="<server>"; $env:AI_ACTIVITY_KEY="<device key>"; irm <server>/install.ps1 | iex
 ```
 
-**Copy install (Linux/macOS)** and **Copy install (Windows)** in Settings →
-Devices copy them with the key filled in (your profile links there, under
-the tools). The key is passed in the environment, never in a URL, and ends
-up only in the installed collectors (files readable by you alone on
+After you create a key, **Settings → Devices** offers buttons to copy the
+Linux/macOS command, Windows command, or an AI setup prompt. Each existing
+device has a **Set up** action for the same options and a way to copy its key
+again. The prompt gives an AI assistant both commands, asks it to use the one
+that matches the device, and tells it to explain the installer's output and
+any follow-up steps. The installer detects tools automatically; the prompt
+does not ask you to select them. You can review the full prompt before copying.
+It includes the device ingestion key: pasting it into an AI service shares
+that key with the service. Revoke the key in Settings → Devices if it is exposed.
+
+The copy buttons include the key in each command (your profile links to
+Settings → Devices under the tools). The key is passed in the environment,
+never in a URL, and ends up only in the installed collectors (files readable by you alone on
 Linux/macOS). Both scripts need Python 3 (`python3`; on Windows `python`
 or the `py` launcher) and install the collectors of the tools they find
 (`claude` / `codex` / `cursor` / `agy` / `opencode` on the `PATH`, or their config
@@ -245,6 +325,10 @@ a bare `/api/ingest` answers `404`. See `AGENTS.md` §5 for the payload contract
 }
 ```
 
+On macOS, replace each `command` value above with
+`python3 ~/.codex/ai-activity-codex.py --hook`. The script answers the hook
+and starts its upload in a detached process without `setsid`.
+
 On Windows, use this instead, replacing `<user>` with your Windows user
 directory name (`--hook` answers Codex and starts the upload detached).
 These commands target PowerShell: `&` is its call operator and is required
@@ -361,8 +445,9 @@ What it does after every tool call and at the end of every turn:
 - `SessionEnd` sends any remaining rollout lines when the main session ends.
   Codex may delay this event until the session has been idle for 30 minutes;
   it is not an immediate replacement for `UserPromptSubmit` after a failed turn.
-- `setsid -f` detaches the upload so Codex goes on at once; `echo '{}'` is
-  the (empty) JSON answer Codex expects from a hook. One run at a time,
+- On Linux, `setsid -f` detaches the upload so Codex goes on at once;
+  `echo '{}'` is the (empty) JSON answer Codex expects from a hook. On macOS
+  and Windows, `--hook` prints that answer and detaches the worker. One run at a time,
   with at most one waiting behind it (it reads the rollouts once its turn
   comes, so any other run can stop at once); a run gives up after 15
   minutes. The script is idempotent: it can
@@ -735,8 +820,11 @@ Each tool has one Python script in `collectors/`. They share the same design:
   macOS and Windows alike (`python3` or `python`).
 - **Metrics only.** They read local usage files read-only or receive live hook metrics, and send ids,
   model, time, the machine's UTC offset and token counts (plus quotas and
-  context fill where the tool has them). Prompts, replies, tool output,
-  titles, paths and provider keys never leave the device.
+  context fill where the tool has them, and what a message's API-equivalent
+  price depends on: Claude Code's cache write durations, `speed`,
+  `service_tier` and `inference_geo`; Codex's service tier and model
+  provider). Prompts, replies, tool output, titles, paths and provider keys
+  never leave the device.
 - **The key only goes to your server.** Uploads never follow an HTTP
   redirect: a redirect fails the run (progress unchanged) instead of
   sending the device key somewhere else.
@@ -757,6 +845,10 @@ Each tool has one Python script in `collectors/`. They share the same design:
   on the same account, everything comes back as already stored. With
   another account on the same server, messages the first account already
   sent stay with it (the server never moves them between accounts).
+  Claude Code's and Codex's progress also records which message fields it
+  was sent with (`"fields"`): a collector that sends new fields sends its
+  history once more, and the server fills them in on messages it stored
+  without them (nothing is counted twice).
 - **Never in the tool's way.** Called from a hook or the status line, a
   script answers at once and uploads from a detached copy of itself
   (Linux/macOS: its own session; Windows: out of the console, the process
@@ -796,9 +888,9 @@ How each one is started:
   `python3 ~/.claude/ai-activity-claude-code.py --worker` (on Windows,
   `python "<path>" --worker`) to see errors while setting up.
 - `codex.py`: without arguments, collects in the foreground (by hand, cron,
-  and the Linux/macOS hooks, which detach it with `setsid -f`). `--hook`
-  (the Windows hooks) prints `{}` for Codex and starts the script again
-  detached.
+  and the Linux hooks, which detach it with `setsid -f`). `--hook`
+  (the macOS and Windows hooks) prints `{}` for Codex and starts the script
+  again detached.
 - `cursor.py`: `--hook` allowlists stdin metrics into its local journal,
   prints `{}`, and starts itself detached. Without arguments it uploads
   unaccepted journal entries in the foreground (also suitable for cron).
@@ -817,7 +909,7 @@ already accepted is kept). The payloads each script sends are described in
 ## Collector CI
 
 `npm test` runs the installed collector integration tests on Linux and ARM64;
-the Windows CI job runs them explicitly. Each test starts a temporary app and
+the Windows and macOS CI jobs run them explicitly. Each test starts a temporary app and
 local HTTP receiver, runs the served installer in an isolated home, invokes
 the installed status line, hook or plugin against synthetic tool data, then
 checks the upload format, retry, deduplication and dashboard totals. No model
@@ -825,12 +917,13 @@ API or external account is needed.
 
 The **Collector CLI smoke** workflow runs on relevant collector changes, on
 pull requests and pushes to `main`, and can be started manually from Actions.
-Its Linux x64, Linux ARM64 and Windows x64 jobs install pinned Claude Code,
+Its Linux x64, Linux ARM64, Windows x64 and macOS jobs install pinned Claude Code,
 Codex and OpenCode CLIs, point each at a local fake model API, complete one
 chat, and check that the installed integration reaches the real app. Windows
-uses a temporary ConPTY for Claude Code's interactive status line. The same
-jobs also install the latest Antigravity CLI, chat with a local Gemini
-stub, and verify that its installed hook uploads measured usage; see the
+uses a temporary ConPTY for Claude Code's interactive status line; macOS uses
+a pseudo-terminal through `node-pty` for the same check and exercises Codex without
+`setsid`. The same jobs also install the latest Antigravity CLI, chat with a
+local Gemini stub, and verify that its installed hook uploads measured usage; see the
 Antigravity section above. `agy` stays in its own steps because it is a
 native binary rather than a Node CLI: it cannot be pinned with the rest and
 intentionally tracks the latest release, and its chat is headless (`agy -p`

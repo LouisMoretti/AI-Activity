@@ -1,8 +1,9 @@
 // Typed client for the dashboard JSON API (same origin, cookie session).
 import type {
-  ActivityResponse, AdminOverview, AdminSettings, AdminUser, AuthStatus, DeletedAccount, DeletedActivity, LeaderboardResponse, Profile, Device, QuotasResponse,
-  SessionsResponse, SummaryResponse, FriendsResponse, PreviewSeedConfig, HoursResponse, PanelSettings, PanelRow, RankResponse,
+  ActivityResponse, AdminOverview, AdminPricing, AdminSettings, AdminUser, AuthStatus, DeletedAccount, DeletedActivity, LeaderboardRank, LeaderboardResponse, Profile, Device, QuotasResponse,
+  SessionsResponse, SummaryResponse, FriendsResponse, PreviewSeedConfig, SiteAnalyticsOverview, HoursResponse, PanelSettings, PanelRow, RankResponse,
 } from "../../../shared/types.ts";
+import { visitorId } from "./visitor.ts";
 
 export class UnauthorizedError extends Error {
   constructor() { super("unauthorized"); }
@@ -70,13 +71,28 @@ export interface GithubStart {
 const toolQuery = (tool: string | null) => (tool ? `&tool=${encodeURIComponent(tool)}` : "");
 const profileBase = (username: string) => `/api/u/${encodeURIComponent(username)}`;
 
+/** Fire-and-forget analytics post: no cookies, no referrer header, never throws. */
+const beacon = (path: string, body: unknown) => fetch(path, {
+  method: "POST",
+  credentials: "omit",
+  keepalive: true,
+  referrerPolicy: "no-referrer",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify(body),
+}).catch(() => undefined);
+
 export const api = {
   authStatus: () => get<AuthStatus>("/api/auth/status"),
   /** The GitHub page to send the browser to; it comes back signed in (or with ?auth_error=). */
   startGithub: (start: GithubStart) => post<{ url: string }>("/api/auth/github", start),
   logout: () => post<{ ok: true }>("/api/auth/logout"),
   adminOverview: () => get<AdminOverview>("/api/admin/overview"),
+  adminPricing: () => get<AdminPricing>("/api/admin/pricing"),
   adminSettings: () => get<AdminSettings>("/api/admin/settings"),
+  siteAnalytics: () => get<SiteAnalyticsOverview>("/api/admin/analytics"),
+  analyticsView: (page: string, referrer: string, signIn = false) =>
+    beacon("/api/analytics/view", { page, referrer, visitor: visitorId(), ...(signIn ? { via: "sign-in" } : {}) }),
+  analyticsPing: (page: string) => beacon("/api/analytics/ping", { page, visitor: visitorId() }),
   setSignupOpen: (signup_open: boolean) => post<AdminSettings>("/api/admin/settings", { signup_open }),
   previewSeed: () => get<{ config: PreviewSeedConfig }>("/api/admin/preview-seed"),
   generatePreviewSeed: (config: PreviewSeedConfig) =>
@@ -91,8 +107,9 @@ export const api = {
   setUserDisabled: (id: number, disabled: boolean) =>
     post<{ ok: true }>(`/api/users/${id}/${disabled ? "disable" : "enable"}`),
   setUserAdmin: (id: number, is_admin: boolean) => post<{ ok: true }>(`/api/users/${id}/admin`, { is_admin }),
-  /** Everyone's usage over the last `days` days, or all time (null). */
-  leaderboard: (days: number | null) => get<LeaderboardResponse>(`/api/leaderboard?days=${days ?? "all"}`),
+  /** Everyone's usage over the last `days` days, or all time (null), ranked by tokens or API-equivalent value. */
+  leaderboard: (days: number | null, rank: LeaderboardRank = "tokens") =>
+    get<LeaderboardResponse>(`/api/leaderboard?days=${days ?? "all"}&rank=${rank}`),
   friends: () => get<FriendsResponse>("/api/friends"),
   savePanels: (rows: PanelRow[]) => post<PanelSettings>("/api/account/panels", { rows }),
   // A profile's usage, public by username (the viewer's own page uses it too).

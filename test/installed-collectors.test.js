@@ -261,6 +261,10 @@ test("installed Codex Stop hook uploads a rollout and its quotas once", async ()
   try {
     const hooks = JSON.parse(fs.readFileSync(path.join(f.home, ".codex", "hooks.json"))).hooks;
     const command = hooks.Stop.at(-1).hooks[0].command;
+    if (process.platform === "darwin") {
+      assert.match(command, / --hook$/, "macOS Codex must use the detached hook wrapper");
+      assert.ok(!command.includes("setsid"), "macOS Codex cannot invoke setsid");
+    }
     const runHook = () => run(command, f.env, JSON.stringify({ session_id: session, hook_event_name: "Stop" }));
     f.wire.refuseOnce();
     const first = await runHook();

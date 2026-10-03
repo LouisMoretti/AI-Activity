@@ -136,7 +136,8 @@ function freePort() {
  * false` boots with no account at all.
  */
 export async function startServer({ signedIn = true, env = {}, autoLogin = true } = {}) {
-  env = { ...(await githubEnv()), ...env };
+  // No network in tests: the LiteLLM price list is off unless a test serves one.
+  env = { LITELLM_PRICES_URL: "", ...(await githubEnv()), ...env };
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ai-usage-test-"));
   const dbPath = env.DB_PATH ?? path.join(dir, "t.db");
   try {
@@ -300,7 +301,7 @@ export async function githubSignIn(base, login, { next, setup_code, link, reauth
   if (start.status !== 200) return { start: { status: start.status, json: startJson }, location: null, error: null, cookie: null };
   const url = new URL(startJson.url);
   const state = forged ?? url.searchParams.get("state");
-  const stateCookie = start.headers.getSetCookie().find((c) => c.startsWith("gh_oauth="))?.split(";")[0];
+  const stateCookie = start.headers.getSetCookie().find((c) => /^(__Host-)?gh_oauth=/.test(c))?.split(";")[0];
   let query = `state=${encodeURIComponent(state)}`;
   if (login === null) query += "&error=access_denied";
   else query = `code=${await githubCode(login)}&${query}`;
@@ -309,7 +310,7 @@ export async function githubSignIn(base, login, { next, setup_code, link, reauth
     headers: { "cf-connecting-ip": ip, cookie: [stateCookie, cookie].filter(Boolean).join("; "), ...extra },
   });
   const location = back.headers.get("location");
-  const session = back.headers.getSetCookie().find((c) => c.startsWith("dash_session=") && !/Max-Age=0/i.test(c));
+  const session = back.headers.getSetCookie().find((c) => /^(__Host-)?dash_session=/.test(c) && !/Max-Age=0/i.test(c));
   return {
     start: { status: start.status, json: startJson, url, headers: start.headers },
     headers: back.headers,

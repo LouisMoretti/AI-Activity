@@ -10,6 +10,7 @@ import { authorizeUrl, signedInUser, type GithubConfig, type GithubUser } from "
 import { readJson } from "../lib/http.ts";
 import { setupCodeMatches } from "../lib/setup.ts";
 import type { ViewerAuth } from "../lib/viewer-auth.ts";
+import { recordSignup } from "./analytics.ts";
 
 /** Open sign-up: accounts one client may create per window (spam guard). */
 const SIGNUPS_PER_CLIENT = 5;
@@ -19,8 +20,16 @@ const SIGNUP_WINDOW_MS = 60 * 60 * 1000;
 const PENDING_MS = 10 * 60 * 1000;
 /** Sign-ins in progress kept at most (the oldest go first). */
 const PENDING_MAX = 10_000;
-const STATE_COOKIE = "gh_oauth";
-const STATE_PATH = "/api/auth/github";
+/**
+ * The OAuth state cookie. Over HTTPS it is `__Host-` prefixed, so a host
+ * under the same parent domain cannot toss in its own state (a login CSRF
+ * into the attacker's account, #188); the prefix requires Path=/, so it is
+ * then sent with every request for its 10 minutes. Plain HTTP (local dev)
+ * keeps it on the sign-in path.
+ */
+const stateCookie = (https: boolean) => (https
+  ? { name: "__Host-gh_oauth", path: "/", secure: true }
+  : { name: "gh_oauth", path: "/api/auth/github", secure: false });
 
 /**
  * Why a sign-in failed, as the `auth_error` of the page it lands on (the
@@ -110,7 +119,10 @@ export function authRoutes(
       const a = { username: gh.login, display_name: gh.name, avatar_url: gh.avatar_url, github_id: gh.id, is_admin: admin };
       return admin ? createFirstAccount(db, a) ?? ("exists" as const) : createAccount(db, a);
     })();
-    if (typeof id === "number" && !admin) signups.set(auth.clientId(c), signupsBy(c) + 1);
+    if (typeof id === "number") {
+      if (!admin) signups.set(auth.clientId(c), signupsBy(c) + 1);
+      recordSignup(db);
+    }
     return id;
   };
 
@@ -174,20 +186,20 @@ export function authRoutes(
       }
       const state = randomBytes(32).toString("base64url");
       pending.set(state, p);
-      setCookie(c, STATE_COOKIE, state, {
-        httpOnly: true, path: STATE_PATH, sameSite: "Lax", maxAge: PENDING_MS / 1000, secure: client.isHttps(c),
-      });
+      const { name, ...cookie } = stateCookie(client.isHttps(c));
+      setCookie(c, name, state, { ...cookie, httpOnly: true, sameSite: "Lax", maxAge: PENDING_MS / 1000 });
       return c.json({ url: authorizeUrl(github, p.redirectUri, state) });
     })
     // GitHub sends the browser back here, with a code to exchange.
     .get("/github/callback", async (c) => {
       const state = c.req.query("state") ?? "";
-      const p = state && getCookie(c, STATE_COOKIE) === state ? pending.get(state) : undefined;
+      const { name: cookieName, ...cookie } = stateCookie(client.isHttps(c));
+      const p = state && getCookie(c, cookieName) === state ? pending.get(state) : undefined;
       if (p) {
         // Once only. A forged or foreign state leaves the cookie alone: a
         // cross-site link must not cancel a sign-in in progress.
         pending.delete(state);
-        deleteCookie(c, STATE_COOKIE, { httpOnly: true, path: STATE_PATH, sameSite: "Lax", secure: client.isHttps(c) });
+        deleteCookie(c, cookieName, { ...cookie, httpOnly: true, sameSite: "Lax" });
       }
       // Where a failure is told: signing in again comes back to where it
       // started (Settings); a sign-in goes back to the sign-in page, still

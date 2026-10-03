@@ -5,11 +5,28 @@ export const fmtCompact = (n: number) => compact.format(n);
 export const fmtNum = (n: number) => plain.format(n);
 export const fmtPct = (n: number) => `${Math.round(n * 10) / 10}`;
 
+const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+const usdCompact = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 1 });
+/** Dollars: cents below $1,000, compact above ("$12.3K"); a tiny non-zero amount reads "<$0.01", never "$0.00". */
+export function fmtUsd(n: number): string {
+  if (n > 0 && n < 0.005) return "<$0.01";
+  return n < 1000 ? usd.format(n) : usdCompact.format(n);
+}
+
 /** Share of a total as "42 %", "<1 %" or "0 %": a small but non-zero value never reads as "none". */
 export function fmtShare(value: number, total: number): string {
   if (!(total > 0) || !(value > 0)) return "0 %";
   const rounded = Math.round((value / total) * 100);
   return rounded === 0 ? "<1 %" : `${rounded} %`;
+}
+
+/**
+ * The share of tokens an API value prices, rounded down: "100 %" only when
+ * nothing is left out, "0 %" when nothing is priced.
+ */
+export function fmtPriced(priced: number, unpriced: number): string {
+  const total = priced + unpriced;
+  return total > 0 ? `${Math.floor((priced / total) * 100)} %` : "0 %";
 }
 
 export const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;

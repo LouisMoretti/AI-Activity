@@ -3,6 +3,7 @@
   import { fmtAgo, fmtCompact, fmtPct, plural, RECENT_SEC } from "../lib/format.ts";
   import { TOOL_META, type SessionVM } from "../lib/view-model.ts";
   import Meter from "./Meter.svelte";
+  import SessionValue from "./SessionValue.svelte";
   import ToolIcon from "./ToolIcon.svelte";
 
   let { sessions, total, onmore }: { sessions: SessionVM[]; total: number; onmore: () => void } = $props();
@@ -20,7 +21,7 @@
       </div>
       <div class="side">
         <div class="line">
-          <span class="num tokens">{fmtCompact(s.tokens)} tokens</span>
+          <span class="num tokens">{fmtCompact(s.tokens)} tokens{#if s.value.usd !== null}&nbsp;·&nbsp;{/if}<SessionValue value={s.value} unpriced={s.unpriced} /></span>
           <span class="when"><i class="dot" class:recent={clock.now - s.lastActive < RECENT_SEC}></i>{fmtAgo(s.lastActive, clock.now)}</span>
         </div>
         {#if s.context}
@@ -52,7 +53,7 @@
   .model { font-family: var(--mono); font-size: 11px; }
   .side { width: 260px; flex-shrink: 0; display: grid; gap: 7px; }
   .line { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 12px; }
-  .tokens { color: var(--text); }
+  .tokens { color: var(--text); display: inline-flex; align-items: center; white-space: nowrap; }
   .when { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); white-space: nowrap; }
   .ctx { font-size: 11px; color: var(--faint); }
   .side :global(.track) { height: 4px; }

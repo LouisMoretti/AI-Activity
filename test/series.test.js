@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   calendarWeeks, cumulative, daysEndingOn, denseSeries, lastUtcDays, level, monthLabels, streaks, weekBuckets,
 } from "../web/src/lib/series.ts";
-import { fmtDayRange, fmtShare } from "../web/src/lib/format.ts";
+import { fmtDayRange, fmtPriced, fmtShare } from "../web/src/lib/format.ts";
 
 const pts = (...tokens) => tokens.map((t, i) => ({ day: `2026-01-${String(i + 1).padStart(2, "0")}`, tokens: t }));
 
@@ -84,4 +84,12 @@ test("month labels never collide: a partial first month is dropped", () => {
   assert.equal(labels[1], "2025-10");
   const shown = labels.map((l, i) => (l ? i : -1)).filter((i) => i >= 0);
   for (let k = 1; k < shown.length; k++) assert.ok(shown[k] - shown[k - 1] >= 3);
+});
+
+test("fmtPriced rounds down: 100 % only when nothing is left out", () => {
+  assert.equal(fmtPriced(100, 0), "100 %");
+  assert.equal(fmtPriced(9999, 1), "99 %");
+  assert.equal(fmtPriced(93, 7), "93 %");
+  assert.equal(fmtPriced(0, 5), "0 %");
+  assert.equal(fmtPriced(0, 0), "0 %");
 });

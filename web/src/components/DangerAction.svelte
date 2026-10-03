@@ -83,8 +83,8 @@
   .actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   button { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 6px 12px; }
   button:disabled { opacity: .5; cursor: default; }
-  .danger:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); }
-  .danger.strong:not(:disabled) { color: var(--danger); border-color: var(--danger); }
+  .danger { color: var(--danger); border-color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+  .danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 18%, transparent); }
   .ok { color: var(--ok); font-size: 13px; }
   .error { color: var(--warn); font-size: 13px; }
 </style>

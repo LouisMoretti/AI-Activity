@@ -15,12 +15,14 @@ export const MIGRATIONS: ((db: DB) => void)[] = [
   activityClearedAt,
   collectorVersions,
   githubAccounts,
+  apiValueInputs,
+  siteAnalytics,
   profilePanels,
   profilePanelsRepair,
 ];
 
 /**
- * 7: profilePanels first ran (on its branch) with a `widgets` column, then
+ * 9: profilePanels first ran (on its branch) with a `widgets` column, then
  * changed to `panels` before merge. Databases that ran the first form (PR
  * previews, dev databases) sit at version 6 with `widgets` but no `panels`:
  * reads silently fell back to the default layout while every save failed
@@ -38,18 +40,103 @@ function profilePanelsRepair(db: DB): void {
   }
 }
 
-/** 6: Each account selects public rows of panels, ratios and tool views. */
+/** 8: Each account selects public rows of panels, ratios and tool views. */
 function profilePanels(db: DB): void {
   db.exec(`ALTER TABLE users ADD COLUMN panels TEXT NOT NULL DEFAULT
     '[{"ratio":"wide-left","panels":[{"id":"claude-code","view":"quota"},{"id":"codex","view":"quota"}]},{"ratio":"full","panels":[{"id":"cursor","view":"activity"}]},{"ratio":"full","panels":[{"id":"antigravity","view":"quota"}]},{"ratio":"wide-left","panels":[{"id":"opencode","view":"activity"},{"id":"today-by-tool"}]}]'`);
+
+/**
+ * 7: privacy-first site analytics, kept apart from measured AI activity:
+ * daily page views by page category and source, visitors and sign-ups.
+ * A visitor is an HMAC that changes every day (rows of different days cannot
+ * be linked), marked new or returning (NULL: the browser sent no id) from
+ * `site_analytics_known_visitors`: its random id's HMAC with the first and
+ * last day seen, nothing in between. External reads of the public API
+ * (by route, origin host and client kind; distinct clients per day); and
+ * requests refused with 429 (by scope, a fixed set; distinct clients).
+ */
+function siteAnalytics(db: DB): void {
+  db.exec(`
+    CREATE TABLE site_analytics_pageviews (
+      day TEXT NOT NULL,
+      page TEXT NOT NULL,
+      source TEXT NOT NULL,
+      views INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (day, page, source)
+    ) WITHOUT ROWID;
+    CREATE TABLE site_analytics_visitors (
+      day TEXT NOT NULL,
+      visitor_hash TEXT NOT NULL,
+      returning_visitor INTEGER,
+      PRIMARY KEY (day, visitor_hash)
+    ) WITHOUT ROWID;
+    CREATE TABLE site_analytics_signups (
+      day TEXT PRIMARY KEY,
+      signups INTEGER NOT NULL DEFAULT 0
+    ) WITHOUT ROWID;
+    CREATE TABLE site_analytics_known_visitors (
+      visitor_hash TEXT PRIMARY KEY,
+      first_day TEXT NOT NULL,
+      last_day TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE INDEX idx_site_analytics_known_last ON site_analytics_known_visitors(last_day);
+    CREATE TABLE site_analytics_api_calls (
+      day TEXT NOT NULL,
+      route TEXT NOT NULL,
+      origin TEXT NOT NULL,
+      client TEXT NOT NULL,
+      calls INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (day, route, origin, client)
+    ) WITHOUT ROWID;
+    CREATE TABLE site_analytics_api_clients (
+      day TEXT NOT NULL,
+      client_hash TEXT NOT NULL,
+      PRIMARY KEY (day, client_hash)
+    ) WITHOUT ROWID;
+    CREATE TABLE site_analytics_rate_limited (
+      day TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      hits INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (day, scope)
+    ) WITHOUT ROWID;
+    CREATE TABLE site_analytics_rate_limited_clients (
+      day TEXT NOT NULL,
+      client_hash TEXT NOT NULL,
+      PRIMARY KEY (day, client_hash)
+    ) WITHOUT ROWID;
+  `);
+}
+
+/**
+ * 6: what an API-equivalent value needs besides model and token counts
+ * (issue #113, shared/pricing.ts). `cache_write_1h_tokens`: of the cache
+ * writes, those to Anthropic's 1-hour cache (2× input instead of 1.25×;
+ * NULL: not recorded, priced at the 5-minute rate as a lower bound).
+ * `service_tier`: the processing tier as the tool recorded it (Claude Code's
+ * fast mode as "fast", Codex's service tier); NULL: standard.
+ * `inference_geo`: Anthropic's inference region ("us" costs 1.1×). The read
+ * index covers them, so pricing reads stay index-only.
+ */
+function apiValueInputs(db: DB): void {
+  db.exec(`
+    ALTER TABLE usage_events ADD COLUMN cache_write_1h_tokens INTEGER;
+    ALTER TABLE usage_events ADD COLUMN service_tier TEXT;
+    ALTER TABLE usage_events ADD COLUMN inference_geo TEXT;
+    DROP INDEX IF EXISTS idx_usage_user_read;
+    CREATE INDEX idx_usage_user_read ON usage_events(
+      user_id, occurred_at, tool, session_id, model,
+      input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, utc_offset_min,
+      cache_write_1h_tokens, service_tier, inference_geo
+    );
+  `);
 }
 
 /**
  * 5: sign in with GitHub only (issue #127). `users.github_id` is the GitHub
  * account's numeric id (stable across login renames). Accounts from before
  * could never sign in again, so the database starts over: every account,
- * its usage, quotas, devices and sessions go (the `-pre-v5` backup keeps
- * them). People sign in with GitHub, make a device key in Settings, and
+ * its usage, quotas, devices and sessions go (the `-pre-v<N>` backup made
+ * before the upgrade that ran it keeps them). People sign in with GitHub, make a device key in Settings, and
  * the collectors send their whole local history again (their offsets are
  * kept per server and key).
  */

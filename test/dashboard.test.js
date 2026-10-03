@@ -21,12 +21,18 @@ const setUrl = (url) => {
   loc.search = u.search;
 };
 let intervals = [];
+const activeIntervals = new Set();
+const documentListeners = new Map();
 globalThis.location = loc;
 globalThis.history = { pushState: (_s, _t, url) => setUrl(url), replaceState: (_s, _t, url) => setUrl(url) };
 globalThis.window = { addEventListener() {}, removeEventListener() {} };
-globalThis.document = { hidden: false, addEventListener() {}, removeEventListener() {} };
-globalThis.setInterval = (fn) => { intervals.push(fn); return intervals.length; };
-globalThis.clearInterval = () => {};
+globalThis.document = {
+  hidden: false,
+  addEventListener: (name, fn) => documentListeners.set(name, fn),
+  removeEventListener: (name, fn) => { if (documentListeners.get(name) === fn) documentListeners.delete(name); },
+};
+globalThis.setInterval = (fn) => { intervals.push(fn); activeIntervals.add(intervals.length); return intervals.length; };
+globalThis.clearInterval = (id) => activeIntervals.delete(id);
 
 /** path → response: a JSON body, a status number, or a function of the call count. */
 let routes = {};
@@ -87,7 +93,10 @@ before(async () => {
   ({ api } = await import(path.join(LIB, "api.ts")));
 });
 after(() => fs.rmSync(BUILT, { force: true }));
-beforeEach(() => { routes = {}; calls.length = 0; sent.length = 0; assigned.length = 0; intervals = []; });
+beforeEach(() => {
+  routes = {}; calls.length = 0; sent.length = 0; assigned.length = 0;
+  intervals = []; activeIntervals.clear(); documentListeners.clear(); document.hidden = false;
+});
 
 /** A dashboard opened at url, started, and settled. */
 async function open(url, extra = {}) {
@@ -138,6 +147,48 @@ describe("dashboard state", () => {
     assert.ok(calls.includes("/api/u/me/sessions?limit=10&offset=0&tool=claude-code"));
     assert.ok(!calls.some((c) => c.includes("tool=opencode")));
     stop();
+  });
+
+  test("a visible tab sends the online heartbeat at most every 30 s, never while hidden", async () => {
+    const { tick, stop } = await open("/leaderboard");
+    const pings = () => sent.filter((entry) => entry.path === "/api/analytics/ping").map((entry) => entry.body.page);
+    const real = Date.now;
+    try {
+      tick();
+      assert.deepEqual(pings(), [], "the page view just counted");
+      Date.now = () => real() + 31_000;
+      document.hidden = true;
+      tick();
+      assert.deepEqual(pings(), []);
+      document.hidden = false;
+      tick();
+      tick();
+      assert.deepEqual(pings(), ["leaderboard"]);
+    } finally {
+      Date.now = real;
+    }
+    stop();
+  });
+
+  test("pauses polling while hidden and refreshes immediately on return", async () => {
+    const { stop } = await open("/u/me", profileRoutes("me"));
+    assert.equal(activeIntervals.size, 1);
+    const first = intervals.at(-1);
+    document.hidden = true;
+    documentListeners.get("visibilitychange")();
+    assert.equal(activeIntervals.size, 0);
+    const before = calls.length;
+    first(); // A callback already queued by the browser may still run.
+    await settle();
+    assert.equal(calls.length, before);
+    document.hidden = false;
+    documentListeners.get("visibilitychange")();
+    await settle();
+    assert.ok(calls.length > before);
+    assert.equal(activeIntervals.size, 1);
+    stop();
+    assert.equal(activeIntervals.size, 0);
+    assert.equal(documentListeners.has("visibilitychange"), false);
   });
 
   test("card reads are per tool and a failed card refresh preserves measured data", async () => {
@@ -288,7 +339,8 @@ describe("dashboard state", () => {
     routes["/api/auth/github"] = { url: AUTHORIZE };
     assert.equal(await dash.signIn(), null);
     // GitHub sends the browser back to next once signed in.
-    assert.deepEqual(sent, [{ path: "/api/auth/github", body: { next: "/u/me?tab=x" } }]);
+    assert.deepEqual(sent.filter((entry) => entry.path === "/api/auth/github"),
+      [{ path: "/api/auth/github", body: { next: "/u/me?tab=x" } }]);
     assert.deepEqual(assigned, [AUTHORIZE]);
     stop();
   });
@@ -297,7 +349,8 @@ describe("dashboard state", () => {
     const { dash, stop } = await open("/", { "/api/auth/status": { ...signedOut, setup_required: true }, "/api/auth/github": 401 });
     assert.equal(dash.status, "setup");
     assert.equal(await dash.signIn("WRONG-CODE"), "Wrong setup code: copy it from the server log.");
-    assert.deepEqual(sent, [{ path: "/api/auth/github", body: { next: "/", setup_code: "WRONG-CODE" } }]);
+    assert.deepEqual(sent.filter((entry) => entry.path === "/api/auth/github"),
+      [{ path: "/api/auth/github", body: { next: "/", setup_code: "WRONG-CODE" } }]);
     assert.deepEqual([dash.status, assigned.length], ["setup", 0]);
     stop();
   });
@@ -339,7 +392,8 @@ describe("dashboard state", () => {
   test("signing in again from Settings comes back to Settings, where a failure is told", async () => {
     const { dash, stop } = await open("/settings", { "/api/auth/github": { url: AUTHORIZE } });
     assert.equal(await dash.signInAgain(), null);
-    assert.deepEqual(sent, [{ path: "/api/auth/github", body: { next: "/settings", reauth: true } }]);
+    assert.deepEqual(sent.filter((entry) => entry.path === "/api/auth/github"),
+      [{ path: "/api/auth/github", body: { next: "/settings", reauth: true } }]);
     assert.deepEqual(assigned, [AUTHORIZE]);
     stop();
     const back = await open("/settings?auth_error=other_account");
@@ -364,10 +418,10 @@ describe("dashboard state", () => {
     assert.equal(dash.own, false);
     assert.deepEqual(dash.shown, { username: "demo", display_name: "Demo preview", avatar_url: null });
     assert.equal(dash.vm.demo, true);
-    assert.deepEqual(calls, ["/api/auth/status"]);
+    assert.deepEqual(calls, ["/api/auth/status", "/api/analytics/view"]);
     tick();
     await settle();
-    assert.deepEqual(calls, ["/api/auth/status"], "no refresh");
+    assert.deepEqual(calls, ["/api/auth/status", "/api/analytics/view"], "no refresh");
     stop();
   });
 
@@ -433,9 +487,11 @@ describe("dashboard state", () => {
   test("navigating loads the new page once", async () => {
     const { dash, stop } = await open("/u/me", profileRoutes("me"));
     const before = calls.filter((c) => c === "/api/auth/status").length;
+    assert.deepEqual(sent.filter((entry) => entry.path === "/api/analytics/view").map((entry) => entry.body.page), ["profile"]);
     dash.go("/leaderboard");
     await settle();
     assert.equal(calls.filter((c) => c === "/api/auth/status").length, before + 1);
+    assert.deepEqual(sent.filter((entry) => entry.path === "/api/analytics/view").map((entry) => entry.body.page), ["profile", "leaderboard"]);
     stop();
   });
 });

@@ -112,6 +112,41 @@ assert not m.command(script, "~/.codex/ai-activity-codex.py", "--hook").startswi
   }
 });
 
+test("macOS Codex hooks use --hook even when setsid is installed", { skip: WINDOWS }, async () => {
+  const home = tempHome("ai-activity-macos-codex-");
+  try {
+    const program = `
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("installer", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+m.sys.platform = "darwin"
+m.HOME = sys.argv[2]
+m.CODEX_HOME = os.path.join(m.HOME, ".codex")
+m.CONFIGS["codex"] = os.path.join(m.CODEX_HOME, "hooks.json")
+m.FILES["codex.py"] = 'SERVER = "<server>"; KEY = "<device key>"'
+original_which = m.shutil.which
+m.shutil.which = lambda name: "/usr/bin/setsid" if name == "setsid" else original_which(name)
+m.install_codex("https://example.com", "test-key")
+hooks = json.load(open(m.CONFIGS["codex"], encoding="utf-8"))["hooks"]
+for event in m.CODEX_HOOKS:
+    command = hooks[event][-1]["hooks"][0]["command"]
+    assert command == "python3 ~/.codex/ai-activity-codex.py --hook", command
+`;
+    const result = await new Promise((resolve, reject) => {
+      const child = spawn(PYTHON, ["-c", program,
+        fileURLToPath(new URL("../collectors/install.py", import.meta.url)), home],
+      { stdio: ["ignore", "pipe", "pipe"] });
+      let output = "";
+      child.stdout.on("data", (data) => { output += data; });
+      child.stderr.on("data", (data) => { output += data; });
+      child.on("error", reject);
+      child.on("close", (code) => resolve({ code, output }));
+    });
+    assert.equal(result.code, 0, result.output);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
 test("installer writes quoteless Antigravity hook commands on Windows", async () => {
   // agy's hook runner splits the command naively on spaces and keeps the
   // quotes in the tokens, so a quoted path never resolves there (Windows
@@ -292,8 +327,9 @@ describe(`one-command install (${WINDOWS ? "/install.ps1" : "/install.sh"})`, ()
       assert.equal(ours.length, 1);
       assert.equal(ours[0].hooks[0].timeout, event === "SessionEnd" ? 3 : 10);
       if (WINDOWS) assert.match(ours[0].hooks[0].command, new RegExp("^& " + windowsCommand(file(".codex", "ai-activity-codex.py"), "--hook").source.slice(1)));
-      else if (fs.existsSync(path.join(env.PATH, "setsid"))) assert.deepEqual(ours[0], CODEX_HOOKS[event][0]);
-      else assert.equal(ours[0].hooks[0].command, "python3 ~/.codex/ai-activity-codex.py --hook");
+      else if (process.platform === "darwin" || !fs.existsSync(path.join(env.PATH, "setsid")))
+        assert.equal(ours[0].hooks[0].command, "python3 ~/.codex/ai-activity-codex.py --hook");
+      else assert.deepEqual(ours[0], CODEX_HOOKS[event][0]);
     }
 
     assert.equal(read(".gemini", "ai-activity-antigravity.py"), filled("antigravity.py"));

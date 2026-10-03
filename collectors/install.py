@@ -254,8 +254,9 @@ def install_codex(url, key):
     config = load_json(path)
     hooks = config.setdefault("hooks", {})  # an object: preflight checked
     changed = write(script, fill(FILES["codex.py"], url, key), 0o600)
-    if WINDOWS or not shutil.which("setsid"):
-        # --hook answers Codex and detaches the upload itself (macOS has no setsid).
+    if WINDOWS or sys.platform == "darwin" or not shutil.which("setsid"):
+        # --hook answers Codex and detaches the upload itself. Use it on
+        # macOS even if a third-party setsid happens to be installed.
         run = command(script, "~/.codex/ai-activity-codex.py", "--hook")
         if WINDOWS:
             # Codex runs Windows hooks through PowerShell; quoted executables

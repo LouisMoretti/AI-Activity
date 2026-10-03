@@ -1,6 +1,8 @@
 <script lang="ts">
   import AdminOverview from "./components/AdminOverview.svelte";
+  import SiteAnalytics from "./components/SiteAnalytics.svelte";
   import PreviewSeedPanel from "./components/PreviewSeedPanel.svelte";
+  import PricingPanel from "./components/PricingPanel.svelte";
   import AuthPanel from "./components/AuthPanel.svelte";
   import ActivityChart from "./components/ActivityChart.svelte";
   import Conversations from "./components/Conversations.svelte";
@@ -98,11 +100,17 @@
         <Section title="Overview" subtitle="The whole server, every account">
           <AdminOverview />
         </Section>
+        <Section title="Site analytics" subtitle="Website visits, separate from AI usage">
+          <SiteAnalytics />
+        </Section>
         {#if dash.preview}
           <Section title="Preview data generator" subtitle="Fictional activity on your own account">
             <PreviewSeedPanel />
           </Section>
         {/if}
+        <Section title="Pricing" subtitle="Where API-equivalent values come from">
+          <PricingPanel />
+        </Section>
         <Section title="Users" subtitle="Profile pages are public; devices and settings stay private">
           <UsersPanel selfId={dash.account.id} />
         </Section>

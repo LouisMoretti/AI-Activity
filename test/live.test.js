@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { liveDashboard } from "../web/src/lib/live.ts";
+import { leaderboardWithValues, liveDashboard, valueVM } from "../web/src/lib/live.ts";
+import { demoDashboard } from "../web/src/lib/demo.ts";
 import { hasLiveWindow } from "../web/src/lib/view-model.ts";
 
 const breakdown = { tokens: 0, sessions: 0, events: 0, by_model: [], by_model_others_sessions: 0, by_tool: [] };
@@ -59,15 +60,18 @@ test("no Codex snapshot yet: Unavailable, not zero", () => {
 test("the OpenCode card gets its latest conversations and today; none yet is empty", () => {
   assert.deepEqual(liveDashboard(data([]), "all").opencode.recent, []);
   const d = data([]);
+  const value = { usd: 0.01, priced_tokens: 1200, unpriced_tokens: 0,
+    lower_bound: false, current_rate_fallback: false, unverified: false };
   d.opencode = {
     summary: { day: "2026-09-25", total: breakdown, today: { ...breakdown, tokens: 5500, sessions: 4, events: 9,
       by_model: [{ name: "opencode/muse", tokens: 5000 }, { name: "opencode/free", tokens: 300 }, { name: "agentrouter/glm-5.3", tokens: 200 }] } },
     latest: { total: 12, sessions: [{ tool: "opencode", session_id: "ses_1", model: "opencode/muse", events: 42, tokens: 1200,
-      last_seen: 1790000000, context_used_pct: null, context_window_size: null }] },
+      last_seen: 1790000000, context_used_pct: null, context_window_size: null, value, unpriced: [] }] },
   };
   const vm = liveDashboard(d, "all").opencode;
   assert.deepEqual(vm.today, { tokens: 5500, sessions: 4, calls: 9, models: 3, providers: 2 });
-  assert.deepEqual(vm.recent[0], { tool: "opencode", id: "ses_1", model: "opencode/muse", calls: 42, tokens: 1200, lastActive: 1790000000, context: null });
+  assert.deepEqual(vm.recent[0], { tool: "opencode", id: "ses_1", model: "opencode/muse", calls: 42,
+    tokens: 1200, lastActive: 1790000000, context: null, value, unpriced: [] });
 });
 
 test("the sessions figure keeps the server's exact folded-model session count", () => {
@@ -139,4 +143,40 @@ test("Antigravity falls back to its activity card while no quota window is runni
   const withQuota = liveDashboard(data([{ ...q("antigravity", "five_hour", 25, 500), account_ref: "gemini" }]), "all");
   assert.equal(hasLiveWindow(withQuota.antigravity, 600), true);
   assert.equal(hasLiveWindow(withQuota.antigravity, 500 + 3600), false, "an expired window no longer counts");
+});
+
+const value = (usd, over = {}) => ({
+  usd, priced_tokens: usd === null ? 0 : 100, unpriced_tokens: 0, lower_bound: false, current_rate_fallback: false, unverified: false, ...over,
+});
+
+test("valueVM keeps the flags and lists only rows with a priced token", () => {
+  const b = { ...breakdown, value: value(3, { unpriced_tokens: 50, lower_bound: true, unverified: true }),
+    by_tool: [{ name: "claude-code", tokens: 100, value: value(3) }, { name: "cursor", tokens: 50, value: value(null) }],
+    by_model: [{ name: "claude-opus-5-5", tokens: 100, value: value(3) }, { name: "composer-2.5", tokens: 50, value: value(null) }] };
+  assert.deepEqual(valueVM(b), {
+    usd: 3, pricedTokens: 100, unpricedTokens: 50, lowerBound: true, fallback: false, unverified: true,
+    byTool: [{ name: "claude-code", value: 3 }], byModel: [{ name: "claude-opus-5-5", value: 3 }],
+  });
+});
+
+test("an answer without values (an older server) shows nothing priced, never $0, and never breaks the page", () => {
+  assert.deepEqual(valueVM({ ...breakdown, by_tool: [{ name: "codex", tokens: 9 }] }), {
+    usd: null, pricedTokens: 0, unpricedTokens: 0, lowerBound: false, fallback: false, unverified: false, byTool: [], byModel: [],
+  });
+  const vm = liveDashboard(data([]), "all");
+  assert.equal(vm.stats.value.total.usd, null);
+  assert.equal(vm.stats.value.lastEventAt, null);
+  const r = leaderboardWithValues({ range_days: 7, accounts: 1, totals: { tokens: 5, sessions: 1, events: 1, active_accounts: 1 },
+    entries: [{ username: "a", tokens: 5 }], by_model: [{ name: "m", tokens: 5 }], day: "2026-09-25", activity: [], provenance: "" });
+  assert.equal(r.rank, "tokens");
+  for (const v of [r.totals.value, r.entries[0].value, r.by_model[0].value]) assert.equal(v.usd, null);
+});
+
+test("/demo prices its fictional tokens with the same rules: models without a known rate are left out", () => {
+  const { total, today } = demoDashboard("all").stats.value;
+  assert.ok(total.usd > 0 && today.usd > 0);
+  // Antigravity's Claude share is priced; its Gemini share and Cursor's Composer are not.
+  assert.deepEqual(total.byTool.map((r) => r.name).sort(), ["antigravity", "claude-code", "codex"]);
+  assert.ok(total.unpricedTokens > 0, "Cursor's Composer and Antigravity's Gemini have no rate without LiteLLM");
+  assert.equal(total.unverified, false);
 });
