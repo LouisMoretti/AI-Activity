@@ -56,7 +56,7 @@ CACHE = os.path.join(HOME, ".cache", "ai-activity")
 BATCH = 400
 # Bump when messages carry new fields: each target's history is sent once
 # more, so the server fills them in on the messages it already has.
-FIELDS = 2
+FIELDS = 3
 
 
 def when(ts):

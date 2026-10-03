@@ -367,6 +367,31 @@ describe("Codex collector (hooks from README.md)", () => {
     assert.deepEqual(models, ["azure/gpt-5", "azure/gpt-5"]);
   });
 
+  test("a legacy rollout (token_count only) keeps its session's provider across incremental reads (#279)", async () => {
+    const before = await summary();
+    const S3 = "01a0b861-4cf4-7f10-8e5b-8d110992ee79";
+    const file = path.join(home, ".codex", "archived_sessions", `rollout-2026-09-01T00-00-00-${S3}.jsonl`);
+    // The first read only sees the session's start…
+    fs.writeFileSync(file, [
+      line("session_meta", { id: S3, model_provider: "azure" }),
+      line("turn_context", { model: "gpt-5.4" }),
+    ].join("\n") + "\n");
+    await run(hookCommand, env);
+    await collectorsDone();
+    // …the next one its usage, read from the saved offset.
+    fs.appendFileSync(file, tokenCount(usage(1000000, 0, 0), 1000000, 2) + "\n");
+    await run(hookCommand, env);
+    assert.ok(await waitFor(async () => (await summary()).events === before.events + 1));
+    const db = new Database(srv.dbPath, { readonly: true });
+    const row = db.prepare("SELECT model FROM usage_events WHERE event_id = ?").get(`tc_${S3}_1000000`);
+    db.close();
+    assert.deepEqual(row, { model: "azure/gpt-5.4" });
+    // Unpriced without a rate of Azure's (no LiteLLM list in tests), never OpenAI's $5.
+    const value = (await summary()).value;
+    assert.equal((value.usd ?? 0) - (before.value.usd ?? 0), 0);
+    assert.equal(value.unpriced_tokens - before.value.unpriced_tokens, 1000000);
+  });
+
   test("the PostToolUse hook sends a turn's usage while it runs", async () => {
     const before = await summary();
     fs.appendFileSync(current, response("resp_8", S1, usage(300, 200, 4), 6776));
