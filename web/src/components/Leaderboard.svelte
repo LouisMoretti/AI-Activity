@@ -3,7 +3,7 @@
   import { api } from "../lib/api.ts";
   import { clock } from "../lib/clock.svelte.ts";
   import { profilePath } from "../lib/dashboard.svelte.ts";
-  import { fmtAgo, fmtCompact, fmtNum, fmtShare, fmtUsd, plural, RECENT_SEC } from "../lib/format.ts";
+  import { fmtAgo, fmtCompact, fmtNum, fmtPriced, fmtShare, fmtUsd, plural, RECENT_SEC } from "../lib/format.ts";
   import { ACTIVITY_DAYS } from "../lib/live.ts";
   import { denseSeries } from "../lib/series.ts";
   import ActivityChart from "./ActivityChart.svelte";
@@ -84,7 +84,9 @@
   const tiles = $derived(data ? [
     { label: "Tokens", value: fmtCompact(data.totals.tokens), note: `${fmtCompact(data.totals.events)} API calls` },
     { label: "API value (estimate)", value: usdText(data.totals.value),
-      note: data.totals.value.unpriced_tokens ? `partial: ${fmtShare(data.totals.value.unpriced_tokens, data.totals.tokens)} of tokens unpriced` : "at retail API rates" },
+      note: data.totals.value.unpriced_tokens
+        ? `${fmtPriced(data.totals.value.priced_tokens, data.totals.value.unpriced_tokens)} of tokens priced`
+        : "at retail API rates" },
     { label: "Conversations", value: fmtCompact(data.totals.sessions), note: "every account" },
     { label: "Active accounts", value: String(data.totals.active_accounts), note: `of ${data.accounts}` },
     { label: "Top model", value: data.by_model[0]?.name ?? "—", note: data.by_model[0] ? `${fmtCompact(data.by_model[0].tokens)} tokens` : "no usage", mono: true },
@@ -129,7 +131,7 @@
               <span class="num tokens">
                 {fmtCompact(e.tokens)} tokens
                 <span class="usd" title="Estimated API-equivalent value: these tokens at published retail API rates, not actual spend">{usdText(e.value)}</span>
-                {#if e.value.unpriced_tokens > 0}<span class="partial" title={partialText(e.value)}>partial</span>{/if}
+                {#if e.value.unpriced_tokens > 0}<span class="partial" title={partialText(e.value)}>{fmtPriced(e.value.priced_tokens, e.value.unpriced_tokens)} priced</span>{/if}
               </span>
               <span class="share">{shownRank === "value" ? fmtShare(e.value.usd ?? 0, data.totals.value.usd ?? 0) : fmtShare(e.tokens, data.totals.tokens)}</span>
             </div>
@@ -157,8 +159,8 @@
     {#if shownRank === "value"}
       <p class="fine">
         API value: what each account's tokens would cost at retail API rates (USD, verified rates of
-        {data.pricing_version}, else LiteLLM's community price list). An estimate, not what anyone paid. "partial" rows leave
-        out models without a known rate, and accounts with nothing priced rank last.
+        {data.pricing_version}, else LiteLLM's community price list). An estimate, not what anyone paid. A row showing a priced share
+        leaves out models without a known rate, and accounts with nothing priced rank last.
       </p>
     {/if}
   </Section>

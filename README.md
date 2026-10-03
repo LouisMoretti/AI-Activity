@@ -45,8 +45,8 @@ you; no plan, invoice or key is needed.
      empty turns it off.
   3. Nothing: models without a known rate (Codex's `codex-auto-review`, a
      ChatGPT-only model; a local model) are counted as *unpriced*, never
-     valued at $0: a figure that leaves some out says *partial*, and one
-     with nothing priced shows "—". **Admin panel → Pricing** lists them,
+     valued at $0: a figure that leaves some out shows the share of tokens
+     priced ("93 % priced"), and one with nothing priced shows "—". **Admin panel → Pricing** lists them,
      with their tokens and why, and the LiteLLM copy in use.
 - **What it is computed from:** each message's model, input, output, cache
   read and cache write tokens (cached input and reasoning are never counted
@@ -66,6 +66,11 @@ you; no plan, invoice or key is needed.
   their history once more, which fills that in. Batch discounts, Codex
   data residency surcharges, server tool fees (web search) and negotiated
   discounts are not measured, so not included.
+- **Codex Fast mode is valued as requested.** Under load, OpenAI can serve
+  a Fast (priority) request at Standard speed and bill it at Standard
+  rates, but the rollout only records the tier Codex asked for. Such
+  responses are valued at Fast rates: the value can be slightly too high.
+  Nothing in the local files tells them apart today.
 - **Leaderboard:** rank by tokens (the default) or by API value over the
   same period; accounts with nothing priced rank last.
 

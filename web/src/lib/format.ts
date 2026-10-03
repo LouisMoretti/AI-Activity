@@ -20,6 +20,15 @@ export function fmtShare(value: number, total: number): string {
   return rounded === 0 ? "<1 %" : `${rounded} %`;
 }
 
+/**
+ * The share of tokens an API value prices, rounded down: "100 %" only when
+ * nothing is left out, "0 %" when nothing is priced.
+ */
+export function fmtPriced(priced: number, unpriced: number): string {
+  const total = priced + unpriced;
+  return total > 0 ? `${Math.floor((priced / total) * 100)} %` : "0 %";
+}
+
 export const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 /** "YYYY-MM-DD" (a calendar day) → "24 September 2026". */

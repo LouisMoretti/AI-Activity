@@ -1,6 +1,6 @@
 <script lang="ts">
   import { clock } from "../lib/clock.svelte.ts";
-  import { fmtAgo, fmtCompact, fmtNum, fmtShare, fmtUsd, plural } from "../lib/format.ts";
+  import { fmtAgo, fmtCompact, fmtNum, fmtPriced, fmtUsd, plural } from "../lib/format.ts";
   import type { StatsVM } from "../lib/view-model.ts";
   import ShareList from "./ShareList.svelte";
   import StatCard from "./StatCard.svelte";
@@ -10,6 +10,10 @@
 
   const value = $derived(stats.value);
   // "≈": an estimate; "≥": some cache writes were priced at the cheaper rate.
+  // The priced share shows on the card itself when some tokens are left out.
+  const valueLabel = $derived(value.total.unpricedTokens > 0 && value.total.usd !== null
+    ? `API value (est., ${fmtPriced(value.total.pricedTokens, value.total.unpricedTokens)} priced)`
+    : "API value (estimate)");
   const usdText = (usd: number | null, lowerBound: boolean) =>
     usd === null ? "—" : `${lowerBound ? "≥" : "≈"} ${fmtUsd(usd)}`;
 
@@ -35,7 +39,7 @@
       <ShareList title="By model" kind="model" rows={stats.today.byModel} />
     {/snippet}
   </StatCard>
-  <StatCard label="API value (estimate)" value={usdText(value.total.usd, value.total.lowerBound)}>
+  <StatCard label={valueLabel} value={usdText(value.total.usd, value.total.lowerBound)}>
     {#snippet detail()}
       <div class="value">
         <p class="today">Today: <strong>{usdText(value.today.usd, value.today.lowerBound)}</strong></p>
@@ -47,9 +51,8 @@
         </p>
         {#if value.total.unpricedTokens > 0}
           <p class="note warn">
-            Partial: leaves out {fmtCompact(value.total.unpricedTokens)} tokens
-            ({fmtShare(value.total.unpricedTokens, value.total.unpricedTokens + value.total.pricedTokens)}): models without
-            a known retail API rate.
+            {fmtPriced(value.total.pricedTokens, value.total.unpricedTokens)} of tokens priced: leaves out
+            {fmtCompact(value.total.unpricedTokens)} tokens of models without a known retail API rate.
           </p>
         {/if}
         {#if value.total.lowerBound}

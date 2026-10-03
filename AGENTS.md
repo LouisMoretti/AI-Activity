@@ -29,7 +29,7 @@ says how to add one (the install command, Settings → Devices). No cost or
 subscription tracking (removed on purpose): no plans, invoices or money
 paid. The only money figure is the **API-equivalent value** (issue #113,
 §4): measured tokens at published retail API rates, always labeled an
-estimate (never "spend"), partial when some tokens have no published rate,
+estimate (never "spend"), with the share of tokens priced when some have no known rate,
 "—" (never $0) when none has. Only demo data carries a badge ("Demonstration data"). Palette: the
 original dark theme; type: Geist, with Geist Mono only for ids and model
 names. Quota bars carry a mark for how far into the window we are.
@@ -964,11 +964,13 @@ Components never branch on live vs demo: both sources map into the same
   `current_rate_fallback` (usage before its model's oldest published rate,
   priced at that rate), `unverified` (some usage priced from LiteLLM).
   A category with tokens but no rate (e.g. cache reads) leaves the group
-  unpriced. The UI shows "≈", "≥" for a lower bound, "partial"
-  when tokens were left out.
+  unpriced. The UI shows "≈", "≥" for a lower bound, and the share of
+  tokens priced (`fmtPriced`, rounded down) when some were left out.
 - Rules worth knowing: OpenAI cache writes are billed as input on models
   without a cache-write rate; Codex Fast mode (`priority`/`fast`) uses the
-  published Fast rates; Anthropic `speed: "fast"` only where a fast rate
+  published Fast rates (as requested: a Fast request OpenAI downgraded to
+  Standard under load is billed Standard, but the rollout keeps the
+  requested tier, so it is valued slightly too high); Anthropic `speed: "fast"` only where a fast rate
   is published; `inference_geo: "us"` 1.1× on Claude 4.6 and later;
   Sonnet 4 / 4.5 above 200K prompt tokens 2× input and cache, 1.5× output.
   Not measured, so not included: batch discounts, server tool fees,
