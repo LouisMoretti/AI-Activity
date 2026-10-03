@@ -60,6 +60,10 @@ const MIX: Record<DemoTool, [number, number, number, number]> = {
   cursor: [0.2, 0.05, 0.75, 0],
   antigravity: [0.3, 0.05, 0.65, 0],
 };
+const SESSION_MIX: Record<SessionVM["tool"], [number, number, number, number]> = {
+  ...MIX,
+  opencode: [0.3, 0.05, 0.65, 0],
+};
 
 /** The demo tokens of `pick`, priced with the same rules as live data (shared/pricing.ts). */
 function valueFor(tools: DemoTool[], pick: (t: DemoTool) => number, at: number): ValueVM {
@@ -121,7 +125,7 @@ export function demoDashboard(provider: Provider): DashboardVM {
   ] satisfies Omit<SessionVM, "value" | "unpriced">[])
     .filter((s) => visible.includes(s.tool))
     .map((s) => {
-      const [input, output, read, write] = MIX[s.tool as DemoTool].map((f) => Math.round(s.tokens * f));
+      const [input, output, read, write] = SESSION_MIX[s.tool].map((f) => Math.round(s.tokens * f));
       const group: PriceGroup = {
         tool: s.tool, model: s.model, service_tier: null, inference_geo: null, band: 0, period: periodOf(s.lastActive),
         input, output, cache_read: read, cache_write: write, cache_write_1h: write, cache_write_unsplit: 0,
