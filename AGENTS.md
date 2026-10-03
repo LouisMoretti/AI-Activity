@@ -208,6 +208,13 @@ Upgrades are normally deployed from GitHub (Continuous deployment below).
 - Before going live: revoke and reissue every device key used through
   quick tunnels, then point the collectors (Claude Code hooks and
   statusLine, Codex hook, OpenCode plugin) at the new URL.
+- Security headers come from the app (`server/lib/headers.ts`), not Caddy:
+  `nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY` and a
+  `Permissions-Policy` on every response, and HSTS
+  (`max-age=31536000`, no `includeSubDomains`: other hosts under the parent
+  domain are not ours) only when the request is HTTPS by the Secure-cookie
+  check (§6), so plain HTTP in dev never pins a host. Do not add them in
+  Caddy too.
 - Logs rotate (`x-logging` in `compose.yaml`: 3 × 10 MB per container);
   Docker keeps them forever otherwise.
 
@@ -614,6 +621,7 @@ server/
   lib/backup.ts       consistent snapshots, retention, restore
   lib/client.ts       client address + HTTPS behind the tunnel or TRUST_PROXY
   lib/rate-limit.ts   token buckets + LIMITS (ingest, public reads, per user, OAuth)
+  lib/headers.ts      security headers on every response (HSTS over HTTPS only)
   lib/http.ts
   routes/           auth, ingest, usage (public profiles + leaderboard),
                     friends (signed-in GitHub follows), devices,

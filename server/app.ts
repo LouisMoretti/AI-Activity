@@ -6,6 +6,7 @@ import { HTTPException } from "hono/http-exception";
 import type { Config } from "./config.ts";
 import type { DB } from "./db/schema.ts";
 import { clientInfo } from "./lib/client.ts";
+import { securityHeaders } from "./lib/headers.ts";
 import { buildInstallers } from "./lib/installer.ts";
 import { jsonOnly, limitBody, readCache } from "./lib/http.ts";
 import { LIMITS, rateLimit, tokenBuckets } from "./lib/rate-limit.ts";
@@ -77,6 +78,7 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
   const installers = buildInstallers();
 
   const app = new Hono()
+    .use(securityHeaders(client))
     .route("/api", api)
     .all("/api/*", (c) => c.json({ error: "not found" }, 404))
     .get("/install.sh", (c) => {
