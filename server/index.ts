@@ -16,7 +16,8 @@ const setupCode = accountsExist(db) || config.allowedLogins ? null : newSetupCod
 // Rates for models the priority pricing file lacks, refreshed in the background.
 const litellm = startLiteLLM(config.litellm.url, config.litellm.cacheFile);
 
-const server = serve({ fetch: createApp(db, config, setupCode, litellm).fetch, port: config.port }, () => {
+const app = createApp(db, config, setupCode, litellm);
+const server = serve({ fetch: app.fetch, port: config.port }, () => {
   console.log(`AI Activity listening on http://localhost:${config.port}`);
   console.log(`DB: ${config.dbPath}`);
   if (config.allowedLogins) {
@@ -39,6 +40,7 @@ function shutdown(signal: string): void {
   force.unref();
   litellm.stop();
   server.close(() => {
+    app.flushAnalytics();
     db.close();
     process.exit(0);
   });

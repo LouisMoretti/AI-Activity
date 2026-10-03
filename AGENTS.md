@@ -34,6 +34,66 @@ estimate (never "spend"), with the share of tokens priced when some have no know
 original dark theme; type: Geist, with Geist Mono only for ids and model
 names. Quota bars carry a mark for how far into the window we are.
 
+Site analytics are enabled by default, shown only in the admin panel, kept
+in their own tables (apart from measured AI usage), and never sent to a
+third party. They count:
+
+- Page views of this site: page category (never the path or a profile
+  name), external referrer host, visitors, new accounts. The return from a
+  sign-in provider (marked in `sessionStorage`, with the provider's host,
+  by the tab that left for it, 10 minutes: the return itself has no
+  referrer, the callback's redirect is `no-referrer`) is stored as
+  `sign-in:<its host>` and listed as "Sign-in
+  returns", never as a referral, so another provider added later shows up
+  on its own.
+- Visitors: each browser keeps a random 128-bit id in `localStorage`
+  (`web/src/lib/visitor.ts`; 13 months, then replaced; not a cookie) and
+  sends it with each view and ping. A day's visitor row is an HMAC of the
+  id **and the day**, so rows of different days cannot be linked (no visit
+  calendar per browser); `site_analytics_known_visitors` keeps only the
+  id's own HMAC with its first and last day seen, which marks each day's
+  row new or returning when it is written and survives IP changes (mobile
+  networks). The id key (`analytics_key` in `settings`) can stay in
+  backups: a 128-bit random id cannot be guessed back. Without storage, a
+  browser falls back to an HMAC of address + user agent under a key
+  rotated every UTC day (never "new" or "returning"). That key, like the
+  one for API and rate-limited clients, lives **in memory only**: an
+  address can be enumerated, so a key kept in the database or a backup
+  would let anyone holding one recover addresses. A restart therefore
+  counts those clients again that day. README.md's "Site analytics"
+  section tells visitors.
+- Who is online: visible tabs ping every 30 s (on the refresh tick, so
+  paused while hidden); a visitor that pinged in the last minute counts.
+  That and the per-minute chart of the last hour live in server memory only.
+- Reads of the public API (`/api/u/*`, `/api/leaderboard`,
+  `/api/profiles`) by other sites and programs: route category, calling
+  site host (`Origin`, else `Referer`; `none` from servers and scripts),
+  client kind guessed from the user agent (curl, node, python, browser,
+  bot…; the string is not kept) and distinct client addresses per day
+  (daily hash). This site's own fetches (`Sec-Fetch-Site: same-origin`;
+  without that header, a browser's request with no `Origin` or `Referer`)
+  are not API reads. Cached answers count; refused ones count only as rate
+  limited.
+- Rate limits: every `429` the server answers (any limiter), by scope from
+  a fixed set (`public.<route>`, `ingest.<tool>`, `auth.github`,
+  `analytics.view`, `session.<route>`…) and distinct client addresses per
+  day. A flood therefore adds one counter, not rows.
+- Callers can invent hosts (Origin, Referer, the posted referrer),
+  visitor ids and addresses, so each is capped per UTC day: 100 hosts for
+  referrers (a sign-in return's host counts once with them) and for API
+  origins, the rest as `other`; 2,000 visitors, 2,000 API clients and
+  2,000 rate-limited clients, beyond which views and calls still count
+  but add no row. The online view holds at most 2,000 visitors. Analytics
+  posts have their own limit (§6).
+
+Counts are buffered in memory and written once a minute (before an admin
+read, and at shutdown), so analytics barely empty the public read cache.
+They leave memory only once committed: a failed write is retried at the
+next flush, and dropped after three failures in a row.
+Daily rows are pruned after 90 days; first/last-seen rows 400 days after
+the last visit. Unique visitors over 30 days: browsers with an id last
+seen in them, plus each day's visitors without one.
+
 **Pages:** `/` shows "Sign in with GitHub", the only way in (a GitHub
 user with no account yet gets one, unless an admin closed sign-up; while
 no account exists, the first-account form asks for the setup code first);
@@ -218,11 +278,13 @@ Upgrades are normally deployed from GitHub (Continuous deployment below).
   `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` in the server's `.env`
   **before** a version with it is deployed: without them nobody can sign
   in. Deploying it (migration 5) deletes every account and all measured
-  data (kept in the `-pre-v5` backup): everyone signs in with GitHub again,
+  data (kept in the backup made before the upgrade, `-pre-v<N>` with N the
+  version it reached: `-pre-v7` from a v4 database to this code, §4):
+  everyone signs in with GitHub again,
   makes a new device key in Settings and reinstalls the collectors, which
   send their whole local history again. To go back, in this order: deploy
   the older commit (`ALLOW_OLDER=1 ai-activity-deploy <commit>`), stop the
-  app, restore the `-pre-v5` backup, start it. Restoring it under this
+  app, restore that `-pre-v<N>` backup, start it. Restoring it under this
   code would only run migration 5 again and empty it once more.
 - Before going live: revoke and reissue every device key used through
   quick tunnels, then point the collectors (Claude Code hooks and
@@ -894,6 +956,7 @@ Components never branch on live vs demo: both sources map into the same
   completed step. A database at a higher version than the code knows (made
   by a newer server) is refused at start. An existing database with
   pending migrations is backed up first (`<BACKUP_DIR>/dashboard-…-pre-v<N>.db`,
+  N the version the upgrade reaches, not each migration's,
   never pruned), so an upgrade can be undone with `npm run restore`.
 - To change the schema, append one function to `MIGRATIONS`, never edit or
   reorder a shipped one, and write it without "already done?" guards (it
@@ -920,8 +983,9 @@ Components never branch on live vs demo: both sources map into the same
   rebuilds the empty `users` table strict (`github_id` and `username` NOT
   NULL and unique, no `password_hash`; the other tables' foreign keys
   follow it by name), with the id sequences reset. Accounts
-  from before could never sign in again. The `-pre-v5` backup keeps it
-  all; people sign in with GitHub, make a device key in Settings, and the
+  from before could never sign in again. The backup made before the
+  upgrade that ran it keeps it all (named after the version that upgrade
+  reached, not 5: `-pre-v<N>`, N = `MIGRATIONS.length` then); people sign in with GitHub, make a device key in Settings, and the
   collectors send their whole local history again (their offsets are
   kept per server and key, §3).
 - Migration 6 adds what an API-equivalent value needs besides model and
@@ -929,6 +993,12 @@ Components never branch on live vs demo: both sources map into the same
   to Anthropic's 1-hour cache; NULL: not recorded), `service_tier` (Claude
   Code's fast mode as `fast`, Codex's service tier) and `inference_geo`
   (Anthropic's region), and rebuilds `idx_usage_user_read` to cover them.
+- Migration 7 adds the site analytics tables, apart from usage:
+  `site_analytics_pageviews`, `site_analytics_visitors`,
+  `site_analytics_signups`, `site_analytics_known_visitors` (browser id
+  HMAC, first and last day seen), `site_analytics_api_calls`,
+  `site_analytics_api_clients`, `site_analytics_rate_limited` (day, scope,
+  hits) and `site_analytics_rate_limited_clients`.
 
 ### API-equivalent value (`shared/pricing.ts`, issues #113, #268)
 
@@ -1445,6 +1515,19 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   `POST /api/users/:id/disable|enable`. A disabled account cannot sign
   in and its device keys are rejected at ingest; admins cannot disable
   themselves, so one enabled admin remains.
+- Site analytics: `POST /api/analytics/view {page, referrer?, visitor?, via?}`
+  (a page category from a fixed list, else `400`; the referrer's host name
+  only; `visitor`: the browser's id, 32 hex digits, else ignored;
+  `via: "sign-in"` for the return from a sign-in provider) and
+  `POST /api/analytics/ping {page, visitor?}` (the online heartbeat,
+  memory only), no session, rate limited apart (below); both `204`.
+  `GET /api/admin/analytics` (admin) → `{days, unique_visitors, pages,
+  sources, sign_ins, online, api, rate_limited}`: 30 UTC days (zeros included; `visitors`,
+  `new_visitors`, `returning_visitors`, `pageviews`, `signups`), top pages
+  and referrers, `online: {now, pages, minutes}` (`minutes`: distinct
+  visitors per minute, the last 60, oldest first), `api: {days (calls,
+  clients), routes, origins, clients}` and `rate_limited: {days (hits,
+  clients), scopes}`.
 - Admin panel (admin only): `GET /api/admin/overview` → server-wide counts
   (accounts, disabled, live devices, events, sessions, last event).
   `GET /api/admin/pricing` → `{pricing_version, priority: {prices,
@@ -1471,6 +1554,8 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
     refill one per 2 s (visitors behind one address, #102, still sign
     in). GitHub's callback is not limited: it only works with a state
     this server handed out, once;
+  - site analytics posts (`/api/analytics/view`, `/ping`): 60 per client,
+    refill one per 2 s (a visible tab pings twice a minute);
   - ingest: per device key (§5). Health and the rest of `/api/auth/*` are
     not rate limited (the setup code and sign-ups have their own limits
     above).

@@ -16,7 +16,70 @@ export const MIGRATIONS: ((db: DB) => void)[] = [
   collectorVersions,
   githubAccounts,
   apiValueInputs,
+  siteAnalytics,
 ];
+
+/**
+ * 7: privacy-first site analytics, kept apart from measured AI activity:
+ * daily page views by page category and source, visitors and sign-ups.
+ * A visitor is an HMAC that changes every day (rows of different days cannot
+ * be linked), marked new or returning (NULL: the browser sent no id) from
+ * `site_analytics_known_visitors`: its random id's HMAC with the first and
+ * last day seen, nothing in between. External reads of the public API
+ * (by route, origin host and client kind; distinct clients per day); and
+ * requests refused with 429 (by scope, a fixed set; distinct clients).
+ */
+function siteAnalytics(db: DB): void {
+  db.exec(`
+    CREATE TABLE site_analytics_pageviews (
+      day TEXT NOT NULL,
+      page TEXT NOT NULL,
+      source TEXT NOT NULL,
+      views INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (day, page, source)
+    ) WITHOUT ROWID;
+    CREATE TABLE site_analytics_visitors (
+      day TEXT NOT NULL,
+      visitor_hash TEXT NOT NULL,
+      returning_visitor INTEGER,
+      PRIMARY KEY (day, visitor_hash)
+    ) WITHOUT ROWID;
+    CREATE TABLE site_analytics_signups (
+      day TEXT PRIMARY KEY,
+      signups INTEGER NOT NULL DEFAULT 0
+    ) WITHOUT ROWID;
+    CREATE TABLE site_analytics_known_visitors (
+      visitor_hash TEXT PRIMARY KEY,
+      first_day TEXT NOT NULL,
+      last_day TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE INDEX idx_site_analytics_known_last ON site_analytics_known_visitors(last_day);
+    CREATE TABLE site_analytics_api_calls (
+      day TEXT NOT NULL,
+      route TEXT NOT NULL,
+      origin TEXT NOT NULL,
+      client TEXT NOT NULL,
+      calls INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (day, route, origin, client)
+    ) WITHOUT ROWID;
+    CREATE TABLE site_analytics_api_clients (
+      day TEXT NOT NULL,
+      client_hash TEXT NOT NULL,
+      PRIMARY KEY (day, client_hash)
+    ) WITHOUT ROWID;
+    CREATE TABLE site_analytics_rate_limited (
+      day TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      hits INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (day, scope)
+    ) WITHOUT ROWID;
+    CREATE TABLE site_analytics_rate_limited_clients (
+      day TEXT NOT NULL,
+      client_hash TEXT NOT NULL,
+      PRIMARY KEY (day, client_hash)
+    ) WITHOUT ROWID;
+  `);
+}
 
 /**
  * 6: what an API-equivalent value needs besides model and token counts
@@ -46,8 +109,8 @@ function apiValueInputs(db: DB): void {
  * 5: sign in with GitHub only (issue #127). `users.github_id` is the GitHub
  * account's numeric id (stable across login renames). Accounts from before
  * could never sign in again, so the database starts over: every account,
- * its usage, quotas, devices and sessions go (the `-pre-v5` backup keeps
- * them). People sign in with GitHub, make a device key in Settings, and
+ * its usage, quotas, devices and sessions go (the `-pre-v<N>` backup made
+ * before the upgrade that ran it keeps them). People sign in with GitHub, make a device key in Settings, and
  * the collectors send their whole local history again (their offsets are
  * kept per server and key).
  */

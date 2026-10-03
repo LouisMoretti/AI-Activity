@@ -13,6 +13,7 @@ import type { LiteLLM } from "./lib/litellm.ts";
 import { LIMITS, rateLimit, tokenBuckets } from "./lib/rate-limit.ts";
 import { createViewerAuth } from "./lib/viewer-auth.ts";
 import { accountRoutes, adminRoutes, userRoutes } from "./routes/account.ts";
+import { createSiteAnalytics } from "./routes/analytics.ts";
 import { authRoutes } from "./routes/auth.ts";
 import { deviceRoutes } from "./routes/devices.ts";
 import { friendsRoutes } from "./routes/friends.ts";
@@ -32,6 +33,8 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
   const publicReads = rateLimit(tokenBuckets(LIMITS.publicReads), (c) => auth.clientId(c));
   const perUser = rateLimit(tokenBuckets(LIMITS.sessionRequests), (c) => String(c.get("userId")));
   const oauth = rateLimit(tokenBuckets(LIMITS.oauth), (c) => auth.clientId(c));
+  const analyticsPosts = rateLimit(tokenBuckets(LIMITS.analytics), (c) => auth.clientId(c));
+  const analytics = createSiteAnalytics(db, client);
 
   const api = new Hono()
     .use(limitBody(256 * 1024))
@@ -40,14 +43,21 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
       await next();
       c.header("cache-control", "no-store");
     })
+    .use(analytics.trackLimited)
     .get("/health", (c) => c.json({ ok: true }))
     // Starting a GitHub sign-in, per client. Not GitHub's callback: a
     // successful sign-in must not cost twice, and the callback only works
     // with a state this server just handed out.
     .on("POST", "/auth/github", oauth)
+    .on("POST", ["/analytics/view", "/analytics/ping"], analyticsPosts)
     .route("/auth", authRoutes(db, auth, client, config.github, config.publicUrl, setupCode, config.preview))
+    .route("/analytics", analytics.routes)
     .route("/ingest", ingestRoutes(db))
     // Public, read-only: profile pages, the account list and the leaderboard.
+    // External reads are counted around the rate limit and the cache (cached ones count).
+    .use("/u/*", analytics.trackApi)
+    .use("/leaderboard", analytics.trackApi)
+    .use("/profiles", analytics.trackApi)
     .use("/u/*", publicReads)
     .use("/leaderboard", publicReads)
     .use("/profiles", publicReads)
@@ -63,7 +73,7 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
     .route("/devices", deviceRoutes(db))
     .route("/account", accountRoutes(db))
     .route("/users", userRoutes(db))
-    .route("/admin", adminRoutes(db, config.preview, litellm));
+    .route("/admin", adminRoutes(db, analytics, config.preview, litellm));
 
   const indexFile = path.join(config.staticDir, "index.html");
   // Served from memory; an async stat per request picks up a rebuilt web
@@ -118,5 +128,6 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
     return c.json({ error: "internal server error" }, 500);
   });
 
-  return app;
+  /** Writes pending analytics counts; call before closing the database. */
+  return Object.assign(app, { flushAnalytics: analytics.flush });
 }

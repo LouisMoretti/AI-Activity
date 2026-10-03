@@ -10,6 +10,7 @@ import { authorizeUrl, signedInUser, type GithubConfig, type GithubUser } from "
 import { readJson } from "../lib/http.ts";
 import { setupCodeMatches } from "../lib/setup.ts";
 import type { ViewerAuth } from "../lib/viewer-auth.ts";
+import { recordSignup } from "./analytics.ts";
 
 /** Open sign-up: accounts one client may create per window (spam guard). */
 const SIGNUPS_PER_CLIENT = 5;
@@ -118,7 +119,10 @@ export function authRoutes(
       const a = { username: gh.login, display_name: gh.name, avatar_url: gh.avatar_url, github_id: gh.id, is_admin: admin };
       return admin ? createFirstAccount(db, a) ?? ("exists" as const) : createAccount(db, a);
     })();
-    if (typeof id === "number" && !admin) signups.set(auth.clientId(c), signupsBy(c) + 1);
+    if (typeof id === "number") {
+      if (!admin) signups.set(auth.clientId(c), signupsBy(c) + 1);
+      recordSignup(db);
+    }
     return id;
   };
 

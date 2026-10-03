@@ -4,6 +4,7 @@
 // (paused while hidden; skipped while already in flight).
 import { api, NotFoundError, onSessionLost, RateLimitedError, UnauthorizedError } from "./api.ts";
 import { authErrorMessage } from "./auth-errors.ts";
+import { markSignIn, takeSignIn } from "./visitor.ts";
 import { DEMO_PROFILE, demoDashboard } from "./demo.ts";
 import { ACTIVITY_DAYS, liveDashboard, type LiveData } from "./live.ts";
 import type { DashboardVM } from "./view-model.ts";
@@ -25,6 +26,8 @@ export type Route =
 export type Status = "loading" | "ready" | "signed-out" | "setup" | "missing" | "error";
 
 const REFRESH_MS = 5000;
+/** Online heartbeat for site analytics, piggybacked on the refresh tick (so paused while hidden). */
+const PING_MS = 30_000;
 /** Server-side cap on one sessions page (/api/u/<name>/sessions). */
 const SESSIONS_MAX_PAGE = 200;
 export const SESSIONS_PAGE = 10;
@@ -111,6 +114,37 @@ export class Dashboard {
   private live = $state<LiveData | null>(null);
   private inFlight = false;
   private reloadQueued = false;
+  private lastAnalyticsPath = "";
+  /** Page category of the last view counted (for the online heartbeat), and when it was last sent. */
+  private analyticsPage = "";
+  private lastPingAt = 0;
+
+  private trackView(route: Route): void {
+    if (this.route !== route || this.lastAnalyticsPath === location.pathname) return;
+    // Only the first view of a page load came from the referring site; later ones are in-app.
+    // A return from a sign-in provider is told apart (its host is still kept).
+    let referrer = "";
+    let signIn = false;
+    if (!this.lastAnalyticsPath) {
+      try { referrer = document.referrer ? new URL(document.referrer).hostname : ""; } catch { /* no usable referrer */ }
+      const provider = takeSignIn();
+      if (provider !== null) {
+        signIn = true;
+        referrer = provider;
+      }
+    }
+    this.lastAnalyticsPath = location.pathname;
+    this.analyticsPage = route.page === "home" ? "signin" : route.page;
+    this.lastPingAt = Date.now();
+    void api.analyticsView(this.analyticsPage, referrer, signIn);
+  }
+
+  /** Keeps a visible tab counted as online (admin panel), at most every 30 s. */
+  private ping(): void {
+    if (!this.analyticsPage || Date.now() - this.lastPingAt < PING_MS) return;
+    this.lastPingAt = Date.now();
+    void api.analyticsPing(this.analyticsPage);
+  }
 
   /** True on the signed-in viewer's own profile. */
   own = $derived(this.route.page === "profile" && same(this.route.username, this.account?.username));
@@ -141,13 +175,13 @@ export class Dashboard {
       this.github = auth.github_sign_in;
       this.preview = Boolean(auth.preview);
       if (!auth.user) {
-        if (route.page === "profile") await this.loadProfile(route.username);
+        if (route.page === "profile") { await this.loadProfile(route.username); this.trackView(route); }
         // Public, like profile pages: the page loads its own data.
-        else if (route.page === "leaderboard") this.status = "ready";
+        else if (route.page === "leaderboard") { this.status = "ready"; this.trackView(route); }
         else if (route.page === "settings" || route.page === "admin" || route.page === "friends") {
           this.go(`/?next=${encodeURIComponent(currentPath())}`, true);
         }
-        else this.status = auth.setup_required ? "setup" : "signed-out";
+        else { this.status = auth.setup_required ? "setup" : "signed-out"; this.trackView(route); }
         return;
       }
       if (route.page === "home") {
@@ -157,6 +191,7 @@ export class Dashboard {
       }
       if (route.page === "profile") await this.loadProfile(route.username);
       else this.status = "ready";
+      this.trackView(route);
     } catch (e) {
       // Navigated elsewhere meanwhile: the queued reload decides, not this.
       if (this.route !== route) return;
@@ -190,8 +225,9 @@ export class Dashboard {
       this.account = auth.user;
       this.signupOpen = auth.signup_open;
       this.preview = Boolean(auth.preview);
+      this.trackView(route);
     } catch {
-      if (this.route === route) this.account = null;
+      if (this.route === route) { this.account = null; this.trackView(route); }
     }
   }
 
@@ -296,6 +332,9 @@ export class Dashboard {
   private async toGithub(start: Parameters<typeof api.startGithub>[0]): Promise<string | null> {
     try {
       const { url } = await api.startGithub(start);
+      let provider = "";
+      try { provider = new URL(url, location.href).hostname; } catch { /* unknown provider */ }
+      markSignIn(provider);
       location.assign(url);
       return null;
     } catch (e) {
@@ -346,6 +385,7 @@ export class Dashboard {
     // that could not reach the server retries.
     const tick = () => {
       if (document.hidden) return;
+      this.ping();
       if (this.status === "error" || this.route.page === "profile") void this.load();
     };
     let id: ReturnType<typeof setInterval> | undefined;
