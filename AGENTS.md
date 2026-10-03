@@ -179,8 +179,12 @@ Upgrades are normally deployed from GitHub (Continuous deployment below).
   nothing compiles and no toolchain is installed), runs as `node`, has a
   `HEALTHCHECK` on `/api/health`, and `npm ci` runs inside it (never copy
   the host's `node_modules`).
-  `.npmrc` turns install scripts off: no dependency needs one, and npm
-  would otherwise try to compile `better-sqlite3` (npm/cli#9837).
+  Install scripts run only for dependencies listed in `package.json`'s
+  `allowScripts` (`strict-allow-scripts` in `.npmrc`, npm >= 11.16): any
+  other one fails `npm ci`. `better-sqlite3` and `fsevents` are denied
+  (`false`: their binaries are in the package, and npm would otherwise
+  compile `better-sqlite3`, npm/cli#9837). A new dependency with one:
+  review it, then list it there (`true` runs it).
 - Data lives in the `data` volume mounted on `/data` (`DB_PATH=/data/dashboard.db`,
   `BACKUP_DIR=/data/backups`): mount the directory, never the database file
   alone (its `-wal` / `-shm` sit next to it). `docker stop` sends SIGTERM:
