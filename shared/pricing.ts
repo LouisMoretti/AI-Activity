@@ -79,7 +79,8 @@ export interface PricingFile {
 
 /** Rates beyond this (USD per million tokens) are taken for a typo. */
 const MAX_RATE = 10_000;
-const OFFICIAL_SOURCE = /^https:\/\/(platform\.claude\.com|docs\.anthropic\.com|developers\.openai\.com)\//;
+// The sellers' own pricing pages: Anthropic, OpenAI, OpenCode Zen (its opencode/ models).
+const OFFICIAL_SOURCE = /^https:\/\/(platform\.claude\.com|docs\.anthropic\.com|developers\.openai\.com|opencode\.ai)\//;
 const RATE_KEYS = ["input", "output", "cacheRead", "cacheWrite", "cacheWrite1h"];
 
 type Obj = Record<string, unknown>;

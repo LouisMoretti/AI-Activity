@@ -122,7 +122,7 @@ test("a value adds priced groups and counts the rest apart; nothing priced is nu
 test("every rate has an official https source and each model one rate per effective day", () => {
   const seen = new Set();
   for (const p of PRICES) {
-    assert.match(p.source, /^https:\/\/(platform\.claude\.com|docs\.anthropic\.com|developers\.openai\.com)\//, p.models.join());
+    assert.match(p.source, /^https:\/\/(platform\.claude\.com|docs\.anthropic\.com|developers\.openai\.com|opencode\.ai)\//, p.models.join());
     for (const m of p.models) {
       assert.equal(m, priceModelId(m), `${m} is stored as looked up`);
       const key = `${p.provider}:${m}:${p.from ?? ""}`;
@@ -206,8 +206,10 @@ describe("the LiteLLM fallback (server/lib/litellm.ts)", () => {
     const p = priced(g);
     close(p.usd, 0.1 + 0.2 + 0.002);
     assert.equal(p.unverified, true);
-    // OpenCode's stealth preview "Ox Alpha" was GLM-5.3-Flash: Z.ai's rate.
-    close(priced({ tool: "opencode", model: "opencode/x-preview-f-free", input: M, output: M, cache_read: M }).usd, 0.15 + 0.5 + 0.03);
+    // OpenCode's stealth preview "Ox Alpha" is GLM-5.3-Flash: OpenCode Zen's own verified rate, no list needed.
+    const ox = priceGroup(group({ tool: "opencode", model: "opencode/x-preview-f-free", input: M, output: M, cache_read: M }));
+    close(ox.usd, 0.15 + 0.5 + 0.03);
+    assert.equal(ox.unverified, false);
     // Without the list there is no rate: unpriced, never $0.
     assert.deepEqual(explainPrice(group(g)), { ok: false, reason: "no known rate" });
   });
