@@ -10,7 +10,7 @@
     {
       "model": "opencode/x-preview-f-free",
       "price_as": "zai/glm-5.3-flash",
-      "note": "\"Ox Alpha Free\", OpenCode's stealth preview (Aug 2026): GLM-5.3-Flash behind it, per the maintainer (no public source); valued at Z.ai's rate."
+      "note": "\"Ox Alpha Free\", the stealth preview on OpenCode and OpenRouter (Aug 2026), revealed by Z.ai as GLM-5.3-Flash (https://openrouter.ai/stealth/ox-alpha, https://pasqualepillitteri.it/en/news/13263/ox-alpha-revealed-zhipu-glm-5-3-flash-mit); valued at Z.ai's rate."
     }
   ],
   "prices": [
