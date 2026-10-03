@@ -47,7 +47,7 @@
 
 <style>
   .value { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
-  .num { color: var(--text); }
+  .num { color: inherit; }
   .explain { position: relative; display: inline-flex; }
   button { display: inline-flex; padding: 0; color: var(--faint); cursor: help; }
   button:hover, button:focus-visible { color: var(--text); }
