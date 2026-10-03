@@ -136,6 +136,13 @@ README's Windows commands) and macOS (`collectors (macos)`, through
 `/install.sh` and the native hooks). The path-filtered Collector CLI smoke
 workflow also runs the real Claude Code, Codex, OpenCode and Antigravity CLIs
 on macOS, Linux and Windows against local model stubs.
+Every action is pinned by commit SHA, its version in a comment
+(`uses: actions/checkout@<sha> # v7.0.1`): a moved tag cannot change the
+action code that runs next to the deploy keys or `preview-fork.yml`'s
+token. What the actions fetch at run time is not pinned (setup-node and
+setup-python resolve `24` / `3.x`, setup-buildx the latest buildx and
+BuildKit). Dependabot changes the SHA and the comment together; by hand,
+do the same, never back to a tag.
 
 ### Deploy (Docker + Caddy)
 
