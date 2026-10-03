@@ -135,8 +135,9 @@ def read(path, state):
             # The tier (Fast mode) and the provider price the next responses.
             settings = p["thread_settings"]
             model = settings.get("model") or model
-            tier = settings.get("service_tier") if isinstance(settings.get("service_tier"), str) else tier
-            provider = settings.get("model_provider_id") if isinstance(settings.get("model_provider_id"), str) else provider
+            # The settings are a whole snapshot: no tier is the standard one.
+            tier = settings.get("service_tier") if isinstance(settings.get("service_tier"), str) else None
+            provider = settings.get("model_provider_id") if isinstance(settings.get("model_provider_id"), str) else None
         elif t == "token_usage_record" and isinstance(p.get("usage"), dict) and ts:
             records = True
             messages.append({

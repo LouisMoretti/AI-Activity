@@ -2292,6 +2292,14 @@ describe("API-equivalent value (issue #113)", () => {
       assert.equal(mixed.unpriced_tokens, 5000);
       const s = (await req(srv.base, "GET", "/api/u/val/summary", { anon: true })).json;
       assert.deepEqual(s.total.by_model.find((r) => r.name === "claude-mystery-9").value, { ...NO_VALUE, unpriced_tokens: 5000 });
+      // A split missing a duration, or not adding up to the writes, is unknown: a lower bound, filled by a later replay.
+      await post(message({ message_id: "msg_value_3", usage: { ...usage, cache_creation: { ephemeral_1h_input_tokens: 1000 } } }));
+      await post(message({ message_id: "msg_value_4", usage: { ...usage, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 1500 } } }));
+      assert.equal((await value()).lower_bound, true);
+      for (const id of ["msg_value_3", "msg_value_4"]) {
+        await post(message({ message_id: id, usage: { ...usage, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 2000 } } }));
+      }
+      assert.equal((await value()).lower_bound, false);
     } finally {
       await srv.stop();
     }
@@ -2316,6 +2324,14 @@ describe("API-equivalent value (issue #113)", () => {
       assert.equal(s.total.value.unpriced_tokens, 3500 * 2 + 27929);
       assert.ok(s.total.by_model.some((r) => r.name === "ollama/gpt-6-sol" && r.value.usd === null));
       assert.deepEqual(s.total.by_tool.find((r) => r.name === "opencode").value, { ...NO_VALUE, unpriced_tokens: 27929 });
+      // Stored before the provider was sent, then resent with it: renamed, no longer priced as OpenAI's.
+      const old = codexResponse({ model: "gpt-5", usage });
+      const send = (m) => req(srv.base, "POST", "/api/ingest/codex", { key, body: { messages: [m], collector: collector("codex") } });
+      await send(old);
+      await send({ ...old, model_provider: "azure" });
+      await send(codexResponse({ model: "gpt-5", model_provider: "my provider!", usage }));
+      const models = (await req(srv.base, "GET", "/api/u/cx/summary", { anon: true })).json.total.by_model.map((r) => r.name);
+      assert.ok(models.includes("azure/gpt-5") && models.includes("other/gpt-5") && !models.includes("gpt-5"), String(models));
     } finally {
       await srv.stop();
     }

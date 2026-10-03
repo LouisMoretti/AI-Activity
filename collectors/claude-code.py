@@ -115,8 +115,9 @@ def read(path, offset):
             usage = {k: u.get(k) or 0 for k in USAGE}
             split = u.get("cache_creation")
             if isinstance(split, dict):
-                usage["cache_creation"] = {k: split.get(k) or 0 for k in CACHE_SPLIT
-                                           if isinstance(split.get(k) or 0, int)}
+                # Only the durations recorded: a missing one is unknown, not 0.
+                usage["cache_creation"] = {k: split[k] for k in CACHE_SPLIT
+                                           if type(split.get(k)) is int}
             # A message seen again with more output tokens is its final entry;
             # at a tie, the session's own file wins over a subagent's.
             rank = (u.get("output_tokens") or 0, main_file == o.get("sessionId"))

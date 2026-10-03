@@ -429,11 +429,11 @@ export function upsertUsageEvent(db: DB, ev: UsageEventInput): UpsertResult {
   return db.transaction((): UpsertResult => {
     const existing = db
       .prepare(
-        `SELECT user_id, output_tokens, cache_write_tokens, utc_offset_min, cache_write_1h_tokens, service_tier, inference_geo
+        `SELECT user_id, model, output_tokens, cache_write_tokens, utc_offset_min, cache_write_1h_tokens, service_tier, inference_geo
          FROM usage_events WHERE event_id = ?`
       )
       .get(ev.event_id) as {
-        user_id: number; output_tokens: number; cache_write_tokens: number; utc_offset_min: number | null;
+        user_id: number; model: string | null; output_tokens: number; cache_write_tokens: number; utc_offset_min: number | null;
         cache_write_1h_tokens: number | null; service_tier: string | null; inference_geo: string | null;
       } | undefined;
     if (!existing) {
@@ -465,13 +465,17 @@ export function upsertUsageEvent(db: DB, ev: UsageEventInput): UpsertResult {
         service_tier: existing.service_tier === null ? ev.service_tier : null,
         inference_geo: existing.inference_geo === null ? ev.inference_geo : null,
       };
-      if (Object.values(fill).some((v) => v !== null)) {
+      // The same model now named with its provider (Codex: another
+      // provider's model, stored as provider/model): never priced as OpenAI's.
+      const model = existing.model !== null && ev.model !== null && ev.model.endsWith(`/${existing.model}`) ? ev.model : null;
+      if (model !== null || Object.values(fill).some((v) => v !== null)) {
         db.prepare(
           `UPDATE usage_events SET utc_offset_min = COALESCE(utc_offset_min, ?),
              cache_write_1h_tokens = COALESCE(cache_write_1h_tokens, ?),
-             service_tier = COALESCE(service_tier, ?), inference_geo = COALESCE(inference_geo, ?)
+             service_tier = COALESCE(service_tier, ?), inference_geo = COALESCE(inference_geo, ?),
+             model = COALESCE(?, model)
            WHERE event_id = ?`
-        ).run(fill.utc_offset_min, fill.cache_write_1h_tokens, fill.service_tier, fill.inference_geo, ev.event_id);
+        ).run(fill.utc_offset_min, fill.cache_write_1h_tokens, fill.service_tier, fill.inference_geo, model, ev.event_id);
       }
       return "deduped";
     }
@@ -662,7 +666,7 @@ const TOKENS = "input_tokens + output_tokens + cache_read_tokens + cache_write_t
  * (shared/pricing.ts): tool, model, tier, region, the prompt's context band
  * (how many long-context thresholds it exceeds, per message) and the
  * pricing period (between the days some rate changed), with the token sums
- * to price. Answered from idx_usage_user_read.
+ * to price. Answered from idx_usage_user_read alone (the leaderboard names it).
  */
 function priceColumns(t = ""): string {
   const prompt = `${t}input_tokens + ${t}cache_read_tokens + ${t}cache_write_tokens`;
@@ -863,10 +867,13 @@ export function leaderboard(
     )
     .all(activitySinceSec) as { user_id: number; day: string; session_id: string | null; tokens: number }[];
   // …and the period again, per user and everything the price depends on.
+  // Every account's period: no user prefix to seek on, so scan the covering
+  // index (the planner would pick the session one and read every row).
   const priceGroups = db
     .prepare(
       `SELECT e.user_id, ${priceColumns("e.")}
-       FROM ${LISTED_FROM} AND e.occurred_at >= ?
+       FROM usage_events e INDEXED BY idx_usage_user_read JOIN users u ON u.id = e.user_id
+       WHERE u.disabled = 0 AND e.occurred_at >= ?
        GROUP BY e.user_id, ${PRICE_GROUP_BY}`
     )
     .all(sinceSec) as (PriceGroup & { user_id: number })[];

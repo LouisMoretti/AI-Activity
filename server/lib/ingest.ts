@@ -99,7 +99,7 @@ function utcOffset(v: unknown): number | null {
 
 /** A short lowercase label (a tier or a region), or null. */
 function label(v: unknown): string | null {
-  return typeof v === "string" && /^[A-Za-z0-9_-]{1,32}$/.test(v) ? v.toLowerCase() : null;
+  return typeof v === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(v) ? v.toLowerCase() : null;
 }
 
 function modelOf(v: unknown): string | null {
@@ -123,9 +123,10 @@ function toMessage(m: Obj, now: number): NormalizedMessage | null {
   const cacheWrite = toInt(u.cache_creation_input_tokens ?? u.cache_write_tokens);
   // Transcripts split cache writes by duration (usage.cache_creation): the
   // 1-hour cache costs 2× input, the 5-minute one 1.25×.
+  // Known only when both durations are there and add up to the writes.
   const split = isObj(u.cache_creation) ? u.cache_creation : null;
-  const hasSplit = split !== null &&
-    (optNum(split.ephemeral_1h_input_tokens) !== null || optNum(split.ephemeral_5m_input_tokens) !== null);
+  const fiveMin = split ? optNum(split.ephemeral_5m_input_tokens) : null;
+  const oneHour = split ? optNum(split.ephemeral_1h_input_tokens) : null;
   const speed = label(m.speed ?? u.speed);
   return {
     event_id: id,
@@ -141,7 +142,7 @@ function toMessage(m: Obj, now: number): NormalizedMessage | null {
     occurred_at: eventTime(m.occurred_at, now),
     utc_offset_min: utcOffset(m.utc_offset_min),
     cache_write_1h_tokens: cacheWrite === 0 ? 0
-      : hasSplit ? Math.min(cacheWrite, toInt(split?.ephemeral_1h_input_tokens)) : null,
+      : fiveMin !== null && oneHour !== null && fiveMin + oneHour === cacheWrite ? oneHour : null,
     // Fast mode is recorded as usage.speed, next to service_tier "standard".
     service_tier: speed === "fast" ? "fast" : label(m.service_tier ?? u.service_tier),
     inference_geo: label(m.inference_geo ?? u.inference_geo),
@@ -265,7 +266,9 @@ function toCodexMessage(m: Obj, now: number): NormalizedMessage | null {
   // Codex can run models of other providers (model_provider_id): stored as
   // provider/model like OpenCode's, so they are never priced as OpenAI's.
   const model = modelOf(m.model);
-  const provider = label(m.model_provider);
+  // An id that is not a plain label is still another provider's.
+  const provider = typeof m.model_provider === "string" && m.model_provider
+    ? label(m.model_provider) ?? "other" : null;
   return {
     event_id: id,
     session_id: str(m.session_id ?? m.thread_id),

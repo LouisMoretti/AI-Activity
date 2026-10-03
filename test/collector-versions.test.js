@@ -31,8 +31,8 @@ const FILES = {
  */
 const RECORDED = {
   cursor: { version: 2, sha256: "fd1359a52b51fb0142d022ef90c44a1020a27151f27abf80567e7ffe12fb3096" },
-  "claude-code": { version: 4, sha256: "a7838afd063906ddc2f3abd35fa516b937f63ea7e969208307e9778ee1a36ada" },
-  codex: { version: 3, sha256: "f7110e7b016fc3437186bf117d4fbaa5af7e2a376b14b3bdc57824e96f6a0dee" },
+  "claude-code": { version: 4, sha256: "0c3fe71d9a719d32203263dc65c79883106a6b7000361cd70da31bfe0972c80f" },
+  codex: { version: 3, sha256: "e8f4f29f6fb78d699bb7510f7bee1c46329d564ee079a2631f2a5ffd7c381027" },
   antigravity: { version: 3, sha256: "08d3bc5ac185b28a6122208ff26fde4a4c9938ae801459b1821e09e35de2a381" },
   opencode: { version: 2, sha256: "e9a6b9c8b2b3ca16364657a72058d2b18268d0738efef4f2af1e8f61fd2ca47d" },
 };

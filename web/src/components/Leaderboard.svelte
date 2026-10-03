@@ -73,8 +73,10 @@
   const same = (a: string, b: string | null) => b !== null && a.toLowerCase() === b.toLowerCase();
   const periodText = $derived(period === "all" ? "all time" : `last ${period} days`);
   // The bar shows the ranking's measure: tokens, or API-equivalent value.
-  const measure = (e: { tokens: number; value: ApiValue }) => (rank === "value" ? e.value.usd ?? 0 : e.tokens);
-  const top = $derived(data?.entries[0] ? measure(data.entries[0]) || 1 : 1);
+  // The data's own ranking, not the toggle: they differ while a new one loads.
+  const shownRank = $derived(data?.rank ?? "tokens");
+  const measure = (e: { tokens: number; value: ApiValue }) => (shownRank === "value" ? e.value.usd ?? 0 : e.tokens);
+  const top = $derived(Math.max(1e-9, ...(data?.entries ?? []).map(measure)));
   const pricedTools = PRICED_TOOLS.map(toolName).join(" and ");
   // "≈": an estimate; "≥": some cache writes were priced at the cheaper rate.
   const usdText = (v: ApiValue) => (v.usd === null ? "—" : `${v.lower_bound ? "≥" : "≈"} ${fmtUsd(v.usd)}`);
@@ -113,7 +115,7 @@
     {/each}
   </div>
 
-  <Section title="Ranking" subtitle="{rank === 'value' ? 'By estimated API-equivalent value' : 'By tokens'}, {periodText}">
+  <Section title="Ranking" subtitle="{shownRank === 'value' ? 'By estimated API-equivalent value' : 'By tokens'}, {periodText}">
     <ol class="list">
       {#each data.entries as e, i (e.username)}
         <li class:me={same(e.username, self)} class:idle={!e.events}>
@@ -132,9 +134,9 @@
                 <span class="usd" title="Estimated API-equivalent value: these tokens at published retail API rates, not actual spend">{usdText(e.value)}</span>
                 {#if e.value.unpriced_tokens > 0}<span class="partial" title={partialText(e.value)}>partial</span>{/if}
               </span>
-              <span class="share">{rank === "value" ? fmtShare(e.value.usd ?? 0, data.totals.value.usd ?? 0) : fmtShare(e.tokens, data.totals.tokens)}</span>
+              <span class="share">{shownRank === "value" ? fmtShare(e.value.usd ?? 0, data.totals.value.usd ?? 0) : fmtShare(e.tokens, data.totals.tokens)}</span>
             </div>
-            <div class="track" title={rank === "value" ? usdText(e.value) : `${fmtNum(e.tokens)} tokens`}><i style:width="{(measure(e) / top) * 100}%"></i></div>
+            <div class="track" title={shownRank === "value" ? usdText(e.value) : `${fmtNum(e.tokens)} tokens`}><i style:width="{(measure(e) / top) * 100}%"></i></div>
             <div class="meta">
               {#if e.last_active !== null}
                 <span>{plural(e.sessions, "conversation")}</span>
@@ -155,7 +157,7 @@
         </li>
       {/each}
     </ol>
-    {#if rank === "value"}
+    {#if shownRank === "value"}
       <p class="fine">
         API value: what each account's tokens would cost at the providers' published retail API rates (USD, rates of
         {data.pricing_version}). An estimate, not what anyone paid. Only {pricedTools} are priced so far: "partial" rows leave
