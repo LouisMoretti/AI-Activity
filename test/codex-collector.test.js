@@ -348,6 +348,25 @@ describe("Codex collector (hooks from README.md)", () => {
     assert.ok(Math.abs((value.usd ?? 0) - (before.value.usd ?? 0) - (400 * 6 + 10 * 30) / 1e6) < 1e-9, String(value.usd));
   });
 
+  test("the session's provider (session_meta) applies without thread settings, and when they name none", async () => {
+    const before = await summary();
+    const S2 = "01a0b861-4cf4-7f10-8e5b-8d110992ee77";
+    const file = path.join(home, ".codex", "sessions", "2026", "09", "20", `rollout-2026-09-20T11-00-00-${S2}.jsonl`);
+    fs.writeFileSync(file, [
+      line("session_meta", { id: S2, session_id: S2, originator: "codex_cli_rs", cli_version: "0.120.0", model_provider: "azure" }),
+      line("turn_context", { turn_id: "turn-1", model: "gpt-5" }),
+    ].join("\n") + "\n" + response("resp_azure", S2, usage(400, 0, 10), 410) +
+      line("event_msg", { type: "thread_settings_applied", thread_id: S2, thread_settings: { model: "gpt-5", service_tier: "default" } }) + "\n" +
+      response("resp_azure_2", S2, usage(400, 0, 10), 820));
+    await run(hookCommand, env);
+    assert.ok(await waitFor(async () => (await summary()).events === before.events + 2));
+    const db = new Database(srv.dbPath, { readonly: true });
+    const models = db.prepare("SELECT model FROM usage_events WHERE event_id IN ('resp_azure', 'resp_azure_2')").all().map((r) => r.model);
+    db.close();
+    // Never priced at OpenAI's gpt-5 rate.
+    assert.deepEqual(models, ["azure/gpt-5", "azure/gpt-5"]);
+  });
+
   test("the PostToolUse hook sends a turn's usage while it runs", async () => {
     const before = await summary();
     fs.appendFileSync(current, response("resp_8", S1, usage(300, 200, 4), 6776));

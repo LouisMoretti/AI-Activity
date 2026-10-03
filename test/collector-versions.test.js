@@ -32,7 +32,7 @@ const FILES = {
 const RECORDED = {
   cursor: { version: 2, sha256: "fd1359a52b51fb0142d022ef90c44a1020a27151f27abf80567e7ffe12fb3096" },
   "claude-code": { version: 4, sha256: "0c3fe71d9a719d32203263dc65c79883106a6b7000361cd70da31bfe0972c80f" },
-  codex: { version: 3, sha256: "e8f4f29f6fb78d699bb7510f7bee1c46329d564ee079a2631f2a5ffd7c381027" },
+  codex: { version: 3, sha256: "0bed8abd46730928e9b3bcfe7cc78f15bc68871c26834fd56143b5670a7068b1" },
   antigravity: { version: 3, sha256: "08d3bc5ac185b28a6122208ff26fde4a4c9938ae801459b1821e09e35de2a381" },
   opencode: { version: 2, sha256: "e9a6b9c8b2b3ca16364657a72058d2b18268d0738efef4f2af1e8f61fd2ca47d" },
 };
