@@ -320,7 +320,8 @@ file hashes, update hints in each collector);
 (`confirm-delete.svelte.ts`, delete activity and delete account: confirm,
 cancel, success, failure);
 `test/pricing.test.js` covers the API-equivalent rates and rules
-(`shared/pricing.ts`);
+(`shared/pricing.ts`, the priority file's validation, the LiteLLM
+conversion and lookup);
 `test/series.test.js` covers pure helpers of the web
 client; `test/dashboard.test.js` runs the client's state class
 (`dashboard.svelte.ts`, compiled with `svelte/compiler`) against a fake
@@ -643,7 +644,7 @@ Browser dashboard (web/: Svelte 5 + TypeScript, built by Vite)
 server/
   index.ts          boot: config, DB, listen
   app.ts            Hono app: /api mount, viewer-auth gate, static + SPA fallback
-  config.ts         env → Config (PORT, DB_PATH, STATIC_DIR, BACKUP_DIR, GITHUB_*, PUBLIC_URL,
+  config.ts         env → Config (PORT, DB_PATH, STATIC_DIR, BACKUP_DIR, GITHUB_*, PUBLIC_URL, LITELLM_PRICES_URL,
                     ALLOWED_GITHUB_LOGINS)
   db/schema.ts      open + migrate (runs pending migrations)
   db/migrations.ts  ordered schema migrations (PRAGMA user_version)
@@ -658,6 +659,7 @@ server/
   lib/backup.ts       consistent snapshots, retention, restore
   lib/client.ts       client address + HTTPS behind the tunnel or TRUST_PROXY
   lib/rate-limit.ts   token buckets + LIMITS (ingest, public reads, per user, OAuth)
+  lib/litellm.ts      LiteLLM price list: fallback pricing catalog, cached next to the DB
   lib/headers.ts      security headers on every response (HSTS over HTTPS only, CSP on HTML)
   lib/http.ts
   routes/           auth, ingest, usage (public profiles + leaderboard),
@@ -665,7 +667,8 @@ server/
                     account (profile + admin users)
 shared/types.ts     API response types shared with the web client, TOOLS
 shared/quota-pools.ts  quota window lengths, quota pools per tool (QUOTA_POOLS)
-shared/pricing.ts      API-equivalent value: retail rates (PRICES), priceGroup
+shared/pricing.json    priority pricing file: verified rates and aliases (edit this one)
+shared/pricing.ts      API-equivalent value: lookup, priceGroup / explainPrice
 shared/collectors.ts   collector versions: latest and minimum per tool
 web/
   src/lib/api.ts          typed fetch client (401 → UnauthorizedError)
@@ -689,7 +692,7 @@ web/
                           DangerZone (DangerAction), AccountMenu,
                           SiteHeader, ProfilePanel, UsersPanel,
                           AuthPanel, Leaderboard, Friends,
-                          AdminOverview, …
+                          AdminOverview, PricingPanel, …
   src/styles/tokens.css   design tokens — components only use these variables
 ```
 
@@ -920,20 +923,37 @@ Components never branch on live vs demo: both sources map into the same
   Code's fast mode as `fast`, Codex's service tier) and `inference_geo`
   (Anthropic's region), and rebuilds `idx_usage_user_read` to cover them.
 
-### API-equivalent value (`shared/pricing.ts`, issue #113)
+### API-equivalent value (`shared/pricing.ts`, issues #113, #268)
 
-- `PRICES`: published retail API rates (USD per million tokens), one entry
-  per model set with its official `source` and `from` (the UTC day it took
-  effect; absent: since release). `PRICING_VERSION` changes with every rate
-  change and is returned with the values. Never add a rate without an
-  official source, and never price a model "like" a similar one: a model,
-  tier or region without a published rate is unpriced.
-- Priced tools: `PRICED_TOOLS` (Claude Code → Anthropic, Codex → OpenAI).
-  Other tools' tokens count as `unpriced_tokens`. Adding one: map it in
-  `TOOL_PROVIDER`, make sure its stored counts are disjoint (input without
-  cache, output with reasoning), and test it.
+- Rates are data, logic is code. `shared/pricing.json` is the priority
+  file: `prices` are published retail API rates (USD per million tokens),
+  one entry per provider and model set with its official `source` and
+  `from` (the UTC day it took effect; absent: since release); `aliases`
+  price a stored model as another (`price_as`, with a `note`). `version`
+  changes with every edit and is returned with the values
+  (`PRICING_VERSION`). `parsePricingFile` validates it at import (the
+  server does not start on a bad edit). Never add a rate without an
+  official source, and never price a model "like" a similar one: alias
+  only to the same model sold elsewhere.
+- Lookup (`explainPrice`): a stored model resolves to provider and id
+  (aliases first; `provider/model` as stored, else the tool's: Claude Code
+  → anthropic, Codex → openai, Cursor and Antigravity by the id's prefix),
+  then the priority file, then the fallback catalog
+  (`server/lib/litellm.ts`: LiteLLM's list, provider-own entries only,
+  usage flagged `unverified`), else unpriced with a reason. Every tool is
+  priced this way; stored counts must stay disjoint (input without cache,
+  output with reasoning).
+- LiteLLM (`LITELLM_PRICES_URL`, default its GitHub raw file; empty: off;
+  tests set it empty): downloaded in the background at start when the
+  copy is missing or a day old, rechecked hourly, kept trimmed in
+  `litellm-prices.json` next to the database (atomic write); a failed or
+  malformed download keeps the copy in use and shows the error in the
+  admin panel. Text models with input and output rates only, per-token
+  costs above $1,000 per million dropped; its `_priority` / `_flex` /
+  `_above_<N>k_tokens` / `_above_1hr` fields map to Fast, Flex, long
+  context and 1-hour cache writes. No effective dates: current rates.
 - Reads group usage by tool, model, tier, region, context band (how many
-  `LONG_CONTEXT_THRESHOLDS` a message's prompt `input + cache read + cache
+  `longContextThresholds(catalog)` a message's prompt `input + cache read + cache
   write` exceeds: long-context rates apply to the whole request) and
   pricing period (between `PRICE_BOUNDARIES`), from the covering index,
   then price each group in JS (`priceGroup`). The dashboard (`summary`)
@@ -942,7 +962,9 @@ Components never branch on live vs demo: both sources map into the same
   `priced_tokens`, `unpriced_tokens`, `lower_bound` (cache writes without
   their 5-minute / 1-hour split, priced at the 5-minute rate),
   `current_rate_fallback` (usage before its model's oldest published rate,
-  priced at that rate). The UI shows "≈", "≥" for a lower bound, "partial"
+  priced at that rate), `unverified` (some usage priced from LiteLLM).
+  A category with tokens but no rate (e.g. cache reads) leaves the group
+  unpriced. The UI shows "≈", "≥" for a lower bound, "partial"
   when tokens were left out.
 - Rules worth knowing: OpenAI cache writes are billed as input on models
   without a cache-write rate; Codex Fast mode (`priority`/`fast`) uses the
@@ -1414,6 +1436,10 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   themselves, so one enabled admin remains.
 - Admin panel (admin only): `GET /api/admin/overview` → server-wide counts
   (accounts, disabled, live devices, events, sessions, last event).
+  `GET /api/admin/pricing` → `{pricing_version, priority: {prices,
+  aliases}, litellm: {url, fetched_at, models, error}, unpriced: [{tool,
+  model, reason, tokens, events, accounts, last_seen}]}` (all accounts, all
+  time, most tokens first): what to add to `shared/pricing.json`.
   `GET /api/admin/settings` → `{signup_open}`, `POST /api/admin/settings
   {signup_open}` opens or closes account creation (stored in `settings`;
   open by default). Closing it never affects existing accounts.

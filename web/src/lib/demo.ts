@@ -85,7 +85,7 @@ function valueFor(tools: DemoTool[], pick: (t: DemoTool) => number, at: number):
     .sort((a, b) => b.value - a.value);
   return {
     usd: total.usd, pricedTokens: total.priced_tokens, unpricedTokens: total.unpriced_tokens,
-    lowerBound: total.lower_bound, fallback: total.current_rate_fallback,
+    lowerBound: total.lower_bound, fallback: total.current_rate_fallback, unverified: total.unverified,
     byTool: rows(byTool), byModel: rows(byModel),
   };
 }

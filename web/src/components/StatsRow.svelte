@@ -1,8 +1,6 @@
 <script lang="ts">
-  import { PRICED_TOOLS } from "../../../shared/pricing.ts";
   import { clock } from "../lib/clock.svelte.ts";
   import { fmtAgo, fmtCompact, fmtNum, fmtShare, fmtUsd, plural } from "../lib/format.ts";
-  import { toolName } from "../lib/view-model.ts";
   import type { StatsVM } from "../lib/view-model.ts";
   import ShareList from "./ShareList.svelte";
   import StatCard from "./StatCard.svelte";
@@ -14,7 +12,6 @@
   // "≈": an estimate; "≥": some cache writes were priced at the cheaper rate.
   const usdText = (usd: number | null, lowerBound: boolean) =>
     usd === null ? "—" : `${lowerBound ? "≥" : "≈"} ${fmtUsd(usd)}`;
-  const pricedTools = PRICED_TOOLS.map(toolName).join(" and ");
 
   const streakNote = $derived.by(() => {
     const s = stats.streak;
@@ -51,12 +48,15 @@
         {#if value.total.unpricedTokens > 0}
           <p class="note warn">
             Partial: leaves out {fmtCompact(value.total.unpricedTokens)} tokens
-            ({fmtShare(value.total.unpricedTokens, value.total.unpricedTokens + value.total.pricedTokens)}) without a published
-            rate: models with no retail API price, and tools other than {pricedTools} (not priced yet).
+            ({fmtShare(value.total.unpricedTokens, value.total.unpricedTokens + value.total.pricedTokens)}): models without
+            a known retail API rate.
           </p>
         {/if}
         {#if value.total.lowerBound}
           <p class="note warn">At least: some cache writes were recorded without their duration and are priced at the cheaper 5-minute rate.</p>
+        {/if}
+        {#if value.total.unverified}
+          <p class="note">Includes community rates (LiteLLM's price list) for models without a verified rate here.</p>
         {/if}
         {#if value.total.fallback}
           <p class="note warn">Some usage predates its model's oldest published rate and is priced at that rate.</p>

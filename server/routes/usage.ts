@@ -1,6 +1,6 @@
 import { Hono, type Context } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { PRICING_VERSION } from "../../shared/pricing.ts";
+import { PRICING_VERSION, type Catalog } from "../../shared/pricing.ts";
 import {
   LEADERBOARD_RANKS, type LeaderboardRank,
 } from "../../shared/types.ts";
@@ -20,9 +20,11 @@ const LEADERBOARD_ACTIVITY_DAYS = 364;
 
 /** Whose usage a request reads. */
 type Owner = (c: Context) => number;
+/** The fallback pricing catalog in use (null: the priority file only). */
+type Catalogs = () => Catalog | null;
 
 /** Read-only measured usage: stats, heatmap buckets, quotas, sessions. */
-function usage(db: DB, owner: Owner) {
+function usage(db: DB, owner: Owner, catalog: Catalogs) {
   return new Hono()
     .get("/stats", (c) => {
       const days = intParam(c, "days", 30, 1, 730);
@@ -63,8 +65,8 @@ function usage(db: DB, owner: Owner) {
       return c.json<SummaryResponse>({
         tool,
         day,
-        total: breakdown(db, uid, 0, tool),
-        today: breakdown(db, uid, earliestOfDay(day), tool, day),
+        total: breakdown(db, uid, 0, tool, null, catalog()),
+        today: breakdown(db, uid, earliestOfDay(day), tool, day, catalog()),
         last_event_at: latestEventAt(db, uid, tool),
         pricing_version: PRICING_VERSION,
         provenance: "measured messages (one row per Anthropic message id); values: published retail API rates (shared/pricing.ts), an estimate, not actual spend",
@@ -84,7 +86,7 @@ function usage(db: DB, owner: Owner) {
 }
 
 /** Everyone's usage, ranked (/api/leaderboard). Public, like profile pages. */
-export function leaderboardRoutes(db: DB) {
+export function leaderboardRoutes(db: DB, catalog: Catalogs = () => null) {
   return new Hono()
     .get("/", (c) => {
       const all = c.req.query("days") === "all";
@@ -94,7 +96,7 @@ export function leaderboardRoutes(db: DB) {
         ? asked as LeaderboardRank : "tokens";
       return c.json<LeaderboardResponse>({
         range_days: all ? null : days,
-        ...leaderboard(db, all ? 0 : nowSec() - days * 86400, LEADERBOARD_ACTIVITY_DAYS, rank),
+        ...leaderboard(db, all ? 0 : nowSec() - days * 86400, LEADERBOARD_ACTIVITY_DAYS, rank, catalog()),
         pricing_version: PRICING_VERSION,
         provenance: "measured messages of every enabled account (one row per Anthropic message id); values: published retail API rates, an estimate, not actual spend",
       });
@@ -111,7 +113,7 @@ export function profileListRoutes(db: DB) {
  * read an enabled account's usage, the owner included (there is no private
  * copy). Only usage: devices and account settings have no public route.
  */
-export function publicProfileRoutes(db: DB) {
+export function publicProfileRoutes(db: DB, catalog: Catalogs = () => null) {
   const owner = (c: Context) => {
     const user = findUserByUsername(db, c.req.param("username") ?? "");
     if (!user || user.disabled) throw new HTTPException(404, { message: "profile not found" });
@@ -121,5 +123,5 @@ export function publicProfileRoutes(db: DB) {
     .get("/", (c) => {
       return c.json<Profile>(toProfile(owner(c)));
     })
-    .route("/", usage(db, (c) => owner(c).id));
+    .route("/", usage(db, (c) => owner(c).id, catalog));
 }

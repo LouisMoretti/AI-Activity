@@ -1,6 +1,6 @@
 // Typed client for the dashboard JSON API (same origin, cookie session).
 import type {
-  ActivityResponse, AdminOverview, AdminSettings, AdminUser, AuthStatus, DeletedAccount, DeletedActivity, LeaderboardRank, LeaderboardResponse, Profile, Device, QuotasResponse,
+  ActivityResponse, AdminOverview, AdminPricing, AdminSettings, AdminUser, AuthStatus, DeletedAccount, DeletedActivity, LeaderboardRank, LeaderboardResponse, Profile, Device, QuotasResponse,
   SessionsResponse, SummaryResponse, FriendsResponse, PreviewSeedConfig,
 } from "../../../shared/types.ts";
 
@@ -76,6 +76,7 @@ export const api = {
   startGithub: (start: GithubStart) => post<{ url: string }>("/api/auth/github", start),
   logout: () => post<{ ok: true }>("/api/auth/logout"),
   adminOverview: () => get<AdminOverview>("/api/admin/overview"),
+  adminPricing: () => get<AdminPricing>("/api/admin/pricing"),
   adminSettings: () => get<AdminSettings>("/api/admin/settings"),
   setSignupOpen: (signup_open: boolean) => post<AdminSettings>("/api/admin/settings", { signup_open }),
   previewSeed: () => get<{ config: PreviewSeedConfig }>("/api/admin/preview-seed"),

@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
   Account, ActivityDay, AdminOverview, AdminUser, Profile, Breakdown, BreakdownRow, DeletedAccount, DeletedActivity, Device, LeaderboardEntry,
-  LeaderboardResponse, PreviewSeedConfig, Quota, Session,
+  LeaderboardResponse, PreviewSeedConfig, Quota, Session, UnpricedModel,
 } from "../../shared/types.ts";
 import { COLLECTOR_VERSIONS } from "../../shared/collectors.ts";
 import {
-  addGroup, emptyValue, LONG_CONTEXT_THRESHOLDS, PRICE_BOUNDARIES, type ApiValue, type PriceGroup,
+  addGroup, emptyValue, explainPrice, groupTokens, longContextThresholds, PRICE_BOUNDARIES,
+  type ApiValue, type Catalog, type PriceGroup,
 } from "../../shared/pricing.ts";
 import { BREAKDOWN_DISPLAY_ROWS, TOOLS, type LeaderboardRank } from "../../shared/types.ts";
 import { nowSec, type DB } from "./schema.ts";
@@ -668,11 +669,11 @@ const TOKENS = "input_tokens + output_tokens + cache_read_tokens + cache_write_t
  * pricing period (between the days some rate changed), with the token sums
  * to price. Answered from idx_usage_user_read alone (the leaderboard names it).
  */
-function priceColumns(t = ""): string {
+function priceColumns(t: string, catalog: Catalog | null): string {
   const prompt = `${t}input_tokens + ${t}cache_read_tokens + ${t}cache_write_tokens`;
   const sumOf = (parts: string[]) => (parts.length ? `(${parts.join(" + ")})` : "0");
   return `${t}tool AS tool, ${t}model AS model, ${t}service_tier AS service_tier, ${t}inference_geo AS inference_geo,
-    ${sumOf(LONG_CONTEXT_THRESHOLDS.map((n) => `(${prompt} > ${n})`))} AS band,
+    ${sumOf(longContextThresholds(catalog).map((n) => `(${prompt} > ${n})`))} AS band,
     ${sumOf(PRICE_BOUNDARIES.map((b) => `(${t}occurred_at >= ${b})`))} AS period,
     SUM(${t}input_tokens) AS input, SUM(${t}output_tokens) AS output,
     SUM(${t}cache_read_tokens) AS cache_read, SUM(${t}cache_write_tokens) AS cache_write,
@@ -682,9 +683,9 @@ function priceColumns(t = ""): string {
 const PRICE_GROUP_BY = "tool, model, service_tier, inference_geo, band, period";
 
 /** Adds a group to the value kept under `key` (made on first use). */
-function addValue(m: Map<string, ApiValue>, key: string, g: PriceGroup): void {
+function addValue(m: Map<string, ApiValue>, key: string, g: PriceGroup, catalog: Catalog | null): void {
   if (!m.has(key)) m.set(key, emptyValue());
-  addGroup(m.get(key)!, g);
+  addGroup(m.get(key)!, g, catalog);
 }
 
 /** The latest measured event of a user (for one tool), or null. */
@@ -759,7 +760,7 @@ const ranked = (m: Map<string, Tally>, values: Map<string, ApiValue>): Breakdown
  * (grouped per model, tool and session, then folded here).
  */
 export function breakdown(
-  db: DB, userId: number, sinceSec: number, tool: string | null, day: string | null = null
+  db: DB, userId: number, sinceSec: number, tool: string | null, day: string | null = null, catalog: Catalog | null = null,
 ): Breakdown {
   const groups = db
     .prepare(
@@ -774,7 +775,7 @@ export function breakdown(
   // The same events, grouped by what their price depends on.
   const priceGroups = db
     .prepare(
-      `SELECT ${priceColumns()}
+      `SELECT ${priceColumns("", catalog)}
        FROM usage_events
        WHERE user_id = ? AND occurred_at >= ? AND (? IS NULL OR tool = ?)
          AND (? IS NULL OR ${localDay()} = ?)
@@ -785,9 +786,9 @@ export function breakdown(
   const modelValues = new Map<string, ApiValue>();
   const toolValues = new Map<string, ApiValue>();
   for (const g of priceGroups) {
-    addGroup(value, g);
-    addValue(modelValues, g.model ?? "unknown", g);
-    addValue(toolValues, g.tool, g);
+    addGroup(value, g, catalog);
+    addValue(modelValues, g.model ?? "unknown", g, catalog);
+    addValue(toolValues, g.tool, g, catalog);
   }
   const total = tally();
   const byModel = new Map<string, Tally>();
@@ -830,7 +831,8 @@ export function breakdown(
  * the heatmap year), folded here.
  */
 export function leaderboard(
-  db: DB, sinceSec: number, calendarDays: number, rank: LeaderboardRank = "tokens", now = nowSec()
+  db: DB, sinceSec: number, calendarDays: number, rank: LeaderboardRank = "tokens", catalog: Catalog | null = null,
+  now = nowSec(),
 ): Omit<LeaderboardResponse, "range_days" | "provenance" | "pricing_version"> {
   // Every enabled account, used or not: idle ones rank last with zeros.
   const users = db
@@ -871,7 +873,7 @@ export function leaderboard(
   // index (the planner would pick the session one and read every row).
   const priceGroups = db
     .prepare(
-      `SELECT e.user_id, ${priceColumns("e.")}
+      `SELECT e.user_id, ${priceColumns("e.", catalog)}
        FROM usage_events e INDEXED BY idx_usage_user_read JOIN users u ON u.id = e.user_id
        WHERE u.disabled = 0 AND e.occurred_at >= ?
        GROUP BY e.user_id, ${PRICE_GROUP_BY}`
@@ -881,9 +883,9 @@ export function leaderboard(
   const userValues = new Map<string, ApiValue>();
   const modelValues = new Map<string, ApiValue>();
   for (const g of priceGroups) {
-    addGroup(totalValue, g);
-    addValue(userValues, String(g.user_id), g);
-    addValue(modelValues, g.model ?? "unknown", g);
+    addGroup(totalValue, g, catalog);
+    addValue(userValues, String(g.user_id), g, catalog);
+    addValue(modelValues, g.model ?? "unknown", g, catalog);
   }
 
   type Acc = Tally & { days: Set<string>; last: number | null; models: Map<string, number>; streakDays: Set<string> };
@@ -962,6 +964,39 @@ export function leaderboard(
     activity: [...activity].sort((x, y) => (x[0] < y[0] ? -1 : 1))
       .map(([day, t]) => ({ day, tokens: t.tokens, sessions: t.sessions.size })),
   };
+}
+
+/**
+ * Models whose usage has no price (all accounts, all time), most tokens
+ * first, with why (shared/pricing.ts explainPrice): what to add to the
+ * priority file next.
+ */
+export function unpricedModels(db: DB, catalog: Catalog | null): UnpricedModel[] {
+  const groups = db
+    .prepare(
+      `SELECT ${priceColumns("e.", catalog)}, COUNT(*) AS events, MAX(e.occurred_at) AS last,
+              json_group_array(DISTINCT e.user_id) AS users
+       FROM usage_events e INDEXED BY idx_usage_user_read
+       GROUP BY ${PRICE_GROUP_BY}`
+    )
+    .all() as (PriceGroup & { events: number; last: number; users: string })[];
+  const rows = new Map<string, UnpricedModel & { accountIds: Set<number> }>();
+  for (const g of groups) {
+    const p = explainPrice(g, catalog);
+    if (p.ok) continue;
+    const key = `${g.tool}\n${g.model ?? ""}\n${p.reason}`;
+    const row = rows.get(key) ?? {
+      tool: g.tool, model: g.model, reason: p.reason, tokens: 0, events: 0, accounts: 0, last_seen: 0, accountIds: new Set<number>(),
+    };
+    row.tokens += groupTokens(g);
+    row.events += g.events;
+    row.last_seen = Math.max(row.last_seen, g.last);
+    for (const id of JSON.parse(g.users) as number[]) row.accountIds.add(id);
+    rows.set(key, row);
+  }
+  return [...rows.values()]
+    .map(({ accountIds, ...r }) => ({ ...r, accounts: accountIds.size }))
+    .sort((a, b) => b.tokens - a.tokens || (a.tool < b.tool ? -1 : 1));
 }
 
 /** SQL for the preview seed exists only in the preview administration path. */

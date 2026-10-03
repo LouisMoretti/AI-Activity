@@ -51,6 +51,7 @@ export function valueVM(b: Breakdown): ValueVM {
     unpricedTokens: v.unpriced_tokens,
     lowerBound: v.lower_bound,
     fallback: v.current_rate_fallback,
+    unverified: v.unverified ?? false,
     byTool: rows(b.by_tool),
     byModel: rows(b.by_model),
   };
