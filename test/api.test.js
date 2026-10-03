@@ -4,6 +4,7 @@ import os from "node:os";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { COLLECTOR_VERSIONS } from "../shared/collectors.ts";
+import { AVATAR_HOSTS } from "../server/lib/avatar.ts";
 import {
   startServer, req, newDevice, event, collector, codexResponse, opencodeMessage, login, register, userId, TEST_ADMIN,
   awayFromMidnight, githubSignIn, githubUser, githubFollowing, renameGithubUser, githubRequests, githubCode,
@@ -494,6 +495,43 @@ describe("basics (signed in as the test admin)", () => {
     assert.equal(https.headers.get("strict-transport-security"), "max-age=31536000");
   });
 
+  test("HTML pages carry a strict Content-Security-Policy, other responses none", async () => {
+    for (const p of ["/", "/index.html", "/u/admin", "/demo", "/leaderboard", "/settings"]) {
+      const r = await req(srv.base, "GET", p);
+      assert.match(r.headers.get("content-type"), /text\/html/, p);
+      const csp = Object.fromEntries(r.headers.get("content-security-policy").split("; ").map((d) => {
+        const [name, ...values] = d.split(" ");
+        return [name, values];
+      }));
+      assert.deepEqual(csp["default-src"], ["'self'"], p);
+      assert.deepEqual(csp["script-src"], ["'self'"], p);
+      assert.deepEqual(csp["style-src"], ["'self'"], p);
+      assert.deepEqual(csp["connect-src"], ["'self'"], p);
+      assert.deepEqual(csp["frame-ancestors"], ["'none'"], p);
+      assert.deepEqual(csp["base-uri"], ["'none'"], p);
+      assert.deepEqual(csp["form-action"], ["'self'", "https://github.com"], p);
+      assert.deepEqual(csp["img-src"], ["'self'", "data:", ...AVATAR_HOSTS.map((h) => `https://${h}`)], p);
+    }
+    for (const p of ["/api/health", "/install.sh"]) {
+      assert.equal((await req(srv.base, "GET", p)).headers.get("content-security-policy"), null, p);
+    }
+  });
+
+  test("the built client has nothing inline for the CSP to block", () => {
+    // `npm run dev:web` serves the page without the CSP: an inline style or
+    // script would only break in production, so the build is checked here.
+    const dist = new URL("../web/dist/", import.meta.url);
+    const html = fs.readFileSync(new URL("index.html", dist), "utf8");
+    assert.doesNotMatch(html, /<style|\sstyle=/i, "index.html");
+    for (const tag of html.match(/<script\b[^>]*>/gi) ?? []) assert.match(tag, /\ssrc=/, tag);
+    const scripts = fs.readdirSync(new URL("assets/", dist)).filter((f) => f.endsWith(".js"));
+    assert.ok(scripts.length, "the build has scripts under /assets/");
+    for (const f of scripts) {
+      // Svelte puts static markup, a style="" attribute included, in template strings.
+      assert.doesNotMatch(fs.readFileSync(new URL(`assets/${f}`, dist), "utf8"), /<style|\sstyle=/i, f);
+    }
+  });
+
   test("static serving never escapes the web root", async () => {
     for (const p of ["/%2e%2e/package.json", "/..%2fpackage.json", "/%2e%2e%2f.env.example"]) {
       const r = await req(srv.base, "GET", p);
@@ -867,6 +905,11 @@ describe("profiles from GitHub and user management", () => {
     await login(srv.base, "admin");
     const after = (await req(srv.base, "GET", "/api/u/admin", anon)).json;
     assert.deepEqual([after.display_name, after.avatar_url], ["x".repeat(60), null]);
+    // A Gravatar default would redirect off the list (and the CSP): dropped.
+    const hash = "0".repeat(32);
+    githubUser("admin", { avatar_url: `https://www.gravatar.com/avatar/${hash}?s=80&d=https%3A%2F%2Fevil.example%2Fp.png&default=x` });
+    await login(srv.base, "admin");
+    assert.equal((await req(srv.base, "GET", "/api/u/admin", anon)).json.avatar_url, `https://www.gravatar.com/avatar/${hash}?s=80`);
     // No name: the username is shown.
     githubUser("admin", { name: null, avatar_url: null });
     await login(srv.base, "admin");
