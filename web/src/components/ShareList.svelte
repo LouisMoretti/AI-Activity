@@ -3,13 +3,14 @@
   import { BREAKDOWN_DISPLAY_ROWS } from "../../../shared/types.ts";
   import { toolName, type ShareRow } from "../lib/view-model.ts";
 
-  let { title, rows, kind, of = null, restValue = null, max = BREAKDOWN_DISPLAY_ROWS }: {
+  let { title, rows, kind, of = null, restValue = null, max = BREAKDOWN_DISPLAY_ROWS, format = fmtCompact }: {
     title: string;
     rows: ShareRow[];
     kind: "tool" | "model";
     of?: number | null; // share denominator when rows overlap (a session can use several models); else their sum
     restValue?: number | null; // exact union for overlapping rows folded into "others"
     max?: number; // rows shown; the rest are summed into one "others" row
+    format?: (value: number) => string; // how values read (tokens by default)
   } = $props();
   const total = $derived(of ?? rows.reduce((a, r) => a + r.value, 0));
   // Largest share first; the "others" row always stays last.
@@ -27,7 +28,7 @@
 </script>
 
 {#snippet num(value: number, share = true)}
-  <span class="num">{fmtCompact(value)}</span>
+  <span class="num">{format(value)}</span>
   {#if share && total}
     <span class="pct">{pct(value)}</span>
   {:else}

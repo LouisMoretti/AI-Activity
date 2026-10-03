@@ -1,0 +1,43 @@
+# Dependabot: weekly updates for npm, GitHub Actions and the Docker base image.
+# Its pull requests close no issue (AGENTS.md, "Issues and pull requests").
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    labels: [enhancement, infra]
+    assignees: [LouisMoretti]
+    groups:
+      # Minor and patch updates in one pull request; each major on its own.
+      npm-minor-patch:
+        update-types: [minor, patch]
+    ignore:
+      # svelte-check needs the TypeScript API, which TypeScript 7 does not
+      # ship: typescript stays on 6 until svelte-check supports 7.
+      - dependency-name: typescript
+        update-types: [version-update:semver-major]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels: [enhancement, infra]
+    assignees: [LouisMoretti]
+    groups:
+      # Actions are pinned by SHA: Dependabot updates the SHA and the
+      # version comment together.
+      github-actions:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    labels: [enhancement, infra]
+    assignees: [LouisMoretti]
+    ignore:
+      # A new Node major is a deliberate move (LTS, CI, engines, AGENTS.md):
+      # only the digest of the current tag is kept up to date.
+      - dependency-name: node
+        update-types: [version-update:semver-major]

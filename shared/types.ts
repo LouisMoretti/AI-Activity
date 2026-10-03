@@ -1,6 +1,9 @@
 // API response shapes shared by the server and the web client.
 // Numeric usage is measured except for explicitly labeled preview samples;
 // missing data is null/absent, never interpolated.
+import type { ApiValue } from "./pricing.ts";
+
+export type { ApiValue } from "./pricing.ts";
 
 /** Every ingestable tool, in display order. */
 export const TOOLS = ["claude-code", "codex", "cursor", "antigravity", "opencode"] as const;
@@ -88,6 +91,8 @@ export interface BreakdownRow {
   tokens: number;
   sessions: number;
   events: number;
+  /** Estimated API-equivalent value of these tokens (shared/pricing.ts). */
+  value: ApiValue;
 }
 
 export interface Breakdown {
@@ -98,6 +103,8 @@ export interface Breakdown {
   /** Distinct sessions across the model rows folded into "others". */
   by_model_others_sessions: number;
   by_tool: BreakdownRow[];
+  /** Estimated API-equivalent value of every token above (shared/pricing.ts). */
+  value: ApiValue;
 }
 
 export interface SummaryResponse {
@@ -105,6 +112,10 @@ export interface SummaryResponse {
   day: string; // the owner's today (at the UTC offset of their latest event; UTC if none), YYYY-MM-DD
   total: Breakdown; // all time
   today: Breakdown;
+  /** Latest measured event (unix seconds), null without usage: how fresh the figures are. */
+  last_event_at: number | null;
+  /** PRICING_VERSION the values were computed with. */
+  pricing_version: string;
   provenance: string;
 }
 
@@ -218,6 +229,30 @@ export interface PreviewSeedConfig {
   cache_write_tokens: number;
 }
 
+/** A model whose usage has no API-equivalent price (admin panel, GET /api/admin/pricing). */
+export interface UnpricedModel {
+  tool: string;
+  /** As stored (provider/model for OpenCode and other providers' Codex models); null: none recorded. */
+  model: string | null;
+  /** Why it has no price: no known rate, provider unknown, a tier or region without a rate, … */
+  reason: string;
+  tokens: number;
+  events: number;
+  accounts: number;
+  last_seen: number;
+}
+
+/** The admin panel's pricing section. */
+export interface AdminPricing {
+  /** PRICING_VERSION of the priority file. */
+  pricing_version: string;
+  /** Rates and aliases in the priority file (shared/pricing.json). */
+  priority: { prices: number; aliases: number };
+  /** The LiteLLM fallback catalog (server/lib/litellm.ts). */
+  litellm: { url: string | null; fetched_at: number | null; models: number; error: string | null };
+  unpriced: UnpricedModel[];
+}
+
 /** Server settings an admin changes from the admin panel. */
 export interface AdminSettings {
   signup_open: boolean;
@@ -293,6 +328,8 @@ export interface LeaderboardEntry {
   tokens: number;
   sessions: number;
   events: number;
+  /** Estimated API-equivalent value of the period's tokens (shared/pricing.ts). */
+  value: ApiValue;
   /** Local days with at least one event in the period. */
   active_days: number;
   /** Model with the most tokens in the period; null if never reported. */
@@ -309,13 +346,23 @@ export interface LeaderboardResponse {
   range_days: number | null;
   /** Enabled accounts, active or not (= entries.length). */
   accounts: number;
-  totals: { tokens: number; sessions: number; events: number; active_accounts: number };
-  /** Ranked by tokens, most first. */
+  totals: { tokens: number; sessions: number; events: number; active_accounts: number; value: ApiValue };
+  /**
+   * How entries are ranked (`?rank=`): by tokens, or by API-equivalent value
+   * (accounts with no priced usage after those with some, then by tokens).
+   */
+  rank: LeaderboardRank;
+  /** Ranked by `rank`, most first. */
   entries: LeaderboardEntry[];
   by_model: BreakdownRow[];
   /** Last day of the activity calendar: the latest account's today (UTC if none), YYYY-MM-DD. */
   day: string;
   /** Everyone's daily buckets over the 364 local days ending on `day`, whatever the period. */
   activity: ActivityDay[];
+  /** PRICING_VERSION the values were computed with. */
+  pricing_version: string;
   provenance: string;
 }
+
+export const LEADERBOARD_RANKS = ["tokens", "value"] as const;
+export type LeaderboardRank = (typeof LEADERBOARD_RANKS)[number];

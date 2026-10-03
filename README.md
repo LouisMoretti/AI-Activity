@@ -19,6 +19,63 @@ following list using the OAuth app's client ID and secret, without requesting
 an OAuth scope or keeping a user's GitHub token.
 If GitHub is unavailable, the page offers a retry.
 
+## API-equivalent value
+
+Next to the token totals, profiles and the leaderboard show an **estimated
+API-equivalent value**: what the measured tokens would cost at the
+providers' published retail API rates, in USD. It is a valuation of usage,
+whatever paid for it (a subscription or an API key): not what you paid, not
+a saving, not what serving it costs the provider. Nothing new is asked of
+you; no plan, invoice or key is needed.
+
+- **Where rates come from**, first match wins:
+  1. [`shared/pricing.json`](shared/pricing.json), the priority file:
+     verified official rates, each with its source and the day it took
+     effect, and aliases that price a model as another one (OpenCode's free
+     `opencode/muse-spark-1.3-contributor-free` at Meta's paid
+     `meta/muse-spark-1.3-contributor` rate). Edit this file to add a rate or
+     an alias; the server refuses to start on an invalid one (`npm test`
+     checks it too).
+  2. [LiteLLM's price list](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json)
+     for every other model: the server downloads it at most once a day and
+     keeps it next to the database (`litellm-prices.json`), so a restart or
+     GitHub being down changes nothing. Only the provider's own rate is used,
+     never a reseller's for the same model name. These are community rates:
+     values using them say so. They have no effective dates: the copy in use
+     prices all of a model's history, so a LiteLLM price change moves that
+     model's past values too (verified rates in the priority file do not). `LITELLM_PRICES_URL` points elsewhere, or
+     empty turns it off.
+  3. Nothing: models without a known rate (Codex's `codex-auto-review`, a
+     ChatGPT-only model; a local model) are counted as *unpriced*, never
+     valued at $0: a figure that leaves some out shows the share of tokens
+     priced ("93 % priced"), and one with nothing priced shows "—". **Admin panel → Pricing** lists them,
+     with their tokens and why, and the LiteLLM copy in use.
+- **What it is computed from:** each message's model, input, output, cache
+  read and cache write tokens (cached input and reasoning are never counted
+  twice), Anthropic's 5-minute and 1-hour cache writes (2× input instead of
+  1.25×), Claude Code's fast mode, Anthropic's US-only inference (1.1×), Codex's
+  service tier (Fast/priority, Flex) and the long-context rates where a
+  model has them (Sonnet 4 and 4.5 above 200K prompt tokens; GPT-5.4,
+  GPT-5.5, GPT-5.6 and GPT-6 above 272K).
+- **Versions:** the priority file has a `version` (shown with the values),
+  changed with every edit. Usage is priced at the rate
+  of its day; usage older than a model's oldest published rate is priced at
+  that rate and flagged. The dashboard and the leaderboard use the same
+  rates, so their figures for a period agree.
+- **Assumptions it flags:** messages recorded before the collectors sent
+  the cache durations (Claude Code collector 4) are priced at the cheaper
+  5-minute rate, shown as "≥" (a lower bound). Updated collectors send
+  their history once more, which fills that in. Batch discounts, Codex
+  data residency surcharges, server tool fees (web search) and negotiated
+  discounts are not measured, so not included.
+- **Codex Fast mode is valued as requested.** Under load, OpenAI can serve
+  a Fast (priority) request at Standard speed and bill it at Standard
+  rates, but the rollout only records the tier Codex asked for. Such
+  responses are valued at Fast rates: the value can be slightly too high.
+  Nothing in the local files tells them apart today.
+- **Leaderboard:** rank by tokens (the default) or by API value over the
+  same period; accounts with nothing priced rank last.
+
 ## One-command install
 
 Create a device key (**Settings → Devices**),
@@ -737,8 +794,11 @@ Each tool has one Python script in `collectors/`. They share the same design:
   macOS and Windows alike (`python3` or `python`).
 - **Metrics only.** They read local usage files read-only or receive live hook metrics, and send ids,
   model, time, the machine's UTC offset and token counts (plus quotas and
-  context fill where the tool has them). Prompts, replies, tool output,
-  titles, paths and provider keys never leave the device.
+  context fill where the tool has them, and what a message's API-equivalent
+  price depends on: Claude Code's cache write durations, `speed`,
+  `service_tier` and `inference_geo`; Codex's service tier and model
+  provider). Prompts, replies, tool output, titles, paths and provider keys
+  never leave the device.
 - **The key only goes to your server.** Uploads never follow an HTTP
   redirect: a redirect fails the run (progress unchanged) instead of
   sending the device key somewhere else.
@@ -759,6 +819,10 @@ Each tool has one Python script in `collectors/`. They share the same design:
   on the same account, everything comes back as already stored. With
   another account on the same server, messages the first account already
   sent stay with it (the server never moves them between accounts).
+  Claude Code's and Codex's progress also records which message fields it
+  was sent with (`"fields"`): a collector that sends new fields sends its
+  history once more, and the server fills them in on messages it stored
+  without them (nothing is counted twice).
 - **Never in the tool's way.** Called from a hook or the status line, a
   script answers at once and uploads from a detached copy of itself
   (Linux/macOS: its own session; Windows: out of the console, the process

@@ -15,36 +15,36 @@ export const MIGRATIONS: ((db: DB) => void)[] = [
   activityClearedAt,
   collectorVersions,
   githubAccounts,
+  apiValueInputs,
   siteAnalytics,
-  analyticsVisitorsAndApi,
-  analyticsRateLimits,
 ];
 
-/** 8: requests refused with 429, per day and scope (a fixed set), and distinct clients (daily address hash). */
-function analyticsRateLimits(db: DB): void {
-  db.exec(`
-    CREATE TABLE site_analytics_rate_limited (
-      day TEXT NOT NULL,
-      scope TEXT NOT NULL,
-      hits INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (day, scope)
-    ) WITHOUT ROWID;
-    CREATE TABLE site_analytics_rate_limited_clients (
-      day TEXT NOT NULL,
-      client_hash TEXT NOT NULL,
-      PRIMARY KEY (day, client_hash)
-    ) WITHOUT ROWID;
-  `);
-}
-
 /**
- * 7: returning visitors (a long-lived random id kept in the browser, stored
- * only as an HMAC: first and last day seen) and external reads of the
- * public API (calls by route, origin host and client kind; distinct
- * clients per day).
+ * 7: privacy-first site analytics, kept apart from measured AI activity:
+ * daily page views by page category and source, visitors (HMACs only) and
+ * sign-ups; returning visitors (a browser's random id, stored only as an
+ * HMAC with its first and last day seen); external reads of the public API
+ * (by route, origin host and client kind; distinct clients per day); and
+ * requests refused with 429 (by scope, a fixed set; distinct clients).
  */
-function analyticsVisitorsAndApi(db: DB): void {
+function siteAnalytics(db: DB): void {
   db.exec(`
+    CREATE TABLE site_analytics_pageviews (
+      day TEXT NOT NULL,
+      page TEXT NOT NULL,
+      source TEXT NOT NULL,
+      views INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (day, page, source)
+    ) WITHOUT ROWID;
+    CREATE TABLE site_analytics_visitors (
+      day TEXT NOT NULL,
+      visitor_hash TEXT NOT NULL,
+      PRIMARY KEY (day, visitor_hash)
+    ) WITHOUT ROWID;
+    CREATE TABLE site_analytics_signups (
+      day TEXT PRIMARY KEY,
+      signups INTEGER NOT NULL DEFAULT 0
+    ) WITHOUT ROWID;
     CREATE TABLE site_analytics_known_visitors (
       visitor_hash TEXT PRIMARY KEY,
       first_day TEXT NOT NULL,
@@ -64,28 +64,41 @@ function analyticsVisitorsAndApi(db: DB): void {
       client_hash TEXT NOT NULL,
       PRIMARY KEY (day, client_hash)
     ) WITHOUT ROWID;
+    CREATE TABLE site_analytics_rate_limited (
+      day TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      hits INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (day, scope)
+    ) WITHOUT ROWID;
+    CREATE TABLE site_analytics_rate_limited_clients (
+      day TEXT NOT NULL,
+      client_hash TEXT NOT NULL,
+      PRIMARY KEY (day, client_hash)
+    ) WITHOUT ROWID;
   `);
 }
 
-/** 6: privacy-first site analytics, kept apart from measured AI activity. */
-function siteAnalytics(db: DB): void {
+/**
+ * 6: what an API-equivalent value needs besides model and token counts
+ * (issue #113, shared/pricing.ts). `cache_write_1h_tokens`: of the cache
+ * writes, those to Anthropic's 1-hour cache (2× input instead of 1.25×;
+ * NULL: not recorded, priced at the 5-minute rate as a lower bound).
+ * `service_tier`: the processing tier as the tool recorded it (Claude Code's
+ * fast mode as "fast", Codex's service tier); NULL: standard.
+ * `inference_geo`: Anthropic's inference region ("us" costs 1.1×). The read
+ * index covers them, so pricing reads stay index-only.
+ */
+function apiValueInputs(db: DB): void {
   db.exec(`
-    CREATE TABLE site_analytics_pageviews (
-      day TEXT NOT NULL,
-      page TEXT NOT NULL,
-      source TEXT NOT NULL,
-      views INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (day, page, source)
-    ) WITHOUT ROWID;
-    CREATE TABLE site_analytics_visitors (
-      day TEXT NOT NULL,
-      visitor_hash TEXT NOT NULL,
-      PRIMARY KEY (day, visitor_hash)
-    ) WITHOUT ROWID;
-    CREATE TABLE site_analytics_signups (
-      day TEXT PRIMARY KEY,
-      signups INTEGER NOT NULL DEFAULT 0
-    ) WITHOUT ROWID;
+    ALTER TABLE usage_events ADD COLUMN cache_write_1h_tokens INTEGER;
+    ALTER TABLE usage_events ADD COLUMN service_tier TEXT;
+    ALTER TABLE usage_events ADD COLUMN inference_geo TEXT;
+    DROP INDEX IF EXISTS idx_usage_user_read;
+    CREATE INDEX idx_usage_user_read ON usage_events(
+      user_id, occurred_at, tool, session_id, model,
+      input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, utc_offset_min,
+      cache_write_1h_tokens, service_tier, inference_geo
+    );
   `);
 }
 
