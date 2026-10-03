@@ -203,6 +203,30 @@ export interface PreviewSeedConfig {
   cache_write_tokens: number;
 }
 
+/** A model whose usage has no API-equivalent price (admin panel, GET /api/admin/pricing). */
+export interface UnpricedModel {
+  tool: string;
+  /** As stored (provider/model for OpenCode and other providers' Codex models); null: none recorded. */
+  model: string | null;
+  /** Why it has no price: no known rate, provider unknown, a tier or region without a rate, … */
+  reason: string;
+  tokens: number;
+  events: number;
+  accounts: number;
+  last_seen: number;
+}
+
+/** The admin panel's pricing section. */
+export interface AdminPricing {
+  /** PRICING_VERSION of the priority file. */
+  pricing_version: string;
+  /** Rates and aliases in the priority file (shared/pricing.json). */
+  priority: { prices: number; aliases: number };
+  /** The LiteLLM fallback catalog (server/lib/litellm.ts). */
+  litellm: { url: string | null; fetched_at: number | null; models: number; error: string | null };
+  unpriced: UnpricedModel[];
+}
+
 /** Server settings an admin changes from the admin panel. */
 export interface AdminSettings {
   signup_open: boolean;

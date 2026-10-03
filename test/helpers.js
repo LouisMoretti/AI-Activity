@@ -136,7 +136,8 @@ function freePort() {
  * false` boots with no account at all.
  */
 export async function startServer({ signedIn = true, env = {}, autoLogin = true } = {}) {
-  env = { ...(await githubEnv()), ...env };
+  // No network in tests: the LiteLLM price list is off unless a test serves one.
+  env = { LITELLM_PRICES_URL: "", ...(await githubEnv()), ...env };
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ai-usage-test-"));
   const dbPath = env.DB_PATH ?? path.join(dir, "t.db");
   try {

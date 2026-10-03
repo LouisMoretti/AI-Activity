@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { PRICED_TOOLS } from "../../../shared/pricing.ts";
   import type { ApiValue, LeaderboardRank, LeaderboardResponse } from "../../../shared/types.ts";
   import { api } from "../lib/api.ts";
   import { clock } from "../lib/clock.svelte.ts";
@@ -11,7 +10,6 @@
   import Avatar from "./Avatar.svelte";
   import Section from "./Section.svelte";
   import Segmented from "./Segmented.svelte";
-  import { toolName } from "../lib/view-model.ts";
 
   let { self, onopen }: {
     /** The viewer's username, highlighted in the ranking; null for visitors. */
@@ -77,11 +75,10 @@
   const shownRank = $derived(data?.rank ?? "tokens");
   const measure = (e: { tokens: number; value: ApiValue }) => (shownRank === "value" ? e.value.usd ?? 0 : e.tokens);
   const top = $derived(Math.max(1e-9, ...(data?.entries ?? []).map(measure)));
-  const pricedTools = PRICED_TOOLS.map(toolName).join(" and ");
   // "≈": an estimate; "≥": some cache writes were priced at the cheaper rate.
   const usdText = (v: ApiValue) => (v.usd === null ? "—" : `${v.lower_bound ? "≥" : "≈"} ${fmtUsd(v.usd)}`);
   const partialText = (v: ApiValue) =>
-    `Leaves out ${fmtCompact(v.unpriced_tokens)} tokens without a published rate: models with no retail API price, and tools other than ${pricedTools} (not priced yet)`;
+    `Leaves out ${fmtCompact(v.unpriced_tokens)} tokens of models without a known retail API rate`;
   const series = $derived(data ? denseSeries(data.activity, ACTIVITY_DAYS, data.day) : []);
   const today = $derived(data?.day ?? "");
   const tiles = $derived(data ? [
@@ -159,9 +156,9 @@
     </ol>
     {#if shownRank === "value"}
       <p class="fine">
-        API value: what each account's tokens would cost at the providers' published retail API rates (USD, rates of
-        {data.pricing_version}). An estimate, not what anyone paid. Only {pricedTools} are priced so far: "partial" rows leave
-        some tokens out, and accounts with nothing priced rank last.
+        API value: what each account's tokens would cost at retail API rates (USD, verified rates of
+        {data.pricing_version}, else LiteLLM's community price list). An estimate, not what anyone paid. "partial" rows leave
+        out models without a known rate, and accounts with nothing priced rank last.
       </p>
     {/if}
   </Section>

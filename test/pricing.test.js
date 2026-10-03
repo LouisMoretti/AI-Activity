@@ -2,9 +2,11 @@
 // measured token groups, with unpriced usage and assumptions flagged.
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import {
-  contextBandOf, periodOf, priceGroup, priceModelId, PRICES, valueOf,
+  contextBandOf, explainPrice, parsePricingFile, periodOf, priceGroup, priceModelId, PRICES, valueOf,
 } from "../shared/pricing.ts";
+import { catalogOf, toEntry } from "../server/lib/litellm.ts";
 
 const M = 1_000_000;
 /** A group with only the given counts; `at` dates it (pricing period). */
@@ -99,23 +101,21 @@ describe("OpenAI rates", () => {
     assert.equal(priceGroup(group(codex({ model: "gpt-5.6-luna", input: M }), Date.parse("2026-07-29T00:00:00Z") / 1000)).fallback, true);
   });
 
-  test("subscription-only models, other providers and other tools are unpriced", () => {
+  test("subscription-only models and other providers' models are unpriced", () => {
     assert.equal(usd(codex({ model: "codex-auto-review", input: M })), null);
     assert.equal(usd(codex({ model: "gpt-5.3-codex-spark", input: M })), null);
     assert.equal(usd(codex({ model: "ollama/gpt-6-sol", input: M })), null);
     assert.equal(usd(codex({ model: "claude-opus-5-5", input: M })), null);
-    assert.equal(usd({ tool: "cursor", model: "claude-opus-5-5", input: M }), null);
-    assert.equal(usd({ tool: "opencode", model: "openai/gpt-6-sol", input: M }), null);
   });
 });
 
 test("a value adds priced groups and counts the rest apart; nothing priced is null, not $0", () => {
-  const v = valueOf([group({ input: M }), group({ tool: "cursor", input: 300 }), group({ model: "mystery", output: 200 })]);
+  const v = valueOf([group({ input: M }), group({ tool: "opencode", model: "agentrouter/glm-5.3", input: 300 }), group({ model: "mystery", output: 200 })]);
   close(v.usd, 4);
   assert.equal(v.priced_tokens, M);
   assert.equal(v.unpriced_tokens, 500);
-  assert.deepEqual(valueOf([group({ tool: "cursor", input: 1 })]),
-    { usd: null, priced_tokens: 0, unpriced_tokens: 1, lower_bound: false, current_rate_fallback: false });
+  assert.deepEqual(valueOf([group({ tool: "cursor", model: "composer-2.5", input: 1 })]),
+    { usd: null, priced_tokens: 0, unpriced_tokens: 1, lower_bound: false, current_rate_fallback: false, unverified: false });
   assert.equal(valueOf([]).usd, null);
 });
 
@@ -133,4 +133,104 @@ test("every rate has an official https source and each model one rate per effect
       for (const n of Object.values(r)) assert.ok(Number.isFinite(n) && n >= 0, p.models.join());
     }
   }
+});
+
+describe("the priority file (shared/pricing.json)", () => {
+  const file = () => JSON.parse(fs.readFileSync(new URL("../shared/pricing.json", import.meta.url), "utf8"));
+  const broken = (edit) => { const f = file(); edit(f); return () => parsePricingFile(f); };
+
+  test("the shipped file is valid", () => {
+    assert.doesNotThrow(() => parsePricingFile(file()));
+  });
+
+  test("a bad edit is refused, so it fails the tests and the server's start", () => {
+    assert.throws(broken((f) => { delete f.prices[0].source; }), /source/);
+    assert.throws(broken((f) => { f.prices[0].source = "https://example.com/prices"; }), /official/);
+    assert.throws(broken((f) => { f.prices[0].standard.rates.input = -1; }), /rate/);
+    assert.throws(broken((f) => { f.prices[0].standard.rates.inputs = 1; }), /unknown rate/);
+    assert.throws(broken((f) => { delete f.prices[0].standard.rates.output; }), /required/);
+    assert.throws(broken((f) => { f.prices[0].models.push("Claude-Opus-9-20250101"); }), /looked up/);
+    assert.throws(broken((f) => { f.prices.push(f.prices[0]); }), /twice/);
+    assert.throws(broken((f) => { f.aliases.push({ model: "a/b", price_as: "a/b", note: "" }); }), /another model/);
+    assert.throws(broken((f) => { f.aliases.push({ ...f.aliases[0] }); }), /aliased twice/);
+    assert.throws(broken((f) => { f.prices[0].standard.long = f.prices[0].standard.rates; }), /longContextAbove/);
+  });
+
+  test("every tool is priced when its model resolves to a known rate", () => {
+    close(usd({ tool: "cursor", model: "claude-opus-5-5", input: M }), 4);
+    close(usd({ tool: "antigravity", model: "claude-opus-5-5", input: M }), 4);
+    close(usd({ tool: "opencode", model: "openai/gpt-6-sol", input: M }), 2);
+    close(usd({ tool: "opencode", model: "anthropic/claude-sonnet-5", input: M }), 2);
+    // A bare name nobody can attribute: no provider, no price.
+    assert.deepEqual(explainPrice(group({ tool: "cursor", model: "composer-2.5", input: M })), { ok: false, reason: "provider unknown" });
+  });
+});
+
+describe("the LiteLLM fallback (server/lib/litellm.ts)", () => {
+  const e = (input, output, more = {}) => ({ litellm_provider: "meta", mode: "chat", input_cost_per_token: input / M, output_cost_per_token: output / M, ...more });
+  const LIST = {
+    sample_spec: { litellm_provider: "one of https://docs.litellm.ai/docs/providers", input_cost_per_token: 0 },
+    "meta/muse-spark-1.3-contributor": e(0.1, 0.2, { cache_read_input_token_cost: 0.002 / M }),
+    // A reseller's rate for the same model: never used for meta's.
+    "openrouter/meta/muse-spark-1.3-contributor": e(9, 9, { litellm_provider: "openrouter" }),
+    "novita/deepseek/deepseek-v4-flash": e(0.14, 0.28, { litellm_provider: "novita", cache_read_input_token_cost: 0.028 / M }),
+    "gpt-9": e(1, 8, {
+      litellm_provider: "openai", cache_read_input_token_cost: 0.1 / M,
+      input_cost_per_token_priority: 2 / M, output_cost_per_token_priority: 16 / M,
+      input_cost_per_token_above_272k_tokens: 2 / M, output_cost_per_token_above_272k_tokens: 12 / M,
+    }),
+    "claude-opus-5-5": e(40, 200, { litellm_provider: "anthropic" }), // the priority file wins
+    "claude-next": e(3, 15, { litellm_provider: "anthropic", cache_read_input_token_cost: 0.3 / M,
+      cache_creation_input_token_cost: 3.75 / M, cache_creation_input_token_cost_above_1hr: 6 / M }),
+    "no-cache-model": e(1, 2, { litellm_provider: "mistral" }),
+    "dall-e-9": { litellm_provider: "openai", mode: "image_generation", input_cost_per_token: 1e-6, output_cost_per_token: 1e-6 },
+    "typo-model": e(1, 2, { litellm_provider: "mistral", input_cost_per_token: 5 }),
+    "half-model": { litellm_provider: "mistral", mode: "chat", input_cost_per_token: 1e-6 },
+  };
+  const catalog = catalogOf(LIST);
+  const priced = (over) => priceGroup(group(over), catalog);
+
+  test("text models with input and output rates only, in USD per million tokens", () => {
+    assert.equal(catalog.size, 7);
+    assert.equal(toEntry("dall-e-9", LIST["dall-e-9"]), null);
+    assert.equal(toEntry("typo-model", LIST["typo-model"]), null);
+    assert.equal(toEntry("half-model", LIST["half-model"]), null);
+    assert.deepEqual(toEntry("claude-next", LIST["claude-next"]).standard.rates,
+      { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75, cacheWrite1h: 6 });
+    assert.deepEqual(catalog.thresholds, [272000]);
+  });
+
+  test("OpenCode's free Muse Spark is priced at Meta's contributor rate through its alias, unverified", () => {
+    const g = { tool: "opencode", model: "opencode/muse-spark-1.3-contributor-free", input: M, output: M, cache_read: M };
+    const p = priced(g);
+    close(p.usd, 0.1 + 0.2 + 0.002);
+    assert.equal(p.unverified, true);
+    // Without the list there is no rate: unpriced, never $0.
+    assert.deepEqual(explainPrice(group(g)), { ok: false, reason: "no known rate" });
+  });
+
+  test("only the provider's own rate, under LiteLLM's provider names", () => {
+    close(priced({ tool: "opencode", model: "novita-ai/deepseek/deepseek-v4-flash", input: M })?.usd ?? null, 0.14);
+    close(priced({ tool: "opencode", model: "meta/muse-spark-1.3-contributor", input: M }).usd, 0.1);
+    assert.equal(priced({ tool: "opencode", model: "agentrouter/muse-spark-1.3-contributor", input: M }), null);
+    assert.equal(catalog.find(null, "gpt-9"), null);
+  });
+
+  test("tiers, long context and cache durations from LiteLLM's fields; the priority file first", () => {
+    close(priced({ tool: "codex", model: "gpt-9", input: M, cache_read: M }).usd, 1.1);
+    close(priced({ tool: "codex", model: "gpt-9", service_tier: "priority", input: M }).usd, 2);
+    close(priced({ tool: "codex", model: "gpt-9", band: contextBandOf(300_000, catalog), output: M }).usd, 12);
+    // OpenAI cache writes without a write rate are billed as input.
+    close(priced({ tool: "codex", model: "gpt-9", cache_write: M }).usd, 1);
+    close(priced({ model: "claude-next", cache_write: 2 * M, cache_write_1h: M }).usd, 3.75 + 6);
+    const own = priced({ input: M });
+    close(own.usd, 4);
+    assert.equal(own.unverified, false);
+  });
+
+  test("a category with tokens but no rate leaves the group unpriced, with why", () => {
+    assert.deepEqual(explainPrice(group({ tool: "opencode", model: "mistral/no-cache-model", input: M, cache_read: 1 }), catalog),
+      { ok: false, reason: "no cache read rate" });
+    close(priced({ tool: "opencode", model: "mistral/no-cache-model", input: M }).usd, 1);
+  });
 });

@@ -30,6 +30,7 @@ export interface ValueVM {
   unpricedTokens: number; // left out: tools or models without a published rate
   lowerBound: boolean; // some cache writes priced at the cheaper rate (duration unknown)
   fallback: boolean; // some usage priced at a rate published after it
+  unverified: boolean; // some usage priced from community rates (LiteLLM), not verified ones
   byTool: ShareRow[]; // USD, priced rows only
   byModel: ShareRow[];
 }

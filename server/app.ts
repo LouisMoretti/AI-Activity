@@ -9,6 +9,7 @@ import { clientInfo } from "./lib/client.ts";
 import { securityHeaders } from "./lib/headers.ts";
 import { buildInstallers } from "./lib/installer.ts";
 import { jsonOnly, limitBody, readCache } from "./lib/http.ts";
+import type { LiteLLM } from "./lib/litellm.ts";
 import { LIMITS, rateLimit, tokenBuckets } from "./lib/rate-limit.ts";
 import { createViewerAuth } from "./lib/viewer-auth.ts";
 import { accountRoutes, adminRoutes, userRoutes } from "./routes/account.ts";
@@ -18,8 +19,13 @@ import { friendsRoutes } from "./routes/friends.ts";
 import { ingestRoutes } from "./routes/ingest.ts";
 import { leaderboardRoutes, profileListRoutes, publicProfileRoutes } from "./routes/usage.ts";
 
-/** setupCode: one-time code for creating the first account from the browser (null once one exists). */
-export function createApp(db: DB, config: Config, setupCode: string | null = null) {
+/**
+ * setupCode: one-time code for creating the first account from the browser
+ * (null once one exists). litellm: the fallback pricing catalog (none: only
+ * the priority pricing file prices usage).
+ */
+export function createApp(db: DB, config: Config, setupCode: string | null = null, litellm: LiteLLM | null = null) {
+  const catalog = () => litellm?.catalog() ?? null;
   const client = clientInfo(config.trustProxy);
   const auth = createViewerAuth(db, client, config.allowedLogins);
   const cache = readCache(db);
@@ -47,8 +53,8 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
     .use("/profiles", publicReads)
     .use("/u/*", cache)
     .use("/leaderboard", cache)
-    .route("/u/:username", publicProfileRoutes(db))
-    .route("/leaderboard", leaderboardRoutes(db))
+    .route("/u/:username", publicProfileRoutes(db, catalog))
+    .route("/leaderboard", leaderboardRoutes(db, catalog))
     .route("/profiles", profileListRoutes(db))
     // Everything below requires a viewer session.
     .use(auth.require)
@@ -57,7 +63,7 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
     .route("/devices", deviceRoutes(db))
     .route("/account", accountRoutes(db))
     .route("/users", userRoutes(db))
-    .route("/admin", adminRoutes(db, config.preview));
+    .route("/admin", adminRoutes(db, config.preview, litellm));
 
   const indexFile = path.join(config.staticDir, "index.html");
   // Served from memory; an async stat per request picks up a rebuilt web

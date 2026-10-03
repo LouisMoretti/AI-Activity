@@ -28,12 +28,26 @@ whatever paid for it (a subscription or an API key): not what you paid, not
 a saving, not what serving it costs the provider. Nothing new is asked of
 you; no plan, invoice or key is needed.
 
-- **Priced so far: Claude Code and Codex.** Cursor, Antigravity and
-  OpenCode tokens are counted as *unpriced*, and so are models without a
-  published retail API rate (for example Codex's `codex-auto-review`, a
-  ChatGPT-only model, or a Codex model of another provider such as a local
-  one). Unpriced tokens are never valued at $0: a figure that leaves some out
-  says *partial*, and one with nothing priced shows "—".
+- **Where rates come from**, first match wins:
+  1. [`shared/pricing.json`](shared/pricing.json), the priority file:
+     verified official rates, each with its source and the day it took
+     effect, and aliases that price a model as another one (OpenCode's free
+     `opencode/muse-spark-1.3-contributor-free` at Meta's paid
+     `meta/muse-spark-1.3-contributor` rate). Edit this file to add a rate or
+     an alias; the server refuses to start on an invalid one (`npm test`
+     checks it too).
+  2. [LiteLLM's price list](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json)
+     for every other model: the server downloads it at most once a day and
+     keeps it next to the database (`litellm-prices.json`), so a restart or
+     GitHub being down changes nothing. Only the provider's own rate is used,
+     never a reseller's for the same model name. These are community rates:
+     values using them say so. `LITELLM_PRICES_URL` points elsewhere, or
+     empty turns it off.
+  3. Nothing: models without a known rate (Codex's `codex-auto-review`, a
+     ChatGPT-only model; a local model) are counted as *unpriced*, never
+     valued at $0: a figure that leaves some out says *partial*, and one
+     with nothing priced shows "—". **Admin panel → Pricing** lists them,
+     with their tokens and why, and the LiteLLM copy in use.
 - **What it is computed from:** each message's model, input, output, cache
   read and cache write tokens (cached input and reasoning are never counted
   twice), Anthropic's 5-minute and 1-hour cache writes (2× input instead of
@@ -41,9 +55,8 @@ you; no plan, invoice or key is needed.
   service tier (Fast/priority, Flex) and the long-context rates where a
   model has them (Sonnet 4 and 4.5 above 200K prompt tokens; GPT-5.4,
   GPT-5.5, GPT-5.6 and GPT-6 above 272K).
-- **Rates** live in [`shared/pricing.ts`](shared/pricing.ts), each with its
-  official source and the day it took effect, versioned together
-  (`PRICING_VERSION`, shown with the values). Usage is priced at the rate
+- **Versions:** the priority file has a `version` (shown with the values),
+  changed with every edit. Usage is priced at the rate
   of its day; usage older than a model's oldest published rate is priced at
   that rate and flagged. The dashboard and the leaderboard use the same
   rates, so their figures for a period agree.

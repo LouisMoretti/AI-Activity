@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import http from "node:http";
 import Database from "better-sqlite3";
 import os from "node:os";
 import { test, describe, before, after } from "node:test";
@@ -1637,14 +1638,14 @@ describe("leaderboard", () => {
       assert.equal(month.rank, "tokens");
       assert.equal(month.pricing_version, PRICING_VERSION);
       assert.ok(Math.abs(monthValue.usd - (1454 + 729 * 2) / 1e6) < 1e-12, String(monthValue.usd));
-      assert.deepEqual({ ...monthValue, usd: 0 }, { usd: 0, priced_tokens: 540, unpriced_tokens: 0, lower_bound: true, current_rate_fallback: false });
+      assert.deepEqual({ ...monthValue, usd: 0 }, { usd: 0, priced_tokens: 540, unpriced_tokens: 0, lower_bound: true, current_rate_fallback: false, unverified: false });
       // Idle accounts are listed too, last, with zeros.
       assert.deepEqual(month.entries.map((e) => [e.username, e.tokens]), [["bob", 360], ["admin", 180], ["idle", 0]]);
       assert.deepEqual(month.entries[2], {
         username: "idle", display_name: "idle", avatar_url: null, tokens: 0, sessions: 0, events: 0, active_days: 0,
         top_model: null, last_active: null, current_streak: 0,
         // Nothing to price: unavailable, not $0.
-        value: { usd: null, priced_tokens: 0, unpriced_tokens: 0, lower_bound: false, current_rate_fallback: false },
+        value: { usd: null, priced_tokens: 0, unpriced_tokens: 0, lower_bound: false, current_rate_fallback: false, unverified: false },
       });
       const b = month.entries[0];
       assert.equal(b.display_name, "Bob");
@@ -2259,7 +2260,9 @@ describe("rate limits", () => {
 
 describe("API-equivalent value (issue #113)", () => {
   const close = (actual, expected) => assert.ok(actual !== null && Math.abs(actual - expected) < 1e-12, `${actual} ≠ ${expected}`);
-  const NO_VALUE = { usd: null, priced_tokens: 0, unpriced_tokens: 0, lower_bound: false, current_rate_fallback: false };
+  const NO_VALUE = { usd: null, priced_tokens: 0, unpriced_tokens: 0, lower_bound: false, current_rate_fallback: false, unverified: false };
+  /** An OpenCode message of a provider nothing prices (no LiteLLM list in these tests). */
+  const unknownModel = (over = {}) => opencodeMessage({ provider_id: "agentrouter", model_id: "glm-5.3", ...over });
 
   test("Claude Code: cache durations, fast mode; a replay fills what an older collector left out", async () => {
     const srv = await startServer();
@@ -2285,7 +2288,7 @@ describe("API-equivalent value (issue #113)", () => {
       const after = await value();
       // Opus 5.5 fast: $8 in, $40 out, reads 0.05×, writes 1.25× / 2× of the fast input rate.
       close(after.usd, (1000 * 8 + 1000 * 40 + 1000 * 0.4 + 1000 * 10 + 1000 * 16) / 1e6);
-      assert.deepEqual({ ...after, usd: 0 }, { usd: 0, priced_tokens: 5000, unpriced_tokens: 0, lower_bound: false, current_rate_fallback: false });
+      assert.deepEqual({ ...after, usd: 0 }, { usd: 0, priced_tokens: 5000, unpriced_tokens: 0, lower_bound: false, current_rate_fallback: false, unverified: false });
       // An unknown model: its tokens are counted as unpriced, never $0.
       await post(message({ message_id: "msg_value_2", model: "claude-mystery-9" }));
       const mixed = await value();
@@ -2305,7 +2308,7 @@ describe("API-equivalent value (issue #113)", () => {
     }
   });
 
-  test("Codex: Fast mode at Fast rates; other providers and subscription-only models unpriced; other tools too", async () => {
+  test("Codex: Fast mode at Fast rates; other providers and subscription-only models unpriced, unknown models too", async () => {
     const srv = await startServer();
     try {
       const cookie = (await register(srv.base, "cx")).cookie;
@@ -2316,7 +2319,7 @@ describe("API-equivalent value (issue #113)", () => {
         codexResponse({ model: "gpt-6-sol", model_provider: "ollama", usage }),
         codexResponse({ model: "codex-auto-review", usage }),
       ], collector: collector("codex") } });
-      await req(srv.base, "POST", "/api/ingest/opencode", { key, body: { messages: [opencodeMessage()] } });
+      await req(srv.base, "POST", "/api/ingest/opencode", { key, body: { messages: [unknownModel()] } });
       const s = (await req(srv.base, "GET", "/api/u/cx/summary", { anon: true })).json;
       // GPT-6 Sol Fast: $4 in, $0.40 cached, $5 cache write, $20 out (reasoning is inside output).
       close(s.total.value.usd, (1000 * 4 + 1000 * 0.4 + 1000 * 5 + 500 * 20) / 1e6);
@@ -2351,7 +2354,7 @@ describe("API-equivalent value (issue #113)", () => {
         usage: { input_tokens: 100000, cached_input_tokens: 0, output_tokens: 0 } })] });
       await post("dear", "claude-code", { messages: [{ message_id: "msg_dear", session_id: "d", model: "claude-opus-5-5",
         occurred_at: now, usage: { input_tokens: 1000, output_tokens: 1000 } }] });
-      await post("cursory", "opencode", { messages: [opencodeMessage({ occurred_at: now })] });
+      await post("cursory", "opencode", { messages: [unknownModel({ occurred_at: now })] });
       const board = async (q) => (await req(srv.base, "GET", `/api/leaderboard?days=7${q}`, { anon: true })).json;
       const names = (b) => b.entries.map((e) => e.username);
 
@@ -2370,6 +2373,94 @@ describe("API-equivalent value (issue #113)", () => {
       assert.equal((await board("&rank=usd")).rank, "tokens");
     } finally {
       await srv.stop();
+    }
+  });
+});
+
+describe("pricing sources: priority file, LiteLLM, unpriced models (issue #268)", () => {
+  const M = 1e6;
+  const LIST = {
+    "meta/muse-spark-1.3-contributor": { litellm_provider: "meta", mode: "chat",
+      input_cost_per_token: 0.1 / M, output_cost_per_token: 0.2 / M, cache_read_input_token_cost: 0.002 / M },
+  };
+  /** A fake LiteLLM host: serves `body` (a status code: fails with it), counts downloads. */
+  async function priceHost(body) {
+    let hits = 0;
+    const server = http.createServer((q, res) => {
+      hits++;
+      if (typeof body === "number") { res.statusCode = body; res.end(); return; }
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(body));
+    });
+    await new Promise((r) => server.listen(0, "127.0.0.1", r));
+    return { url: `http://127.0.0.1:${server.address().port}/prices.json`, hits: () => hits, close: () => new Promise((r) => server.close(r)) };
+  }
+  const muse = (over = {}) => opencodeMessage({ provider_id: "opencode", model_id: "muse-spark-1.3-contributor-free",
+    usage: { input_tokens: 1000, output_tokens: 1000, reasoning_tokens: 0, cache_read_tokens: 1000, cache_write_tokens: 0, total_tokens: 3000 }, ...over });
+  const pricing = async (srv) => (await req(srv.base, "GET", "/api/admin/pricing")).json;
+  const waitFor = async (fn) => { for (let i = 0; i < 100 && !(await fn()); i++) await new Promise((r) => setTimeout(r, 50)); return fn(); };
+
+  test("the admin panel lists unpriced models with why; LiteLLM prices them once downloaded, kept across restarts", async () => {
+    const host = await priceHost(LIST);
+    const dir = fs.mkdtempSync(`${os.tmpdir()}/ai-pricing-`);
+    const env = { DB_PATH: `${dir}/t.db`, LITELLM_PRICES_URL: host.url };
+    let srv = await startServer({ env });
+    try {
+      const key = (await newDevice(srv.base, "p")).key;
+      await req(srv.base, "POST", "/api/ingest/opencode", { key, body: { messages: [
+        muse(), opencodeMessage({ provider_id: "agentrouter", model_id: "glm-5.3" }),
+      ] } });
+      assert.ok(await waitFor(async () => (await pricing(srv)).litellm.models === 1), "the list was downloaded");
+      const p = await pricing(srv);
+      assert.equal(p.litellm.url, host.url);
+      assert.equal(p.litellm.error, null);
+      assert.ok(p.priority.prices > 0 && p.priority.aliases >= 1);
+      // Muse Spark is priced (alias → LiteLLM); the other model is listed, with why.
+      assert.deepEqual(p.unpriced.map(({ last_seen, ...m }) => m), [{
+        tool: "opencode", model: "agentrouter/glm-5.3", reason: "no known rate", tokens: 27929, events: 1, accounts: 1,
+      }]);
+      const value = (await req(srv.base, "GET", "/api/u/admin/summary?tool=opencode", { anon: true })).json.total.value;
+      assert.ok(Math.abs(value.usd - (1000 * 0.1 + 1000 * 0.2 + 1000 * 0.002) / M) < 1e-12, String(value.usd));
+      assert.equal(value.unverified, true);
+      assert.ok(fs.existsSync(`${dir}/litellm-prices.json`), "kept next to the database");
+      // Admins only.
+      const bob = (await register(srv.base, "bob")).cookie;
+      assert.equal((await req(srv.base, "GET", "/api/admin/pricing", { cookie: bob })).status, 403);
+      await srv.stop();
+
+      // A restart uses the copy kept: no download while it is less than a day old.
+      const before = host.hits();
+      srv = await startServer({ env });
+      assert.equal((await pricing(srv)).litellm.models, 1);
+      assert.equal(host.hits(), before);
+    } finally {
+      await srv.stop();
+      await host.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a failed download changes nothing: no list, the error shown, usage unpriced", async () => {
+    const host = await priceHost(500);
+    const srv = await startServer({ env: { LITELLM_PRICES_URL: host.url } });
+    try {
+      const key = (await newDevice(srv.base, "p")).key;
+      await req(srv.base, "POST", "/api/ingest/opencode", { key, body: { messages: [muse()] } });
+      assert.ok(await waitFor(async () => (await pricing(srv)).litellm.error !== null));
+      const p = await pricing(srv);
+      assert.equal(p.litellm.error, "HTTP 500");
+      assert.equal(p.litellm.models, 0);
+      assert.equal(p.unpriced[0].model, "opencode/muse-spark-1.3-contributor-free");
+      // Off by default in tests, and off when empty.
+      const off = await startServer();
+      try {
+        assert.deepEqual((await pricing(off)).litellm, { url: null, fetched_at: null, models: 0, error: null });
+      } finally {
+        await off.stop();
+      }
+    } finally {
+      await srv.stop();
+      await host.close();
     }
   });
 });
