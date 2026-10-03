@@ -10,6 +10,7 @@
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
     "skipLibCheck": true,
+    "resolveJsonModule": true,
     "types": ["svelte", "vite/client"]
   },
   "include": ["src/**/*", "../shared/**/*"]

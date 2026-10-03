@@ -25,7 +25,16 @@ export interface NormalizedMessage {
   occurred_at: number;
   /** The device's UTC offset at occurred_at, in minutes; null when not sent. */
   utc_offset_min: number | null;
+  /** Of cache_write_tokens, those written to Anthropic's 1-hour cache; null: not recorded. */
+  cache_write_1h_tokens: number | null;
+  /** Processing tier as recorded ("fast", "flex", …); null: not recorded (standard). */
+  service_tier: string | null;
+  /** Anthropic inference region ("us", "global", …); null: not recorded. */
+  inference_geo: string | null;
 }
+
+/** No pricing detail: tools whose payloads carry none. */
+const NO_PRICING_DETAIL = { cache_write_1h_tokens: null, service_tier: null, inference_geo: null } as const;
 
 /** Context fill of a session at measurement time (a gauge, never summed). */
 export interface NormalizedContext {
@@ -88,6 +97,11 @@ function utcOffset(v: unknown): number | null {
   return Number.isInteger(n) && n >= -720 && n <= 840 && n % 15 === 0 ? n : null;
 }
 
+/** A short lowercase label (a tier or a region), or null. */
+function label(v: unknown): string | null {
+  return typeof v === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(v) ? v.toLowerCase() : null;
+}
+
 function modelOf(v: unknown): string | null {
   if (typeof v === "string") return v;
   return isObj(v) ? str(v.id || v.display_name || null) : null;
@@ -106,6 +120,14 @@ function toMessage(m: Obj, now: number): NormalizedMessage | null {
   if (typeof id !== "string") return null;
   const u: Obj = isObj(m.usage) ? m.usage : {};
   const size = optNum(m.context_window_size);
+  const cacheWrite = toInt(u.cache_creation_input_tokens ?? u.cache_write_tokens);
+  // Transcripts split cache writes by duration (usage.cache_creation): the
+  // 1-hour cache costs 2× input, the 5-minute one 1.25×.
+  // Known only when both durations are there and add up to the writes.
+  const split = isObj(u.cache_creation) ? u.cache_creation : null;
+  const fiveMin = split ? optNum(split.ephemeral_5m_input_tokens) : null;
+  const oneHour = split ? optNum(split.ephemeral_1h_input_tokens) : null;
+  const speed = label(m.speed ?? u.speed);
   return {
     event_id: id,
     session_id: str(m.session_id ?? m.sessionId),
@@ -114,11 +136,16 @@ function toMessage(m: Obj, now: number): NormalizedMessage | null {
     input_tokens: toInt(u.input_tokens),
     output_tokens: toInt(u.output_tokens),
     cache_read_tokens: toInt(u.cache_read_input_tokens ?? u.cache_read_tokens),
-    cache_write_tokens: toInt(u.cache_creation_input_tokens ?? u.cache_write_tokens),
+    cache_write_tokens: cacheWrite,
     context_window_size: size !== null && size > 0 ? Math.floor(size) : null,
     context_used_pct: optNum(m.context_used_pct),
     occurred_at: eventTime(m.occurred_at, now),
     utc_offset_min: utcOffset(m.utc_offset_min),
+    cache_write_1h_tokens: cacheWrite === 0 ? 0
+      : fiveMin !== null && oneHour !== null && fiveMin + oneHour === cacheWrite ? oneHour : null,
+    // Fast mode is recorded as usage.speed, next to service_tier "standard".
+    service_tier: speed === "fast" ? "fast" : label(m.service_tier ?? u.service_tier),
+    inference_geo: label(m.inference_geo ?? u.inference_geo),
   };
 }
 
@@ -236,11 +263,17 @@ function toCodexMessage(m: Obj, now: number): NormalizedMessage | null {
   const u: Obj = isObj(m.usage) ? m.usage : {};
   const cacheRead = toInt(u.cached_input_tokens ?? u.cache_read_input_tokens);
   const cacheWrite = toInt(u.cache_write_input_tokens ?? u.cache_creation_input_tokens);
+  // Codex can run models of other providers (model_provider_id): stored as
+  // provider/model like OpenCode's, so they are never priced as OpenAI's.
+  const model = modelOf(m.model);
+  // An id that is not a plain label is still another provider's.
+  const provider = typeof m.model_provider === "string" && m.model_provider
+    ? label(m.model_provider) ?? "other" : null;
   return {
     event_id: id,
     session_id: str(m.session_id ?? m.thread_id),
     prompt_id: str(m.turn_id),
-    model: modelOf(m.model),
+    model: model && provider && provider !== "openai" ? `${provider}/${model}` : model,
     input_tokens: Math.max(0, toInt(u.input_tokens) - cacheRead - cacheWrite),
     output_tokens: toInt(u.output_tokens),
     cache_read_tokens: cacheRead,
@@ -249,6 +282,9 @@ function toCodexMessage(m: Obj, now: number): NormalizedMessage | null {
     context_used_pct: null,
     occurred_at: eventTime(m.occurred_at, now),
     utc_offset_min: utcOffset(m.utc_offset_min),
+    cache_write_1h_tokens: null,
+    service_tier: label(m.service_tier),
+    inference_geo: null,
   };
 }
 
@@ -327,6 +363,7 @@ function toOpenCodeMessage(m: Obj, now: number): NormalizedMessage | null {
     context_used_pct: null,
     occurred_at: eventTime(m.occurred_at, now),
     utc_offset_min: utcOffset(m.utc_offset_min),
+    ...NO_PRICING_DETAIL,
   };
 }
 
@@ -387,6 +424,7 @@ function normalizeCursor(body: unknown): NormalizedBatch {
       context_used_pct: null,
       occurred_at: eventTime(m.occurred_at, now),
       utc_offset_min: utcOffset(m.utc_offset_min),
+      ...NO_PRICING_DETAIL,
     });
   }
   return { tool: "cursor", messages, quotas: [], account_ref: accountRef(src),
@@ -422,6 +460,7 @@ function toAntigravityMessage(m: Obj, now: number): NormalizedMessage | null {
     context_used_pct: null,
     occurred_at: eventTime(m.occurred_at, now),
     utc_offset_min: utcOffset(m.utc_offset_min),
+    ...NO_PRICING_DETAIL,
   };
 }
 

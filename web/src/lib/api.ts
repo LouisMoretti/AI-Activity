@@ -1,6 +1,6 @@
 // Typed client for the dashboard JSON API (same origin, cookie session).
 import type {
-  ActivityResponse, AdminOverview, AdminSettings, AdminUser, AuthStatus, DeletedAccount, DeletedActivity, LeaderboardResponse, Profile, Device, QuotasResponse,
+  ActivityResponse, AdminOverview, AdminPricing, AdminSettings, AdminUser, AuthStatus, DeletedAccount, DeletedActivity, LeaderboardRank, LeaderboardResponse, Profile, Device, QuotasResponse,
   SessionsResponse, SummaryResponse, FriendsResponse, PreviewSeedConfig,
 } from "../../../shared/types.ts";
 
@@ -76,6 +76,7 @@ export const api = {
   startGithub: (start: GithubStart) => post<{ url: string }>("/api/auth/github", start),
   logout: () => post<{ ok: true }>("/api/auth/logout"),
   adminOverview: () => get<AdminOverview>("/api/admin/overview"),
+  adminPricing: () => get<AdminPricing>("/api/admin/pricing"),
   adminSettings: () => get<AdminSettings>("/api/admin/settings"),
   setSignupOpen: (signup_open: boolean) => post<AdminSettings>("/api/admin/settings", { signup_open }),
   previewSeed: () => get<{ config: PreviewSeedConfig }>("/api/admin/preview-seed"),
@@ -91,8 +92,9 @@ export const api = {
   setUserDisabled: (id: number, disabled: boolean) =>
     post<{ ok: true }>(`/api/users/${id}/${disabled ? "disable" : "enable"}`),
   setUserAdmin: (id: number, is_admin: boolean) => post<{ ok: true }>(`/api/users/${id}/admin`, { is_admin }),
-  /** Everyone's usage over the last `days` days, or all time (null). */
-  leaderboard: (days: number | null) => get<LeaderboardResponse>(`/api/leaderboard?days=${days ?? "all"}`),
+  /** Everyone's usage over the last `days` days, or all time (null), ranked by tokens or API-equivalent value. */
+  leaderboard: (days: number | null, rank: LeaderboardRank = "tokens") =>
+    get<LeaderboardResponse>(`/api/leaderboard?days=${days ?? "all"}&rank=${rank}`),
   friends: () => get<FriendsResponse>("/api/friends"),
   // A profile's usage, public by username (the viewer's own page uses it too).
   profile: (username: string) => get<Profile>(profileBase(username)),

@@ -19,14 +19,18 @@ activity view as OpenCode (`ActivityToolCard`).
 Layout, top to bottom: token activity (centered year calendar, readout shows
 today unless a day is hovered; the Weekly and Cumulative tabs likewise show
 the last 7 days or the running total unless a week is hovered, focused or
-tapped), four stats (all-time tokens, today, sessions,
-current streak; hover shows the split by tool and model, or the longest
-streak), one card per tool in `TOOLS` order (Claude Code, Codex,
+tapped), five stats (all-time tokens, today, API value, sessions,
+current streak; hover shows the split by tool and model, the value's
+coverage and assumptions, or the longest streak), one card per tool in `TOOLS` order (Claude Code, Codex,
 Cursor and Antigravity on full rows, then OpenCode, which takes 2/3 of the last row,
 next to "Today by tool": today's tokens split by tool), recent conversations (10 + "Show more"). No tool filter:
 every tool is always shown; on your own page, a one-line box under them
-says how to add one (the install command, Settings → Devices). No cost or subscription tracking (removed on
-purpose). Only demo data carries a badge ("Demonstration data"). Palette: the
+says how to add one (the install command, Settings → Devices). No cost or
+subscription tracking (removed on purpose): no plans, invoices or money
+paid. The only money figure is the **API-equivalent value** (issue #113,
+§4): measured tokens at published retail API rates, always labeled an
+estimate (never "spend"), with the share of tokens priced when some have no known rate,
+"—" (never $0) when none has. Only demo data carries a badge ("Demonstration data"). Palette: the
 original dark theme; type: Geist, with Geist Mono only for ids and model
 names. Quota bars carry a mark for how far into the window we are.
 
@@ -43,8 +47,9 @@ fictional user, "Demo preview" (initial only, no picture), built in the
 browser (no usage API call, no refresh). It lives only at `/demo`, never
 under `/u/`, so a real account named `demo` is never mistaken for it.
 `/leaderboard` is **public** too: every enabled account (idle ones last,
-with zeros) ranked by tokens over 7 days / 30 days / all time, with
-server-wide totals, the model split and a global activity calendar.
+with zeros) ranked by tokens (default) or API-equivalent value over 7 days
+/ 30 days / all time, with server-wide totals, the model split and a
+global activity calendar.
 `/friends` is signed-in only: it matches the viewer's public GitHub follows
 by numeric id to enabled accounts here, with their public seven-day usage.
 The GitHub list is cached for five minutes per numeric id and login; if GitHub
@@ -321,6 +326,9 @@ file hashes, update hints in each collector);
 `test/confirm-delete.test.js` runs the Settings danger zone's flows
 (`confirm-delete.svelte.ts`, delete activity and delete account: confirm,
 cancel, success, failure);
+`test/pricing.test.js` covers the API-equivalent rates and rules
+(`shared/pricing.ts`, the priority file's validation, the LiteLLM
+conversion and lookup);
 `test/series.test.js` covers pure helpers of the web
 client; `test/dashboard.test.js` runs the client's state class
 (`dashboard.svelte.ts`, compiled with `svelte/compiler`) against a fake
@@ -643,7 +651,7 @@ Browser dashboard (web/: Svelte 5 + TypeScript, built by Vite)
 server/
   index.ts          boot: config, DB, listen
   app.ts            Hono app: /api mount, viewer-auth gate, static + SPA fallback
-  config.ts         env → Config (PORT, DB_PATH, STATIC_DIR, BACKUP_DIR, GITHUB_*, PUBLIC_URL,
+  config.ts         env → Config (PORT, DB_PATH, STATIC_DIR, BACKUP_DIR, GITHUB_*, PUBLIC_URL, LITELLM_PRICES_URL,
                     ALLOWED_GITHUB_LOGINS)
   db/schema.ts      open + migrate (runs pending migrations)
   db/migrations.ts  ordered schema migrations (PRAGMA user_version)
@@ -658,6 +666,7 @@ server/
   lib/backup.ts       consistent snapshots, retention, restore
   lib/client.ts       client address + HTTPS behind the tunnel or TRUST_PROXY
   lib/rate-limit.ts   token buckets + LIMITS (ingest, public reads, per user, OAuth)
+  lib/litellm.ts      LiteLLM price list: fallback pricing catalog, cached next to the DB
   lib/headers.ts      security headers on every response (HSTS over HTTPS only, CSP on HTML)
   lib/http.ts
   routes/           auth, ingest, usage (public profiles + leaderboard),
@@ -665,6 +674,8 @@ server/
                     account (profile + admin users)
 shared/types.ts     API response types shared with the web client, TOOLS
 shared/quota-pools.ts  quota window lengths, quota pools per tool (QUOTA_POOLS)
+shared/pricing.json    priority pricing file: verified rates and aliases (edit this one)
+shared/pricing.ts      API-equivalent value: lookup, priceGroup / explainPrice
 shared/collectors.ts   collector versions: latest and minimum per tool
 web/
   src/lib/api.ts          typed fetch client (401 → UnauthorizedError)
@@ -688,7 +699,7 @@ web/
                           DangerZone (DangerAction), AccountMenu,
                           SiteHeader, ProfilePanel, UsersPanel,
                           AuthPanel, Leaderboard, Friends,
-                          AdminOverview, …
+                          AdminOverview, PricingPanel, …
   src/styles/tokens.css   design tokens — components only use these variables
 ```
 
@@ -752,7 +763,10 @@ Components never branch on live vs demo: both sources map into the same
   targets are kept, so switching back resumes. The shape from before
   targets is dropped (one full resend), except Antigravity's
   `{"scope": sha256(url + "\n" + key), …}`, carried over when it is the
-  current target's. Issue #127.
+  current target's. Issue #127. Claude Code's and Codex's target state
+  also holds `"fields": FIELDS`: bump `FIELDS` when messages carry new
+  fields, and progress saved before is dropped (one full resend), so the
+  server fills the new fields in on rows it has (§5).
 - README.md ends with "How the collector scripts work": what the five
   scripts share and, per script, where it is copied, what runs it, what it
   reads, its progress and lock files, and its flags. Keep it in step.
@@ -910,6 +924,66 @@ Components never branch on live vs demo: both sources map into the same
   all; people sign in with GitHub, make a device key in Settings, and the
   collectors send their whole local history again (their offsets are
   kept per server and key, §3).
+- Migration 6 adds what an API-equivalent value needs besides model and
+  counts: `usage_events.cache_write_1h_tokens` (of the cache writes, those
+  to Anthropic's 1-hour cache; NULL: not recorded), `service_tier` (Claude
+  Code's fast mode as `fast`, Codex's service tier) and `inference_geo`
+  (Anthropic's region), and rebuilds `idx_usage_user_read` to cover them.
+
+### API-equivalent value (`shared/pricing.ts`, issues #113, #268)
+
+- Rates are data, logic is code. `shared/pricing.json` is the priority
+  file: `prices` are published retail API rates (USD per million tokens),
+  one entry per provider and model set with its official `source` and
+  `from` (the UTC day it took effect; absent: since release); `aliases`
+  price a stored model as another (`price_as`, with a `note`). `version`
+  changes with every edit and is returned with the values
+  (`PRICING_VERSION`). `parsePricingFile` validates it at import (the
+  server does not start on a bad edit). Never add a rate without an
+  official source, and never price a model "like" a similar one: alias
+  only to the same model sold elsewhere.
+- Lookup (`explainPrice`): a stored model resolves to provider and id
+  (aliases first; `provider/model` as stored, else the tool's: Claude Code
+  → anthropic, Codex → openai, Cursor and Antigravity by the id's prefix),
+  then the priority file, then the fallback catalog (also when the
+  priority entry lacks the group's tier, region, long-context or cache
+  rate: a partial verified entry never hides a complete community one)
+  (`server/lib/litellm.ts`: LiteLLM's list, provider-own entries only,
+  usage flagged `unverified`), else unpriced with a reason. Every tool is
+  priced this way; stored counts must stay disjoint (input without cache,
+  output with reasoning).
+- LiteLLM (`LITELLM_PRICES_URL`, default its GitHub raw file; empty: off;
+  tests set it empty): downloaded in the background at start when the
+  copy is missing or a day old, rechecked hourly, kept trimmed in
+  `litellm-prices.json` next to the database (atomic write); a failed or
+  malformed download keeps the copy in use and shows the error in the
+  admin panel. Text models with input and output rates only, per-token
+  costs above $1,000 per million dropped; its `_priority` / `_flex` /
+  `_above_<N>k_tokens` / `_above_1hr` fields map to Fast, Flex, long
+  context and 1-hour cache writes. No effective dates: current rates.
+- Reads group usage by tool, model, tier, region, context band (how many
+  `longContextThresholds(catalog)` a message's prompt `input + cache read + cache
+  write` exceeds: long-context rates apply to the whole request) and
+  pricing period (between `PRICE_BOUNDARIES`), from the covering index,
+  then price each group in JS (`priceGroup`). The dashboard (`summary`)
+  and the leaderboard share it, so their values agree.
+- `ApiValue`: `usd` (null when nothing is priced, never 0),
+  `priced_tokens`, `unpriced_tokens`, `lower_bound` (cache writes without
+  their 5-minute / 1-hour split, priced at the 5-minute rate),
+  `current_rate_fallback` (usage before its model's oldest published rate,
+  priced at that rate), `unverified` (some usage priced from LiteLLM).
+  A category with tokens but no rate (e.g. cache reads) leaves the group
+  unpriced. The UI shows "≈", "≥" for a lower bound, and the share of
+  tokens priced (`fmtPriced`, rounded down) when some were left out.
+- Rules worth knowing: OpenAI cache writes are billed as input on models
+  without a cache-write rate; Codex Fast mode (`priority`/`fast`) uses the
+  published Fast rates (as requested: a Fast request OpenAI downgraded to
+  Standard under load is billed Standard, but the rollout keeps the
+  requested tier, so it is valued slightly too high); Anthropic `speed: "fast"` only where a fast rate
+  is published; `inference_geo: "us"` 1.1× on Claude 4.6 and later;
+  Sonnet 4 / 4.5 above 200K prompt tokens 2× input and cache, 1.5× output.
+  Not measured, so not included: batch discounts, server tool fees,
+  OpenAI data residency, negotiated discounts.
 
 ### Backups
 
@@ -1111,6 +1185,8 @@ Notes:
 | transcript `message.model`, `timestamp` | `model`, `occurred_at` |
 | device clock at `timestamp` (`time.localtime(t).tm_gmtoff // 60`) | `messages[].utc_offset_min` |
 | transcript `message.usage` (4 counters) | `messages[].usage` |
+| transcript `message.usage.cache_creation` (`ephemeral_5m_input_tokens`, `ephemeral_1h_input_tokens`) | `messages[].usage.cache_creation` → `cache_write_1h_tokens` |
+| transcript `message.usage.speed` / `service_tier` / `inference_geo` | `messages[].speed` / `service_tier` / `inference_geo` → `service_tier` (`fast` when `speed` is), `inference_geo` |
 | statusLine `rate_limits.*` | `rate_limits` snapshots (absent → "Unavailable") |
 | statusLine `context_window.used_percentage` / `context_window_size` | `context` gauge, never summed |
 
@@ -1129,6 +1205,7 @@ Same batch shape (`messages`, `rate_limits`, `context`, `occurred_at`,
 | older rollouts (no records): `token_count` → `tc_<session>_<thread total>` | `messages[].event_id` |
 | `token_usage_record.session_id` / `session_meta.id` | `messages[].session_id` |
 | latest `turn_context.model` (or `thread_settings_applied`) | `messages[].model` |
+| latest `thread_settings_applied.service_tier` / `model_provider_id` | `messages[].service_tier` / `model_provider` (a provider other than `openai` stores the model as `provider/model`, never priced as OpenAI's) |
 | `token_usage_record.usage` (`input_tokens`, `cached_input_tokens`, `cache_write_input_tokens`, `output_tokens`) | `messages[].usage` |
 | machine clock at the line's `timestamp` | `messages[].utc_offset_min` |
 | `token_count.rate_limits.primary` / `secondary` (`used_percent`, `window_minutes`, `resets_at`) | `rate_limits` → `five_hour` (300 min) / `seven_day` (10080 min); other lengths dropped |
@@ -1370,6 +1447,10 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   themselves, so one enabled admin remains.
 - Admin panel (admin only): `GET /api/admin/overview` → server-wide counts
   (accounts, disabled, live devices, events, sessions, last event).
+  `GET /api/admin/pricing` → `{pricing_version, priority: {prices,
+  aliases}, litellm: {url, fetched_at, models, error}, unpriced: [{tool,
+  model, reason, tokens, events, accounts, last_seen}]}` (all accounts, all
+  time, most tokens first): what to add to `shared/pricing.json`.
   `GET /api/admin/settings` → `{signup_open}`, `POST /api/admin/settings
   {signup_open}` opens or closes account creation (stored in `settings`;
   open by default). Closing it never affects existing accounts.
@@ -1396,10 +1477,14 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
 - Public reads (`/api/u/…`, `/api/leaderboard`) are cached in memory until
   the database changes (this server's writes or the CLI's) and for 30 s at
   most (`readCache` in `server/lib/http.ts`).
-- `GET /api/leaderboard?days=1..730|all` (default 30; the UI uses 7, 30 and all), **no session needed** → every enabled
-  account, ranked by tokens in the period (`tokens`, `sessions`, `events`,
+- `GET /api/leaderboard?days=1..730|all&rank=tokens|value` (default 30 and
+  tokens; the UI uses 7, 30 and all), **no session needed** → every enabled
+  account, ranked by tokens in the period, or by API-equivalent value
+  (accounts with nothing priced after the others, then by tokens)
+  (`tokens`, `sessions`, `events`, `value`,
   `active_days`, `top_model`, `last_active` (null when idle),
-  `current_streak`), plus `totals`, `accounts`, `by_model` and a 364-day
+  `current_streak`), plus `rank`, `totals` (with `value`), `accounts`,
+  `by_model` (each with `value`), `pricing_version` and a 364-day
   global `activity` ending on `day`. Disabled accounts never appear.
 - Usage, public, under `/api/u/:username/`:
   - `stats?days=30&tool=claude-code`
@@ -1407,7 +1492,9 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
     the `days` days ending on the owner's today)
   - `quotas` (current window per account, tool + limit type; see §5)
   - `summary?tool=...` (`day`: the owner's today; all-time and today's
-    tokens, sessions, events, each split `by_model` and `by_tool`)
+    tokens, sessions, events and API-equivalent `value`, each split
+    `by_model` and `by_tool` (rows with their `value`);
+    `last_event_at`: the latest measured event; `pricing_version`)
   - `sessions?limit=10&offset=0&tool=...` (grouped by unique session id,
     with latest `context_used_pct` / `context_window_size`, plus `total`
     for paging)

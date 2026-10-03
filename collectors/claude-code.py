@@ -46,7 +46,7 @@ else:
 
 # Bump on every change to this file, with COLLECTOR_VERSIONS in
 # shared/collectors.ts: the server flags older copies as outdated.
-VERSION = 3
+VERSION = 4
 COLLECTOR = {"name": "claude-code", "version": VERSION}
 SERVER = os.environ.get("AI_ACTIVITY_URL", "<server>")
 KEY = os.environ.get("AI_ACTIVITY_KEY", "<device key>")
@@ -54,6 +54,13 @@ HOME = os.path.expanduser("~")
 CACHE = os.path.join(HOME, ".cache", "ai-activity")
 BATCH = 400
 USAGE = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+# What each message's price depends on besides its model and counts: the
+# cache writes' durations, fast mode and the inference region.
+CACHE_SPLIT = ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")
+PRICING = ("speed", "service_tier", "inference_geo")
+# Bump when messages carry new fields: each target's history is sent once
+# more, so the server fills them in on the messages it already has.
+FIELDS = 2
 
 
 def objects(line):
@@ -105,6 +112,12 @@ def read(path, offset):
             if not isinstance(m, dict) or not isinstance(m.get("id"), str) or not isinstance(m.get("usage"), dict) or t is None:
                 continue
             u = m["usage"]
+            usage = {k: u.get(k) or 0 for k in USAGE}
+            split = u.get("cache_creation")
+            if isinstance(split, dict):
+                # Only the durations recorded: a missing one is unknown, not 0.
+                usage["cache_creation"] = {k: split[k] for k in CACHE_SPLIT
+                                           if type(split.get(k)) is int}
             # A message seen again with more output tokens is its final entry;
             # at a tie, the session's own file wins over a subagent's.
             rank = (u.get("output_tokens") or 0, main_file == o.get("sessionId"))
@@ -114,7 +127,8 @@ def read(path, offset):
                 "model": m.get("model"),
                 "occurred_at": t,
                 "utc_offset_min": utc_offset(t),
-                "usage": {k: u.get(k) or 0 for k in USAGE},
+                "usage": usage,
+                **{k: u[k] for k in PRICING if isinstance(u.get(k), str)},
             }))
     return found, offset + end
 
@@ -190,11 +204,14 @@ def for_target(saved):
     Offsets are kept per server and key: a new one starts empty, so its first
     run sends the whole local history (the server stores each message once),
     and switching back to an earlier one resumes where it was. Offsets from
-    before targets (at the top level) are dropped: one full resend."""
+    before targets (at the top level) are dropped: one full resend, like
+    offsets saved before messages carried the current FIELDS."""
     targets = saved.get("targets") if isinstance(saved, dict) else None
     targets = {k: v for k, v in targets.items() if isinstance(v, dict)} if isinstance(targets, dict) else {}
     fp = target()
     offsets = targets.pop(fp, {})
+    if offsets.get("fields") != FIELDS:
+        offsets = {"fields": FIELDS}
     targets[fp] = offsets  # most recently used last
     return {"targets": dict(list(targets.items())[-KEPT_TARGETS:])}, offsets
 

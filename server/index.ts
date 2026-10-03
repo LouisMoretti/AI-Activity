@@ -3,6 +3,7 @@ import { createApp } from "./app.ts";
 import { loadConfig } from "./config.ts";
 import { accountsExist } from "./db/queries.ts";
 import { openDb } from "./db/schema.ts";
+import { startLiteLLM } from "./lib/litellm.ts";
 import { newSetupCode } from "./lib/setup.ts";
 
 const config = loadConfig();
@@ -12,7 +13,10 @@ const db = openDb(config.dbPath, config.backupDir);
 // when ALLOWED_GITHUB_LOGINS already says who may take the server.
 const setupCode = accountsExist(db) || config.allowedLogins ? null : newSetupCode();
 
-const server = serve({ fetch: createApp(db, config, setupCode).fetch, port: config.port }, () => {
+// Rates for models the priority pricing file lacks, refreshed in the background.
+const litellm = startLiteLLM(config.litellm.url, config.litellm.cacheFile);
+
+const server = serve({ fetch: createApp(db, config, setupCode, litellm).fetch, port: config.port }, () => {
   console.log(`AI Activity listening on http://localhost:${config.port}`);
   console.log(`DB: ${config.dbPath}`);
   if (config.allowedLogins) {
@@ -33,6 +37,7 @@ function shutdown(signal: string): void {
   console.log(`${signal} received, shutting down`);
   const force = setTimeout(() => process.exit(1), 5000);
   force.unref();
+  litellm.stop();
   server.close(() => {
     db.close();
     process.exit(0);

@@ -1,9 +1,11 @@
 import fs from "node:fs";
+import http from "node:http";
 import Database from "better-sqlite3";
 import os from "node:os";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { COLLECTOR_VERSIONS } from "../shared/collectors.ts";
+import { PRICING_VERSION } from "../shared/pricing.ts";
 import { AVATAR_HOSTS } from "../server/lib/avatar.ts";
 import {
   startServer, req, newDevice, event, collector, codexResponse, opencodeMessage, login, register, userId, TEST_ADMIN,
@@ -1629,12 +1631,21 @@ describe("leaderboard", () => {
       assert.deepEqual((await req(srv.base, "GET", "/api/leaderboard?days=30", { cookie: bob })).json, month);
       assert.equal(month.range_days, 30);
       assert.equal(month.accounts, 3);
-      assert.deepEqual(month.totals, { tokens: 540, sessions: 3, events: 3, active_accounts: 2 });
+      const { value: monthValue, ...monthTotals } = month.totals;
+      assert.deepEqual(monthTotals, { tokens: 540, sessions: 3, events: 3, active_accounts: 2 });
+      // Valued at retail API rates: Opus 5.5 and Sonnet 5. The writes have no
+      // 1-hour split, so they are priced at the 5-minute rate (a lower bound).
+      assert.equal(month.rank, "tokens");
+      assert.equal(month.pricing_version, PRICING_VERSION);
+      assert.ok(Math.abs(monthValue.usd - (1454 + 729 * 2) / 1e6) < 1e-12, String(monthValue.usd));
+      assert.deepEqual({ ...monthValue, usd: 0 }, { usd: 0, priced_tokens: 540, unpriced_tokens: 0, lower_bound: true, current_rate_fallback: false, unverified: false });
       // Idle accounts are listed too, last, with zeros.
       assert.deepEqual(month.entries.map((e) => [e.username, e.tokens]), [["bob", 360], ["admin", 180], ["idle", 0]]);
       assert.deepEqual(month.entries[2], {
         username: "idle", display_name: "idle", avatar_url: null, tokens: 0, sessions: 0, events: 0, active_days: 0,
         top_model: null, last_active: null, current_streak: 0,
+        // Nothing to price: unavailable, not $0.
+        value: { usd: null, priced_tokens: 0, unpriced_tokens: 0, lower_bound: false, current_rate_fallback: false, unverified: false },
       });
       const b = month.entries[0];
       assert.equal(b.display_name, "Bob");
@@ -1751,7 +1762,10 @@ describe("summary, sessions and context (redesign APIs)", () => {
     assert.equal(s.today.sessions, 1);
     assert.deepEqual(s.total.by_model.map((r) => r.name).sort(), ["claude-opus-5-5", "claude-sonnet-5"]);
     assert.equal(s.total.by_model_others_sessions, 0);
-    assert.deepEqual(s.total.by_tool, [{ name: "claude-code", tokens: 360, sessions: 2, events: 2 }]);
+    assert.deepEqual(s.total.by_tool.map(({ value, ...r }) => r), [{ name: "claude-code", tokens: 360, sessions: 2, events: 2 }]);
+    assert.ok(Math.abs(s.total.by_tool[0].value.usd - (1454 + 729) / 1e6) < 1e-12);
+    assert.ok(Math.abs(s.today.value.usd - 1454 / 1e6) < 1e-12);
+    assert.equal(s.last_event_at, now);
     assert.equal(s.day, new Date(now * 1000).toISOString().slice(0, 10));
     assert.equal((await req(srv.base, "GET", "/api/u/admin/summary?tool=codex")).json.total.tokens, 0);
   });
@@ -1906,7 +1920,7 @@ describe("migrations", () => {
       assert.ok(!cols.includes("cost_estimated_usd"));
       // Migration 5 starts over for GitHub sign-in; the backup made first keeps it.
       assert.equal(db.prepare("SELECT COUNT(*) AS n FROM usage_events").get().n, 0);
-      const [backup] = fs.readdirSync(`${dir}/backups`).filter((f) => f.endsWith("-pre-v5.db"));
+      const [backup] = fs.readdirSync(`${dir}/backups`).filter((f) => /-pre-v\d+\.db$/.test(f));
       const kept = new Database(`${dir}/backups/${backup}`, { readonly: true });
       assert.equal(kept.prepare("SELECT input_tokens FROM usage_events WHERE event_id = 'e1'").get().input_tokens, 42);
       kept.close();
@@ -2241,5 +2255,253 @@ describe("rate limits", () => {
     assert.match(full.json.error, /at most 20 devices/);
     assert.equal((await req(srv.base, "POST", `/api/devices/${ids[0]}/revoke`)).status, 200);
     assert.equal((await req(srv.base, "POST", "/api/devices", { body: { name: "replacement" } })).status, 200);
+  });
+});
+
+describe("API-equivalent value (issue #113)", () => {
+  const close = (actual, expected) => assert.ok(actual !== null && Math.abs(actual - expected) < 1e-12, `${actual} ≠ ${expected}`);
+  const NO_VALUE = { usd: null, priced_tokens: 0, unpriced_tokens: 0, lower_bound: false, current_rate_fallback: false, unverified: false };
+  /** An OpenCode message of a provider nothing prices (no LiteLLM list in these tests). */
+  const unknownModel = (over = {}) => opencodeMessage({ provider_id: "agentrouter", model_id: "glm-5.3", ...over });
+
+  test("Claude Code: cache durations, fast mode; a replay fills what an older collector left out", async () => {
+    const srv = await startServer();
+    try {
+      const cookie = (await register(srv.base, "val")).cookie;
+      const key = (await newDevice(srv.base, "v", cookie)).key;
+      const now = Math.floor(Date.now() / 1000);
+      const usage = { input_tokens: 1000, output_tokens: 1000, cache_creation_input_tokens: 2000, cache_read_input_tokens: 1000 };
+      const message = (over) => ({ message_id: "msg_value_1", session_id: "v1", model: "claude-opus-5-5", occurred_at: now, usage, ...over });
+      const post = (m) => req(srv.base, "POST", "/api/ingest/claude-code", { key, body: { messages: [m], collector: collector("claude-code") } });
+      const value = async () => (await req(srv.base, "GET", "/api/u/val/summary", { anon: true })).json.total.value;
+
+      // An older collector: no duration split, priced at the 5-minute rate, flagged.
+      await post(message());
+      const before = await value();
+      close(before.usd, (1000 * 4 + 1000 * 20 + 1000 * 0.2 + 2000 * 5) / 1e6);
+      assert.equal(before.lower_bound, true);
+      // The same message resent with its split (and fast mode): the split is
+      // filled in, counts and tier of the stored message only fill what was missing.
+      const replay = await post(message({ speed: "fast", service_tier: "standard",
+        usage: { ...usage, cache_creation: { ephemeral_5m_input_tokens: 1000, ephemeral_1h_input_tokens: 1000 } } }));
+      assert.equal(replay.json.deduped, 1);
+      const after = await value();
+      // Opus 5.5 fast: $8 in, $40 out, reads 0.05×, writes 1.25× / 2× of the fast input rate.
+      close(after.usd, (1000 * 8 + 1000 * 40 + 1000 * 0.4 + 1000 * 10 + 1000 * 16) / 1e6);
+      assert.deepEqual({ ...after, usd: 0 }, { usd: 0, priced_tokens: 5000, unpriced_tokens: 0, lower_bound: false, current_rate_fallback: false, unverified: false });
+      // An unknown model: its tokens are counted as unpriced, never $0.
+      await post(message({ message_id: "msg_value_2", model: "claude-mystery-9" }));
+      const mixed = await value();
+      assert.equal(mixed.unpriced_tokens, 5000);
+      const s = (await req(srv.base, "GET", "/api/u/val/summary", { anon: true })).json;
+      assert.deepEqual(s.total.by_model.find((r) => r.name === "claude-mystery-9").value, { ...NO_VALUE, unpriced_tokens: 5000 });
+      // A split missing a duration, or not adding up to the writes, is unknown: a lower bound, filled by a later replay.
+      await post(message({ message_id: "msg_value_3", usage: { ...usage, cache_creation: { ephemeral_1h_input_tokens: 1000 } } }));
+      await post(message({ message_id: "msg_value_4", usage: { ...usage, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 1500 } } }));
+      assert.equal((await value()).lower_bound, true);
+      for (const id of ["msg_value_3", "msg_value_4"]) {
+        await post(message({ message_id: id, usage: { ...usage, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 2000 } } }));
+      }
+      assert.equal((await value()).lower_bound, false);
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  test("Codex: Fast mode at Fast rates; other providers and subscription-only models unpriced, unknown models too", async () => {
+    const srv = await startServer();
+    try {
+      const cookie = (await register(srv.base, "cx")).cookie;
+      const key = (await newDevice(srv.base, "c", cookie)).key;
+      const usage = { input_tokens: 3000, cached_input_tokens: 1000, cache_write_input_tokens: 1000, output_tokens: 500, reasoning_output_tokens: 100 };
+      await req(srv.base, "POST", "/api/ingest/codex", { key, body: { messages: [
+        codexResponse({ model: "gpt-6-sol", service_tier: "priority", model_provider: "openai", usage }),
+        codexResponse({ model: "gpt-6-sol", model_provider: "ollama", usage }),
+        codexResponse({ model: "codex-auto-review", usage }),
+      ], collector: collector("codex") } });
+      await req(srv.base, "POST", "/api/ingest/opencode", { key, body: { messages: [unknownModel()] } });
+      const s = (await req(srv.base, "GET", "/api/u/cx/summary", { anon: true })).json;
+      // GPT-6 Sol Fast: $4 in, $0.40 cached, $5 cache write, $20 out (reasoning is inside output).
+      close(s.total.value.usd, (1000 * 4 + 1000 * 0.4 + 1000 * 5 + 500 * 20) / 1e6);
+      assert.equal(s.total.value.priced_tokens, 3500);
+      assert.equal(s.total.value.unpriced_tokens, 3500 * 2 + 27929);
+      assert.ok(s.total.by_model.some((r) => r.name === "ollama/gpt-6-sol" && r.value.usd === null));
+      assert.deepEqual(s.total.by_tool.find((r) => r.name === "opencode").value, { ...NO_VALUE, unpriced_tokens: 27929 });
+      // Stored before the provider was sent, then resent with it: renamed, no longer priced as OpenAI's.
+      const old = codexResponse({ model: "gpt-5", usage });
+      const send = (m) => req(srv.base, "POST", "/api/ingest/codex", { key, body: { messages: [m], collector: collector("codex") } });
+      await send(old);
+      await send({ ...old, model_provider: "azure" });
+      await send(codexResponse({ model: "gpt-5", model_provider: "my provider!", usage }));
+      const models = (await req(srv.base, "GET", "/api/u/cx/summary", { anon: true })).json.total.by_model.map((r) => r.name);
+      assert.ok(models.includes("azure/gpt-5") && models.includes("other/gpt-5") && !models.includes("gpt-5"), String(models));
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  test("final counts without a 1-hour split keep the stored one only for the same cache writes", async () => {
+    const srv = await startServer();
+    try {
+      const cookie = (await register(srv.base, "split")).cookie;
+      const key = (await newDevice(srv.base, "s", cookie)).key;
+      const post = (id, output, writes, split) => req(srv.base, "POST", "/api/ingest/claude-code", { key, body: { messages: [{
+        message_id: id, session_id: "s", model: "claude-opus-5-5", occurred_at: Math.floor(Date.now() / 1000) - 60,
+        usage: { input_tokens: 1, output_tokens: output, cache_creation_input_tokens: writes,
+          ...(split ? { cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: writes } } : {}) },
+      }], collector: collector("claude-code") } });
+      const lowerBound = async () => (await req(srv.base, "GET", "/api/u/split/summary", { anon: true })).json.total.value.lower_bound;
+      // A partial entry with its split, then the final one without (an older collector), same writes: kept.
+      await post("msg_split_1", 1, 1000, true);
+      assert.equal((await post("msg_split_1", 50, 1000, false)).json.updated, 1);
+      assert.equal(await lowerBound(), false);
+      // Final counts with other writes and no split: the old split no longer describes them.
+      await post("msg_split_2", 1, 1000, true);
+      await post("msg_split_2", 50, 3000, false);
+      assert.equal(await lowerBound(), true);
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  test("a leaderboard row is public usage only: its exact shape", async () => {
+    const srv = await startServer();
+    try {
+      const key = (await newDevice(srv.base, "shape")).key;
+      await req(srv.base, "POST", "/api/ingest/opencode", { key, body: { messages: [unknownModel()] } });
+      const board = (await req(srv.base, "GET", "/api/leaderboard?days=7&rank=value", { anon: true })).json;
+      assert.deepEqual(Object.keys(board).sort(), ["accounts", "activity", "by_model", "day", "entries", "pricing_version", "provenance", "range_days", "rank", "totals"]);
+      assert.deepEqual(Object.keys(board.entries[0]).sort(), ["active_days", "avatar_url", "current_streak", "display_name", "events",
+        "last_active", "sessions", "tokens", "top_model", "username", "value"]);
+      // Values carry counts and flags, never which model or why it is unpriced.
+      assert.deepEqual(Object.keys(board.entries[0].value).sort(),
+        ["current_rate_fallback", "lower_bound", "priced_tokens", "unpriced_tokens", "unverified", "usd"]);
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  test("the leaderboard ranks by tokens or by value; nothing priced ranks last, unavailable", async () => {
+    const srv = await startServer();
+    try {
+      const now = Math.floor(Date.now() / 1000) - 60;
+      const post = async (name, tool, body) => {
+        const cookie = (await register(srv.base, name)).cookie;
+        const key = (await newDevice(srv.base, name, cookie)).key;
+        await req(srv.base, "POST", `/api/ingest/${tool}`, { key, body });
+      };
+      // Many cheap tokens, a few expensive ones, and unpriced ones.
+      await post("cheap", "codex", { messages: [codexResponse({ model: "gpt-6-luna", occurred_at: now,
+        usage: { input_tokens: 100000, cached_input_tokens: 0, output_tokens: 0 } })] });
+      await post("dear", "claude-code", { messages: [{ message_id: "msg_dear", session_id: "d", model: "claude-opus-5-5",
+        occurred_at: now, usage: { input_tokens: 1000, output_tokens: 1000 } }] });
+      await post("cursory", "opencode", { messages: [unknownModel({ occurred_at: now })] });
+      const board = async (q) => (await req(srv.base, "GET", `/api/leaderboard?days=7${q}`, { anon: true })).json;
+      const names = (b) => b.entries.map((e) => e.username);
+
+      const byTokens = await board("");
+      assert.equal(byTokens.rank, "tokens");
+      assert.deepEqual(names(byTokens), ["cheap", "cursory", "dear", "admin"]);
+      const byValue = await board("&rank=value");
+      assert.equal(byValue.rank, "value");
+      // $0.024 > $0.01; the accounts with nothing priced follow, by tokens.
+      assert.deepEqual(names(byValue), ["dear", "cheap", "cursory", "admin"]);
+      close(byValue.entries[0].value.usd, (1000 * 4 + 1000 * 20) / 1e6);
+      close(byValue.entries[1].value.usd, 100000 * 0.1 / 1e6);
+      assert.deepEqual(byValue.entries[2].value, { ...NO_VALUE, unpriced_tokens: 27929 });
+      assert.equal(byValue.totals.value.unpriced_tokens, 27929);
+      // Anything else ranks by tokens.
+      assert.equal((await board("&rank=usd")).rank, "tokens");
+    } finally {
+      await srv.stop();
+    }
+  });
+});
+
+describe("pricing sources: priority file, LiteLLM, unpriced models (issue #268)", () => {
+  const M = 1e6;
+  const LIST = {
+    "meta/muse-spark-1.3-contributor": { litellm_provider: "meta", mode: "chat",
+      input_cost_per_token: 0.1 / M, output_cost_per_token: 0.2 / M, cache_read_input_token_cost: 0.002 / M },
+  };
+  /** A fake LiteLLM host: serves `body` (a status code: fails with it), counts downloads. */
+  async function priceHost(body) {
+    let hits = 0;
+    const server = http.createServer((q, res) => {
+      hits++;
+      if (typeof body === "number") { res.statusCode = body; res.end(); return; }
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(body));
+    });
+    await new Promise((r) => server.listen(0, "127.0.0.1", r));
+    return { url: `http://127.0.0.1:${server.address().port}/prices.json`, hits: () => hits, close: () => new Promise((r) => server.close(r)) };
+  }
+  const muse = (over = {}) => opencodeMessage({ provider_id: "opencode", model_id: "muse-spark-1.3-contributor-free",
+    usage: { input_tokens: 1000, output_tokens: 1000, reasoning_tokens: 0, cache_read_tokens: 1000, cache_write_tokens: 0, total_tokens: 3000 }, ...over });
+  const pricing = async (srv) => (await req(srv.base, "GET", "/api/admin/pricing")).json;
+  const waitFor = async (fn) => { for (let i = 0; i < 100 && !(await fn()); i++) await new Promise((r) => setTimeout(r, 50)); return fn(); };
+
+  test("the admin panel lists unpriced models with why; LiteLLM prices them once downloaded, kept across restarts", async () => {
+    const host = await priceHost(LIST);
+    const dir = fs.mkdtempSync(`${os.tmpdir()}/ai-pricing-`);
+    const env = { DB_PATH: `${dir}/t.db`, LITELLM_PRICES_URL: host.url };
+    let srv = await startServer({ env });
+    try {
+      const key = (await newDevice(srv.base, "p")).key;
+      await req(srv.base, "POST", "/api/ingest/opencode", { key, body: { messages: [
+        muse(), opencodeMessage({ provider_id: "agentrouter", model_id: "glm-5.3" }),
+      ] } });
+      assert.ok(await waitFor(async () => (await pricing(srv)).litellm.models === 1), "the list was downloaded");
+      const p = await pricing(srv);
+      assert.equal(p.litellm.url, host.url);
+      assert.equal(p.litellm.error, null);
+      assert.ok(p.priority.prices > 0 && p.priority.aliases >= 1);
+      // Muse Spark is priced (alias → LiteLLM); the other model is listed, with why.
+      assert.deepEqual(p.unpriced.map(({ last_seen, ...m }) => m), [{
+        tool: "opencode", model: "agentrouter/glm-5.3", reason: "no known rate", tokens: 27929, events: 1, accounts: 1,
+      }]);
+      const value = (await req(srv.base, "GET", "/api/u/admin/summary?tool=opencode", { anon: true })).json.total.value;
+      assert.ok(Math.abs(value.usd - (1000 * 0.1 + 1000 * 0.2 + 1000 * 0.002) / M) < 1e-12, String(value.usd));
+      assert.equal(value.unverified, true);
+      assert.ok(fs.existsSync(`${dir}/litellm-prices.json`), "kept next to the database");
+      // Admins only.
+      const bob = (await register(srv.base, "bob")).cookie;
+      assert.equal((await req(srv.base, "GET", "/api/admin/pricing", { cookie: bob })).status, 403);
+      await srv.stop();
+
+      // A restart uses the copy kept: no download while it is less than a day old.
+      const before = host.hits();
+      srv = await startServer({ env });
+      assert.equal((await pricing(srv)).litellm.models, 1);
+      assert.equal(host.hits(), before);
+    } finally {
+      await srv.stop();
+      await host.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a failed download changes nothing: no list, the error shown, usage unpriced", async () => {
+    const host = await priceHost(500);
+    const srv = await startServer({ env: { LITELLM_PRICES_URL: host.url } });
+    try {
+      const key = (await newDevice(srv.base, "p")).key;
+      await req(srv.base, "POST", "/api/ingest/opencode", { key, body: { messages: [muse()] } });
+      assert.ok(await waitFor(async () => (await pricing(srv)).litellm.error !== null));
+      const p = await pricing(srv);
+      assert.equal(p.litellm.error, "HTTP 500");
+      assert.equal(p.litellm.models, 0);
+      assert.equal(p.unpriced[0].model, "opencode/muse-spark-1.3-contributor-free");
+      // Off by default in tests, and off when empty.
+      const off = await startServer();
+      try {
+        assert.deepEqual((await pricing(off)).litellm, { url: null, fetched_at: null, models: 0, error: null });
+      } finally {
+        await off.stop();
+      }
+    } finally {
+      await srv.stop();
+      await host.close();
+    }
   });
 });

@@ -9,8 +9,8 @@ import type { Tool } from "./types.ts";
  * A post without it counts as version 0 (collectors from before versions).
  */
 export const COLLECTOR_VERSIONS: Record<Tool, number> = {
-  "claude-code": 3,
-  codex: 2,
+  "claude-code": 4,
+  codex: 3,
   cursor: 2,
   antigravity: 3,
   opencode: 2,

@@ -4,6 +4,7 @@ import type { BlockList } from "node:net";
 import { defaultBackupDir } from "./db/schema.ts";
 import { parseTrustProxy } from "./lib/client.ts";
 import { parseAllowedLogins, type GithubConfig } from "./lib/github.ts";
+import { DEFAULT_LITELLM_URL } from "./lib/litellm.ts";
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -29,6 +30,12 @@ export interface Config {
   allowedLogins: ReadonlySet<string> | null;
   /** Only isolated PR previews expose sample data controls. */
   preview: boolean;
+  /**
+   * LiteLLM's model price list, the fallback for models the priority
+   * pricing file lacks (LITELLM_PRICES_URL; empty: off), kept in `cacheFile`
+   * next to the database.
+   */
+  litellm: { url: string | null; cacheFile: string };
 }
 
 const trimUrl = (v: string | undefined) => (v?.trim() ? v.trim().replace(/\/+$/, "") : null);
@@ -68,5 +75,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     publicUrl: trimUrl(env.PUBLIC_URL),
     allowedLogins: parseAllowedLogins(env.ALLOWED_GITHUB_LOGINS),
     preview: isPreview(env),
+    litellm: {
+      url: env.LITELLM_PRICES_URL === undefined ? DEFAULT_LITELLM_URL : env.LITELLM_PRICES_URL.trim() || null,
+      cacheFile: path.join(path.dirname(dbPath), "litellm-prices.json"),
+    },
   };
 }
