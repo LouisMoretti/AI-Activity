@@ -6,6 +6,11 @@
       "model": "opencode/muse-spark-1.3-contributor-free",
       "price_as": "meta/muse-spark-1.3-contributor",
       "note": "Free on OpenCode Zen; valued at Meta's paid contributor model, the same model."
+    },
+    {
+      "model": "opencode/x-preview-f-free",
+      "price_as": "zai/glm-5.3-flash",
+      "note": "\"Ox Alpha Free\", OpenCode's stealth preview (Aug 2026): GLM-5.3-Flash behind it, per the maintainer (no public source); valued at Z.ai's rate."
     }
   ],
   "prices": [

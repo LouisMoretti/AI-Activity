@@ -174,6 +174,7 @@ describe("the LiteLLM fallback (server/lib/litellm.ts)", () => {
     // A reseller's rate for the same model: never used for meta's.
     "openrouter/meta/muse-spark-1.3-contributor": e(9, 9, { litellm_provider: "openrouter" }),
     "novita/deepseek/deepseek-v4-flash": e(0.14, 0.28, { litellm_provider: "novita", cache_read_input_token_cost: 0.028 / M }),
+    "zai/glm-5.3-flash": e(0.15, 0.5, { litellm_provider: "zai", cache_read_input_token_cost: 0.03 / M }),
     "gpt-9": e(1, 8, {
       litellm_provider: "openai", cache_read_input_token_cost: 0.1 / M,
       input_cost_per_token_priority: 2 / M, output_cost_per_token_priority: 16 / M,
@@ -191,7 +192,7 @@ describe("the LiteLLM fallback (server/lib/litellm.ts)", () => {
   const priced = (over) => priceGroup(group(over), catalog);
 
   test("text models with input and output rates only, in USD per million tokens", () => {
-    assert.equal(catalog.size, 7);
+    assert.equal(catalog.size, 8);
     assert.equal(toEntry("dall-e-9", LIST["dall-e-9"]), null);
     assert.equal(toEntry("typo-model", LIST["typo-model"]), null);
     assert.equal(toEntry("half-model", LIST["half-model"]), null);
@@ -205,6 +206,8 @@ describe("the LiteLLM fallback (server/lib/litellm.ts)", () => {
     const p = priced(g);
     close(p.usd, 0.1 + 0.2 + 0.002);
     assert.equal(p.unverified, true);
+    // OpenCode's stealth preview "Ox Alpha" was GLM-5.3-Flash: Z.ai's rate.
+    close(priced({ tool: "opencode", model: "opencode/x-preview-f-free", input: M, output: M, cache_read: M }).usd, 0.15 + 0.5 + 0.03);
     // Without the list there is no rate: unpriced, never $0.
     assert.deepEqual(explainPrice(group(g)), { ok: false, reason: "no known rate" });
   });
