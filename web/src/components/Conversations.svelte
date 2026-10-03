@@ -21,10 +21,9 @@
       </div>
       <div class="side">
         <div class="line">
-          <span class="num tokens">{fmtCompact(s.tokens)} tokens</span>
+          <span class="num tokens">{fmtCompact(s.tokens)} tokens{#if s.value.usd !== null}&nbsp;·&nbsp;{/if}<SessionValue value={s.value} unpriced={s.unpriced} /></span>
           <span class="when"><i class="dot" class:recent={clock.now - s.lastActive < RECENT_SEC}></i>{fmtAgo(s.lastActive, clock.now)}</span>
         </div>
-        <SessionValue value={s.value} unpriced={s.unpriced} />
         {#if s.context}
           <Meter pct={s.context.pct} label="Context used" />
           <div class="ctx">Context {fmtPct(s.context.pct)} %{s.context.size ? ` of ${fmtCompact(s.context.size)}` : ""}</div>
@@ -54,7 +53,7 @@
   .model { font-family: var(--mono); font-size: 11px; }
   .side { width: 260px; flex-shrink: 0; display: grid; gap: 7px; }
   .line { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 12px; }
-  .tokens { color: var(--text); }
+  .tokens { color: var(--text); display: inline-flex; align-items: center; white-space: nowrap; }
   .when { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); white-space: nowrap; }
   .ctx { font-size: 11px; color: var(--faint); }
   .side :global(.track) { height: 4px; }

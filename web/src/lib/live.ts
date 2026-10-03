@@ -115,8 +115,8 @@ const toSession = (s: Session): SessionVM => ({
   tokens: s.tokens,
   lastActive: s.last_seen,
   context: s.context_used_pct === null ? null : { pct: s.context_used_pct, size: s.context_window_size },
-  value: s.value ?? { ...emptyValue(), unpriced_tokens: s.tokens },
-  unpriced: s.unpriced ?? (s.tokens ? [{ model: s.model, reason: "pricing details unavailable", tokens: s.tokens }] : []),
+  value: s.value ?? emptyValue(),
+  unpriced: s.unpriced ?? [],
 });
 
 /** providers: the tool stores its models as provider/model (OpenCode). */

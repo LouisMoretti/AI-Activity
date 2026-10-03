@@ -1,58 +1,67 @@
 <script lang="ts">
   import type { ApiValue, Session } from "../../../shared/types.ts";
-  import { fmtNum, fmtUsd } from "../lib/format.ts";
+  import { fmtCompact, fmtUsd } from "../lib/format.ts";
 
+  // A conversation's API-equivalent value, inline ("≈ $1.20"). Nothing when
+  // none of its tokens is priced. An info icon explains the same caveats as
+  // the API value stat (StatsRow) on hover or keyboard focus.
   let { value, unpriced }: { value: ApiValue; unpriced: Session["unpriced"] } = $props();
   const id = $props.id();
-  const warning = $derived(value.usd === null || value.unpriced_tokens > 0 || value.lower_bound ||
-    value.current_rate_fallback || value.unverified);
+  const caveat = $derived(value.unpriced_tokens > 0 || value.lower_bound || value.current_rate_fallback);
 </script>
 
-<div class="value">
-  <span>API value (estimate)</span>
-  <span class="right">
-    <strong>{value.usd === null ? "—" : `${value.lower_bound ? "≥" : "≈"} ${fmtUsd(value.usd)}`}</strong>
-    {#if warning}
+{#if value.usd !== null}
+  <span class="value">
+    <span class="num" title="API-equivalent value (estimate)">{value.lower_bound ? "≥" : "≈"} {fmtUsd(value.usd)}</span>
+    {#if caveat}
       <span class="explain">
-        <button type="button" aria-label="Why this API value needs attention" aria-describedby={id}>!</button>
+        <button type="button" aria-label="About this API value" aria-describedby={id}>
+          <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+            <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.3" />
+            <path d="M8 7.2v4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+            <circle cx="8" cy="4.9" r=".9" fill="currentColor" />
+          </svg>
+        </button>
         <span class="tip" role="tooltip" {id}>
-          {#if value.usd === null}
-            <span>No API value can be calculated for this conversation.</span>
-          {:else}
-            <span>Estimated at retail API rates, not the amount paid.</span>
-          {/if}
+          <span>At retail API rates: an estimate, not what was paid.</span>
           {#if value.unpriced_tokens > 0}
-            <span>{fmtNum(value.unpriced_tokens)} {value.unpriced_tokens === 1 ? "token" : "tokens"} left out:</span>
+            <span class="warn">Leaves out {fmtCompact(value.unpriced_tokens)} tokens:</span>
             {#each unpriced as item}
-              <span class="reason">{item.model ?? "Model not reported"}: {item.reason} ({fmtNum(item.tokens)} tokens).</span>
+              <span class="reason"><span class="model">{item.model ?? "model not reported"}</span>: {item.reason} ({fmtCompact(item.tokens)})</span>
             {/each}
-          {:else if value.usd === null}
-            <span>No measured tokens have a price.</span>
           {/if}
           {#if value.lower_bound}
-            <span>Some cache writes have no recorded duration, so they use the cheaper 5-minute rate.</span>
+            <span class="warn">At least: some cache writes have no recorded duration and use the cheaper 5-minute rate.</span>
           {/if}
           {#if value.current_rate_fallback}
-            <span>Some usage predates its model's oldest known rate and uses that rate.</span>
+            <span class="warn">Some usage predates its model's oldest published rate and uses that rate.</span>
           {/if}
           {#if value.unverified}
-            <span>Some rates come from the community catalog and have not been verified against the provider's official prices.</span>
+            <span>Includes community rates (LiteLLM's price list).</span>
           {/if}
         </span>
       </span>
     {/if}
   </span>
-</div>
+{/if}
 
 <style>
-  .value { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12px; }
-  .right { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
-  strong { color: var(--text); font-weight: 500; }
+  .value { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+  .num { color: var(--text); }
   .explain { position: relative; display: inline-flex; }
-  button { width: 16px; height: 16px; border: 1px solid var(--warn); border-radius: 50%; color: var(--warn); font-size: 11px; font-weight: 700; line-height: 1; cursor: help; }
-  .tip { position: absolute; z-index: 20; top: calc(100% + 6px); right: 0; width: max-content; max-width: min(320px, calc(100vw - 48px)); max-height: 240px; overflow: auto; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); color: var(--text); box-shadow: 0 8px 24px #0007; white-space: normal; font-size: 12px; line-height: 1.4; visibility: hidden; opacity: 0; transition: opacity .12s ease; }
+  button { display: inline-flex; padding: 0; color: var(--faint); cursor: help; }
+  button:hover, button:focus-visible { color: var(--text); }
+  .tip {
+    position: absolute; z-index: 20; top: calc(100% + 8px); right: -6px;
+    width: max-content; max-width: min(300px, calc(100vw - 32px)); padding: 10px 12px;
+    background: var(--raised); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px #0007;
+    color: var(--muted); font-size: 12px; line-height: 1.45; white-space: normal; text-align: left;
+    opacity: 0; visibility: hidden; transition: opacity .12s ease;
+  }
   .tip > span { display: block; }
-  .tip > span + span { margin-top: 6px; }
-  .reason { color: var(--muted); }
-  .explain:hover .tip, .explain:focus-within .tip { visibility: visible; opacity: 1; }
+  .tip > span + span { margin-top: 4px; }
+  .warn { color: var(--warn); }
+  .reason { padding-left: 8px; }
+  .model { font-family: var(--mono); font-size: 11px; }
+  .explain:hover .tip, .explain:focus-within .tip { opacity: 1; visibility: visible; }
 </style>
