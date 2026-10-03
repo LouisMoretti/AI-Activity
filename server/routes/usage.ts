@@ -78,6 +78,7 @@ function usage(db: DB, owner: Owner, catalog: CatalogGetter) {
       return c.json<SessionsResponse>({
         sessions: recentSessions(
           db, uid, intParam(c, "limit", 10, 1, 200), tool, intParam(c, "offset", 0, 0, Number.MAX_SAFE_INTEGER),
+          catalog(),
         ),
         total: countSessions(db, uid, tool),
         provenance: "grouped by unique session id from measured messages",

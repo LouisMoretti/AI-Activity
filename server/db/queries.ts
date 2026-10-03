@@ -706,13 +706,13 @@ export function latestEventAt(db: DB, userId: number, tool: string | null): numb
  * looked up for the page's sessions only.
  */
 export function recentSessions(
-  db: DB, userId: number, limit: number, tool: string | null, offset = 0
+  db: DB, userId: number, limit: number, tool: string | null, offset = 0, catalog: Catalog | null = null,
 ): Session[] {
   const latest = (col: string, where: string) =>
     `(SELECT ${col} FROM usage_events m
       WHERE m.user_id = s.user_id AND m.session_id = s.session_id AND m.tool = s.tool AND ${where}
       ORDER BY m.occurred_at DESC, m.received_at DESC LIMIT 1)`;
-  return db
+  const sessions = db
     .prepare(
       `SELECT s.session_id, s.tool, s.tokens, s.last_seen, s.events,
          ${latest("model", "m.model IS NOT NULL")} AS model,
@@ -729,7 +729,41 @@ export function recentSessions(
        ) s
        ORDER BY s.last_seen DESC, s.session_id`
     )
-    .all(userId, tool, tool, limit, offset) as Session[];
+    .all(userId, tool, tool, limit, offset) as Omit<Session, "value" | "unpriced">[];
+  if (!sessions.length) return [];
+
+  // Price only the conversations on this page. One group retains every
+  // dimension used by the summary's price calculation, including the event
+  // day and prompt length, so a session with changing models stays accurate.
+  const selected = sessions.map(() => "(?, ?)").join(", ");
+  const groups = db.prepare(
+    `WITH selected(session_id, tool) AS (VALUES ${selected})
+     SELECT e.session_id, ${priceColumns("e.", catalog)}
+     FROM selected s JOIN usage_events e INDEXED BY idx_usage_user_session_read
+       ON e.user_id = ? AND e.session_id = s.session_id AND e.tool = s.tool
+     GROUP BY e.session_id, e.tool, e.model, e.service_tier, e.inference_geo, band, period`
+  ).all(...sessions.flatMap((s) => [s.session_id, s.tool]), userId) as (PriceGroup & { session_id: string })[];
+  const values = new Map<string, ApiValue>();
+  const unpriced = new Map<string, Session["unpriced"]>();
+  const keyOf = (s: { tool: string; session_id: string }) => JSON.stringify([s.tool, s.session_id]);
+  for (const g of groups) {
+    const tokens = groupTokens(g);
+    if (!tokens) continue;
+    const key = keyOf(g);
+    if (!values.has(key)) values.set(key, emptyValue());
+    addGroup(values.get(key)!, g, catalog);
+    const price = explainPrice(g, catalog);
+    if (!price.ok) {
+      if (!unpriced.has(key)) unpriced.set(key, []);
+      const reasons = unpriced.get(key)!;
+      const prior = reasons.find((r) => r.model === g.model && r.reason === price.reason);
+      if (prior) prior.tokens += tokens;
+      else reasons.push({ model: g.model, reason: price.reason, tokens });
+    }
+  }
+  return sessions.map((s) => ({
+    ...s, value: values.get(keyOf(s)) ?? emptyValue(), unpriced: unpriced.get(keyOf(s)) ?? [],
+  }));
 }
 
 export function countSessions(db: DB, userId: number, tool: string | null): number {

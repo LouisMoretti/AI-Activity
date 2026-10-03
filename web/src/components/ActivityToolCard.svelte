@@ -2,6 +2,7 @@
   import { clock } from "../lib/clock.svelte.ts";
   import { fmtAgo, fmtCompact, plural, RECENT_SEC } from "../lib/format.ts";
   import { TOOL_META, type ActivityToolVM, type SessionVM, type ToolKey } from "../lib/view-model.ts";
+  import SessionValue from "./SessionValue.svelte";
   import ToolHeader from "./ToolHeader.svelte";
 
   const SHOWN = 3;
@@ -59,9 +60,12 @@
         {#each rows as s (s.id)}
           {@const m = modelOf(s)}
           <div class="row">
-            {#if active.length}<i class="dot recent" aria-hidden="true"></i>{/if}
-            <span class="model" title={s.model ?? ""}><i>{m.provider}</i>{m.name}</span>
-            <span class="meta">{plural(s.calls, callNoun)} · {fmtCompact(s.tokens)} tokens</span>
+            <div class="main">
+              {#if active.length}<i class="dot recent" aria-hidden="true"></i>{/if}
+              <span class="model" title={s.model ?? ""}><i>{m.provider}</i>{m.name}</span>
+              <span class="meta">{plural(s.calls, callNoun)} · {fmtCompact(s.tokens)} tokens</span>
+            </div>
+            <SessionValue value={s.value} unpriced={s.unpriced} />
           </div>
         {/each}
         {#if more > 0}<div class="meta more">+{more} more</div>{/if}
@@ -85,7 +89,8 @@
   .unused { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
   small { color: var(--muted); font-size: 12px; font-weight: 400; }
   .rows { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
-  .row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .row { display: grid; gap: 4px; min-width: 0; }
+  .main { display: flex; align-items: center; gap: 10px; min-width: 0; }
   .model { font-family: var(--mono); font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .model i { font-style: normal; color: var(--faint); }
   .row .meta { margin-left: auto; flex-shrink: 0; white-space: nowrap; }

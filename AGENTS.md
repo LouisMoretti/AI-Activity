@@ -1496,7 +1496,8 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
     `by_model` and `by_tool` (rows with their `value`);
     `last_event_at`: the latest measured event; `pricing_version`)
   - `sessions?limit=10&offset=0&tool=...` (grouped by unique session id,
-    with latest `context_used_pct` / `context_window_size`, plus `total`
+    with latest `context_used_pct` / `context_window_size`, each session's
+    API-equivalent `value` and reasons for unpriced tokens, plus `total`
     for paging)
 - `GET /api/devices` (never the keys, only `key_prefix` and `has_key`;
   `collectors`: per tool it posted for, `{tool, version, seen_at, newest,

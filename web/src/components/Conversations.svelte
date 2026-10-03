@@ -3,6 +3,7 @@
   import { fmtAgo, fmtCompact, fmtPct, plural, RECENT_SEC } from "../lib/format.ts";
   import { TOOL_META, type SessionVM } from "../lib/view-model.ts";
   import Meter from "./Meter.svelte";
+  import SessionValue from "./SessionValue.svelte";
   import ToolIcon from "./ToolIcon.svelte";
 
   let { sessions, total, onmore }: { sessions: SessionVM[]; total: number; onmore: () => void } = $props();
@@ -23,6 +24,7 @@
           <span class="num tokens">{fmtCompact(s.tokens)} tokens</span>
           <span class="when"><i class="dot" class:recent={clock.now - s.lastActive < RECENT_SEC}></i>{fmtAgo(s.lastActive, clock.now)}</span>
         </div>
+        <SessionValue value={s.value} unpriced={s.unpriced} />
         {#if s.context}
           <Meter pct={s.context.pct} label="Context used" />
           <div class="ctx">Context {fmtPct(s.context.pct)} %{s.context.size ? ` of ${fmtCompact(s.context.size)}` : ""}</div>

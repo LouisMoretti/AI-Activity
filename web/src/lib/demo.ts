@@ -1,6 +1,6 @@
 // FICTIONAL, deterministic demo dataset. Only shown at /demo, as the profile
 // of a fictional user, and always labeled "Demonstration data". Never presented as a measurement.
-import { addGroup, emptyValue, periodOf, PRICING_VERSION, type ApiValue, type PriceGroup } from "../../../shared/pricing.ts";
+import { addGroup, emptyValue, explainPrice, groupTokens, periodOf, PRICING_VERSION, type ApiValue, type PriceGroup } from "../../../shared/pricing.ts";
 import { QUOTA_WINDOW_SEC } from "../../../shared/quota-pools.ts";
 import type { Profile } from "../../../shared/types.ts";
 import { lastUtcDays, streaks, type DayPoint } from "./series.ts";
@@ -118,7 +118,19 @@ export function demoDashboard(provider: Provider): DashboardVM {
     { tool: "claude-code", id: "demo-c9d0e1f2", model: "claude-sonnet-5", calls: 12, tokens: 940_000, lastActive: now - 5 * 3600, context: null },
     { tool: "antigravity", id: "demo-k1l2m3n4", model: "claude-sonnet-5", calls: 9, tokens: 180_000, lastActive: now - 9 * 3600, context: null },
     { tool: "opencode", id: "demo-o5p6q7r8", model: "openai/gpt-5.2", calls: 18, tokens: 760_000, lastActive: now - 2 * 86400, context: null },
-  ] satisfies SessionVM[]).filter((s) => visible.includes(s.tool));
+  ] satisfies Omit<SessionVM, "value" | "unpriced">[])
+    .filter((s) => visible.includes(s.tool))
+    .map((s) => {
+      const [input, output, read, write] = MIX[s.tool as DemoTool].map((f) => Math.round(s.tokens * f));
+      const group: PriceGroup = {
+        tool: s.tool, model: s.model, service_tier: null, inference_geo: null, band: 0, period: periodOf(s.lastActive),
+        input, output, cache_read: read, cache_write: write, cache_write_1h: write, cache_write_unsplit: 0,
+      };
+      const value = emptyValue();
+      if (groupTokens(group)) addGroup(value, group);
+      const price = explainPrice(group);
+      return { ...s, value, unpriced: price.ok ? [] : [{ model: s.model, reason: price.reason, tokens: groupTokens(group) }] };
+    });
 
   return {
     demo: true,
