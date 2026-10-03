@@ -8,11 +8,17 @@ test("profile rows carry tools, views and ratios; only the owner can edit them",
   const srv = await startServer();
   try {
     const bob = (await register(srv.base, "widgetbob")).cookie;
-    const get = (path, cookie) => req(srv.base, "GET", path, cookie ? { cookie } : { anon: true });
-    assert.deepEqual((await get("/api/u/admin/panels")).json.rows, DEFAULT_ROWS);
-    assert.deepEqual((await req(srv.base, "GET", "/api/account/panels")).json.rows, DEFAULT_ROWS);
-    assert.deepEqual((await get("/api/account/panels", bob)).json.rows, DEFAULT_ROWS);
-    assert.equal((await get("/api/account/panels", null)).status, 401);
+    const panels = async (name) => (await req(srv.base, "GET", `/api/u/${name}`, { anon: true })).json.panels;
+    const stored = (name) => {
+      const db = new Database(srv.dbPath, { readonly: true });
+      try { return db.prepare("SELECT panels FROM users WHERE username = ?").get(name).panels; } finally { db.close(); }
+    };
+    const save = (rows, cookie) => req(srv.base, "POST", "/api/account/panels", { body: { rows }, ...(cookie ? { cookie } : {}) });
+    // The layout comes with the public profile; there is no separate read.
+    assert.deepEqual(await panels("admin"), DEFAULT_ROWS);
+    assert.equal(stored("admin"), null);
+    assert.notEqual((await req(srv.base, "GET", "/api/u/admin/panels", { anon: true })).status, 200);
+    assert.equal((await req(srv.base, "POST", "/api/account/panels", { body: { rows: [] }, anon: true })).status, 401);
 
     const chosen = [
       { ratio: "half", panels: [
@@ -22,9 +28,9 @@ test("profile rows carry tools, views and ratios; only the owner can edit them",
       { ratio: "wide-right", panels: [{ id: "today-by-hour" }] },
       { ratio: "full", panels: [{ id: "best-day" }] },
     ];
-    assert.deepEqual((await req(srv.base, "POST", "/api/account/panels", { body: { rows: chosen } })).json.rows, chosen);
-    assert.deepEqual((await get("/api/u/ADMIN/panels")).json.rows, chosen);
-    assert.deepEqual((await get("/api/u/widgetbob/panels")).json.rows, DEFAULT_ROWS);
+    assert.deepEqual((await save(chosen)).json.rows, chosen);
+    assert.deepEqual(await panels("ADMIN"), chosen);
+    assert.deepEqual(await panels("widgetbob"), DEFAULT_ROWS);
     for (const rows of [
       [{ ratio: "full", panels: [{ id: "bad" }] }],
       [{ ratio: "half", panels: [{ id: "best-day" }, { id: "best-day" }] }],
@@ -38,24 +44,30 @@ test("profile rows carry tools, views and ratios; only the owner can edit them",
       [{ ratio: "half", panels: [{ id: "best-day" }, { id: "best-day", view: "quota" }, { id: "codex", view: "quota" }] }],
       [{ id: "best-day", size: "small" }],
     ]) {
-      assert.equal((await req(srv.base, "POST", "/api/account/panels", { body: { rows } })).status, 400);
+      assert.equal((await save(rows)).status, 400);
     }
-    assert.deepEqual((await get("/api/u/admin/panels")).json.rows, chosen);
-    assert.deepEqual((await req(srv.base, "POST", "/api/account/panels", { body: { rows: [] }, cookie: bob })).json.rows, []);
-    assert.deepEqual((await get("/api/u/widgetbob/panels")).json.rows, []);
+    assert.deepEqual(await panels("admin"), chosen);
+    assert.deepEqual((await save([], bob)).json.rows, []);
+    assert.deepEqual(await panels("widgetbob"), []);
+
+    // Saving the default layout stores NULL again, so it follows future defaults
+    // (whatever the key order sent).
+    const reordered = DEFAULT_ROWS.map((r) => ({ panels: r.panels.map((p) => (p.view ? { view: p.view, id: p.id } : p)), ratio: r.ratio }));
+    assert.deepEqual((await save(reordered)).json.rows, DEFAULT_ROWS);
+    assert.equal(stored("admin"), null);
 
     const db = new Database(srv.dbPath);
     try {
       db.prepare("UPDATE users SET panels = 'broken' WHERE username = 'admin'").run();
     } finally { db.close(); }
-    assert.deepEqual((await get("/api/u/admin/panels")).json.rows, DEFAULT_ROWS);
+    assert.deepEqual(await panels("admin"), DEFAULT_ROWS);
     const flat = new Database(srv.dbPath);
     try {
-      // The pre-rows flat list resets to the default rows on read.
+      // A value no longer valid (the pre-rows flat list) reads as the default rows.
       flat.prepare("UPDATE users SET panels = ? WHERE username = 'admin'")
         .run(JSON.stringify([{ id: "best-day", size: "small" }]));
     } finally { flat.close(); }
-    assert.deepEqual((await get("/api/u/admin/panels")).json.rows, DEFAULT_ROWS);
+    assert.deepEqual(await panels("admin"), DEFAULT_ROWS);
   } finally { await srv.stop(); }
 });
 

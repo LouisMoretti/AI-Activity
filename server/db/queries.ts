@@ -79,7 +79,8 @@ export interface UserRow {
   github_id: number;
   is_admin: number;
   disabled: number;
-  panels: string;
+  /** The saved dashboard layout (JSON), NULL for the default one. */
+  panels: string | null;
 }
 
 const panelIds = new Set<string>([...TOOLS, ...WIDGETS]);
@@ -121,16 +122,26 @@ export function validLayout(value: unknown): value is PanelRow[] {
   }) && new Set(keys).size === keys.length;
 }
 
+/** The account's layout: the saved one, else (NULL, or a value no longer valid) the default. */
 export function panelSettings(user: UserRow): PanelRow[] {
-  try {
-    const value: unknown = JSON.parse(user.panels);
-    if (validLayout(value)) return value;
-  } catch { /* Old, flat or manually edited value: keep the default layout. */ }
+  if (user.panels !== null) {
+    try {
+      const value: unknown = JSON.parse(user.panels);
+      if (validLayout(value)) return value;
+    } catch { /* A manually edited value: the default layout. */ }
+  }
   return copyRows(DEFAULT_ROWS);
 }
 
-export function setPanelSettings(db: DB, userId: number, rows: PanelRow[]): void {
-  db.prepare("UPDATE users SET panels = ? WHERE id = ?").run(JSON.stringify(rows), userId);
+/** Saves a validated layout; the default one is stored as NULL, so it follows future defaults. */
+export function setPanelSettings(db: DB, userId: number, rows: PanelRow[]): PanelRow[] {
+  const clean = copyRows(rows.map((r) => ({
+    ratio: r.ratio,
+    panels: r.panels.map((p) => (p.view ? { id: p.id, view: p.view } : { id: p.id })) as PanelRow["panels"],
+  })));
+  const json = JSON.stringify(clean);
+  db.prepare("UPDATE users SET panels = ? WHERE id = ?").run(json === JSON.stringify(DEFAULT_ROWS) ? null : json, userId);
+  return clean;
 }
 
 export function toAccount(u: UserRow): Account {

@@ -7,6 +7,7 @@ import { test, describe, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { stripTypeScriptTypes } from "node:module";
 import { compileModule } from "svelte/compiler";
+import { PANEL_OPTIONS } from "../shared/types.ts";
 
 const LIB = new URL("../web/src/lib/", import.meta.url).pathname;
 const BUILT = path.join(LIB, ".dashboard.test-build.js");
@@ -69,18 +70,19 @@ const signedIn = { authenticated: true, user: me, setup_required: false, signup_
 const signedOut = { authenticated: false, user: null, setup_required: false, signup_open: true, github_sign_in: true };
 const AUTHORIZE = "https://github.com/login/oauth/authorize?state=s";
 const emptySummary = { tool: null, day: "2026-09-25", total: { tokens: 0, sessions: 0, events: 0, by_model: [], by_model_others_sessions: 0, by_tool: [] }, today: { tokens: 0, sessions: 0, events: 0, by_model: [], by_model_others_sessions: 0, by_tool: [] }, provenance: "" };
+const DEFAULT_PANELS = [
+  { ratio: "wide-left", panels: [{ id: "claude-code", view: "quota" }, { id: "codex", view: "quota" }] },
+  { ratio: "full", panels: [{ id: "cursor", view: "activity" }] },
+  { ratio: "full", panels: [{ id: "antigravity", view: "quota" }] },
+  { ratio: "full", panels: [{ id: "opencode", view: "activity" }] },
+  { ratio: "full", panels: [{ id: "today-by-tool" }] },
+];
+const profilePage = (name, panels = DEFAULT_PANELS) => ({ username: name, display_name: name, avatar_url: null, panels });
 const profileRoutes = (name, sessions = { sessions: [], total: 0, provenance: "" }) => ({
-  [`/api/u/${name}`]: { username: name, display_name: name, avatar_url: null },
+  [`/api/u/${name}`]: profilePage(name),
   [`/api/u/${name}/summary`]: emptySummary,
   [`/api/u/${name}/activity`]: { days: [], provenance: "" },
   [`/api/u/${name}/quotas`]: { quotas: [], provenance: "" },
-  [`/api/u/${name}/panels`]: { rows: [
-    { ratio: "wide-left", panels: [{ id: "claude-code", view: "quota" }, { id: "codex", view: "quota" }] },
-    { ratio: "full", panels: [{ id: "cursor", view: "activity" }] },
-    { ratio: "full", panels: [{ id: "antigravity", view: "quota" }] },
-    { ratio: "full", panels: [{ id: "opencode", view: "activity" }] },
-    { ratio: "full", panels: [{ id: "today-by-tool" }] },
-  ] },
   [`/api/u/${name}/sessions`]: sessions,
 });
 
@@ -111,17 +113,17 @@ async function open(url, extra = {}) {
 describe("dashboard state", () => {
   test("loads optional widget data only when the profile selects it", async () => {
     const widgets = { ...profileRoutes("me"),
-      "/api/u/me/panels": { rows: [
+      "/api/u/me": profilePage("me", [
         { ratio: "full", panels: [{ id: "leaderboard" }] },
         { ratio: "half", panels: [{ id: "today-by-hour" }] },
-      ] },
+      ]),
       "/api/u/me/hours": { day: emptySummary.day, current_hour: 10, hours: [], provenance: "measured" },
       "/api/u/me/rank": { rank: 1, accounts: 1, tokens: 0, neighbor: null, provenance: "measured" },
     };
     const { dash, stop } = await open("/u/me", widgets);
     assert.deepEqual(dash.rows.flatMap((r) => r.panels.map((p) => p.id)), ["leaderboard", "today-by-hour"]);
-    assert.equal(dash.hours.current_hour, 10);
-    assert.equal(dash.widgetRank.accounts, 1);
+    assert.equal(dash.vm.hours.currentHour, 10);
+    assert.equal(dash.vm.rank.accounts, 1);
     assert.ok(calls.includes("/api/u/me/hours"));
     assert.ok(calls.includes("/api/u/me/rank"));
     assert.ok(!calls.some((c) => c.startsWith("/api/leaderboard")), "the panel does not fetch the full leaderboard calendar");
@@ -132,12 +134,12 @@ describe("dashboard state", () => {
 
   test("one tool can show quotas and details together without fetching hidden tools", async () => {
     const layout = { ...profileRoutes("me"),
-      "/api/u/me/panels": { rows: [
+      "/api/u/me": profilePage("me", [
         { ratio: "half", panels: [
           { id: "claude-code", view: "quota" },
           { id: "claude-code", view: "activity" },
         ] },
-      ] },
+      ]),
     };
     const { dash, stop } = await open("/u/me", layout);
     assert.equal(dash.status, "ready");
@@ -146,6 +148,54 @@ describe("dashboard state", () => {
     assert.ok(calls.includes("/api/u/me/summary?x=1&tool=claude-code"));
     assert.ok(calls.includes("/api/u/me/sessions?limit=10&offset=0&tool=claude-code"));
     assert.ok(!calls.some((c) => c.includes("tool=opencode")));
+    stop();
+  });
+
+  test("a refresh is one round trip, and slow panels are read at most once a minute", async () => {
+    const widgets = { ...profileRoutes("me"),
+      "/api/u/me": profilePage("me", [{ ratio: "half", panels: [{ id: "leaderboard" }, { id: "today-by-hour" }] }]),
+      "/api/u/me/hours": { day: emptySummary.day, current_hour: 10, hours: [], provenance: "measured" },
+      "/api/u/me/rank": { rank: 1, accounts: 1, tokens: 0, neighbor: null, provenance: "measured" },
+    };
+    const { dash, stop, tick } = await open("/u/me", widgets);
+    const reads = (p) => calls.filter((c) => c === p).length;
+    assert.equal(reads("/api/u/me/rank"), 1);
+    let resolveProfile;
+    const original = api.profile;
+    api.profile = (u) => new Promise((resolve) => { resolveProfile = () => resolve(original(u)); });
+    try {
+      const before = calls.length;
+      tick();
+      await new Promise((r) => setTimeout(r, 20));
+      // The panels' reads left with the profile's, before it answered.
+      assert.ok(calls.slice(before).some((c) => c.startsWith("/api/u/me/summary")));
+      resolveProfile();
+      await settle();
+    } finally { api.profile = original; }
+    assert.equal(reads("/api/u/me/rank"), 1, "the rank waits a minute");
+    assert.equal(reads("/api/u/me/hours"), 1, "so does Today by hour");
+    assert.equal(dash.vm.rank.rank, 1, "and keeps its last value meanwhile");
+    const real = Date.now;
+    try {
+      Date.now = () => real() + 61_000;
+      tick();
+      await settle();
+    } finally { Date.now = real; }
+    assert.equal(reads("/api/u/me/rank"), 2);
+    assert.equal(reads("/api/u/me/hours"), 2);
+    stop();
+  });
+
+  test("a layout saved elsewhere is shown and its panels read at once", async () => {
+    const { dash, stop, tick } = await open("/u/me", profileRoutes("me"));
+    assert.ok(!calls.some((c) => c.includes("tool=claude-code")));
+    routes["/api/u/me"] = profilePage("me", [{ ratio: "full", panels: [{ id: "claude-code", view: "activity" }] }]);
+    tick();
+    await settle();
+    assert.deepEqual(dash.rows.flatMap((r) => r.panels.map((p) => p.id)), ["claude-code"]);
+    assert.ok(calls.includes("/api/u/me/summary?x=1&tool=claude-code"), "read right after, not at the next refresh");
+    assert.equal(dash.vm.claudeActivity.available, true);
+    assert.equal("panels" in dash.shown, false);
     stop();
   });
 
@@ -193,7 +243,7 @@ describe("dashboard state", () => {
 
   test("card reads are per tool and a failed card refresh preserves measured data", async () => {
     const { dash, stop, tick } = await open("/u/me", profileRoutes("me"));
-    assert.equal(calls.filter(c => c.startsWith("/api/u/")).length, 12);
+    assert.equal(calls.filter(c => c.startsWith("/api/u/")).length, 11);
     assert.equal(calls.filter(c => c.includes("tool-activity")).length, 0);
     assert.equal(dash.vm.cursor.available, true);
     // Only the Cursor card's reads fail: the profile stays up and keeps
@@ -418,6 +468,11 @@ describe("dashboard state", () => {
     assert.equal(dash.own, false);
     assert.deepEqual(dash.shown, { username: "demo", display_name: "Demo preview", avatar_url: null });
     assert.equal(dash.vm.demo, true);
+    // Every panel is shown, with its fictional data from demo.ts.
+    const shownPanels = dash.rows.flatMap((r) => r.panels.map((p) => `${p.id}:${p.view ?? ""}`)).sort();
+    assert.deepEqual(shownPanels, PANEL_OPTIONS.map((p) => `${p.id}:${p.view ?? ""}`).sort());
+    assert.ok(dash.vm.hours.hours.length > 0);
+    assert.ok(!dash.vm.rank.neighbor.name.startsWith("@"), "never a login: it could be a real account");
     assert.deepEqual(calls, ["/api/auth/status", "/api/analytics/view"]);
     tick();
     await settle();

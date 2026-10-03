@@ -6,7 +6,7 @@ import {
 } from "../../shared/types.ts";
 import type {
   ActivityResponse, LeaderboardResponse, Profile, ProfilesResponse, QuotasResponse, SessionsResponse, StatsResponse,
-  SummaryResponse, HoursResponse, PanelSettings, RankResponse,
+  SummaryResponse, HoursResponse, ProfilePage, RankResponse,
 } from "../../shared/types.ts";
 import {
   addDays, breakdown, countSessions, dailyBuckets, dayAt, earliestOfDay, findUserByUsername, latestEventAt, latestOffset, latestQuotas,
@@ -134,9 +134,9 @@ export function publicProfileRoutes(db: DB, catalog: CatalogGetter = () => null)
   };
   return new Hono()
     .get("/", (c) => {
-      return c.json<Profile>(toProfile(owner(c)));
+      const user = owner(c);
+      return c.json<ProfilePage>({ ...toProfile(user), panels: panelSettings(user) });
     })
-    .get("/panels", (c) => c.json<PanelSettings>({ rows: panelSettings(owner(c)) }))
     .get("/rank", (c) => c.json<RankResponse>({
       ...profileRank(db, owner(c).id, nowSec() - 7 * 86400),
       provenance: "measured messages over the last seven days",

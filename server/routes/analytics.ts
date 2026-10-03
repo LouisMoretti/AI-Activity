@@ -29,7 +29,7 @@ const MAX_CLIENTS_PER_DAY = 2_000;
 const FLUSH_MS = 60_000;
 /** The browser's random id: 128 bits, hex. */
 const VISITOR_TOKEN = /^[0-9a-f]{32}$/;
-const PROFILE_ROUTES = new Set(["stats", "activity", "quotas", "summary", "sessions"]);
+const PROFILE_ROUTES = new Set(["stats", "activity", "quotas", "summary", "sessions", "hours", "rank"]);
 /** New referrer or origin hosts recorded per UTC day each; beyond it they count as "other" (they come from the caller). */
 const MAX_HOSTS_PER_DAY = 100;
 const SESSION_ROUTES = new Set(["friends", "devices", "account", "users", "admin"]);

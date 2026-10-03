@@ -133,7 +133,7 @@
       <StatsRow stats={vm.stats} />
 
       {#key dash.route.page === "demo" ? "demo" : `profile:${dash.shown.username}`}
-        <ProfilePanels {vm} rows={dash.rows} own={dash.own} hours={dash.hours} rankInfo={dash.widgetRank}
+        <ProfilePanels {vm} rows={dash.rows} own={dash.own}
           onrowschange={(rows) => dash.setRows(rows)} ondevices={() => dash.go("/settings")} />
       {/key}
 

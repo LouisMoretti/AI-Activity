@@ -6,7 +6,6 @@ import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { openDb, schemaVersion } from "../server/db/schema.ts";
 import { MIGRATIONS } from "../server/db/migrations.ts";
-import { DEFAULT_ROWS } from "../shared/types.ts";
 import { startServer } from "./helpers.js";
 
 const LATEST = MIGRATIONS.length;
@@ -103,9 +102,9 @@ function freshSchema() {
 }
 
 describe("versioned migrations", () => {
-  test("version 6 adds dashboard rows without changing existing accounts or usage", () => {
+  test("version 8 adds dashboard layouts, NULL (the default) for every account, usage untouched", () => {
     const t = tmpDb();
-    const old = upgradeTo(t.file, 5);
+    const old = upgradeTo(t.file, 7);
     old.prepare("INSERT INTO users (id, github_id, username, created_at) VALUES (1, 42, 'alice', 0)").run();
     old.prepare("INSERT INTO devices (id, user_id, name, key_hash, created_at) VALUES (1, 1, 'laptop', 'key', 0)").run();
     old.prepare("INSERT INTO usage_events (event_id, device_id, user_id, tool, input_tokens, occurred_at, received_at) VALUES ('msg_a', 1, 1, 'codex', 7, 0, 0)").run();
@@ -113,33 +112,8 @@ describe("versioned migrations", () => {
     const db = openDb(t.file);
     try {
       assert.equal(schemaVersion(db), LATEST);
-      const profile = db.prepare("SELECT username, panels FROM users").get();
-      assert.equal(profile.username, "alice");
-      assert.deepEqual(JSON.parse(profile.panels), DEFAULT_ROWS);
+      assert.deepEqual(db.prepare("SELECT username, panels FROM users").get(), { username: "alice", panels: null });
       assert.equal(db.prepare("SELECT input_tokens FROM usage_events WHERE event_id = 'msg_a'").get().input_tokens, 7);
-    } finally { db.close(); fs.rmSync(t.dir, { recursive: true, force: true }); }
-  });
-  test("version 7 repairs databases left with the first form of migration 6 (widgets, no panels)", () => {
-    const t = tmpDb();
-    const old = upgradeTo(t.file, 5);
-    // What the first form of migration 6 did, before it became `panels`.
-    old.exec("ALTER TABLE users ADD COLUMN widgets TEXT NOT NULL DEFAULT '[\"today-by-tool\"]'");
-    old.prepare("INSERT INTO users (id, github_id, username, created_at) VALUES (1, 42, 'alice', 0)").run();
-    old.pragma("user_version = 6");
-    old.close();
-    const db = openDb(t.file);
-    try {
-      assert.equal(schemaVersion(db), LATEST);
-      const cols = db.prepare("PRAGMA table_info(users)").all().map((c) => c.name);
-      assert.ok(cols.includes("panels"));
-      assert.ok(!cols.includes("widgets"));
-      const profile = db.prepare("SELECT username, panels FROM users").get();
-      assert.equal(profile.username, "alice");
-      assert.deepEqual(JSON.parse(profile.panels), DEFAULT_ROWS);
-      // Saving the layout works again on the repaired database.
-      db.prepare("UPDATE users SET panels = ? WHERE id = 1").run(JSON.stringify([{ ratio: "full", panels: [{ id: "best-day" }] }]));
-      assert.deepEqual(JSON.parse(db.prepare("SELECT panels FROM users WHERE id = 1").get().panels),
-        [{ ratio: "full", panels: [{ id: "best-day" }] }]);
     } finally { db.close(); fs.rmSync(t.dir, { recursive: true, force: true }); }
   });
   test("a new database runs every migration and ends at the latest version", () => {

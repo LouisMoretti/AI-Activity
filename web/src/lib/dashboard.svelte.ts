@@ -5,10 +5,10 @@
 import { api, NotFoundError, onSessionLost, RateLimitedError, UnauthorizedError } from "./api.ts";
 import { authErrorMessage } from "./auth-errors.ts";
 import { markSignIn, takeSignIn } from "./visitor.ts";
-import { DEMO_PROFILE, demoDashboard } from "./demo.ts";
+import { DEMO_PROFILE, DEMO_ROWS, demoDashboard } from "./demo.ts";
 import { ACTIVITY_DAYS, liveDashboard, type LiveData } from "./live.ts";
 import type { DashboardVM } from "./view-model.ts";
-import { DEFAULT_ROWS, WIDGETS, copyRows, type Account, type Profile, type SessionsResponse, type SummaryResponse, type HoursResponse, type RankResponse, type PanelRow, type Tool } from "../../../shared/types.ts";
+import { DEFAULT_ROWS, copyRows, type Widget, type Account, type Profile, type SessionsResponse, type SummaryResponse, type HoursResponse, type RankResponse, type PanelRow, type Tool } from "../../../shared/types.ts";
 
 export type Route =
   | { page: "home" }
@@ -28,6 +28,12 @@ export type Status = "loading" | "ready" | "signed-out" | "setup" | "missing" | 
 const REFRESH_MS = 5000;
 /** Online heartbeat for site analytics, piggybacked on the refresh tick (so paused while hidden). */
 const PING_MS = 30_000;
+/** Panels that change slowly (Today by hour, the seven-day rank) are read at most this often. */
+const SLOW_MS = 60_000;
+/** A slow panel's last read, and when it was made (0: failed since, retry). */
+interface SlowRead<T> { at: number; value: T }
+/** A read without a day (the rank) is never tied to one. */
+const sameDay = (value: object, day: string | undefined) => !("day" in value) || value.day === day;
 /** Server-side cap on one sessions page (/api/u/<name>/sessions). */
 const SESSIONS_MAX_PAGE = 200;
 export const SESSIONS_PAGE = 10;
@@ -111,13 +117,14 @@ export class Dashboard {
   authError = $state<string | null>(null);
   /** The profile on screen. */
   shown = $state<Profile | null>(null);
+  /** The dashboard rows on screen: the profile's saved layout (or /demo's). */
   rows = $state<PanelRow[]>(copyRows(DEFAULT_ROWS));
-  hours = $state<HoursResponse | null>(null);
-  widgetRank = $state<RankResponse | null>(null);
   private live = $state<LiveData | null>(null);
   private inFlight = false;
   private reloadQueued = false;
   private panelRevision = 0;
+  private hoursRead: SlowRead<HoursResponse> | null = null;
+  private rankRead: SlowRead<RankResponse> | null = null;
   private lastAnalyticsPath = "";
   /** Page category of the last view counted (for the online heartbeat), and when it was last sent. */
   private analyticsPage = "";
@@ -222,10 +229,7 @@ export class Dashboard {
    */
   private async loadDemo(route: Route): Promise<void> {
     this.shown = DEMO_PROFILE;
-    this.rows = [...copyRows(DEFAULT_ROWS),
-      ...WIDGETS.filter((id) => id !== "today-by-tool").map((id) => ({ ratio: "full" as const, panels: [{ id }] as PanelRow["panels"] }))];
-    this.hours = null;
-    this.widgetRank = null;
+    this.rows = copyRows(DEMO_ROWS);
     this.status = "ready";
     try {
       const auth = await api.authStatus();
@@ -243,43 +247,49 @@ export class Dashboard {
     const route = this.route;
     const previous = this.live;
     const panelRevision = this.panelRevision;
-    // Core reads and the public panel layout settle together. The second pass
-    // requests only data needed by visible panels (plus Antigravity's quota
-    // fallback), while all-time stats and conversations stay global.
-    const [profile, summary, activity, sessions, panelSettings] = await Promise.allSettled([
+    // The layout comes with the profile. A refresh sends the panels' reads
+    // with the core ones, for the layout already on screen (one round trip);
+    // the first load waits for the layout. Settle every read before
+    // releasing inFlight, so a slow one never overlaps the next refresh.
+    const core = Promise.allSettled([
       api.profile(username),
       api.summary(username, null),
       api.activity(username, ACTIVITY_DAYS, null),
       fetchSessions(username, this.sessionsLimit),
-      api.panels(username),
     ]);
-    if (this.route !== route) return;
-    if (profile.status === "rejected") throw profile.reason;
-    if (summary.status === "rejected") throw summary.reason;
-    if (activity.status === "rejected") throw activity.reason;
-    if (sessions.status === "rejected") throw sessions.reason;
-    if (panelSettings.status === "rejected") throw panelSettings.reason;
-    // A save may complete while this refresh is reading the old layout.
-    const rows = panelRevision === this.panelRevision ? panelSettings.value.rows : this.rows;
-    const flat = rows.flatMap((r) => r.panels);
+    const known = previous !== null && same(this.shown?.username, username) ? this.rows : null;
+    const layout: PanelRow[] = known
+      ?? await core.then(([p]) => (p.status === "fulfilled" ? p.value.panels : []));
+    const flat = layout.flatMap((r) => r.panels);
     const selected = (id: string, view?: string) => flat.some((p) => p.id === id && (!view || p.view === view));
+    // Antigravity's quota panel falls back to its activity view while no window runs.
     const activityView = (tool: Tool) => selected(tool, "activity") ||
       (tool === "antigravity" && selected(tool, "quota"));
-    const needsQuota = flat.some((p) => p.view === "quota");
     const toolSummary = (tool: Tool) => activityView(tool) ? api.summary(username, tool) : Promise.resolve(null);
     const toolSessions = (tool: Tool) => activityView(tool) ? api.sessions(username, 10, tool, 0) : Promise.resolve(null);
-    const [quotas, hours, rank, ccSummary, ccLatest, cdSummary, cdLatest,
-      ocSummary, ocLatest, agSummary, agLatest, cuSummary, cuLatest] = await Promise.allSettled([
-      needsQuota ? api.quotas(username) : Promise.resolve(null),
-      selected("today-by-hour") ? api.hours(username) : Promise.resolve(null),
-      selected("leaderboard") ? api.rank(username) : Promise.resolve(null),
+    // Today by hour and the seven-day rank barely move in 5 s: read at most
+    // once a minute (and again on a new day), to stay within the public read limit.
+    const slow = <T extends object>(id: Widget, last: SlowRead<T> | null, read: () => Promise<T>) =>
+      !selected(id) ? Promise.resolve(null)
+        : last && Date.now() - last.at < SLOW_MS && sameDay(last.value, previous?.summary.day)
+          ? Promise.resolve(last)
+          : read().then((value) => ({ at: Date.now(), value }));
+    const [[profile, summary, activity, sessions], [quotas, hours, rank, ccSummary, ccLatest, cdSummary, cdLatest,
+      ocSummary, ocLatest, agSummary, agLatest, cuSummary, cuLatest]] = await Promise.all([core, Promise.allSettled([
+      flat.some((p) => p.view === "quota") ? api.quotas(username) : Promise.resolve(null),
+      slow("today-by-hour", this.hoursRead, () => api.hours(username)),
+      slow("leaderboard", this.rankRead, () => api.rank(username)),
       toolSummary("claude-code"), toolSessions("claude-code"),
       toolSummary("codex"), toolSessions("codex"),
       toolSummary("opencode"), toolSessions("opencode"),
       toolSummary("antigravity"), toolSessions("antigravity"),
       toolSummary("cursor"), toolSessions("cursor"),
-    ]);
+    ])]);
     if (this.route !== route) return;
+    if (profile.status === "rejected") throw profile.reason;
+    if (summary.status === "rejected") throw summary.reason;
+    if (activity.status === "rejected") throw activity.reason;
+    if (sessions.status === "rejected") throw sessions.reason;
     if (quotas.status === "rejected") throw quotas.reason;
     // Keep a failed card's last measured data only for the same local day.
     // An initial failure or midnight rollover is Unavailable, never guessed.
@@ -293,10 +303,16 @@ export class Dashboard {
       !activityView(tool) ? undefined :
       sum.status === "fulfilled" && sum.value && lat.status === "fulfilled" && lat.value
         ? { summary: sum.value, latest: lat.value } : keep(tool);
-    this.shown = profile.value;
+    // A failed slow read keeps its last value (same day) and is retried at the next refresh.
+    const settle = <T extends object>(r: PromiseSettledResult<SlowRead<T> | null>, last: SlowRead<T> | null) =>
+      r.status === "fulfilled" ? r.value : last && sameDay(last.value, summary.value.day) ? { ...last, at: 0 } : null;
+    this.hoursRead = settle(hours, this.hoursRead);
+    this.rankRead = settle(rank, this.rankRead);
+    // A save may complete while this refresh is reading the old layout.
+    const rows = panelRevision === this.panelRevision ? profile.value.panels : this.rows;
+    const { panels: _, ...shown } = profile.value;
+    this.shown = shown;
     this.rows = rows;
-    this.hours = hours.status === "fulfilled" ? hours.value : null;
-    this.widgetRank = rank.status === "fulfilled" ? rank.value : null;
     this.live = {
       summary: summary.value, activity: activity.value,
       quotas: quotas.value ?? { quotas: [], provenance: "" }, sessions: sessions.value,
@@ -305,8 +321,12 @@ export class Dashboard {
       opencode: card("opencode", ocSummary, ocLatest),
       antigravity: card("antigravity", agSummary, agLatest),
       cursor: card("cursor", cuSummary, cuLatest),
+      hours: this.hoursRead?.value ?? null,
+      rank: this.rankRead?.value ?? null,
     };
     this.status = "ready";
+    // The layout changed elsewhere (another tab saved): read its panels now.
+    if (JSON.stringify(rows) !== JSON.stringify(layout)) this.reloadQueued = true;
   }
 
   showMoreSessions(): void {
@@ -341,8 +361,8 @@ export class Dashboard {
     this.route = routeFromPath();
     this.live = null;
     this.rows = copyRows(DEFAULT_ROWS);
-    this.hours = null;
-    this.widgetRank = null;
+    this.hoursRead = null;
+    this.rankRead = null;
     this.shown = null;
     this.sessionsLimit = SESSIONS_PAGE;
     this.status = "loading";

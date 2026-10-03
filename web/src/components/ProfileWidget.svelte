@@ -1,44 +1,18 @@
 <script lang="ts">
-  import { TOOLS, type HourBucket, type HoursResponse, type RankResponse, type Widget } from "../../../shared/types.ts";
+  import { TOOLS, type Widget } from "../../../shared/types.ts";
   import { fmtCompact, fmtDay, fmtShare } from "../lib/format.ts";
   import { TOOL_META, type DashboardVM, type ToolKey } from "../lib/view-model.ts";
   import TodayByTool from "./TodayByTool.svelte";
 
-  let { widget, vm, hours, rankInfo }: {
-    widget: Widget; vm: DashboardVM; hours: HoursResponse | null;
-    rankInfo: RankResponse | null;
-  } = $props();
+  let { widget, vm }: { widget: Widget; vm: DashboardVM } = $props();
 
-  // The demo uses fixed fictional shares. Its hourly totals add up to the
-  // same fictional "today" total as the other cards, with a peak at 14h.
-  const demoHours = (): HoursResponse => {
-    const weights = Array.from({ length: 24 }, (_, h) => h === 14 ? 12 : h >= 8 && h <= 19 ? 4 : 1);
-    const sum = weights.reduce((a, b) => a + b, 0);
-    const rows: HourBucket[] = [];
-    for (const tool of vm.stats.today.byTool) {
-      let used = 0;
-      weights.forEach((weight, hour) => {
-        const tokens = hour === 23 ? tool.value - used : Math.floor(tool.value * weight / sum);
-        used += tokens;
-        if (tokens) rows.push({ hour, tool: tool.name as ToolKey, tokens });
-      });
-    }
-    return { day: vm.today, current_hour: 14, hours: rows, provenance: "Demonstration data" };
-  };
-  const hourData = $derived(vm.demo ? demoHours() : hours);
+  const hourData = $derived(vm.hours);
   const hourTotals = $derived(Array.from({ length: 24 }, (_, hour) =>
     hourData?.hours.filter((r) => r.hour === hour).reduce((n, r) => n + r.tokens, 0) ?? 0));
   const peak = $derived(Math.max(...hourTotals));
   const peakHour = $derived(hourTotals.indexOf(peak));
   const best = $derived(vm.series.reduce((a, d) => d.tokens > a.tokens ? d : a, { day: vm.today, tokens: 0 }));
   const today = $derived(vm.series.find((d) => d.day === vm.today)?.tokens ?? 0);
-  const rank = $derived(vm.demo ? 2 : rankInfo?.rank ?? 0);
-  const accountCount = $derived(vm.demo ? 5 : rankInfo?.accounts ?? 0);
-  const weeklyTokens = $derived(vm.demo ? vm.series.slice(-7).reduce((n, d) => n + d.tokens, 0)
-    : rankInfo?.tokens ?? 0);
-  const neighbor = $derived(vm.demo
-    ? { username: "sample-user", tokens: weeklyTokens + 34_000_000, direction: "behind" }
-    : rankInfo?.neighbor ?? null);
   const barColor = (tool: string) => tool in TOOL_META ? TOOL_META[tool as ToolKey].color : "var(--accent)";
 </script>
 
@@ -53,7 +27,7 @@
         {#if peak}<div class="big">Peak {peakHour}h · {fmtCompact(peak)}</div>{:else}<p>Nothing yet today</p>{/if}
         <div class="hours" role="img" aria-label="Today's tokens by local hour, peak at {peakHour}h with {fmtCompact(peak)} tokens">
           {#each Array.from({ length: 24 }, (_, i) => i) as hour}
-            <div class="hour" class:current={hour === hourData.current_hour} title="{hour}h · {fmtCompact(hourTotals[hour])}">
+            <div class="hour" class:current={hour === hourData.currentHour} title="{hour}h · {fmtCompact(hourTotals[hour])}">
               {#each TOOLS as tool}
                 {@const value = hourData.hours.find((r) => r.hour === hour && r.tool === tool)?.tokens ?? 0}
                 {#if value}<span style:height="{peak ? value / peak * 100 : 0}%" style:background={barColor(tool)}></span>{/if}
@@ -71,11 +45,12 @@
         <p>Today at {fmtShare(today, best.tokens)} of it</p>
       {:else}<p>No activity yet</p>{/if}
     {:else if widget === "leaderboard"}
-      {#if rank > 0}
-        <div class="big">#{rank} of {accountCount}</div>
-        <p>{fmtCompact(weeklyTokens)} tokens this week</p>
-        {#if neighbor}
-          <p>{fmtCompact(Math.abs(neighbor.tokens - weeklyTokens))} {neighbor.direction} @{neighbor.username}</p>
+      {#if vm.rank}
+        {@const r = vm.rank}
+        <div class="big">#{r.rank} of {r.accounts}</div>
+        <p>{fmtCompact(r.tokens)} tokens this week</p>
+        {#if r.neighbor}
+          <p>{fmtCompact(Math.abs(r.neighbor.tokens - r.tokens))} {r.neighbor.direction} {r.neighbor.name}</p>
         {/if}
       {:else}<p>Leaderboard unavailable</p>{/if}
     {/if}

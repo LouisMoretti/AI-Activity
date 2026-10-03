@@ -94,13 +94,18 @@ you; no plan, invoice or key is needed.
 
 On your own profile, use **Edit layout** at the top right of Dashboard panels.
 The **+ Add panel** button offers every tool and four usage cards: Today by
-tool, Today by hour, Best day and Leaderboard · 7 days. Remove panels you do
-not want, move them earlier or later, and choose a small, medium or large
-width. Claude Code, Codex and Antigravity can each show quotas, conversation
-details, or both as separate panels. Save layout to publish it on your public
-profile. Visitors see the chosen layout but cannot change it. The public
-`/demo` page shows every panel
-with fictional, labeled data.
+tool, Today by hour, Best day and Leaderboard · 7 days. Each row holds one
+card or two side by side. Move a card with its arrow buttons (up or down
+joins the next row when it has room; a card sharing its row moves to a row of
+its own) or by dragging it, move whole rows with **Row ↑ / Row ↓**, and pick
+a two-card row's widths (equal, ⅔ · ⅓ or ⅓ · ⅔) from its select or by
+dragging the bar between the cards. Everything works with a keyboard or a
+touch screen, without dragging. Claude Code, Codex and Antigravity can each
+show quotas, conversation details, or both as separate panels. Save layout
+to publish it on your public profile; visitors see it but cannot change it.
+Until you save one, your profile follows the default layout, new tools
+included. The public `/demo` page shows every panel with fictional, labeled
+data.
 
 ## One-command install
 

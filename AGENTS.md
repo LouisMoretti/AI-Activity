@@ -25,17 +25,24 @@ coverage and assumptions, or the longest streak), dashboard rows, recent
 conversations (10 + "Show more"; each with its API-equivalent value inline
 after its tokens, nothing when none of them is priced, and an info icon only
 for a partial, lower-bound or older-rate value). The rows are the
-owner's layout (`users.panels` JSON, `{rows: [{ratio, panels}]}`): each row holds
+owner's layout (`users.panels`: a JSON array of rows `{ratio, panels}`, NULL
+for the default layout): each row holds
 one card (`full`) or two (`half` = 50/50, `wide-left` = ⅔/⅓, `wide-right` = ⅓/⅔;
 a lone card in a split row stretches full width). Any tool (as its quota card,
 its activity card, or both at once for Claude Code, Codex and Antigravity) and
 any widget ("Today by tool": today's tokens split by tool, "Today by hour",
 "Best day", "Leaderboard · 7 days") can go in any row, in any order; the
-default is Claude Code + Codex, Cursor, Antigravity, then OpenCode + Today by
-tool. The owner edits it in place (Edit layout: drag the cards themselves, or move them with
-the arrow keys with Alt moving the whole row, dropping a card next to another
-shares its row; drag the thin bar between two cards to snap their widths live
-to half and thirds; add or remove rows and cards, then Save layout); visitors
+default (`DEFAULT_ROWS`, `shared/types.ts`) is Claude Code + Codex, Cursor,
+Antigravity, then OpenCode + Today by tool. The owner edits it in place (Edit
+layout, then Save layout): each card has buttons to switch its view, move it
+up or down (a card sharing its row gets a row of its own; a card alone joins
+the next row when it has room, else the rows swap), swap it with its
+neighbour and remove it; each row has Row ↑ / Row ↓ and, with two cards, a
+widths select. Dragging a card (pointer only) drops it next to another or on
+a row with room (a full row refuses it), and the bar between two cards snaps
+their widths live. The buttons cover everything dragging does, so keyboards
+and touch screens reach every layout; the focus stays on the control used,
+and a live region says what moved where. Visitors
 see the saved layout read-only.
 Hidden tool cards trigger no tool-specific reads. Antigravity's quota card
 still falls back to its activity view while no window is running. On your own
@@ -406,6 +413,8 @@ cancel, success, failure);
 `test/pricing.test.js` covers the API-equivalent rates and rules
 (`shared/pricing.ts`, the priority file's validation, the LiteLLM
 conversion and lookup);
+`test/widgets.test.js` covers dashboard layouts (validation, owner-only
+saves, NULL for the default), the local-hour and seven-day rank reads;
 `test/series.test.js` covers pure helpers of the web
 client; `test/dashboard.test.js` runs the client's state class
 (`dashboard.svelte.ts`, compiled with `svelte/compiler`) against a fake
@@ -771,6 +780,8 @@ web/
                           ToolHeader, QuotaWindow, Meter), OpenCodeCard
                           (wraps ActivityToolCard, the card of a tool
                           without quota windows),
+                          ProfilePanels (the dashboard rows and their
+                          editor), ProfileWidget (the usage widgets),
                           TodayByTool,
                           Conversations, DevicesPanel,
                           DangerZone (DangerAction), AccountMenu,
@@ -934,7 +945,11 @@ Components never branch on live vs demo: both sources map into the same
   GitHub login, NOT NULL; `github_id` unique and NOT NULL, the GitHub
   numeric id; `display_name` and `avatar_url` from GitHub, NULL when GitHub
   has none; `is_admin`, `disabled`,
-  `activity_cleared_at`: when the user last deleted their activity, §6).
+  `activity_cleared_at`: when the user last deleted their activity, §6;
+  `panels`: the saved dashboard layout as JSON, NULL for the default one,
+  so the default and new tools reach accounts that never saved theirs;
+  saving the default layout stores NULL again; a value that no longer
+  validates reads as the default).
   `deleted_events` — ids of the messages a user deleted (ids only), so a
   resend is refused (§5). Device, usage, quota and session tables carry
   `user_id`. `viewer_sessions` holds hashed session tokens with expiry.
@@ -1014,6 +1029,7 @@ Components never branch on live vs demo: both sources map into the same
   HMAC, first and last day seen), `site_analytics_api_calls`,
   `site_analytics_api_clients`, `site_analytics_rate_limited` (day, scope,
   hits) and `site_analytics_rate_limited_clients`.
+- Migration 8 adds `users.panels` (NULL: the default layout).
 
 ### API-equivalent value (`shared/pricing.ts`, issues #113, #268)
 
@@ -1470,7 +1486,9 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
 - `GET /api/profiles` → enabled accounts `{username, display_name, avatar_url}`,
   **no session needed** (the public leaderboard lists them too).
 - Public profile pages, **no session needed**: `GET /api/u/:username` →
-  `{username, display_name, avatar_url}`, and the usage routes below under
+  `{username, display_name, avatar_url, panels}` (`panels`: the dashboard
+  rows, §1; read with every refresh, so a saved layout reaches visitors
+  within 5 s), and the usage routes below under
   `/api/u/:username/` (`404` if unknown or disabled). They are the only
   copy: the signed-in viewer reads their own page through them too.
   Nothing private has a public route: devices, account and users
@@ -1491,7 +1509,11 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   (`403`): a cross-site HTML form could otherwise post JSON-looking
   `text/plain` and start a sign-in for the visitor.
 - The profile is GitHub's, updated at each sign-in: nothing to edit (no
-  `POST /api/account`). Profile pictures are links, never uploads: every
+  `POST /api/account`). Only the dashboard layout is the owner's:
+  `POST /api/account/panels {rows}` → `{rows}` (validated: known panels,
+  the quota view only for Claude Code, Codex and Antigravity, one card per
+  `full` row and at most two otherwise, no duplicates or other fields, else
+  `400`). Profile pictures are links, never uploads: every
   visitor's browser loads them (public pages, open sign-up), so only
   `https` images from GitHub, Gravatar or Imgur are kept
   (`server/lib/avatar.ts`, per-host path check, no credentials or port);
@@ -1556,9 +1578,14 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   memory: they reset when the server restarts). Over one → `429` with
   `Retry-After`:
   - public reads (`/api/u/…`, `/api/leaderboard`, `/api/profiles`): 300
-    per client (the client address above), refill 5/s. A dashboard polls
-    eleven of them every 5 s (five core reads plus a summary and sessions
-    per activity card), so about two tabs fit behind one address. A
+    per client (the client address above), refill 5/s. With the default
+    layout a dashboard polls eleven of them every 5 s, in one round trip
+    (the profile with its layout, summary, activity, conversations, quotas
+    while a quota card is shown, plus a summary and sessions per activity
+    card), so about two tabs fit behind one address. Hidden panels read
+    nothing. Every panel at once polls fifteen (Today by hour and the rank
+    are read at most once a minute): one tab fits; two such tabs behind one
+    address run out after about five minutes. A
     rate-limited refresh keeps the page as it was (the web client does
     not show it as "Could not reach the server");
   - signed-in routes (`/api/friends`, `/api/devices`, `/api/account`,
@@ -1595,6 +1622,13 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
     tokens, sessions, events and API-equivalent `value`, each split
     `by_model` and `by_tool` (rows with their `value`);
     `last_event_at`: the latest measured event; `pricing_version`)
+  - `hours` (`day`: the owner's today, `current_hour` on the owner's
+    clock, today's tokens per local hour and tool, each event on its own
+    recorded offset; "Today by hour")
+  - `rank` (the seven-day leaderboard's rank by tokens, its account count,
+    the profile's tokens and the nearest account above or below; same
+    window, accounts and order as `/api/leaderboard?days=7`, without its
+    calendar)
   - `sessions?limit=10&offset=0&tool=...` (grouped by unique session id,
     with latest `context_used_pct` / `context_window_size`, each session's
     API-equivalent `value` and reasons for unpriced tokens, plus `total`

@@ -322,6 +322,11 @@ export interface Profile {
   avatar_url: string | null;
 }
 
+/** `GET /api/u/:username`: the profile and its dashboard layout, read with every refresh. */
+export interface ProfilePage extends Profile {
+  panels: PanelRow[];
+}
+
 export interface ProfilesResponse {
   profiles: Profile[];
 }

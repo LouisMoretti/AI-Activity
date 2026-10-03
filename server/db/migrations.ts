@@ -18,32 +18,16 @@ export const MIGRATIONS: ((db: DB) => void)[] = [
   apiValueInputs,
   siteAnalytics,
   profilePanels,
-  profilePanelsRepair,
 ];
 
 /**
- * 9: profilePanels first ran (on its branch) with a `widgets` column, then
- * changed to `panels` before merge. Databases that ran the first form (PR
- * previews, dev databases) sit at version 6 with `widgets` but no `panels`:
- * reads silently fell back to the default layout while every save failed
- * with "no such column: panels". Adds the missing column and drops the
- * leftover; databases that never saw the first form pass through untouched.
+ * 8: each account's dashboard layout, `users.panels`: JSON rows of panels
+ * (`validLayout` in queries.ts). NULL, the value of every account until it
+ * saves another layout, means the default layout of the code that runs
+ * (`DEFAULT_ROWS`), so a new default or a new tool reaches those accounts.
  */
-function profilePanelsRepair(db: DB): void {
-  const cols = columns(db, "users");
-  if (!cols.has("panels")) {
-    db.exec(`ALTER TABLE users ADD COLUMN panels TEXT NOT NULL DEFAULT
-    '[{"ratio":"wide-left","panels":[{"id":"claude-code","view":"quota"},{"id":"codex","view":"quota"}]},{"ratio":"full","panels":[{"id":"cursor","view":"activity"}]},{"ratio":"full","panels":[{"id":"antigravity","view":"quota"}]},{"ratio":"wide-left","panels":[{"id":"opencode","view":"activity"},{"id":"today-by-tool"}]}]'`);
-  }
-  if (cols.has("widgets")) {
-    db.exec("ALTER TABLE users DROP COLUMN widgets");
-  }
-}
-
-/** 8: Each account selects public rows of panels, ratios and tool views. */
 function profilePanels(db: DB): void {
-  db.exec(`ALTER TABLE users ADD COLUMN panels TEXT NOT NULL DEFAULT
-    '[{"ratio":"wide-left","panels":[{"id":"claude-code","view":"quota"},{"id":"codex","view":"quota"}]},{"ratio":"full","panels":[{"id":"cursor","view":"activity"}]},{"ratio":"full","panels":[{"id":"antigravity","view":"quota"}]},{"ratio":"wide-left","panels":[{"id":"opencode","view":"activity"},{"id":"today-by-tool"}]}]'`);
+  db.exec("ALTER TABLE users ADD COLUMN panels TEXT");
 }
 
 /**

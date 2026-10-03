@@ -4,7 +4,7 @@ import {
 } from "../../shared/types.ts";
 import {
   adminOverview, unpricedModels, deleteAccount, deleteUserActivity, deleteUserSessions, getUser, listAdminUsers, setUserAdmin,
-  setSignupOpen, setUserDisabled, signupOpen, previewSeedSettings, seedPreviewData, setPanelSettings, panelSettings, validLayout, type UserRow,
+  setSignupOpen, setUserDisabled, signupOpen, previewSeedSettings, seedPreviewData, setPanelSettings, validLayout, type UserRow,
 } from "../db/queries.ts";
 import { PRICE_ALIASES, PRICES, PRICING_VERSION } from "../../shared/pricing.ts";
 import { nowSec, type DB } from "../db/schema.ts";
@@ -46,12 +46,10 @@ export function accountRoutes(db: DB) {
   }
 
   return new Hono<ViewerEnv>()
-    .get("/panels", (c) => c.json<PanelSettings>({ rows: panelSettings(getUser(db, c.get("userId"))!) }))
     .post("/panels", async (c) => {
       const { rows } = await readJson(c);
       if (!validLayout(rows)) return c.json({ error: "rows must be a unique list of valid dashboard rows" }, 400);
-      setPanelSettings(db, c.get("userId"), rows);
-      return c.json<PanelSettings>({ rows });
+      return c.json<PanelSettings>({ rows: setPanelSettings(db, c.get("userId"), rows) });
     })
     // Deletes the signed-in user's own usage and quotas; the account,
     // profile, devices and sessions stay.

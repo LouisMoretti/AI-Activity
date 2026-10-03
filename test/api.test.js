@@ -6,6 +6,7 @@ import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { COLLECTOR_VERSIONS } from "../shared/collectors.ts";
 import { PRICING_VERSION } from "../shared/pricing.ts";
+import { DEFAULT_ROWS } from "../shared/types.ts";
 import { AVATAR_HOSTS } from "../server/lib/avatar.ts";
 import {
   startServer, req, newDevice, event, collector, codexResponse, opencodeMessage, login, register, userId, TEST_ADMIN,
@@ -1543,7 +1544,8 @@ describe("public profile pages", () => {
       // Signed out, and signed in as someone else: same public view.
       for (const cookie of [undefined, bob]) {
         const get = (p) => req(srv.base, "GET", p, cookie ? { cookie } : { anon: true });
-        assert.deepEqual((await get("/api/u/admin")).json, { username: "admin", display_name: "admin", avatar_url: null });
+        assert.deepEqual((await get("/api/u/admin")).json,
+          { username: "admin", display_name: "admin", avatar_url: null, panels: DEFAULT_ROWS });
         assert.equal((await get("/api/u/ADMIN/stats?days=730")).json.events, 1);
         assert.equal((await get("/api/u/admin/summary")).json.total.sessions, 1);
         assert.equal((await get("/api/u/admin/activity")).json.days.length, 1);
