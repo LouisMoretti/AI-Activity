@@ -31,8 +31,8 @@ const FILES = {
  */
 const RECORDED = {
   cursor: { version: 2, sha256: "fd1359a52b51fb0142d022ef90c44a1020a27151f27abf80567e7ffe12fb3096" },
-  "claude-code": { version: 3, sha256: "cbd888fe200429a3fcf842aad2bc85ab0d32b83eb1b3356ab89ebf3b9b3b4738" },
-  codex: { version: 2, sha256: "a48e3cf19fdff5ae3cd0b9d29f029bf760b49ddf7ff74a444948f67335320c6a" },
+  "claude-code": { version: 4, sha256: "a7838afd063906ddc2f3abd35fa516b937f63ea7e969208307e9778ee1a36ada" },
+  codex: { version: 3, sha256: "f7110e7b016fc3437186bf117d4fbaa5af7e2a376b14b3bdc57824e96f6a0dee" },
   antigravity: { version: 3, sha256: "08d3bc5ac185b28a6122208ff26fde4a4c9938ae801459b1821e09e35de2a381" },
   opencode: { version: 2, sha256: "e9a6b9c8b2b3ca16364657a72058d2b18268d0738efef4f2af1e8f61fd2ca47d" },
 };
@@ -195,20 +195,26 @@ m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 m.SERVER, m.KEY = "https://ai.example.com", "ak_one"
 saved = {"targets": {"old%d" % i: {"n": i} for i in range(9)}}
-saved["targets"][m.target()] = {"mine": 1}
+# Collectors with FIELDS resend everything once when their saved state predates them.
+fields = {"fields": m.FIELDS} if hasattr(m, "FIELDS") else {}
+saved["targets"][m.target()] = {"mine": 1, **fields}
 saved["targets"]["old9"] = {"n": 9}
 kept = m.for_target(saved)
-print(json.dumps([list(kept[0]["targets"]), kept[1]]))
+stale = m.for_target({"targets": {m.target(): {"mine": 1}}})[1]
+print(json.dumps([list(kept[0]["targets"]), {k: v for k, v in kept[1].items() if k != "fields"},
+                  {k: v for k, v in stale.items() if k != "fields"} if fields else None]))
 `;
 
   // Cursor's compact SQLite checkpoints have their own real-target LRU test.
   for (const tool of TOOLS.filter(t => t !== "cursor")) {
     test(`${tool}: keeps the 8 most recent targets`, () => {
-      const [kept, mine] = JSON.parse(execFileSync(PYTHON, ["-c", KEEP, fileURLToPath(new URL(scriptOf(tool), dir))],
+      const [kept, mine, stale] = JSON.parse(execFileSync(PYTHON, ["-c", KEEP, fileURLToPath(new URL(scriptOf(tool), dir))],
         { encoding: "utf8", windowsHide: true }));
       const fp = collectorTarget("https://ai.example.com", "ak_one");
       assert.deepEqual(kept, ["old3", "old4", "old5", "old6", "old7", "old8", "old9", fp]);
       assert.deepEqual(mine, { mine: 1 });
+      // Progress saved before messages carried the current fields starts over (one resend).
+      if (stale !== null) assert.deepEqual(stale, {});
     });
   }
 

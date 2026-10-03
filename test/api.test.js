@@ -4,6 +4,7 @@ import os from "node:os";
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { COLLECTOR_VERSIONS } from "../shared/collectors.ts";
+import { PRICING_VERSION } from "../shared/pricing.ts";
 import { AVATAR_HOSTS } from "../server/lib/avatar.ts";
 import {
   startServer, req, newDevice, event, collector, codexResponse, opencodeMessage, login, register, userId, TEST_ADMIN,
@@ -1629,12 +1630,21 @@ describe("leaderboard", () => {
       assert.deepEqual((await req(srv.base, "GET", "/api/leaderboard?days=30", { cookie: bob })).json, month);
       assert.equal(month.range_days, 30);
       assert.equal(month.accounts, 3);
-      assert.deepEqual(month.totals, { tokens: 540, sessions: 3, events: 3, active_accounts: 2 });
+      const { value: monthValue, ...monthTotals } = month.totals;
+      assert.deepEqual(monthTotals, { tokens: 540, sessions: 3, events: 3, active_accounts: 2 });
+      // Valued at retail API rates: Opus 5.5 and Sonnet 5. The writes have no
+      // 1-hour split, so they are priced at the 5-minute rate (a lower bound).
+      assert.equal(month.rank, "tokens");
+      assert.equal(month.pricing_version, PRICING_VERSION);
+      assert.ok(Math.abs(monthValue.usd - (1454 + 729 * 2) / 1e6) < 1e-12, String(monthValue.usd));
+      assert.deepEqual({ ...monthValue, usd: 0 }, { usd: 0, priced_tokens: 540, unpriced_tokens: 0, lower_bound: true, current_rate_fallback: false });
       // Idle accounts are listed too, last, with zeros.
       assert.deepEqual(month.entries.map((e) => [e.username, e.tokens]), [["bob", 360], ["admin", 180], ["idle", 0]]);
       assert.deepEqual(month.entries[2], {
         username: "idle", display_name: "idle", avatar_url: null, tokens: 0, sessions: 0, events: 0, active_days: 0,
         top_model: null, last_active: null, current_streak: 0,
+        // Nothing to price: unavailable, not $0.
+        value: { usd: null, priced_tokens: 0, unpriced_tokens: 0, lower_bound: false, current_rate_fallback: false },
       });
       const b = month.entries[0];
       assert.equal(b.display_name, "Bob");
@@ -1751,7 +1761,10 @@ describe("summary, sessions and context (redesign APIs)", () => {
     assert.equal(s.today.sessions, 1);
     assert.deepEqual(s.total.by_model.map((r) => r.name).sort(), ["claude-opus-5-5", "claude-sonnet-5"]);
     assert.equal(s.total.by_model_others_sessions, 0);
-    assert.deepEqual(s.total.by_tool, [{ name: "claude-code", tokens: 360, sessions: 2, events: 2 }]);
+    assert.deepEqual(s.total.by_tool.map(({ value, ...r }) => r), [{ name: "claude-code", tokens: 360, sessions: 2, events: 2 }]);
+    assert.ok(Math.abs(s.total.by_tool[0].value.usd - (1454 + 729) / 1e6) < 1e-12);
+    assert.ok(Math.abs(s.today.value.usd - 1454 / 1e6) < 1e-12);
+    assert.equal(s.last_event_at, now);
     assert.equal(s.day, new Date(now * 1000).toISOString().slice(0, 10));
     assert.equal((await req(srv.base, "GET", "/api/u/admin/summary?tool=codex")).json.total.tokens, 0);
   });
@@ -1906,7 +1919,7 @@ describe("migrations", () => {
       assert.ok(!cols.includes("cost_estimated_usd"));
       // Migration 5 starts over for GitHub sign-in; the backup made first keeps it.
       assert.equal(db.prepare("SELECT COUNT(*) AS n FROM usage_events").get().n, 0);
-      const [backup] = fs.readdirSync(`${dir}/backups`).filter((f) => f.endsWith("-pre-v5.db"));
+      const [backup] = fs.readdirSync(`${dir}/backups`).filter((f) => /-pre-v\d+\.db$/.test(f));
       const kept = new Database(`${dir}/backups/${backup}`, { readonly: true });
       assert.equal(kept.prepare("SELECT input_tokens FROM usage_events WHERE event_id = 'e1'").get().input_tokens, 42);
       kept.close();
@@ -2241,5 +2254,106 @@ describe("rate limits", () => {
     assert.match(full.json.error, /at most 20 devices/);
     assert.equal((await req(srv.base, "POST", `/api/devices/${ids[0]}/revoke`)).status, 200);
     assert.equal((await req(srv.base, "POST", "/api/devices", { body: { name: "replacement" } })).status, 200);
+  });
+});
+
+describe("API-equivalent value (issue #113)", () => {
+  const close = (actual, expected) => assert.ok(actual !== null && Math.abs(actual - expected) < 1e-12, `${actual} ≠ ${expected}`);
+  const NO_VALUE = { usd: null, priced_tokens: 0, unpriced_tokens: 0, lower_bound: false, current_rate_fallback: false };
+
+  test("Claude Code: cache durations, fast mode; a replay fills what an older collector left out", async () => {
+    const srv = await startServer();
+    try {
+      const cookie = (await register(srv.base, "val")).cookie;
+      const key = (await newDevice(srv.base, "v", cookie)).key;
+      const now = Math.floor(Date.now() / 1000);
+      const usage = { input_tokens: 1000, output_tokens: 1000, cache_creation_input_tokens: 2000, cache_read_input_tokens: 1000 };
+      const message = (over) => ({ message_id: "msg_value_1", session_id: "v1", model: "claude-opus-5-5", occurred_at: now, usage, ...over });
+      const post = (m) => req(srv.base, "POST", "/api/ingest/claude-code", { key, body: { messages: [m], collector: collector("claude-code") } });
+      const value = async () => (await req(srv.base, "GET", "/api/u/val/summary", { anon: true })).json.total.value;
+
+      // An older collector: no duration split, priced at the 5-minute rate, flagged.
+      await post(message());
+      const before = await value();
+      close(before.usd, (1000 * 4 + 1000 * 20 + 1000 * 0.2 + 2000 * 5) / 1e6);
+      assert.equal(before.lower_bound, true);
+      // The same message resent with its split (and fast mode): the split is
+      // filled in, counts and tier of the stored message only fill what was missing.
+      const replay = await post(message({ speed: "fast", service_tier: "standard",
+        usage: { ...usage, cache_creation: { ephemeral_5m_input_tokens: 1000, ephemeral_1h_input_tokens: 1000 } } }));
+      assert.equal(replay.json.deduped, 1);
+      const after = await value();
+      // Opus 5.5 fast: $8 in, $40 out, reads 0.05×, writes 1.25× / 2× of the fast input rate.
+      close(after.usd, (1000 * 8 + 1000 * 40 + 1000 * 0.4 + 1000 * 10 + 1000 * 16) / 1e6);
+      assert.deepEqual({ ...after, usd: 0 }, { usd: 0, priced_tokens: 5000, unpriced_tokens: 0, lower_bound: false, current_rate_fallback: false });
+      // An unknown model: its tokens are counted as unpriced, never $0.
+      await post(message({ message_id: "msg_value_2", model: "claude-mystery-9" }));
+      const mixed = await value();
+      assert.equal(mixed.unpriced_tokens, 5000);
+      const s = (await req(srv.base, "GET", "/api/u/val/summary", { anon: true })).json;
+      assert.deepEqual(s.total.by_model.find((r) => r.name === "claude-mystery-9").value, { ...NO_VALUE, unpriced_tokens: 5000 });
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  test("Codex: Fast mode at Fast rates; other providers and subscription-only models unpriced; other tools too", async () => {
+    const srv = await startServer();
+    try {
+      const cookie = (await register(srv.base, "cx")).cookie;
+      const key = (await newDevice(srv.base, "c", cookie)).key;
+      const usage = { input_tokens: 3000, cached_input_tokens: 1000, cache_write_input_tokens: 1000, output_tokens: 500, reasoning_output_tokens: 100 };
+      await req(srv.base, "POST", "/api/ingest/codex", { key, body: { messages: [
+        codexResponse({ model: "gpt-6-sol", service_tier: "priority", model_provider: "openai", usage }),
+        codexResponse({ model: "gpt-6-sol", model_provider: "ollama", usage }),
+        codexResponse({ model: "codex-auto-review", usage }),
+      ], collector: collector("codex") } });
+      await req(srv.base, "POST", "/api/ingest/opencode", { key, body: { messages: [opencodeMessage()] } });
+      const s = (await req(srv.base, "GET", "/api/u/cx/summary", { anon: true })).json;
+      // GPT-6 Sol Fast: $4 in, $0.40 cached, $5 cache write, $20 out (reasoning is inside output).
+      close(s.total.value.usd, (1000 * 4 + 1000 * 0.4 + 1000 * 5 + 500 * 20) / 1e6);
+      assert.equal(s.total.value.priced_tokens, 3500);
+      assert.equal(s.total.value.unpriced_tokens, 3500 * 2 + 27929);
+      assert.ok(s.total.by_model.some((r) => r.name === "ollama/gpt-6-sol" && r.value.usd === null));
+      assert.deepEqual(s.total.by_tool.find((r) => r.name === "opencode").value, { ...NO_VALUE, unpriced_tokens: 27929 });
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  test("the leaderboard ranks by tokens or by value; nothing priced ranks last, unavailable", async () => {
+    const srv = await startServer();
+    try {
+      const now = Math.floor(Date.now() / 1000) - 60;
+      const post = async (name, tool, body) => {
+        const cookie = (await register(srv.base, name)).cookie;
+        const key = (await newDevice(srv.base, name, cookie)).key;
+        await req(srv.base, "POST", `/api/ingest/${tool}`, { key, body });
+      };
+      // Many cheap tokens, a few expensive ones, and unpriced ones.
+      await post("cheap", "codex", { messages: [codexResponse({ model: "gpt-6-luna", occurred_at: now,
+        usage: { input_tokens: 100000, cached_input_tokens: 0, output_tokens: 0 } })] });
+      await post("dear", "claude-code", { messages: [{ message_id: "msg_dear", session_id: "d", model: "claude-opus-5-5",
+        occurred_at: now, usage: { input_tokens: 1000, output_tokens: 1000 } }] });
+      await post("cursory", "opencode", { messages: [opencodeMessage({ occurred_at: now })] });
+      const board = async (q) => (await req(srv.base, "GET", `/api/leaderboard?days=7${q}`, { anon: true })).json;
+      const names = (b) => b.entries.map((e) => e.username);
+
+      const byTokens = await board("");
+      assert.equal(byTokens.rank, "tokens");
+      assert.deepEqual(names(byTokens), ["cheap", "cursory", "dear", "admin"]);
+      const byValue = await board("&rank=value");
+      assert.equal(byValue.rank, "value");
+      // $0.024 > $0.01; the accounts with nothing priced follow, by tokens.
+      assert.deepEqual(names(byValue), ["dear", "cheap", "cursory", "admin"]);
+      close(byValue.entries[0].value.usd, (1000 * 4 + 1000 * 20) / 1e6);
+      close(byValue.entries[1].value.usd, 100000 * 0.1 / 1e6);
+      assert.deepEqual(byValue.entries[2].value, { ...NO_VALUE, unpriced_tokens: 27929 });
+      assert.equal(byValue.totals.value.unpriced_tokens, 27929);
+      // Anything else ranks by tokens.
+      assert.equal((await board("&rank=usd")).rank, "tokens");
+    } finally {
+      await srv.stop();
+    }
   });
 });

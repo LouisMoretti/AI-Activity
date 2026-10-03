@@ -5,6 +5,14 @@ export const fmtCompact = (n: number) => compact.format(n);
 export const fmtNum = (n: number) => plain.format(n);
 export const fmtPct = (n: number) => `${Math.round(n * 10) / 10}`;
 
+const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+const usdCompact = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 1 });
+/** Dollars: cents below $1,000, compact above ("$12.3K"); a tiny non-zero amount reads "<$0.01", never "$0.00". */
+export function fmtUsd(n: number): string {
+  if (n > 0 && n < 0.005) return "<$0.01";
+  return n < 1000 ? usd.format(n) : usdCompact.format(n);
+}
+
 /** Share of a total as "42 %", "<1 %" or "0 %": a small but non-zero value never reads as "none". */
 export function fmtShare(value: number, total: number): string {
   if (!(total > 0) || !(value > 0)) return "0 %";

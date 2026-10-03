@@ -19,6 +19,43 @@ following list using the OAuth app's client ID and secret, without requesting
 an OAuth scope or keeping a user's GitHub token.
 If GitHub is unavailable, the page offers a retry.
 
+## API-equivalent value
+
+Next to the token totals, profiles and the leaderboard show an **estimated
+API-equivalent value**: what the measured tokens would cost at the
+providers' published retail API rates, in USD. It is a valuation of usage,
+whatever paid for it (a subscription or an API key): not what you paid, not
+a saving, not what serving it costs the provider. Nothing new is asked of
+you; no plan, invoice or key is needed.
+
+- **Priced so far: Claude Code and Codex.** Cursor, Antigravity and
+  OpenCode tokens are counted as *unpriced*, and so are models without a
+  published retail API rate (for example Codex's `codex-auto-review`, a
+  ChatGPT-only model, or a Codex model of another provider such as a local
+  one). Unpriced tokens are never valued at $0: a figure that leaves some out
+  says *partial*, and one with nothing priced shows "—".
+- **What it is computed from:** each message's model, input, output, cache
+  read and cache write tokens (cached input and reasoning are never counted
+  twice), Anthropic's 5-minute and 1-hour cache writes (2× input instead of
+  1.25×), Claude Code's fast mode, Anthropic's US-only inference (1.1×), Codex's
+  service tier (Fast/priority, Flex) and the long-context rates where a
+  model has them (Sonnet 4 and 4.5 above 200K prompt tokens; GPT-5.4,
+  GPT-5.5, GPT-5.6 and GPT-6 above 272K).
+- **Rates** live in [`shared/pricing.ts`](shared/pricing.ts), each with its
+  official source and the day it took effect, versioned together
+  (`PRICING_VERSION`, shown with the values). Usage is priced at the rate
+  of its day; usage older than a model's oldest published rate is priced at
+  that rate and flagged. The dashboard and the leaderboard use the same
+  rates, so their figures for a period agree.
+- **Assumptions it flags:** messages recorded before the collectors sent
+  the cache durations (Claude Code collector 4) are priced at the cheaper
+  5-minute rate, shown as "≥" (a lower bound). Updated collectors send
+  their history once more, which fills that in. Batch discounts, Codex
+  data residency surcharges, server tool fees (web search) and negotiated
+  discounts are not measured, so not included.
+- **Leaderboard:** rank by tokens (the default) or by API value over the
+  same period; accounts with nothing priced rank last.
+
 ## One-command install
 
 Create a device key (**Settings → Devices**),
@@ -737,8 +774,11 @@ Each tool has one Python script in `collectors/`. They share the same design:
   macOS and Windows alike (`python3` or `python`).
 - **Metrics only.** They read local usage files read-only or receive live hook metrics, and send ids,
   model, time, the machine's UTC offset and token counts (plus quotas and
-  context fill where the tool has them). Prompts, replies, tool output,
-  titles, paths and provider keys never leave the device.
+  context fill where the tool has them, and what a message's API-equivalent
+  price depends on: Claude Code's cache write durations, `speed`,
+  `service_tier` and `inference_geo`; Codex's service tier and model
+  provider). Prompts, replies, tool output, titles, paths and provider keys
+  never leave the device.
 - **The key only goes to your server.** Uploads never follow an HTTP
   redirect: a redirect fails the run (progress unchanged) instead of
   sending the device key somewhere else.
@@ -759,6 +799,10 @@ Each tool has one Python script in `collectors/`. They share the same design:
   on the same account, everything comes back as already stored. With
   another account on the same server, messages the first account already
   sent stay with it (the server never moves them between accounts).
+  Claude Code's and Codex's progress also records which message fields it
+  was sent with (`"fields"`): a collector that sends new fields sends its
+  history once more, and the server fills them in on messages it stored
+  without them (nothing is counted twice).
 - **Never in the tool's way.** Called from a hook or the status line, a
   script answers at once and uploads from a detached copy of itself
   (Linux/macOS: its own session; Windows: out of the console, the process

@@ -33,7 +33,11 @@ const entry = (id, output, { session = "sess-1", agent = null } = {}) =>
     type: "assistant", sessionId: session, agentId: agent,
     timestamp: new Date(Date.UTC(2026, 8, 20, 10, 0, line++)).toISOString(),
     message: { id, model: "claude-opus-5-5", content: [{ type: "text", text: "secret reply" }],
-      usage: { input_tokens: 2, cache_creation_input_tokens: 100, cache_read_input_tokens: 1000, output_tokens: output } },
+      usage: { input_tokens: 2, cache_creation_input_tokens: 100, cache_read_input_tokens: 1000, output_tokens: output,
+        // As Claude Code writes them: what the price depends on, and more.
+        cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 100 },
+        service_tier: "standard", inference_geo: "not_available", speed: "standard",
+        server_tool_use: { web_search_requests: 0 }, output_tokens_details: { thinking_tokens: 1 } } },
   });
 const PER_MESSAGE = 2 + 100 + 1000;
 const filler = (n) => Array.from({ length: n }, () => JSON.stringify({ type: "user", message: { content: "secret prompt" } })).join("\n") + "\n";
@@ -380,6 +384,25 @@ describe("Claude Code collector (hooks and statusLine from README.md)", () => {
     assert.equal((await stats()).total_tokens - before.total_tokens, PER_MESSAGE + 9);
   });
 
+  test("each message carries what its price depends on, and nothing else", async () => {
+    const rec = await recordingServer();
+    try {
+      await run(cmd(rec.base, "ak_shape"), { env });
+      await collectorsDone(marker);
+      const m = rec.take().find((x) => x.message_id === "msg_b");
+      assert.deepEqual(Object.keys(m).sort(),
+        ["inference_geo", "message_id", "model", "occurred_at", "service_tier", "session_id", "speed", "usage", "utc_offset_min"]);
+      assert.deepEqual(m.usage, {
+        input_tokens: 2, output_tokens: 10, cache_creation_input_tokens: 100, cache_read_input_tokens: 1000,
+        cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 100 },
+      });
+      assert.deepEqual([m.speed, m.service_tier, m.inference_geo], ["standard", "standard", "not_available"]);
+    } finally {
+      cmd(srv.base);
+      await rec.close();
+    }
+  });
+
   test("offsets are kept per server and key: a new one gets the whole history, an earlier one resumes", async () => {
     const local = new Set(fs.readdirSync(project, { recursive: true }).filter((f) => f.endsWith(".jsonl"))
       .flatMap((f) => [...fs.readFileSync(path.join(project, f), "utf8").matchAll(/"id":"(msg_\w+)"/g)].map((m) => m[1])));
@@ -402,6 +425,13 @@ describe("Claude Code collector (hooks and statusLine from README.md)", () => {
           .map((f) => [path.join(project, f), fs.statSync(path.join(project, f)).size]))));
       assert.deepEqual(await refresh(rec.base), local, "the old shape is dropped");
       assert.deepEqual(Object.keys(JSON.parse(saved())), ["targets"]);
+      // Progress saved before messages carried the pricing fields: all is sent
+      // once more (the server fills them in), then only what is new.
+      const state = JSON.parse(saved());
+      for (const t of Object.values(state.targets)) delete t.fields;
+      fs.writeFileSync(offsetsFile(), JSON.stringify(state));
+      assert.deepEqual(await refresh(rec.base), local, "older progress resends once");
+      assert.equal((await refresh(rec.base)).size, 0, "then resumes");
     } finally {
       cmd(srv.base);
       await rec.close();

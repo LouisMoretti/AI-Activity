@@ -1,5 +1,6 @@
 // Maps measured API responses into the view model. Missing data stays
 // null ("—" / "Unavailable"); nothing is interpolated.
+import { emptyValue, PRICING_VERSION } from "../../../shared/pricing.ts";
 import { QUOTA_POOLS, QUOTA_WINDOW_SEC, type QuotaWindowType } from "../../../shared/quota-pools.ts";
 import {
   TOOLS, type ActivityResponse, type Breakdown, type QuotasResponse, type Session,
@@ -8,7 +9,7 @@ import {
 import { denseSeries, streaks } from "./series.ts";
 import {
   POOL_LABELS, toolsFor, WINDOW_LABELS, type DashboardVM, type FigureVM, type Provider,
-  type ActivityToolVM, type QuotaToolVM, type SessionVM, type ToolKey,
+  type ActivityToolVM, type QuotaToolVM, type SessionVM, type ToolKey, type ValueVM,
 } from "./view-model.ts";
 
 export interface LiveData {
@@ -33,6 +34,25 @@ function figure(b: Breakdown, metric: "tokens" | "sessions"): FigureVM {
     byTool: b.by_tool.map((r) => ({ name: r.name, value: r[metric] })),
     byModel: b.by_model.map((r) => ({ name: r.name, value: r[metric] })),
     byModelOthers: metric === "sessions" ? (b.by_model_others_sessions ?? null) : null,
+  };
+}
+
+/**
+ * A breakdown's API-equivalent value; rows without a priced token are left
+ * out of the split. A response without values (an older server) shows "—".
+ */
+export function valueVM(b: Breakdown): ValueVM {
+  const rows = (rs: Breakdown["by_tool"]) =>
+    rs.flatMap((r) => (r.value?.usd == null ? [] : [{ name: r.name, value: r.value.usd }]));
+  const v = b.value ?? emptyValue();
+  return {
+    usd: v.usd,
+    pricedTokens: v.priced_tokens,
+    unpricedTokens: v.unpriced_tokens,
+    lowerBound: v.lower_bound,
+    fallback: v.current_rate_fallback,
+    byTool: rows(b.by_tool),
+    byModel: rows(b.by_model),
   };
 }
 
@@ -111,6 +131,12 @@ export function liveDashboard(d: LiveData, provider: Provider): DashboardVM {
       today: figure(d.summary.today, "tokens"),
       sessions: figure(d.summary.total, "sessions"),
       streak: hasActivity ? streaks(series) : null,
+      value: {
+        total: valueVM(d.summary.total),
+        today: valueVM(d.summary.today),
+        lastEventAt: d.summary.last_event_at ?? null,
+        pricingVersion: d.summary.pricing_version ?? PRICING_VERSION,
+      },
     },
     tools: toolsFor(provider),
     claude: toolQuotas(d.quotas, "claude-code"),

@@ -1,11 +1,12 @@
 // FICTIONAL, deterministic demo dataset. Only shown at /demo, as the profile
 // of a fictional user, and always labeled "Demonstration data". Never presented as a measurement.
+import { addGroup, emptyValue, periodOf, PRICING_VERSION, type ApiValue, type PriceGroup } from "../../../shared/pricing.ts";
 import { QUOTA_WINDOW_SEC } from "../../../shared/quota-pools.ts";
 import type { Profile } from "../../../shared/types.ts";
 import { lastUtcDays, streaks, type DayPoint } from "./series.ts";
 import {
   POOL_LABELS, toolsFor, WINDOW_LABELS, type DashboardVM, type FigureVM, type Provider,
-  type QuotaPoolVM, type SessionVM,
+  type QuotaPoolVM, type SessionVM, type ValueVM,
 } from "./view-model.ts";
 
 /**
@@ -51,6 +52,44 @@ function figure(tools: DemoTool[], pick: (t: DemoTool) => number): FigureVM {
   return { value: byTool.reduce((a, r) => a + r.value, 0), byTool, byModel, byModelOthers: null };
 }
 
+// Fictional split of a tool's tokens into the categories prices tell apart
+// (input, output, cache read, cache write), so /demo prices them like live data.
+const MIX: Record<DemoTool, [number, number, number, number]> = {
+  "claude-code": [0.02, 0.01, 0.9, 0.07],
+  codex: [0.3, 0.02, 0.68, 0],
+  cursor: [0.2, 0.05, 0.75, 0],
+  antigravity: [0.3, 0.05, 0.65, 0],
+};
+
+/** The demo tokens of `pick`, priced with the same rules as live data (shared/pricing.ts). */
+function valueFor(tools: DemoTool[], pick: (t: DemoTool) => number, at: number): ValueVM {
+  const total = emptyValue();
+  const byTool = new Map<string, ApiValue>();
+  const byModel = new Map<string, ApiValue>();
+  for (const t of tools) {
+    for (const [model, share] of MODELS[t]) {
+      const tokens = pick(t) * share;
+      const [input, output, read, write] = MIX[t].map((f) => Math.round(tokens * f));
+      const g: PriceGroup = {
+        tool: t, model, service_tier: null, inference_geo: null, band: 0, period: periodOf(at),
+        input, output, cache_read: read, cache_write: write, cache_write_1h: write, cache_write_unsplit: 0,
+      };
+      addGroup(total, g);
+      for (const [m, key] of [[byTool, t], [byModel, model]] as const) {
+        if (!m.has(key)) m.set(key, emptyValue());
+        addGroup(m.get(key)!, g);
+      }
+    }
+  }
+  const rows = (m: Map<string, ApiValue>) => [...m].flatMap(([name, v]) => (v.usd === null ? [] : [{ name, value: v.usd }]))
+    .sort((a, b) => b.value - a.value);
+  return {
+    usd: total.usd, pricedTokens: total.priced_tokens, unpricedTokens: total.unpriced_tokens,
+    lowerBound: total.lower_bound, fallback: total.current_rate_fallback,
+    byTool: rows(byTool), byModel: rows(byModel),
+  };
+}
+
 // A pool's 5-hour and weekly windows: [% used, reset time] each.
 function pool(label: string | null, five: [number, number], week: [number, number]): QuotaPoolVM {
   return {
@@ -91,6 +130,12 @@ export function demoDashboard(provider: Provider): DashboardVM {
       today: figure(tools, (t) => last[t]),
       sessions: figure(tools, (t) => ({ "claude-code": 64, codex: 38, cursor: 12, antigravity: 18 })[t]),
       streak: streaks(series),
+      value: {
+        total: valueFor(tools, (t) => days.reduce((a, d) => a + d[t], 0), now),
+        today: valueFor(tools, (t) => last[t], now),
+        lastEventAt: now - 90,
+        pricingVersion: PRICING_VERSION,
+      },
     },
     tools: visible,
     claude: {

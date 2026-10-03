@@ -44,7 +44,7 @@ else:
 
 # Bump on every change to this file, with COLLECTOR_VERSIONS in
 # shared/collectors.ts: the server flags older copies as outdated.
-VERSION = 2
+VERSION = 3
 COLLECTOR = {"name": "codex", "version": VERSION}
 SERVER = os.environ.get("AI_ACTIVITY_URL", "<server>")
 KEY = os.environ.get("AI_ACTIVITY_KEY", "<device key>")
@@ -54,6 +54,9 @@ HOME = os.path.expanduser("~")
 CODEX_HOME = os.environ.get("CODEX_HOME") or os.path.join(HOME, ".codex")
 CACHE = os.path.join(HOME, ".cache", "ai-activity")
 BATCH = 400
+# Bump when messages carry new fields: each target's history is sent once
+# more, so the server fills them in on the messages it already has.
+FIELDS = 2
 
 
 def when(ts):
@@ -107,10 +110,14 @@ def limits_of(p):
 def read(path, state):
     """New messages, rate limits and context of one rollout since its saved offset."""
     size = os.path.getsize(path)
-    # [offset, session id, model, has token_usage_record lines]
-    offset, session, model, records = (state.get(path) or [0, None, None, False])
+    # [offset, session id, model, has token_usage_record lines, service tier,
+    # model provider]: what applies to the lines after the offset.
+    saved = state.get(path)
+    offset, session, model, records, tier, provider = (
+        (list(saved) + [None, None])[:6] if isinstance(saved, list) and len(saved) >= 4
+        else [0, None, None, False, None, None])
     if offset > size:  # rewritten: start over
-        offset, session, model, records = 0, None, None, False
+        offset, session, model, records, tier, provider = 0, None, None, False, None, None
     with open(path, "rb") as f:
         f.seek(offset)
         data = f.read(size - offset)
@@ -124,8 +131,12 @@ def read(path, state):
             session = session or p.get("session_id") or p.get("id")
         elif t == "turn_context" and p.get("model"):
             model = p["model"]
-        elif p.get("type") == "thread_settings_applied" and (p.get("thread_settings") or {}).get("model"):
-            model = p["thread_settings"]["model"]
+        elif p.get("type") == "thread_settings_applied" and isinstance(p.get("thread_settings"), dict):
+            # The tier (Fast mode) and the provider price the next responses.
+            settings = p["thread_settings"]
+            model = settings.get("model") or model
+            tier = settings.get("service_tier") if isinstance(settings.get("service_tier"), str) else tier
+            provider = settings.get("model_provider_id") if isinstance(settings.get("model_provider_id"), str) else provider
         elif t == "token_usage_record" and isinstance(p.get("usage"), dict) and ts:
             records = True
             messages.append({
@@ -133,6 +144,8 @@ def read(path, state):
                 "session_id": p.get("session_id") or p.get("thread_id") or session,
                 "turn_id": p.get("turn_id"),
                 "model": model,
+                "service_tier": tier,
+                "model_provider": provider,
                 "occurred_at": ts,
                 "utc_offset_min": utc_offset(ts),
                 "usage": usage_of(p["usage"]),
@@ -155,6 +168,8 @@ def read(path, state):
                     "event_id": "tc_%s_%d" % (session, total),
                     "session_id": session,
                     "model": model,
+                    "service_tier": tier,
+                    "model_provider": provider,
                     "occurred_at": ts,
                     "utc_offset_min": utc_offset(ts),
                     "usage": usage_of(last),
@@ -168,7 +183,7 @@ def read(path, state):
             rl = limits_of(p)
             if rl:
                 limits = (rl, ts)
-    return messages, limits, context, [offset + end, session, model, records]
+    return messages, limits, context, [offset + end, session, model, records, tier, provider]
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -253,6 +268,9 @@ def for_target(saved):
     targets = {k: v for k, v in targets.items() if isinstance(v, dict)} if isinstance(targets, dict) else {}
     fp = target()
     offsets = targets.pop(fp, {})
+    # Saved before messages carried the current FIELDS: one full resend.
+    if offsets.get("fields") != FIELDS:
+        offsets = {"fields": FIELDS}
     targets[fp] = offsets  # most recently used last
     return {"targets": dict(list(targets.items())[-KEPT_TARGETS:])}, offsets
 

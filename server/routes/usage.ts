@@ -1,11 +1,15 @@
 import { Hono, type Context } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { PRICING_VERSION } from "../../shared/pricing.ts";
+import {
+  LEADERBOARD_RANKS, type LeaderboardRank,
+} from "../../shared/types.ts";
 import type {
   ActivityResponse, LeaderboardResponse, Profile, ProfilesResponse, QuotasResponse, SessionsResponse, StatsResponse,
   SummaryResponse,
 } from "../../shared/types.ts";
 import {
-  addDays, breakdown, countSessions, dailyBuckets, dayAt, earliestOfDay, findUserByUsername, latestOffset, latestQuotas,
+  addDays, breakdown, countSessions, dailyBuckets, dayAt, earliestOfDay, findUserByUsername, latestEventAt, latestOffset, latestQuotas,
   leaderboard, listProfiles, recentSessions, toProfile, usageTotals,
 } from "../db/queries.ts";
 import { nowSec, type DB } from "../db/schema.ts";
@@ -61,7 +65,9 @@ function usage(db: DB, owner: Owner) {
         day,
         total: breakdown(db, uid, 0, tool),
         today: breakdown(db, uid, earliestOfDay(day), tool, day),
-        provenance: "measured messages (one row per Anthropic message id)",
+        last_event_at: latestEventAt(db, uid, tool),
+        pricing_version: PRICING_VERSION,
+        provenance: "measured messages (one row per Anthropic message id); values: published retail API rates (shared/pricing.ts), an estimate, not actual spend",
       });
     })
     .get("/sessions", (c) => {
@@ -83,10 +89,14 @@ export function leaderboardRoutes(db: DB) {
     .get("/", (c) => {
       const all = c.req.query("days") === "all";
       const days = intParam(c, "days", 30, 1, 730);
+      const asked = c.req.query("rank");
+      const rank: LeaderboardRank = (LEADERBOARD_RANKS as readonly string[]).includes(asked ?? "")
+        ? asked as LeaderboardRank : "tokens";
       return c.json<LeaderboardResponse>({
         range_days: all ? null : days,
-        ...leaderboard(db, all ? 0 : nowSec() - days * 86400, LEADERBOARD_ACTIVITY_DAYS),
-        provenance: "measured messages of every enabled account (one row per Anthropic message id)",
+        ...leaderboard(db, all ? 0 : nowSec() - days * 86400, LEADERBOARD_ACTIVITY_DAYS, rank),
+        pricing_version: PRICING_VERSION,
+        provenance: "measured messages of every enabled account (one row per Anthropic message id); values: published retail API rates, an estimate, not actual spend",
       });
     });
 }

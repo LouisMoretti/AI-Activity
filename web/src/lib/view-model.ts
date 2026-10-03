@@ -20,11 +20,32 @@ export interface FigureVM {
   byModelOthers: number | null;
 }
 
+/**
+ * Estimated API-equivalent value (shared/pricing.ts): measured tokens at
+ * published retail API rates. Not actual spend.
+ */
+export interface ValueVM {
+  usd: number | null; // null → nothing priced ("—"), never $0
+  pricedTokens: number;
+  unpricedTokens: number; // left out: tools or models without a published rate
+  lowerBound: boolean; // some cache writes priced at the cheaper rate (duration unknown)
+  fallback: boolean; // some usage priced at a rate published after it
+  byTool: ShareRow[]; // USD, priced rows only
+  byModel: ShareRow[];
+}
+
 export interface StatsVM {
   total: FigureVM; // all-time tokens
   today: FigureVM; // tokens today (the owner's local day)
   sessions: FigureVM; // all-time conversations
   streak: { current: number; longest: number } | null;
+  value: {
+    total: ValueVM; // all time
+    today: ValueVM;
+    /** Latest measured event, null without usage: how fresh the figures are. */
+    lastEventAt: number | null;
+    pricingVersion: string;
+  };
 }
 
 export interface QuotaWindowVM {

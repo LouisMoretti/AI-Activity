@@ -15,7 +15,32 @@ export const MIGRATIONS: ((db: DB) => void)[] = [
   activityClearedAt,
   collectorVersions,
   githubAccounts,
+  apiValueInputs,
 ];
+
+/**
+ * 6: what an API-equivalent value needs besides model and token counts
+ * (issue #113, shared/pricing.ts). `cache_write_1h_tokens`: of the cache
+ * writes, those to Anthropic's 1-hour cache (2× input instead of 1.25×;
+ * NULL: not recorded, priced at the 5-minute rate as a lower bound).
+ * `service_tier`: the processing tier as the tool recorded it (Claude Code's
+ * fast mode as "fast", Codex's service tier); NULL: standard.
+ * `inference_geo`: Anthropic's inference region ("us" costs 1.1×). The read
+ * index covers them, so pricing reads stay index-only.
+ */
+function apiValueInputs(db: DB): void {
+  db.exec(`
+    ALTER TABLE usage_events ADD COLUMN cache_write_1h_tokens INTEGER;
+    ALTER TABLE usage_events ADD COLUMN service_tier TEXT;
+    ALTER TABLE usage_events ADD COLUMN inference_geo TEXT;
+    DROP INDEX IF EXISTS idx_usage_user_read;
+    CREATE INDEX idx_usage_user_read ON usage_events(
+      user_id, occurred_at, tool, session_id, model,
+      input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, utc_offset_min,
+      cache_write_1h_tokens, service_tier, inference_geo
+    );
+  `);
+}
 
 /**
  * 5: sign in with GitHub only (issue #127). `users.github_id` is the GitHub

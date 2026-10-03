@@ -322,6 +322,28 @@ describe("Codex collector (hooks from README.md)", () => {
     assert.equal((await summary()).tokens - before.tokens, 35);
   });
 
+  test("Fast mode and the model provider (thread settings) go with each response, for its price", async () => {
+    const before = await summary();
+    const settings = (over) => line("event_msg", { type: "thread_settings_applied", thread_id: S1,
+      thread_settings: { model: "gpt-6-sol", model_provider_id: "openai", service_tier: "priority", cwd: "/secret/path", ...over } }) + "\n";
+    fs.appendFileSync(current, settings() + response("resp_fast", S1, usage(400, 0, 10), 7300) +
+      settings({ model_provider_id: "ollama", service_tier: "default" }) + response("resp_local", S1, usage(400, 0, 10), 7710));
+    await run(hookCommand, env);
+    assert.ok(await waitFor(async () => (await summary()).events === before.events + 2));
+    const db = new Database(srv.dbPath, { readonly: true });
+    const rows = db.prepare("SELECT event_id, model, service_tier FROM usage_events WHERE event_id IN ('resp_fast', 'resp_local') ORDER BY event_id").all();
+    db.close();
+    assert.deepEqual(rows, [
+      { event_id: "resp_fast", model: "gpt-6-sol", service_tier: "priority" },
+      // Another provider's model is never priced as OpenAI's.
+      { event_id: "resp_local", model: "ollama/gpt-6-sol", service_tier: "default" },
+    ]);
+    // GPT-6 Sol Fast: 400 input at $4, 10 output at $20 (the other provider's tokens unpriced).
+    const value = (await summary()).value;
+    assert.ok(value.unpriced_tokens >= 410);
+    assert.ok(Math.abs((value.usd ?? 0) - (before.value.usd ?? 0) - (400 * 4 + 10 * 20) / 1e6) < 1e-9, String(value.usd));
+  });
+
   test("the PostToolUse hook sends a turn's usage while it runs", async () => {
     const before = await summary();
     fs.appendFileSync(current, response("resp_8", S1, usage(300, 200, 4), 6776));
