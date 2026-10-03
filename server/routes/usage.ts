@@ -6,11 +6,11 @@ import {
 } from "../../shared/types.ts";
 import type {
   ActivityResponse, LeaderboardResponse, Profile, ProfilesResponse, QuotasResponse, SessionsResponse, StatsResponse,
-  SummaryResponse,
+  SummaryResponse, HoursResponse, ProfilePage, RankResponse,
 } from "../../shared/types.ts";
 import {
   addDays, breakdown, countSessions, dailyBuckets, dayAt, earliestOfDay, findUserByUsername, latestEventAt, latestOffset, latestQuotas,
-  leaderboard, listProfiles, recentSessions, toProfile, usageTotals,
+  leaderboard, listProfiles, recentSessions, toProfile, usageTotals, hourlyBuckets, panelSettings, profileRank,
 } from "../db/queries.ts";
 import { nowSec, type DB } from "../db/schema.ts";
 import { intParam } from "../lib/http.ts";
@@ -47,6 +47,18 @@ function usage(db: DB, owner: Owner, catalog: CatalogGetter) {
       const first = addDays(dayAt(latestOffset(db, uid)), -(days - 1));
       return c.json<ActivityResponse>({
         days: dailyBuckets(db, uid, earliestOfDay(first), tool).filter((d) => d.day >= first),
+        provenance: "measured messages",
+      });
+    })
+    .get("/hours", (c) => {
+      const uid = owner(c);
+      const offset = latestOffset(db, uid);
+      const now = nowSec();
+      const day = dayAt(offset, now);
+      return c.json<HoursResponse>({
+        day,
+        current_hour: new Date((now + (offset ?? 0) * 60) * 1000).getUTCHours(),
+        hours: hourlyBuckets(db, uid, day),
         provenance: "measured messages",
       });
     })
@@ -122,7 +134,12 @@ export function publicProfileRoutes(db: DB, catalog: CatalogGetter = () => null)
   };
   return new Hono()
     .get("/", (c) => {
-      return c.json<Profile>(toProfile(owner(c)));
+      const user = owner(c);
+      return c.json<ProfilePage>({ ...toProfile(user), panels: panelSettings(user) });
     })
+    .get("/rank", (c) => c.json<RankResponse>({
+      ...profileRank(db, owner(c).id, nowSec() - 7 * 86400),
+      provenance: "measured messages over the last seven days",
+    }))
     .route("/", usage(db, (c) => owner(c).id, catalog));
 }

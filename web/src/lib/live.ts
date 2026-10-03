@@ -4,7 +4,7 @@ import { emptyValue, PRICING_VERSION } from "../../../shared/pricing.ts";
 import { QUOTA_POOLS, QUOTA_WINDOW_SEC, type QuotaWindowType } from "../../../shared/quota-pools.ts";
 import {
   TOOLS, type ActivityResponse, type ApiValue, type Breakdown, type LeaderboardResponse, type QuotasResponse, type Session,
-  type SessionsResponse, type SummaryResponse,
+  type SessionsResponse, type SummaryResponse, type HoursResponse, type RankResponse,
 } from "../../../shared/types.ts";
 import { denseSeries, streaks } from "./series.ts";
 import {
@@ -17,12 +17,17 @@ export interface LiveData {
   activity: ActivityResponse;
   quotas: QuotasResponse;
   sessions: SessionsResponse;
+  claudeCode?: { summary: SummaryResponse; latest: SessionsResponse };
+  codex?: { summary: SummaryResponse; latest: SessionsResponse };
   /** OpenCode's card: its summary (today) and its latest sessions. */
   opencode?: { summary: SummaryResponse; latest: SessionsResponse };
   /** Antigravity's card without quota windows: the same as OpenCode's. */
   antigravity?: { summary: SummaryResponse; latest: SessionsResponse };
   /** Cursor's card: absent for callers built before Cursor support. */
   cursor?: { summary: SummaryResponse; latest: SessionsResponse };
+  /** Read only for the panels that show them. */
+  hours?: HoursResponse | null;
+  rank?: RankResponse | null;
 }
 
 export const ACTIVITY_DAYS = 364;
@@ -158,12 +163,19 @@ export function liveDashboard(d: LiveData, provider: Provider): DashboardVM {
     },
     tools: toolsFor(provider),
     claude: toolQuotas(d.quotas, "claude-code"),
+    claudeActivity: activityTool(d.claudeCode, false),
     codex: toolQuotas(d.quotas, "codex"),
+    codexActivity: activityTool(d.codex, false),
     cursor: activityTool(d.cursor, false),
     opencode: activityTool(d.opencode, true),
     antigravity: toolQuotas(d.quotas, "antigravity"),
     antigravityActivity: activityTool(d.antigravity, false),
     sessions,
     sessionsTotal: d.sessions.total,
+    hours: d.hours ? { day: d.hours.day, currentHour: d.hours.current_hour, hours: d.hours.hours } : null,
+    rank: d.rank && d.rank.rank > 0 ? {
+      rank: d.rank.rank, accounts: d.rank.accounts, tokens: d.rank.tokens,
+      neighbor: d.rank.neighbor && { name: `@${d.rank.neighbor.username}`, tokens: d.rank.neighbor.tokens, direction: d.rank.neighbor.direction },
+    } : null,
   };
 }

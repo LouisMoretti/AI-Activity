@@ -1,14 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
   Account, ActivityDay, AdminOverview, AdminUser, Profile, Breakdown, BreakdownRow, DeletedAccount, DeletedActivity, Device, LeaderboardEntry,
-  LeaderboardResponse, PreviewSeedConfig, Quota, Session, UnpricedModel,
+  LeaderboardResponse, PreviewSeedConfig, Quota, Session, UnpricedModel, ProfilePanel, PanelRow, HourBucket, RankResponse,
 } from "../../shared/types.ts";
 import { COLLECTOR_VERSIONS } from "../../shared/collectors.ts";
 import {
   addGroup, emptyValue, explainPrice, groupTokens, longContextThresholds, PRICE_BOUNDARIES,
   type ApiValue, type Catalog, type PriceGroup,
 } from "../../shared/pricing.ts";
-import { BREAKDOWN_DISPLAY_ROWS, TOOLS, type LeaderboardRank } from "../../shared/types.ts";
+import { BREAKDOWN_DISPLAY_ROWS, DEFAULT_ROWS, PANEL_OPTIONS, TOOLS, WIDGETS, copyRows, type LeaderboardRank } from "../../shared/types.ts";
 import { nowSec, type DB } from "./schema.ts";
 import { DEFAULT_PREVIEW_SEED, parsePreviewSeed } from "../lib/preview-seed.ts";
 
@@ -79,6 +79,71 @@ export interface UserRow {
   github_id: number;
   is_admin: number;
   disabled: number;
+  /** The saved dashboard layout (JSON), NULL for the default one. */
+  panels: string | null;
+}
+
+const panelIds = new Set<string>([...TOOLS, ...WIDGETS]);
+const quotaTools = new Set<string>(["claude-code", "codex", "antigravity"]);
+const rowRatios = new Set<string>(["full", "half", "wide-left", "wide-right", "thirds"]);
+
+/** One public panel: a known tool or widget, with the quota view only where one exists. */
+function validPanel(p: unknown): p is ProfilePanel {
+  const panel = p as ProfilePanel;
+  return p !== null && typeof p === "object" && !Array.isArray(p) &&
+    Object.keys(p).every((key) => ["id", "view"].includes(key)) &&
+    typeof panel.id === "string" && panelIds.has(panel.id) &&
+    (quotaTools.has(panel.id) ? (["quota", "activity"] as string[]).includes(panel.view ?? "")
+      : (TOOLS as readonly string[]).includes(panel.id) ? panel.view === "activity" : panel.view === undefined);
+}
+
+/**
+ * Accept a complete public layout: rows of one card (`full`), one to two
+ * (two-card ratios; a single card stretches full width) or three
+ * (`thirds`), no duplicate panels
+ * or private fields. Anything else (the pre-rows flat list included) resets
+ * to the default layout on read.
+ */
+export function validLayout(value: unknown): value is PanelRow[] {
+  if (!Array.isArray(value) || value.length > PANEL_OPTIONS.length) return false;
+  const keys: string[] = [];
+  return value.every((row) => {
+    const candidate = row as PanelRow;
+    return row !== null && typeof row === "object" && !Array.isArray(row) &&
+      Object.keys(row).length === 2 &&
+      Object.keys(row).every((key) => ["ratio", "panels"].includes(key)) &&
+      rowRatios.has(candidate.ratio) &&
+      Array.isArray(candidate.panels) &&
+      (candidate.ratio === "thirds" ? candidate.panels.length === 3
+        : candidate.panels.length === 1 || (candidate.ratio !== "full" && candidate.panels.length === 2)) &&
+      candidate.panels.every((p) => {
+        if (!validPanel(p)) return false;
+        keys.push(`${p.id}:${p.view ?? ""}`);
+        return true;
+      });
+  }) && new Set(keys).size === keys.length;
+}
+
+/** The account's layout: the saved one, else (NULL, or a value no longer valid) the default. */
+export function panelSettings(user: UserRow): PanelRow[] {
+  if (user.panels !== null) {
+    try {
+      const value: unknown = JSON.parse(user.panels);
+      if (validLayout(value)) return value;
+    } catch { /* A manually edited value: the default layout. */ }
+  }
+  return copyRows(DEFAULT_ROWS);
+}
+
+/** Saves a validated layout; the default one is stored as NULL, so it follows future defaults. */
+export function setPanelSettings(db: DB, userId: number, rows: PanelRow[]): PanelRow[] {
+  const clean = copyRows(rows.map((r) => ({
+    ratio: r.ratio,
+    panels: r.panels.map((p) => (p.view ? { id: p.id, view: p.view } : { id: p.id })) as PanelRow["panels"],
+  })));
+  const json = JSON.stringify(clean);
+  db.prepare("UPDATE users SET panels = ? WHERE id = ?").run(json === JSON.stringify(DEFAULT_ROWS) ? null : json, userId);
+  return clean;
 }
 
 export function toAccount(u: UserRow): Account {
@@ -662,6 +727,46 @@ export function dailyBuckets(db: DB, userId: number, sinceSec: number, tool: str
        GROUP BY day ORDER BY day`
     )
     .all(userId, sinceSec, tool, tool) as ActivityDay[];
+}
+
+/** Today's tokens by hour on each event's local clock, using the covering read index. */
+export function hourlyBuckets(db: DB, userId: number, day: string): HourBucket[] {
+  // UTC+14 can start this day earliest; UTC-12 can end it latest.
+  return db.prepare(
+    `SELECT CAST(strftime('%H', occurred_at + COALESCE(utc_offset_min, 0) * 60, 'unixepoch') AS INTEGER) AS hour,
+            tool, SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens) AS tokens
+     FROM usage_events INDEXED BY idx_usage_user_read
+     WHERE user_id = ? AND occurred_at >= ? AND occurred_at < ?
+       AND ${localDay()} = ?
+     GROUP BY hour, tool ORDER BY hour, tool`
+  ).all(userId, earliestOfDay(day), earliestOfDay(addDays(day, 1)) + 26 * 3600, day) as HourBucket[];
+}
+
+/** Seven-day rank without the leaderboard page's year of calendar/model data. */
+export function profileRank(db: DB, userId: number, sinceSec: number): Omit<RankResponse, "provenance"> {
+  const rows = db.prepare(
+    `SELECT u.id, u.username,
+            COALESCE(SUM(e.input_tokens + e.output_tokens + e.cache_read_tokens + e.cache_write_tokens), 0) AS tokens
+     FROM users u LEFT JOIN usage_events e ON e.user_id = u.id AND e.occurred_at >= ?
+     WHERE u.disabled = 0
+     GROUP BY u.id
+     ORDER BY tokens DESC, u.username COLLATE NOCASE`
+  ).all(sinceSec) as { id: number; username: string; tokens: number }[];
+  const index = rows.findIndex((row) => row.id === userId);
+  const own = rows[index];
+  if (!own) return { rank: 0, accounts: rows.length, tokens: 0, neighbor: null };
+  const above = rows[index - 1];
+  const below = rows[index + 1];
+  const other = above && below
+    ? own.tokens - below.tokens < above.tokens - own.tokens ? below : above
+    : above ?? below;
+  return {
+    rank: index + 1,
+    accounts: rows.length,
+    tokens: own.tokens,
+    neighbor: other ? { username: other.username, tokens: other.tokens,
+      direction: other === above ? "behind" : "ahead of" } : null,
+  };
 }
 
 const TOKENS = "input_tokens + output_tokens + cache_read_tokens + cache_write_tokens";

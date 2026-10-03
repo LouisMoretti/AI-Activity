@@ -2,7 +2,7 @@
 // of a fictional user, and always labeled "Demonstration data". Never presented as a measurement.
 import { addGroup, emptyValue, explainPrice, groupTokens, periodOf, PRICING_VERSION, type ApiValue, type PriceGroup } from "../../../shared/pricing.ts";
 import { QUOTA_WINDOW_SEC } from "../../../shared/quota-pools.ts";
-import type { Profile } from "../../../shared/types.ts";
+import { DEFAULT_ROWS, PANEL_OPTIONS, type HourBucket, type PanelRow, type Profile, type Tool } from "../../../shared/types.ts";
 import { lastUtcDays, streaks, type DayPoint } from "./series.ts";
 import {
   POOL_LABELS, toolsFor, WINDOW_LABELS, type DashboardVM, type FigureVM, type Provider,
@@ -111,6 +111,7 @@ export function demoDashboard(provider: Provider): DashboardVM {
   const series: DayPoint[] = days.map((d) => ({ day: d.day, tokens: tools.reduce((a, t) => a + d[t], 0) }));
   const now = Math.floor(Date.now() / 1000);
   const last = days[days.length - 1];
+  const week = series.slice(-7).reduce((a, d) => a + d.tokens, 0);
 
   const sessions: SessionVM[] = ([
     { tool: "claude-code", id: "demo-a1b2c3d4", model: "claude-opus-5-5", calls: 142, tokens: 18_400_000, lastActive: now - 90, context: { pct: 64, size: 200000 } },
@@ -159,10 +160,18 @@ export function demoDashboard(provider: Provider): DashboardVM {
       updatedAt: now - 40,
       pools: [pool(null, [72, now + 48 * 60], [86, now + 2 * 86400 + 5 * 3600])],
     },
+    claudeActivity: {
+      recent: sessions.filter((s) => s.tool === "claude-code"),
+      today: { tokens: last["claude-code"], sessions: 1, calls: 142, models: 2, providers: null },
+    },
     codex: {
       tool: "codex",
       updatedAt: now - 20 * 60,
       pools: [pool(null, [38, now + 2 * 3600 + 18 * 60], [64, now + 4 * 86400])],
+    },
+    codexActivity: {
+      recent: sessions.filter((s) => s.tool === "codex"),
+      today: { tokens: last.codex, sessions: 1, calls: 57, models: 1, providers: null },
     },
     cursor: {
       recent: sessions.filter((s) => s.tool === "cursor"),
@@ -188,5 +197,34 @@ export function demoDashboard(provider: Provider): DashboardVM {
     },
     sessions,
     sessionsTotal: sessions.length,
+    // Today's fictional tokens spread over the day, peaking at 14h.
+    hours: { day: last.day, currentHour: 14, hours: tools.flatMap((t) => demoHours(t, last[t])) },
+    // A fictional rank; the neighbour is named in words, never as a login
+    // (any made-up login could be a real account).
+    rank: {
+      rank: 2, accounts: 5, tokens: week,
+      neighbor: { name: "a fictional account", tokens: week + 34_000_000, direction: "behind" },
+    },
   };
 }
+
+const HOUR_WEIGHTS = Array.from({ length: 24 }, (_, h) => (h === 14 ? 12 : h >= 8 && h <= 19 ? 4 : 1));
+const HOUR_WEIGHT_SUM = HOUR_WEIGHTS.reduce((a, b) => a + b, 0);
+
+/** A tool's fictional today split by hour; the hours add up to its today. */
+function demoHours(tool: Tool, total: number): HourBucket[] {
+  let used = 0;
+  return HOUR_WEIGHTS.flatMap((weight, hour) => {
+    const tokens = hour === 23 ? total - used : Math.floor((total * weight) / HOUR_WEIGHT_SUM);
+    used += tokens;
+    return tokens ? [{ hour, tool, tokens }] : [];
+  });
+}
+
+/** /demo shows every panel: the default rows, then each remaining panel on its own row. */
+export const DEMO_ROWS: PanelRow[] = [
+  ...DEFAULT_ROWS,
+  ...PANEL_OPTIONS
+    .filter((o) => !DEFAULT_ROWS.some((r) => r.panels.some((p) => p.id === o.id && p.view === o.view)))
+    .map((o): PanelRow => ({ ratio: "full", panels: [{ ...o }] })),
+];

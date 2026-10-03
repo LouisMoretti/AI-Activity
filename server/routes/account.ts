@@ -1,10 +1,10 @@
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import {
-  DELETE_ACCOUNT_PHRASE, DELETE_ACTIVITY_PHRASE, type AdminOverview, type AdminPricing, type SiteAnalyticsOverview, type AdminSettings, type AdminUser, type DeletedAccount, type DeletedActivity,
+  DELETE_ACCOUNT_PHRASE, DELETE_ACTIVITY_PHRASE, type PanelSettings, type AdminOverview, type AdminPricing, type SiteAnalyticsOverview, type AdminSettings, type AdminUser, type DeletedAccount, type DeletedActivity,
 } from "../../shared/types.ts";
 import {
   adminOverview, unpricedModels, deleteAccount, deleteUserActivity, deleteUserSessions, getUser, listAdminUsers, setUserAdmin,
-  setSignupOpen, setUserDisabled, signupOpen, previewSeedSettings, seedPreviewData, type UserRow,
+  setSignupOpen, setUserDisabled, signupOpen, previewSeedSettings, seedPreviewData, setPanelSettings, validLayout, type UserRow,
 } from "../db/queries.ts";
 import { PRICE_ALIASES, PRICES, PRICING_VERSION } from "../../shared/pricing.ts";
 import { nowSec, type DB } from "../db/schema.ts";
@@ -46,6 +46,11 @@ export function accountRoutes(db: DB) {
   }
 
   return new Hono<ViewerEnv>()
+    .post("/panels", async (c) => {
+      const { rows } = await readJson(c);
+      if (!validLayout(rows)) return c.json({ error: "rows must be a unique list of valid dashboard rows" }, 400);
+      return c.json<PanelSettings>({ rows: setPanelSettings(db, c.get("userId"), rows) });
+    })
     // Deletes the signed-in user's own usage and quotas; the account,
     // profile, devices and sessions stay.
     .post("/delete-activity", async (c) => {

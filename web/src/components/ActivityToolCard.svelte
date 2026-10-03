@@ -92,6 +92,15 @@
   .row .meta { margin-left: auto; flex-shrink: 0; display: inline-flex; align-items: center; white-space: nowrap; }
   .meta { color: var(--muted); font-size: 12px; }
   .today .meta + .meta { margin-top: 4px; }
+  @container (max-width: 560px) {
+    .card { grid-template-columns: 1fr; }
+    .today { padding-right: 0; }
+    .conversations { padding-left: 0; border-left: 0; border-top: 1px solid var(--line); padding-top: 18px; margin-top: 18px; }
+  }
+  @container (max-width: 350px) {
+    .head, .row { flex-wrap: wrap; }
+    .status, .row .meta { margin-left: 0; white-space: normal; }
+  }
   @media (max-width: 720px) {
     .card { grid-template-columns: 1fr; }
     .today { padding-right: 0; }

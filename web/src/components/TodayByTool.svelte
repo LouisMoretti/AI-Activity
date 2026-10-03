@@ -3,7 +3,7 @@
   import { TOOL_META, toolName, type FigureVM, type ToolKey } from "../lib/view-model.ts";
 
   // Today's tokens split by tool, one bar each in the tool's colour.
-  let { today }: { today: FigureVM } = $props();
+  let { today, demo = false }: { today: FigureVM; demo?: boolean } = $props();
   const color = (name: string) => (name in TOOL_META ? TOOL_META[name as ToolKey].color : "var(--accent)");
   const total = $derived(today.value ?? 0);
   const share = (v: number) => (total ? (v / total) * 100 : 0);
@@ -11,6 +11,7 @@
 
 <article class="card">
   <div class="head"><span class="label">Today by tool</span><span class="meta">{fmtCompact(total)}</span></div>
+  {#if demo}<div class="demo">Demonstration data</div>{/if}
   <div class="rows">
     {#each today.byTool as t (t.name)}
       <div>
@@ -29,6 +30,7 @@
   .head .meta { margin-left: auto; }
   .label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); }
   .meta { color: var(--muted); font-size: 12px; }
+  .demo { color: var(--muted); font-size: 11px; margin: -7px 0 12px; }
   .rows { display: grid; gap: 12px; }
   .line { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; margin-bottom: 5px; }
   .track { height: 6px; background: var(--track); border-radius: 10px; overflow: hidden; }

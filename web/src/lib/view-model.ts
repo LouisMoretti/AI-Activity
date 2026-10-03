@@ -3,7 +3,7 @@
 // Time-relative text (countdowns, "x ago") is derived in components from
 // timestamps here plus the shared clock.
 import type { QUOTA_POOLS, QuotaWindowType } from "../../../shared/quota-pools.ts";
-import { TOOLS, type ApiValue, type Session, type Tool } from "../../../shared/types.ts";
+import { TOOLS, type ApiValue, type HourBucket, type Session, type Tool } from "../../../shared/types.ts";
 import type { DayPoint } from "./series.ts";
 
 export type ToolKey = Tool;
@@ -90,6 +90,22 @@ export interface SessionVM {
 }
 
 
+/** "Today by hour": today's tokens per local hour and tool. */
+export interface HoursVM {
+  day: string; // YYYY-MM-DD, the owner's today
+  currentHour: number;
+  hours: HourBucket[];
+}
+
+/** "Leaderboard · 7 days": the profile's rank by tokens and its nearest account. */
+export interface RankVM {
+  rank: number;
+  accounts: number;
+  tokens: number;
+  /** `name` is shown as is ("@login" for a real account). */
+  neighbor: { name: string; tokens: number; direction: "behind" | "ahead of" } | null;
+}
+
 export interface DashboardVM {
   demo: boolean;
   today: string; // YYYY-MM-DD, the highlighted calendar day
@@ -98,7 +114,9 @@ export interface DashboardVM {
   stats: StatsVM;
   tools: ToolKey[]; // cards to show for the current filter
   claude: QuotaToolVM;
+  claudeActivity: ActivityToolVM;
   codex: QuotaToolVM;
+  codexActivity: ActivityToolVM;
   cursor: ActivityToolVM;
   opencode: ActivityToolVM;
   antigravity: QuotaToolVM;
@@ -107,6 +125,9 @@ export interface DashboardVM {
   antigravityActivity: ActivityToolVM;
   sessions: SessionVM[];
   sessionsTotal: number;
+  /** Null when not read (the panel is not shown) or unavailable. */
+  hours: HoursVM | null;
+  rank: RankVM | null;
 }
 
 // color: the tool's design token, set as `--tool` on its elements.

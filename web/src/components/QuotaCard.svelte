@@ -28,6 +28,10 @@
   /* A rule between pools, in the middle of the gap. */
   .split .windows + .windows::before { content: ""; position: absolute; top: 0; bottom: 0; left: -16px; width: 1px; background: var(--line); }
   h4 { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); margin-bottom: -10px; }
+  @container (max-width: 560px) {
+    .pools.split { grid-auto-flow: row; }
+    .split .windows + .windows::before { display: none; }
+  }
   @media (max-width: 720px) {
     .pools.split { grid-auto-flow: row; }
     .split .windows + .windows::before { display: none; }
