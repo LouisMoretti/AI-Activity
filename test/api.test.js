@@ -517,6 +517,21 @@ describe("basics (signed in as the test admin)", () => {
     }
   });
 
+  test("the built client has nothing inline for the CSP to block", () => {
+    // `npm run dev:web` serves the page without the CSP: an inline style or
+    // script would only break in production, so the build is checked here.
+    const dist = new URL("../web/dist/", import.meta.url);
+    const html = fs.readFileSync(new URL("index.html", dist), "utf8");
+    assert.doesNotMatch(html, /<style|\sstyle=/i, "index.html");
+    for (const tag of html.match(/<script\b[^>]*>/gi) ?? []) assert.match(tag, /\ssrc=/, tag);
+    const scripts = fs.readdirSync(new URL("assets/", dist)).filter((f) => f.endsWith(".js"));
+    assert.ok(scripts.length, "the build has scripts under /assets/");
+    for (const f of scripts) {
+      // Svelte puts static markup, a style="" attribute included, in template strings.
+      assert.doesNotMatch(fs.readFileSync(new URL(`assets/${f}`, dist), "utf8"), /<style|\sstyle=/i, f);
+    }
+  });
+
   test("static serving never escapes the web root", async () => {
     for (const p of ["/%2e%2e/package.json", "/..%2fpackage.json", "/%2e%2e%2f.env.example"]) {
       const r = await req(srv.base, "GET", p);
@@ -890,6 +905,11 @@ describe("profiles from GitHub and user management", () => {
     await login(srv.base, "admin");
     const after = (await req(srv.base, "GET", "/api/u/admin", anon)).json;
     assert.deepEqual([after.display_name, after.avatar_url], ["x".repeat(60), null]);
+    // A Gravatar default would redirect off the list (and the CSP): dropped.
+    const hash = "0".repeat(32);
+    githubUser("admin", { avatar_url: `https://www.gravatar.com/avatar/${hash}?s=80&d=https%3A%2F%2Fevil.example%2Fp.png&default=x` });
+    await login(srv.base, "admin");
+    assert.equal((await req(srv.base, "GET", "/api/u/admin", anon)).json.avatar_url, `https://www.gravatar.com/avatar/${hash}?s=80`);
     // No name: the username is shown.
     githubUser("admin", { name: null, avatar_url: null });
     await login(srv.base, "admin");

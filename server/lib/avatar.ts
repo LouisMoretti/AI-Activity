@@ -37,5 +37,11 @@ export function parseAvatarUrl(v: unknown): { url: string | null } | { error: st
     return { error: `picture links must be https images from ${AVATAR_HOSTS_TEXT}` };
   }
   u.hash = "";
+  // Gravatar redirects a missing picture to its `d` default (through
+  // i0.wp.com for a URL), a host outside the list and the CSP.
+  if (u.hostname.endsWith("gravatar.com")) {
+    u.searchParams.delete("d");
+    u.searchParams.delete("default");
+  }
   return { url: u.toString() };
 }

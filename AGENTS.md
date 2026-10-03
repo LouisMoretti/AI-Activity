@@ -219,8 +219,10 @@ Upgrades are normally deployed from GitHub (Continuous deployment below).
   styles through the CSSOM), images from the site, `data:` (the favicon)
   and the avatar hosts (`AVATAR_HOSTS`, `server/lib/avatar.ts`), never
   framed (`frame-ancestors 'none'`). A new external resource must be added
-  there. In dev, Vite serves the page itself, so HMR is not affected. Do
-  not add them in Caddy too.
+  there. In dev, Vite serves the page itself, so HMR is not affected (nor
+  is the CSP enforced: `test/api.test.js` checks `web/dist` has no inline
+  script, `<style>` or `style=""`). Gravatar's `d` default is dropped from
+  pictures (it redirects off the list). Do not add them in Caddy too.
 - Logs rotate (`x-logging` in `compose.yaml`: 3 × 10 MB per container);
   Docker keeps them forever otherwise.
 
