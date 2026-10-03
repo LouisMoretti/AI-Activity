@@ -19,7 +19,7 @@
   import UsersPanel from "./components/UsersPanel.svelte";
   import { untrack } from "svelte";
   import { Dashboard } from "./lib/dashboard.svelte.ts";
-  import { DEMO_PROFILE } from "./lib/demo.ts";
+  import { DEMO_PROFILE, demoDashboard } from "./lib/demo.ts";
 
   const dash = new Dashboard();
   // Breadcrumb after "AI Activity" in the header: where you are.
@@ -133,7 +133,7 @@
       <StatsRow stats={vm.stats} />
 
       {#key dash.route.page === "demo" ? "demo" : `profile:${dash.shown.username}`}
-        <ProfilePanels {vm} rows={dash.rows} own={dash.own}
+        <ProfilePanels {vm} sample={() => demoDashboard("all")} rows={dash.rows} own={dash.own}
           onrowschange={(rows) => dash.setRows(rows)} ondevices={() => dash.go("/settings")} />
       {/key}
 

@@ -26,24 +26,32 @@ conversations (10 + "Show more"; each with its API-equivalent value inline
 after its tokens, nothing when none of them is priced, and an info icon only
 for a partial, lower-bound or older-rate value). The rows are the
 owner's layout (`users.panels`: a JSON array of rows `{ratio, panels}`, NULL
-for the default layout): each row holds
-one card (`full`) or two (`half` = 50/50, `wide-left` = ⅔/⅓, `wide-right` = ⅓/⅔;
-a lone card in a split row stretches full width). Any tool (as its quota card,
+for the default layout): each row holds one card (`full`), two (`half` =
+50/50, `wide-left` = ⅔/⅓, `wide-right` = ⅓/⅔; a lone card in such a row
+stretches full width) or three (`thirds`). Any tool (as its quota card,
 its activity card, or both at once for Claude Code, Codex and Antigravity) and
 any widget ("Today by tool": today's tokens split by tool, "Today by hour",
 "Best day", "Leaderboard · 7 days") can go in any row, in any order; the
 default (`DEFAULT_ROWS`, `shared/types.ts`) is Claude Code + Codex, Cursor,
-Antigravity, then OpenCode + Today by tool. The owner edits it in place (Edit
-layout, then Save layout): each card has buttons to switch its view, move it
-up or down (a card sharing its row gets a row of its own; a card alone joins
-the next row when it has room, else the rows swap), swap it with its
-neighbour and remove it; each row has Row ↑ / Row ↓ and, with two cards, a
-widths select. Dragging a card (pointer only) drops it next to another or on
-a row with room (a full row refuses it), and the bar between two cards snaps
-their widths live. The buttons cover everything dragging does, so keyboards
-and touch screens reach every layout; the focus stays on the control used,
-and a live region says what moved where. Visitors
-see the saved layout read-only.
+Antigravity, then OpenCode + Today by tool. The owner edits it in place
+(Edit layout, then Save layout or Cancel), by drag and drop only, no button
+on the cards: while editing, every card shows the fictional `/demo` data
+(labeled "Sample data"), so the owner sees the final look, not their data.
+A held card follows the pointer; where it will land, an empty dashed box of
+its final size opens and the other cards slide aside (180 ms, translation
+only, none with reduced motion). Next to a card (its left or right half)
+shares that row (the widths follow the count: `ratioFor`), the top or bottom
+band of a row starts a new row, and over a card of a full row (three) the
+two swap (the hovered card takes the held one's old place). A drawer of the
+panels not shown sticks to the bottom of the window: drag one onto the
+dashboard to add it; while a card is held it becomes "Drop here to remove".
+The bar between two cards snaps their widths live to half and thirds. The
+page scrolls near the window's edges. Touch: a long press (350 ms) lifts a
+card, a quick swipe scrolls. Keyboard, with nothing visible: Tab to a card
+(or a drawer tile), Space or Enter lifts it, the arrows move it through every
+possible place (Up / Down across rows and new-row slots), Space drops it,
+Escape puts it back; a live region says each step. Card content is inert
+while editing. Visitors see the saved layout read-only.
 Hidden tool cards trigger no tool-specific reads. Antigravity's quota card
 still falls back to its activity view while no window is running. On your own
 page, a one-line box under the rows says how to add a tool (the install
@@ -781,7 +789,7 @@ web/
                           (wraps ActivityToolCard, the card of a tool
                           without quota windows),
                           ProfilePanels (the dashboard rows and their
-                          editor), ProfileWidget (the usage widgets),
+                          drag-and-drop editor), ProfileWidget (the usage widgets),
                           TodayByTool,
                           Conversations, DevicesPanel,
                           DangerZone (DangerAction), AccountMenu,
@@ -1512,7 +1520,8 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   `POST /api/account`). Only the dashboard layout is the owner's:
   `POST /api/account/panels {rows}` → `{rows}` (validated: known panels,
   the quota view only for Claude Code, Codex and Antigravity, one card per
-  `full` row and at most two otherwise, no duplicates or other fields, else
+  `full` row, three per `thirds` row and one or two otherwise, no duplicates
+  or other fields, else
   `400`). Profile pictures are links, never uploads: every
   visitor's browser loads them (public pages, open sign-up), so only
   `https` images from GitHub, Gravatar or Imgur are kept

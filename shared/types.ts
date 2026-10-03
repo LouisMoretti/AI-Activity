@@ -26,10 +26,20 @@ export const PANEL_OPTIONS: { id: PanelId; view?: PanelView }[] = [
 ];
 /**
  * Dashboard rows: the row's ratio sets its cards' widths, so cards carry
- * no size. `full` holds one card; the split ratios hold two.
+ * no size. `full` holds one card; `half`, `wide-left` (⅔ · ⅓) and
+ * `wide-right` (⅓ · ⅔) two (one stretches full width); `thirds` three.
  */
-export type RowRatio = "full" | "half" | "wide-left" | "wide-right";
-export interface PanelRow { ratio: RowRatio; panels: [ProfilePanel] | [ProfilePanel, ProfilePanel] }
+export type RowRatio = "full" | "half" | "wide-left" | "wide-right" | "thirds";
+export interface PanelRow {
+  ratio: RowRatio;
+  panels: [ProfilePanel] | [ProfilePanel, ProfilePanel] | [ProfilePanel, ProfilePanel, ProfilePanel];
+}
+/** The ratio a row of `count` cards takes, keeping a two-card row's widths when it had two. */
+export function ratioFor(count: number, previous: RowRatio): RowRatio {
+  if (count >= 3) return "thirds";
+  if (count === 2) return previous === "half" || previous === "wide-left" || previous === "wide-right" ? previous : "half";
+  return "full";
+}
 export const DEFAULT_ROWS: PanelRow[] = [
   { ratio: "wide-left", panels: [{ id: "claude-code", view: "quota" }, { id: "codex", view: "quota" }] },
   { ratio: "full", panels: [{ id: "cursor", view: "activity" }] },

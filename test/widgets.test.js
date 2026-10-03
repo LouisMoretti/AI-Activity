@@ -27,6 +27,7 @@ test("profile rows carry tools, views and ratios; only the owner can edit them",
       ] },
       { ratio: "wide-right", panels: [{ id: "today-by-hour" }] },
       { ratio: "full", panels: [{ id: "best-day" }] },
+      { ratio: "thirds", panels: [{ id: "codex", view: "quota" }, { id: "cursor", view: "activity" }, { id: "leaderboard" }] },
     ];
     assert.deepEqual((await save(chosen)).json.rows, chosen);
     assert.deepEqual(await panels("ADMIN"), chosen);
@@ -43,6 +44,10 @@ test("profile rows carry tools, views and ratios; only the owner can edit them",
       [{ ratio: "diagonal", panels: [{ id: "best-day" }] }],
       [{ ratio: "half", panels: [{ id: "best-day" }, { id: "best-day", view: "quota" }, { id: "codex", view: "quota" }] }],
       [{ id: "best-day", size: "small" }],
+      // Three cards only in a thirds row, and a thirds row holds exactly three.
+      [{ ratio: "half", panels: [{ id: "best-day" }, { id: "leaderboard" }, { id: "today-by-hour" }] }],
+      [{ ratio: "thirds", panels: [{ id: "best-day" }, { id: "leaderboard" }] }],
+      [{ ratio: "thirds", panels: [{ id: "best-day" }, { id: "leaderboard" }, { id: "today-by-hour" }, { id: "today-by-tool" }] }],
     ]) {
       assert.equal((await save(rows)).status, 400);
     }

@@ -85,7 +85,7 @@ export interface UserRow {
 
 const panelIds = new Set<string>([...TOOLS, ...WIDGETS]);
 const quotaTools = new Set<string>(["claude-code", "codex", "antigravity"]);
-const rowRatios = new Set<string>(["full", "half", "wide-left", "wide-right"]);
+const rowRatios = new Set<string>(["full", "half", "wide-left", "wide-right", "thirds"]);
 
 /** One public panel: a known tool or widget, with the quota view only where one exists. */
 function validPanel(p: unknown): p is ProfilePanel {
@@ -98,8 +98,9 @@ function validPanel(p: unknown): p is ProfilePanel {
 }
 
 /**
- * Accept a complete public layout: rows of one card (`full`) or one to two
- * (split ratios; a single card stretches full width), no duplicate panels
+ * Accept a complete public layout: rows of one card (`full`), one to two
+ * (two-card ratios; a single card stretches full width) or three
+ * (`thirds`), no duplicate panels
  * or private fields. Anything else (the pre-rows flat list included) resets
  * to the default layout on read.
  */
@@ -113,7 +114,8 @@ export function validLayout(value: unknown): value is PanelRow[] {
       Object.keys(row).every((key) => ["ratio", "panels"].includes(key)) &&
       rowRatios.has(candidate.ratio) &&
       Array.isArray(candidate.panels) &&
-      (candidate.panels.length === 1 || (candidate.ratio !== "full" && candidate.panels.length === 2)) &&
+      (candidate.ratio === "thirds" ? candidate.panels.length === 3
+        : candidate.panels.length === 1 || (candidate.ratio !== "full" && candidate.panels.length === 2)) &&
       candidate.panels.every((p) => {
         if (!validPanel(p)) return false;
         keys.push(`${p.id}:${p.view ?? ""}`);
