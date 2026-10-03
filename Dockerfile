@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1
 # AI Activity server: see AGENTS.md, "Deploy (Docker + Caddy)".
-# Node 22 on Debian (glibc): better-sqlite3 ships prebuilt binaries for it on
-# amd64 and arm64, so nothing is compiled. Node >= 22.18 runs server/*.ts as is.
-ARG NODE_IMAGE=node:22-slim
+# Node 24 LTS on Debian (glibc): better-sqlite3 ships N-API prebuilt binaries
+# for amd64 and arm64, so nothing is compiled. Node 24 runs server/*.ts as is.
+ARG NODE_IMAGE=node:24-slim
 
 FROM ${NODE_IMAGE} AS build
 WORKDIR /app
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json .npmrc ./
 RUN npm ci --no-audit --no-fund
 COPY . .
 RUN npm run build
@@ -17,7 +17,7 @@ ENV NODE_ENV=production \
     DB_PATH=/data/dashboard.db \
     BACKUP_DIR=/data/backups
 WORKDIR /app
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json .npmrc ./
 # Installed here, not copied from the build stage or the host: the native
 # SQLite binding must match this image's platform.
 RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force

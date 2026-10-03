@@ -174,10 +174,13 @@ git pull && docker compose up -d --build                  # upgrade by hand
 
 Upgrades are normally deployed from GitHub (Continuous deployment below).
 
-- The image (`Dockerfile`) is `node:22-slim` (glibc: `better-sqlite3` has
-  prebuilt binaries for amd64 and arm64 on Node 22; Node 24 would compile
-  from source), runs as `node`, has a `HEALTHCHECK` on `/api/health`, and
-  `npm ci` runs inside it (never copy the host's `node_modules`).
+- The image (`Dockerfile`) is `node:24-slim` (glibc: `better-sqlite3`
+  ships N-API prebuilt binaries for amd64 and arm64 in its package, so
+  nothing compiles and no toolchain is installed), runs as `node`, has a
+  `HEALTHCHECK` on `/api/health`, and `npm ci` runs inside it (never copy
+  the host's `node_modules`).
+  `.npmrc` turns install scripts off: no dependency needs one, and npm
+  would otherwise try to compile `better-sqlite3` (npm/cli#9837).
 - Data lives in the `data` volume mounted on `/data` (`DB_PATH=/data/dashboard.db`,
   `BACKUP_DIR=/data/backups`): mount the directory, never the database file
   alone (its `-wal` / `-shm` sit next to it). `docker stop` sends SIGTERM:
@@ -320,7 +323,7 @@ README's Codex Stop hook; `test/opencode-collector.test.js` runs
 synthetic Antigravity databases; `test/cursor-collector.test.js` covers
 synthetic Cursor hooks, ingestion, retries and privacy; `test/install.test.js` runs `/install.sh`
 (and, on Windows, `/install.ps1`) in a temporary home.
-Types: `npm run typecheck` (tsc for server, svelte-check for web). Node >= 22.18 runs the TypeScript server directly
+Types: `npm run typecheck` (tsc for server, svelte-check for web). Node >= 24 runs the TypeScript server directly
 (type stripping, no build step), so only erasable TS syntax is allowed (no
 `enum`, no parameter properties) and relative imports keep their `.ts`
 extension.
