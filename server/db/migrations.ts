@@ -44,6 +44,7 @@ function profilePanelsRepair(db: DB): void {
 function profilePanels(db: DB): void {
   db.exec(`ALTER TABLE users ADD COLUMN panels TEXT NOT NULL DEFAULT
     '[{"ratio":"wide-left","panels":[{"id":"claude-code","view":"quota"},{"id":"codex","view":"quota"}]},{"ratio":"full","panels":[{"id":"cursor","view":"activity"}]},{"ratio":"full","panels":[{"id":"antigravity","view":"quota"}]},{"ratio":"wide-left","panels":[{"id":"opencode","view":"activity"},{"id":"today-by-tool"}]}]'`);
+}
 
 /**
  * 7: privacy-first site analytics, kept apart from measured AI activity:
