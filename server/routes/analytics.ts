@@ -15,8 +15,16 @@ const OVERVIEW_DAYS = 30;
 const ONLINE_MS = 60_000;
 /** Minutes of online history kept in memory for the admin chart. */
 const ONLINE_MINUTES = 60;
-/** Distinct entries held in memory at once (presence, pending writes); beyond it, new ones are dropped. */
+/** Distinct entries held in memory at once (pending writes); beyond it, new ones are dropped. */
 const MAX_TRACKED = 10_000;
+/** Visitors held in the online view at once (each minute too); beyond it, new ones are not shown. */
+const MAX_ONLINE = 2_000;
+/**
+ * Visitors, and distinct API or rate-limited clients, recorded per UTC day
+ * each: anyone can invent ids and addresses, so this bounds the rows a
+ * flood can add (beyond it, page views and calls still count).
+ */
+const MAX_CLIENTS_PER_DAY = 2_000;
 /** Pending counts are written at most this often, so analytics barely touch the public read cache. */
 const FLUSH_MS = 60_000;
 /** The browser's random id: 128 bits, hex. */
@@ -92,24 +100,45 @@ function routeOf(path: string): string {
 }
 
 /**
- * Hash keys, stored in `settings` so a restart counts nobody twice: one
- * permanent key for browser ids (they are random, so their HMAC links
- * nothing but the visits of that browser), and one rotated every UTC day
- * for address + user agent (clients without an id, API callers).
+ * Hash keys. Browser ids are random (128 bits), so their HMAC under the
+ * permanent key, stored in `settings`, cannot be reversed even from a
+ * backup, and a restart counts nobody twice. Addresses can be enumerated
+ * (2^32 for IPv4): their key is rotated every UTC day and kept in memory
+ * only, never in the database or its backups, so a stored hash never leads
+ * back to an address. A restart starts a new one (clients without an id
+ * may count twice that day).
  */
 function hashKeys(db: DB) {
   const read = db.prepare("SELECT value FROM settings WHERE key = ?");
-  const write = db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
-  const stored = (key: string) => (read.get(key) as { value: string } | undefined)?.value;
-  let permanent = stored("analytics_key");
-  if (!permanent) write.run("analytics_key", (permanent = randomBytes(32).toString("hex")));
-  let daily = stored("analytics_daily_key") ?? "";
+  let permanent = (read.get("analytics_key") as { value: string } | undefined)?.value;
+  if (!permanent) {
+    db.prepare("INSERT INTO settings (key, value) VALUES ('analytics_key', ?)").run((permanent = randomBytes(32).toString("hex")));
+  }
+  let daily = { date: "", key: "" };
   return {
     permanent: permanent!,
     daily(date: string): string {
-      if (!daily.startsWith(`${date}:`)) write.run("analytics_daily_key", (daily = `${date}:${randomBytes(32).toString("hex")}`));
-      return daily;
+      if (daily.date !== date) daily = { date, key: randomBytes(32).toString("hex") };
+      return daily.key;
     },
+  };
+}
+
+/**
+ * Distinct values a caller can invent (hosts, visitors, client hashes), per
+ * UTC day: at most `max` are recorded, those already stored that day
+ * included (`sql` lists them, reloaded when the day turns).
+ */
+function dailyDistinct(db: DB, sql: string, max: number) {
+  let today = { date: "", values: new Set<string>() };
+  return (date: string, value: string): boolean => {
+    if (today.date !== date) {
+      today = { date, values: new Set((db.prepare(sql).all(date) as { v: string }[]).map((row) => row.v)) };
+    }
+    if (today.values.has(value)) return true;
+    if (today.values.size >= max) return false;
+    today.values.add(value);
+    return true;
   };
 }
 
@@ -135,12 +164,12 @@ function presence() {
   return {
     touch(visitor: string, page: string, now = Date.now()) {
       if (now - prunedAt > 10_000) { prune(now); prunedAt = now; }
-      if (!seen.has(visitor) && seen.size >= MAX_TRACKED) return;
+      if (!seen.has(visitor) && seen.size >= MAX_ONLINE) return;
       seen.set(visitor, { at: now, page });
       const minute = Math.floor(now / 60_000);
       let set = minutes.get(minute);
       if (!set) minutes.set(minute, (set = new Set()));
-      if (set.size < MAX_TRACKED) set.add(visitor);
+      if (set.size < MAX_ONLINE) set.add(visitor);
     },
     snapshot(now = Date.now()): SiteAnalyticsOverview["online"] {
       prune(now);
@@ -187,35 +216,40 @@ export function createSiteAnalytics(db: DB, client: ClientInfo) {
 
   /**
    * Hosts come from the caller (Origin, Referer, the posted referrer): at
-   * most 100 new ones per day and column, others count as "other", so
-   * nobody can grow the database by inventing hosts.
+   * most 100 per day and column, others count as "other", so nobody can
+   * grow the database by inventing hosts. A sign-in return's host counts
+   * once with the referrers' (stored as "sign-in:<host>").
    */
-  const hostsSeen = new Map<string, { day: string; hosts: Set<string> }>();
+  const hostCaps = {
+    source: dailyDistinct(db, `SELECT DISTINCT CASE WHEN source LIKE 'sign-in:%' THEN substr(source, 9) ELSE source END AS v
+      FROM site_analytics_pageviews WHERE day = ? AND source NOT IN ('direct', 'other')`, MAX_HOSTS_PER_DAY),
+    origin: dailyDistinct(db, `SELECT DISTINCT origin AS v FROM site_analytics_api_calls
+      WHERE day = ? AND origin NOT IN ('none', 'other')`, MAX_HOSTS_PER_DAY),
+  };
   function capped(column: "source" | "origin", date: string, host: string): string {
-    if (host === "direct" || host === "none") return host;
-    let seen = hostsSeen.get(column);
-    if (seen?.day !== date) {
-      const table = column === "source" ? "site_analytics_pageviews" : "site_analytics_api_calls";
-      const rows = db.prepare(`SELECT DISTINCT ${column} AS host FROM ${table} WHERE day = ?`).all(date) as { host: string }[];
-      hostsSeen.set(column, (seen = { day: date, hosts: new Set(rows.map((row) => row.host)) }));
-    }
-    if (seen.hosts.has(host)) return host;
-    if (seen.hosts.size >= MAX_HOSTS_PER_DAY) return "other";
-    seen.hosts.add(host);
-    return host;
+    if (host === "direct" || host === "none" || host === "other") return host;
+    return hostCaps[column](date, host) ? host : "other";
   }
+  const clientCaps = {
+    visitors: dailyDistinct(db, "SELECT visitor_hash AS v FROM site_analytics_visitors WHERE day = ?", MAX_CLIENTS_PER_DAY),
+    api: dailyDistinct(db, "SELECT client_hash AS v FROM site_analytics_api_clients WHERE day = ?", MAX_CLIENTS_PER_DAY),
+    limited: dailyDistinct(db, "SELECT client_hash AS v FROM site_analytics_rate_limited_clients WHERE day = ?", MAX_CLIENTS_PER_DAY),
+  };
 
   const write = db.transaction(() => {
     const view = db.prepare(`INSERT INTO site_analytics_pageviews(day, page, source, views) VALUES (?, ?, ?, ?)
       ON CONFLICT(day, page, source) DO UPDATE SET views = views + excluded.views`);
     for (const [k, n] of queue.counts.pageviews) view.run(...k.split("\0"), n);
-    const visitor = db.prepare("INSERT OR IGNORE INTO site_analytics_visitors(day, visitor_hash) VALUES (?, ?)");
+    const visitor = db.prepare("INSERT OR IGNORE INTO site_analytics_visitors(day, visitor_hash, returning_visitor) VALUES (?, ?, ?)");
+    const firstDay = db.prepare("SELECT first_day FROM site_analytics_known_visitors WHERE visitor_hash = ?").pluck();
     const known = db.prepare(`INSERT INTO site_analytics_known_visitors(visitor_hash, first_day, last_day) VALUES (?, ?, ?)
       ON CONFLICT(visitor_hash) DO UPDATE SET first_day = min(first_day, excluded.first_day), last_day = max(last_day, excluded.last_day)`);
     for (const k of queue.sets.visitors) {
-      const [date, hash] = k.split("\0");
-      visitor.run(date, hash);
-      if (hash.startsWith("v:")) known.run(hash, date, date);
+      const [date, hash, id] = k.split("\0");
+      if (!id) { visitor.run(date, hash, null); continue; }
+      const first = firstDay.get(id) as string | undefined;
+      visitor.run(date, hash, first !== undefined && first < date ? 1 : 0);
+      known.run(id, date, date);
     }
     const call = db.prepare(`INSERT INTO site_analytics_api_calls(day, route, origin, client, calls) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(day, route, origin, client) DO UPDATE SET calls = calls + excluded.calls`);
@@ -246,10 +280,17 @@ export function createSiteAnalytics(db: DB, client: ClientInfo) {
   }
   setInterval(flush, FLUSH_MS).unref();
 
-  /** The browser's id when it sent one ("v:"), else its address and user agent for today only ("d:"). */
-  function visitorOf(c: Context, date: string, token: unknown): string {
-    if (typeof token === "string" && VISITOR_TOKEN.test(token)) return `v:${hmac(keys.permanent, "visitor", token)}`;
-    return `d:${hmac(keys.daily(date), "visitor", client.clientId(c), c.req.header("user-agent") ?? "")}`;
+  /**
+   * A visitor, for one day: from the browser's id when it sent one ("v:",
+   * keyed by the day too, so days cannot be linked; `id` is its day-free
+   * hash for first and last seen), else its address and user agent under
+   * the day's key ("d:").
+   */
+  function visitorOf(c: Context, date: string, token: unknown): { hash: string; id: string } {
+    if (typeof token === "string" && VISITOR_TOKEN.test(token)) {
+      return { hash: `v:${hmac(keys.permanent, "visitor-day", date, token)}`, id: `v:${hmac(keys.permanent, "visitor", token)}` };
+    }
+    return { hash: `d:${hmac(keys.daily(date), "visitor", client.clientId(c), c.req.header("user-agent") ?? "")}`, id: "" };
   }
 
   async function pageBody(c: Context) {
@@ -267,15 +308,15 @@ export function createSiteAnalytics(db: DB, client: ClientInfo) {
       const source = sourceOf(body.referrer, body.via, siteHostOf(c));
       const [kind, host] = source.startsWith("sign-in:") ? ["sign-in:", source.slice(8)] : ["", source];
       queue.add(queue.counts.pageviews, date, body.page, kind + capped("source", date, host));
-      queue.put(queue.sets.visitors, date, visitor);
-      online.touch(visitor, body.page);
+      if (clientCaps.visitors(date, visitor.hash)) queue.put(queue.sets.visitors, date, visitor.hash, visitor.id);
+      online.touch(visitor.hash, body.page);
       return c.body(null, 204);
     })
     // Heartbeat of a visible tab: memory only.
     .post("/ping", async (c) => {
       const body = await pageBody(c);
       if (!body) return c.json({ error: "invalid page" }, 400);
-      online.touch(visitorOf(c, day(), body.visitor), body.page);
+      online.touch(visitorOf(c, day(), body.visitor).hash, body.page);
       return c.body(null, 204);
     });
 
@@ -297,7 +338,8 @@ export function createSiteAnalytics(db: DB, client: ClientInfo) {
     const date = day();
     const origin = from && from !== siteHost ? capped("origin", date, from) : "none";
     queue.add(queue.counts.api, date, routeOf(c.req.path), origin, clientKind(c.req.header("user-agent") ?? ""));
-    queue.put(queue.sets.apiClients, date, hmac(keys.daily(date), "api", client.clientId(c)));
+    const clientHash = hmac(keys.daily(date), "api", client.clientId(c));
+    if (clientCaps.api(date, clientHash)) queue.put(queue.sets.apiClients, date, clientHash);
   };
 
   /** Every request the server refuses with 429 (any limiter), by scope, and distinct client addresses per day. */
@@ -306,7 +348,8 @@ export function createSiteAnalytics(db: DB, client: ClientInfo) {
     if (c.res.status !== 429) return;
     const date = day();
     queue.add(queue.counts.limited, date, limitedScope(c.req.path));
-    queue.put(queue.sets.limitedClients, date, hmac(keys.daily(date), "limited", client.clientId(c)));
+    const clientHash = hmac(keys.daily(date), "limited", client.clientId(c));
+    if (clientCaps.limited(date, clientHash)) queue.put(queue.sets.limitedClients, date, clientHash);
   };
 
   /** 30-day aggregates (every day, zeros included) and who is online; no viewer or account dimensions. */
@@ -318,12 +361,8 @@ export function createSiteAnalytics(db: DB, client: ClientInfo) {
     const byDay = (sql: string) => new Map((db.prepare(sql).all(since) as Count[]).map((r) => [r.day, r.n]));
     const views = byDay("SELECT day, SUM(views) AS n FROM site_analytics_pageviews WHERE day >= ? GROUP BY day");
     const visitors = byDay("SELECT day, COUNT(*) AS n FROM site_analytics_visitors WHERE day >= ? GROUP BY day");
-    const newVisitors = byDay(`SELECT v.day, COUNT(*) AS n FROM site_analytics_visitors v
-      JOIN site_analytics_known_visitors k ON k.visitor_hash = v.visitor_hash
-      WHERE v.day >= ? AND k.first_day = v.day GROUP BY v.day`);
-    const returning = byDay(`SELECT v.day, COUNT(*) AS n FROM site_analytics_visitors v
-      JOIN site_analytics_known_visitors k ON k.visitor_hash = v.visitor_hash
-      WHERE v.day >= ? AND k.first_day < v.day GROUP BY v.day`);
+    const newVisitors = byDay("SELECT day, COUNT(*) AS n FROM site_analytics_visitors WHERE day >= ? AND returning_visitor = 0 GROUP BY day");
+    const returning = byDay("SELECT day, COUNT(*) AS n FROM site_analytics_visitors WHERE day >= ? AND returning_visitor = 1 GROUP BY day");
     const signups = byDay("SELECT day, signups AS n FROM site_analytics_signups WHERE day >= ?");
     const calls = byDay("SELECT day, SUM(calls) AS n FROM site_analytics_api_calls WHERE day >= ? GROUP BY day");
     const clients = byDay("SELECT day, COUNT(*) AS n FROM site_analytics_api_clients WHERE day >= ? GROUP BY day");
@@ -340,8 +379,9 @@ export function createSiteAnalytics(db: DB, client: ClientInfo) {
         new_visitors: newVisitors.get(d) ?? 0, returning_visitors: returning.get(d) ?? 0,
         signups: signups.get(d) ?? 0,
       })) as SiteAnalyticsOverview["days"],
-      unique_visitors: (db.prepare(`SELECT COUNT(DISTINCT visitor_hash) AS n FROM site_analytics_visitors
-        WHERE day >= ?`).get(since) as { n: number }).n,
+      // Browsers with an id once each (last seen in the window), the others once per day.
+      unique_visitors: (db.prepare(`SELECT (SELECT COUNT(*) FROM site_analytics_known_visitors WHERE last_day >= ?)
+        + (SELECT COUNT(*) FROM site_analytics_visitors WHERE day >= ? AND returning_visitor IS NULL) AS n`).get(since, since) as { n: number }).n,
       pages: top(`SELECT page, SUM(views) AS views FROM site_analytics_pageviews
         WHERE day >= ? GROUP BY page ORDER BY views DESC, page`),
       sources: top(`SELECT source, SUM(views) AS views FROM site_analytics_pageviews

@@ -17,7 +17,10 @@ import type { Context, MiddlewareHandler } from "hono";
  * - signed-in routes (friends, devices, account, users, admin), per user;
  * - starting a GitHub sign-in, per client: 60, then one every 2 s, so
  *   visitors sharing one address (IPv6 behind Caddy, issue #102) still
- *   sign in.
+ *   sign in;
+ * - site analytics posts (views, online pings), per client: a visible tab
+ *   pings twice a minute, so 60 with one every 2 s fits a dozen tabs
+ *   behind one address while bounding invented visitors.
  */
 export const LIMITS = {
   ingestRequests: { capacity: 300, perSec: 5 },
@@ -26,6 +29,7 @@ export const LIMITS = {
   publicReads: { capacity: 300, perSec: 5 },
   sessionRequests: { capacity: 120, perSec: 1 },
   oauth: { capacity: 60, perSec: 0.5 },
+  analytics: { capacity: 60, perSec: 0.5 },
   /** Live (not revoked) devices per account, from Settings; the CLI is not capped. */
   devicesPerAccount: 20,
 };

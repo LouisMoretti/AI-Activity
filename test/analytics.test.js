@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { req, startServer } from "./helpers.js";
+import { asNewClient, req, startServer } from "./helpers.js";
 
 test("site analytics are on by default and aggregate generic routes, referrer hosts, visitors and sign-ups", async (t) => {
   const srv = await startServer();
@@ -81,13 +81,20 @@ test("a browser's id counts it once across addresses, and tells new from returni
   let today = (await analytics(srv.base)).days.at(-1);
   assert.deepEqual([today.visitors, today.new_visitors, today.returning_visitors], [1, 1, 0]);
 
-  // Seen on an earlier day: returning. Only an HMAC of the id is stored.
+  // Only HMACs are stored, and the day's visitor hash is not the id's: rows of
+  // different days cannot be linked to each other or to first/last seen.
   const db = new Database(srv.dbPath);
   const known = db.prepare("SELECT visitor_hash FROM site_analytics_known_visitors").all();
+  const visits = db.prepare("SELECT visitor_hash FROM site_analytics_visitors").all();
   assert.equal(known.length, 1);
+  assert.equal(visits.length, 1);
   assert.ok(!known[0].visitor_hash.includes(ID));
+  assert.notEqual(visits[0].visitor_hash, known[0].visitor_hash);
+  // Seen on an earlier day: returning (decided when today's visit is written).
   db.prepare("UPDATE site_analytics_known_visitors SET first_day = '2000-01-01'").run();
+  db.prepare("DELETE FROM site_analytics_visitors").run();
   db.close();
+  await view(srv.base, { page: "profile", visitor: ID });
   today = (await analytics(srv.base)).days.at(-1);
   assert.deepEqual([today.visitors, today.new_visitors, today.returning_visitors], [1, 0, 1]);
 
@@ -97,18 +104,26 @@ test("a browser's id counts it once across addresses, and tells new from returni
   assert.deepEqual([overview.days.at(-1).visitors, overview.days.at(-1).new_visitors, overview.unique_visitors], [2, 0, 2]);
 });
 
-test("a restart neither loses pending counts nor counts the same visitor twice", async (t) => {
+test("a restart keeps pending counts and browser ids, never the address key", async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ai-analytics-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const env = { DB_PATH: path.join(dir, "t.db") };
   const first = await startServer({ env });
+  await view(first.base, { page: "profile", visitor: ID });
   await view(first.base, { page: "profile" }, { "user-agent": "no-storage" });
+  await req(first.base, "GET", "/api/profiles", { anon: true, headers: { "user-agent": "curl/8" } });
   await first.stop(); // SIGTERM writes what was pending
+  // The day's address key lives in memory only: no backup can map a stored hash back to an address.
+  const settings = new Database(env.DB_PATH, { readonly: true });
+  assert.deepEqual(settings.prepare("SELECT key FROM settings WHERE key LIKE 'analytics%'").pluck().all(), ["analytics_key"]);
+  settings.close();
   const second = await startServer({ env });
   t.after(() => second.stop());
+  await view(second.base, { page: "profile", visitor: ID });
   await view(second.base, { page: "profile" }, { "user-agent": "no-storage" });
   const today = (await analytics(second.base)).days.at(-1);
-  assert.deepEqual([today.pageviews, today.visitors], [2, 1]);
+  // The id counts once; the browser without one twice (a new address key after the restart).
+  assert.deepEqual([today.pageviews, today.visitors, today.new_visitors], [4, 3, 1]);
 });
 
 test("external reads of the public API are counted by route, origin and client, never this site's own", async (t) => {
@@ -172,4 +187,55 @@ test("refused requests are counted by limit, never as API reads, and caller-made
   const scope = overview.rate_limited.scopes.find((s) => s.scope === "public.profiles");
   assert.equal(scope.hits, refused);
   assert.deepEqual([overview.rate_limited.days.at(-1).hits, overview.rate_limited.days.at(-1).clients], [refused, 1]);
+});
+
+test("invented visitors and clients add at most 2,000 rows per day each", async (t) => {
+  const srv = await startServer();
+  t.after(() => srv.stop());
+  const id = (i) => i.toString(16).padStart(32, "0");
+  for (let i = 0; i < 2010; i += 100) {
+    await Promise.all(Array.from({ length: Math.min(100, 2010 - i) }, (_, j) =>
+      view(srv.base, { page: "profile", visitor: id(i + j) }, asNewClient())));
+  }
+  const overview = await analytics(srv.base);
+  assert.equal(overview.days.at(-1).pageviews, 2010, "views still count");
+  assert.equal(overview.days.at(-1).visitors, 2000);
+  withDb(srv, (db) => {
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM site_analytics_known_visitors").get().n, 2000);
+  });
+  assert.ok(overview.online.now <= 2000);
+});
+
+test("analytics posts have their own, stricter limit", async (t) => {
+  const srv = await startServer();
+  t.after(() => srv.stop());
+  const client = asNewClient();
+  const results = await Promise.all(Array.from({ length: 80 }, () =>
+    req(srv.base, "POST", "/api/analytics/ping", { anon: true, headers: client, body: { page: "profile" } })));
+  assert.equal(results.filter((r) => r.status === 204).length, 60);
+  assert.ok(results.some((r) => r.status === 429));
+});
+
+test("after a restart, the host cap counts each host once and ignores direct visits", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ai-analytics-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const env = { DB_PATH: path.join(dir, "t.db") };
+  const first = await startServer({ env });
+  await view(first.base, { page: "profile" }, asNewClient());
+  await view(first.base, { page: "profile", referrer: "github.com", via: "sign-in" }, asNewClient());
+  await view(first.base, { page: "profile", referrer: "github.com" }, asNewClient());
+  for (let i = 0; i < 98; i++) await view(first.base, { page: "profile", referrer: `site-${i}.example` }, asNewClient());
+  await first.stop();
+  const second = await startServer({ env });
+  t.after(() => second.stop());
+  // 99 hosts so far: one more fits, the next is "other".
+  await view(second.base, { page: "profile", referrer: "last.example" }, asNewClient());
+  await view(second.base, { page: "profile", referrer: "over.example" }, asNewClient());
+  await analytics(second.base);
+  withDb(second, (db) => {
+    const sources = db.prepare("SELECT source FROM site_analytics_pageviews").pluck().all();
+    assert.ok(sources.includes("last.example"));
+    assert.ok(!sources.includes("over.example"));
+    assert.ok(sources.includes("other"));
+  });
 });

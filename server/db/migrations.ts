@@ -21,9 +21,11 @@ export const MIGRATIONS: ((db: DB) => void)[] = [
 
 /**
  * 7: privacy-first site analytics, kept apart from measured AI activity:
- * daily page views by page category and source, visitors (HMACs only) and
- * sign-ups; returning visitors (a browser's random id, stored only as an
- * HMAC with its first and last day seen); external reads of the public API
+ * daily page views by page category and source, visitors and sign-ups.
+ * A visitor is an HMAC that changes every day (rows of different days cannot
+ * be linked), marked new or returning (NULL: the browser sent no id) from
+ * `site_analytics_known_visitors`: its random id's HMAC with the first and
+ * last day seen, nothing in between. External reads of the public API
  * (by route, origin host and client kind; distinct clients per day); and
  * requests refused with 429 (by scope, a fixed set; distinct clients).
  */
@@ -39,6 +41,7 @@ function siteAnalytics(db: DB): void {
     CREATE TABLE site_analytics_visitors (
       day TEXT NOT NULL,
       visitor_hash TEXT NOT NULL,
+      returning_visitor INTEGER,
       PRIMARY KEY (day, visitor_hash)
     ) WITHOUT ROWID;
     CREATE TABLE site_analytics_signups (
@@ -106,8 +109,8 @@ function apiValueInputs(db: DB): void {
  * 5: sign in with GitHub only (issue #127). `users.github_id` is the GitHub
  * account's numeric id (stable across login renames). Accounts from before
  * could never sign in again, so the database starts over: every account,
- * its usage, quotas, devices and sessions go (the `-pre-v5` backup keeps
- * them). People sign in with GitHub, make a device key in Settings, and
+ * its usage, quotas, devices and sessions go (the `-pre-v<N>` backup made
+ * before the upgrade that ran it keeps them). People sign in with GitHub, make a device key in Settings, and
  * the collectors send their whole local history again (their offsets are
  * kept per server and key).
  */

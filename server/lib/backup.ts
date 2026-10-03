@@ -23,8 +23,8 @@ export interface BackupResult {
  * everything committed before it started. It is written under a temporary
  * name and only renamed once it passes an integrity check, so a crash or a
  * full disk never leaves a half-written backup that looks complete.
- * Backups hold session and device key hashes (and copyable device keys; the
- * `-pre-v5` one, password hashes too): the directory is private to the
+ * Backups hold session and device key hashes (and copyable device keys; one
+ * made before migration 5, password hashes too): the directory is private to the
  * server's user.
  */
 export function backupTo(db: DB, dir: string, { now = new Date(), suffix = "" } = {}): BackupResult {

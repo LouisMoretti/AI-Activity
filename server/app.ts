@@ -33,6 +33,7 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
   const publicReads = rateLimit(tokenBuckets(LIMITS.publicReads), (c) => auth.clientId(c));
   const perUser = rateLimit(tokenBuckets(LIMITS.sessionRequests), (c) => String(c.get("userId")));
   const oauth = rateLimit(tokenBuckets(LIMITS.oauth), (c) => auth.clientId(c));
+  const analyticsPosts = rateLimit(tokenBuckets(LIMITS.analytics), (c) => auth.clientId(c));
   const analytics = createSiteAnalytics(db, client);
 
   const api = new Hono()
@@ -48,7 +49,7 @@ export function createApp(db: DB, config: Config, setupCode: string | null = nul
     // successful sign-in must not cost twice, and the callback only works
     // with a state this server just handed out.
     .on("POST", "/auth/github", oauth)
-    .on("POST", ["/analytics/view", "/analytics/ping"], publicReads)
+    .on("POST", ["/analytics/view", "/analytics/ping"], analyticsPosts)
     .route("/auth", authRoutes(db, auth, client, config.github, config.publicUrl, setupCode, config.preview))
     .route("/analytics", analytics.routes)
     .route("/ingest", ingestRoutes(db))

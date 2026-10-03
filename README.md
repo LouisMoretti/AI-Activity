@@ -9,6 +9,20 @@
 > their APIs on your behalf or work around their limits. Using those tools
 > stays subject to their own terms.
 
+## Site analytics
+
+The server counts visits to its own pages, for the admin panel only, and
+sends nothing to a third party. No cookie is set for it. Each browser
+keeps a random id in `localStorage` for 13 months, so a return visit is
+told apart from a new one; the server stores only keyed hashes of it, one
+per day that cannot be linked to the next, plus the first and last day
+seen. What is counted: the page category (never the address or the
+profile name), the referring site's host name, sign-ups, and reads of the
+public API by other sites and programs. IP addresses and user-agent
+strings are never stored: without the id, a hash of them under a key that
+changes every day and is never written to disk stands for the visitor.
+Daily counts are deleted after 90 days.
+
 ## Friends
 
 Sign in and open **Friends** from the avatar menu to see the people you
