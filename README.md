@@ -41,7 +41,9 @@ you; no plan, invoice or key is needed.
      keeps it next to the database (`litellm-prices.json`), so a restart or
      GitHub being down changes nothing. Only the provider's own rate is used,
      never a reseller's for the same model name. These are community rates:
-     values using them say so. `LITELLM_PRICES_URL` points elsewhere, or
+     values using them say so. They have no effective dates: the copy in use
+     prices all of a model's history, so a LiteLLM price change moves that
+     model's past values too (verified rates in the priority file do not). `LITELLM_PRICES_URL` points elsewhere, or
      empty turns it off.
   3. Nothing: models without a known rate (Codex's `codex-auto-review`, a
      ChatGPT-only model; a local model) are counted as *unpriced*, never

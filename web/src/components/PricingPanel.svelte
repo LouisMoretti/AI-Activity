@@ -50,7 +50,7 @@
     </p>
     <div class="table" role="table" aria-label="Unpriced models">
       <div class="row head" role="row">
-        <span role="columnheader">Model</span><span role="columnheader">Why</span>
+        <span role="columnheader">Model</span><span role="columnheader" class="reason">Why</span>
         <span role="columnheader" class="num">Tokens</span><span role="columnheader" class="num">Accounts</span>
         <span role="columnheader" class="num">Last seen</span>
       </div>
@@ -84,7 +84,7 @@
   .row.head { color: var(--faint); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
   .row span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row small { color: var(--muted); }
-  .reason { color: var(--muted); }
+  .row:not(.head) .reason { color: var(--muted); }
   .num { text-align: right; font-variant-numeric: tabular-nums; }
   .error { color: var(--warn); font-size: 13px; }
   @media (max-width: 640px) {

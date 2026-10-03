@@ -3,7 +3,7 @@
 import { emptyValue, PRICING_VERSION } from "../../../shared/pricing.ts";
 import { QUOTA_POOLS, QUOTA_WINDOW_SEC, type QuotaWindowType } from "../../../shared/quota-pools.ts";
 import {
-  TOOLS, type ActivityResponse, type Breakdown, type QuotasResponse, type Session,
+  TOOLS, type ActivityResponse, type ApiValue, type Breakdown, type LeaderboardResponse, type QuotasResponse, type Session,
   type SessionsResponse, type SummaryResponse,
 } from "../../../shared/types.ts";
 import { denseSeries, streaks } from "./series.ts";
@@ -54,6 +54,21 @@ export function valueVM(b: Breakdown): ValueVM {
     unverified: v.unverified ?? false,
     byTool: rows(b.by_tool),
     byModel: rows(b.by_model),
+  };
+}
+
+/**
+ * A leaderboard answer with every value present: one from a server without
+ * values (older) shows "—" and ranks by tokens instead of breaking the page.
+ */
+export function leaderboardWithValues(r: LeaderboardResponse): LeaderboardResponse {
+  const v = (x: ApiValue | undefined) => x ?? emptyValue();
+  return {
+    ...r,
+    rank: r.rank ?? "tokens",
+    totals: { ...r.totals, value: v(r.totals.value) },
+    entries: r.entries.map((e) => ({ ...e, value: v(e.value) })),
+    by_model: r.by_model.map((m) => ({ ...m, value: v(m.value) })),
   };
 }
 

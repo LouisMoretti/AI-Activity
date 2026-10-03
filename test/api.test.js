@@ -2340,6 +2340,47 @@ describe("API-equivalent value (issue #113)", () => {
     }
   });
 
+  test("final counts without a 1-hour split keep the stored one only for the same cache writes", async () => {
+    const srv = await startServer();
+    try {
+      const cookie = (await register(srv.base, "split")).cookie;
+      const key = (await newDevice(srv.base, "s", cookie)).key;
+      const post = (id, output, writes, split) => req(srv.base, "POST", "/api/ingest/claude-code", { key, body: { messages: [{
+        message_id: id, session_id: "s", model: "claude-opus-5-5", occurred_at: Math.floor(Date.now() / 1000) - 60,
+        usage: { input_tokens: 1, output_tokens: output, cache_creation_input_tokens: writes,
+          ...(split ? { cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: writes } } : {}) },
+      }], collector: collector("claude-code") } });
+      const lowerBound = async () => (await req(srv.base, "GET", "/api/u/split/summary", { anon: true })).json.total.value.lower_bound;
+      // A partial entry with its split, then the final one without (an older collector), same writes: kept.
+      await post("msg_split_1", 1, 1000, true);
+      assert.equal((await post("msg_split_1", 50, 1000, false)).json.updated, 1);
+      assert.equal(await lowerBound(), false);
+      // Final counts with other writes and no split: the old split no longer describes them.
+      await post("msg_split_2", 1, 1000, true);
+      await post("msg_split_2", 50, 3000, false);
+      assert.equal(await lowerBound(), true);
+    } finally {
+      await srv.stop();
+    }
+  });
+
+  test("a leaderboard row is public usage only: its exact shape", async () => {
+    const srv = await startServer();
+    try {
+      const key = (await newDevice(srv.base, "shape")).key;
+      await req(srv.base, "POST", "/api/ingest/opencode", { key, body: { messages: [unknownModel()] } });
+      const board = (await req(srv.base, "GET", "/api/leaderboard?days=7&rank=value", { anon: true })).json;
+      assert.deepEqual(Object.keys(board).sort(), ["accounts", "activity", "by_model", "day", "entries", "pricing_version", "provenance", "range_days", "rank", "totals"]);
+      assert.deepEqual(Object.keys(board.entries[0]).sort(), ["active_days", "avatar_url", "current_streak", "display_name", "events",
+        "last_active", "sessions", "tokens", "top_model", "username", "value"]);
+      // Values carry counts and flags, never which model or why it is unpriced.
+      assert.deepEqual(Object.keys(board.entries[0].value).sort(),
+        ["current_rate_fallback", "lower_bound", "priced_tokens", "unpriced_tokens", "unverified", "usd"]);
+    } finally {
+      await srv.stop();
+    }
+  });
+
   test("the leaderboard ranks by tokens or by value; nothing priced ranks last, unavailable", async () => {
     const srv = await startServer();
     try {

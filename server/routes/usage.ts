@@ -20,11 +20,11 @@ const LEADERBOARD_ACTIVITY_DAYS = 364;
 
 /** Whose usage a request reads. */
 type Owner = (c: Context) => number;
-/** The fallback pricing catalog in use (null: the priority file only). */
-type Catalogs = () => Catalog | null;
+/** Reads the fallback pricing catalog in use at request time (null: the priority file only). */
+type CatalogGetter = () => Catalog | null;
 
 /** Read-only measured usage: stats, heatmap buckets, quotas, sessions. */
-function usage(db: DB, owner: Owner, catalog: Catalogs) {
+function usage(db: DB, owner: Owner, catalog: CatalogGetter) {
   return new Hono()
     .get("/stats", (c) => {
       const days = intParam(c, "days", 30, 1, 730);
@@ -86,7 +86,7 @@ function usage(db: DB, owner: Owner, catalog: Catalogs) {
 }
 
 /** Everyone's usage, ranked (/api/leaderboard). Public, like profile pages. */
-export function leaderboardRoutes(db: DB, catalog: Catalogs = () => null) {
+export function leaderboardRoutes(db: DB, catalog: CatalogGetter = () => null) {
   return new Hono()
     .get("/", (c) => {
       const all = c.req.query("days") === "all";
@@ -113,7 +113,7 @@ export function profileListRoutes(db: DB) {
  * read an enabled account's usage, the owner included (there is no private
  * copy). Only usage: devices and account settings have no public route.
  */
-export function publicProfileRoutes(db: DB, catalog: Catalogs = () => null) {
+export function publicProfileRoutes(db: DB, catalog: CatalogGetter = () => null) {
   const owner = (c: Context) => {
     const user = findUserByUsername(db, c.req.param("username") ?? "");
     if (!user || user.disabled) throw new HTTPException(404, { message: "profile not found" });

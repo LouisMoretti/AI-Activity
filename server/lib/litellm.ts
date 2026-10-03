@@ -6,15 +6,15 @@
 // it is flagged unverified: nobody checked these rates against the provider.
 import fs from "node:fs";
 import path from "node:path";
-import { priceModelId, type Catalog, type PriceEntry, type Rates, type TierRates } from "../../shared/pricing.ts";
+import { MAX_RATE, priceModelId, type Catalog, type PriceEntry, type Rates, type TierRates } from "../../shared/pricing.ts";
 
 export const DEFAULT_LITELLM_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 const REFRESH_SEC = 86400;
 const MAX_BYTES = 50 * 1024 * 1024;
 /** Text model modes; image, audio and embedding prices are not per text token. */
 const MODES = new Set(["chat", "responses", "completion"]);
-/** Per-token costs beyond this ($1,000 per million tokens) are taken for a mistake. */
-const MAX_COST = 1e-3;
+/** Per-token costs beyond the priority file's MAX_RATE are taken for a mistake. */
+const MAX_COST = MAX_RATE / 1e6;
 
 /** LiteLLM's provider names for a provider id as tools store it (provider/model). */
 const PROVIDER_NAMES: Record<string, string[]> = {
@@ -89,7 +89,8 @@ export function catalogOf(list: Record<string, unknown>): Catalog & { size: numb
     const entry = toEntry(key, raw);
     if (entry) byKey.set(key.toLowerCase(), entry);
   }
-  const thresholds = [...new Set([...byKey.values()].flatMap((e) => (e.longContextAbove ? [e.longContextAbove] : [])))];
+  const thresholds = [...new Set([...byKey.values()].flatMap((e) => (e.longContextAbove ? [e.longContextAbove] : [])))]
+    .sort((a, b) => a - b);
   return {
     size: byKey.size,
     thresholds,

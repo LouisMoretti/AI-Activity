@@ -159,6 +159,9 @@ describe("the priority file (shared/pricing.json)", () => {
     assert.throws(broken((f) => { f.aliases.push({ model: "a/b", price_as: "a/b", note: "" }); }), /another model/);
     assert.throws(broken((f) => { f.aliases.push({ ...f.aliases[0] }); }), /aliased twice/);
     assert.throws(broken((f) => { f.prices[0].standard.long = f.prices[0].standard.rates; }), /longContextAbove/);
+    assert.throws(broken((f) => { f.prices[0].longContextAbove = 200000; }), /standard\.long is required/);
+    assert.throws(broken((f) => { f.aliases[0].price_as = "muse-spark-1.3-contributor"; }), /provider\/model/);
+    assert.throws(broken((f) => { f.prices[0].standard.rates.output = 5000; }), /rate/);
   });
 
   test("every tool is priced when its model resolves to a known rate", () => {
@@ -186,6 +189,8 @@ describe("the LiteLLM fallback (server/lib/litellm.ts)", () => {
       input_cost_per_token_above_272k_tokens: 2 / M, output_cost_per_token_above_272k_tokens: 12 / M,
     }),
     "claude-opus-5-5": e(40, 200, { litellm_provider: "anthropic" }), // the priority file wins
+    // Fast mode the priority file has no rate for (Opus 4.6).
+    "claude-opus-4-6": e(5, 25, { litellm_provider: "anthropic", input_cost_per_token_priority: 30 / M, output_cost_per_token_priority: 150 / M }),
     "claude-next": e(3, 15, { litellm_provider: "anthropic", cache_read_input_token_cost: 0.3 / M,
       cache_creation_input_token_cost: 3.75 / M, cache_creation_input_token_cost_above_1hr: 6 / M }),
     "no-cache-model": e(1, 2, { litellm_provider: "mistral" }),
@@ -197,7 +202,7 @@ describe("the LiteLLM fallback (server/lib/litellm.ts)", () => {
   const priced = (over) => priceGroup(group(over), catalog);
 
   test("text models with input and output rates only, in USD per million tokens", () => {
-    assert.equal(catalog.size, 8);
+    assert.equal(catalog.size, 9);
     assert.equal(toEntry("dall-e-9", LIST["dall-e-9"]), null);
     assert.equal(toEntry("typo-model", LIST["typo-model"]), null);
     assert.equal(toEntry("half-model", LIST["half-model"]), null);
@@ -236,6 +241,18 @@ describe("the LiteLLM fallback (server/lib/litellm.ts)", () => {
     const own = priced({ input: M });
     close(own.usd, 4);
     assert.equal(own.unverified, false);
+  });
+
+  test("a priority entry lacking a tier falls back to the list's entry for the same model, not to unpriced", () => {
+    const fast = priced({ model: "claude-opus-4-6", service_tier: "fast", input: M });
+    close(fast.usd, 30);
+    assert.equal(fast.unverified, true);
+    // The standard tier stays on the verified rate.
+    const std = priced({ model: "claude-opus-4-6", input: M });
+    close(std.usd, 5);
+    assert.equal(std.unverified, false);
+    // Without the list: unpriced, with the priority entry's reason.
+    assert.deepEqual(explainPrice(group({ model: "claude-opus-4-6", service_tier: "fast", input: M })), { ok: false, reason: "no rate for the fast tier" });
   });
 
   test("a category with tokens but no rate leaves the group unpriced, with why", () => {

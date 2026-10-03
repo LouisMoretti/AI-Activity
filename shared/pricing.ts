@@ -77,8 +77,8 @@ export interface PricingFile {
   prices: PriceEntry[];
 }
 
-/** Rates beyond this (USD per million tokens) are taken for a typo. */
-const MAX_RATE = 10_000;
+/** Rates beyond this (USD per million tokens) are taken for a typo, here and in the fallback catalog. */
+export const MAX_RATE = 1_000;
 // The sellers' own pricing pages: Anthropic, OpenAI, OpenCode Zen (its opencode/ models).
 const OFFICIAL_SOURCE = /^https:\/\/(platform\.claude\.com|docs\.anthropic\.com|developers\.openai\.com|opencode\.ai)\//;
 const RATE_KEYS = ["input", "output", "cacheRead", "cacheWrite", "cacheWrite1h"];
@@ -129,6 +129,10 @@ export function parsePricingFile(raw: unknown): PricingFile {
     for (const tier of ["standard", "fast", "flex", "ultrafast"]) {
       if (tier === "standard" || p[tier] !== undefined) checkTier(p[tier], `${where}.${tier}`, p.longContextAbove !== undefined);
     }
+    // A threshold needs the rates above it (null: none published), or it would price long requests as short ones.
+    if (p.longContextAbove !== undefined && (!isObj(p.standard) || p.standard.long === undefined)) {
+      throw new Error(`${where}.standard.long is required with longContextAbove (null: no published rate)`);
+    }
     if (p.usMultiplier !== undefined && !(typeof p.usMultiplier === "number" && p.usMultiplier >= 1 && p.usMultiplier < 2)) {
       throw new Error(`${where}.usMultiplier must be a multiplier`);
     }
@@ -146,6 +150,8 @@ export function parsePricingFile(raw: unknown): PricingFile {
       throw new Error(`${where}: model, price_as and note are required`);
     }
     if (!a.model || !a.price_as || a.model === a.price_as) throw new Error(`${where}: an alias points to another model`);
+    // The target names who sells it: a rate in this file or LiteLLM's list is looked up by provider.
+    if (!/^[a-z0-9_.-]+\/\S+$/.test(a.price_as)) throw new Error(`${where}.price_as must be provider/model`);
     if (aliased.has(a.model)) throw new Error(`${where}: ${a.model} is aliased twice`);
     aliased.add(a.model);
   });
@@ -291,21 +297,8 @@ export type PriceResult =
   | { ok: true; usd: number; lowerBound: boolean; fallback: boolean; unverified: boolean }
   | { ok: false; reason: string };
 
-/** The price of one group, or why it has none (shown in the admin panel). */
-export function explainPrice(g: PriceGroup, catalog?: Catalog | null): PriceResult {
-  if (!g.model) return { ok: false, reason: "no model recorded" };
-  const { provider, id } = resolveModel(g.tool, g.model);
-  let found = provider ? entryFor(provider, priceModelId(id), g.period) : null;
-  let unverified = false;
-  if (!found && catalog) {
-    const entry = catalog.find(provider, id);
-    if (entry) {
-      found = { entry, fallback: false };
-      unverified = true;
-    }
-  }
-  if (!found) return { ok: false, reason: provider ? "no known rate" : "provider unknown" };
-  const { entry, fallback } = found;
+/** The price of one group at one entry's rates, or why that entry cannot price it. */
+function priceAt(g: PriceGroup, entry: PriceEntry, fallback: boolean, unverified: boolean, catalog?: Catalog | null): PriceResult {
   const tierName = tierOf(entry.provider, g.service_tier);
   const tier = tierName ? entry[tierName] : undefined;
   if (!tier) return { ok: false, reason: `no rate for the ${g.service_tier} tier` };
@@ -325,6 +318,25 @@ export function explainPrice(g: PriceGroup, catalog?: Catalog | null): PriceResu
   // Unsplit Anthropic writes were priced at the 5-minute rate: maybe 1-hour ones.
   const lowerBound = g.cache_write_unsplit > 0 && rates.cacheWrite1h !== undefined && rates.cacheWrite1h > (rates.cacheWrite ?? 0);
   return { ok: true, usd, lowerBound, fallback, unverified };
+}
+
+/**
+ * The price of one group, or why it has none (shown in the admin panel).
+ * The priority file first; when its entry lacks what the group needs (a
+ * tier, a region, a long-context or cache rate), the fallback catalog's
+ * entry for the same model is tried, so a partial verified entry never
+ * hides a complete community one.
+ */
+export function explainPrice(g: PriceGroup, catalog?: Catalog | null): PriceResult {
+  if (!g.model) return { ok: false, reason: "no model recorded" };
+  const { provider, id } = resolveModel(g.tool, g.model);
+  const own = provider ? entryFor(provider, priceModelId(id), g.period) : null;
+  const first = own ? priceAt(g, own.entry, own.fallback, false, catalog) : null;
+  if (first?.ok) return first;
+  const listed = catalog?.find(provider, id) ?? null;
+  const second = listed ? priceAt(g, listed, false, true, catalog) : null;
+  if (second?.ok) return second;
+  return first ?? second ?? { ok: false, reason: provider ? "no known rate" : "provider unknown" };
 }
 
 /** USD of one group, or null when it cannot be priced. */

@@ -480,16 +480,20 @@ export function upsertUsageEvent(db: DB, ev: UsageEventInput): UpsertResult {
       }
       return "deduped";
     }
+    // The final counts carry their own 1-hour split. Without one, the stored
+    // split stays only while it still describes the same cache writes (the
+    // right-hand side reads the row as it was).
     db.prepare(
       `UPDATE usage_events SET input_tokens = ?, output_tokens = ?, cache_read_tokens = ?,
          cache_write_tokens = ?, model = COALESCE(?, model), utc_offset_min = COALESCE(utc_offset_min, ?),
-         cache_write_1h_tokens = ?, service_tier = COALESCE(?, service_tier),
+         cache_write_1h_tokens = CASE WHEN ? IS NULL AND cache_write_tokens = ? THEN cache_write_1h_tokens ELSE ? END,
+         service_tier = COALESCE(?, service_tier),
          inference_geo = COALESCE(?, inference_geo), received_at = ?
        WHERE event_id = ?`
     ).run(
       ev.input_tokens, ev.output_tokens, ev.cache_read_tokens, ev.cache_write_tokens,
-      ev.model, ev.utc_offset_min, ev.cache_write_1h_tokens, ev.service_tier, ev.inference_geo,
-      ev.received_at, ev.event_id
+      ev.model, ev.utc_offset_min, ev.cache_write_1h_tokens, ev.cache_write_tokens, ev.cache_write_1h_tokens,
+      ev.service_tier, ev.inference_geo, ev.received_at, ev.event_id
     );
     return "updated";
   })();
@@ -824,7 +828,8 @@ export function breakdown(
 }
 
 /**
- * Everyone's usage since sinceSec, ranked by tokens. The global heatmap
+ * Everyone's usage since sinceSec, ranked by tokens or by API-equivalent
+ * value (`rank`; nothing priced after any priced value). The global heatmap
  * covers calendarDays local days and ignores the period, like the streaks
  * (each counted back from that account's own today). Disabled accounts
  * never appear. Two grouped passes over the covering index (the period, and

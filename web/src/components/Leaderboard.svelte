@@ -1,10 +1,10 @@
 <script lang="ts">
   import type { ApiValue, LeaderboardRank, LeaderboardResponse } from "../../../shared/types.ts";
-  import { api } from "../lib/api.ts";
+  import { api, RateLimitedError } from "../lib/api.ts";
   import { clock } from "../lib/clock.svelte.ts";
   import { profilePath } from "../lib/dashboard.svelte.ts";
   import { fmtAgo, fmtCompact, fmtNum, fmtPriced, fmtShare, fmtUsd, plural, RECENT_SEC } from "../lib/format.ts";
-  import { ACTIVITY_DAYS } from "../lib/live.ts";
+  import { ACTIVITY_DAYS, leaderboardWithValues } from "../lib/live.ts";
   import { denseSeries } from "../lib/series.ts";
   import ActivityChart from "./ActivityChart.svelte";
   import Avatar from "./Avatar.svelte";
@@ -36,9 +36,11 @@
       const r = await api.leaderboard(p === "all" ? null : Number(p), by);
       // A newer period or ranking was picked while this was in flight.
       if (p !== period || by !== rank) return;
-      data = r;
+      data = leaderboardWithValues(r);
       error = "";
     } catch (e) {
+      // A rate-limited refresh keeps the page as it was, like the dashboard's.
+      if (e instanceof RateLimitedError && data !== null) return;
       error = (e as Error).message;
     }
   }
@@ -69,7 +71,11 @@
   });
 
   const same = (a: string, b: string | null) => b !== null && a.toLowerCase() === b.toLowerCase();
-  const periodText = $derived(period === "all" ? "all time" : `last ${period} days`);
+  // The loaded data's period (the toggle's while the first answer loads).
+  const periodText = $derived.by(() => {
+    const days = data ? data.range_days : period === "all" ? null : Number(period);
+    return days === null ? "all time" : `last ${days} days`;
+  });
   // The bar shows the ranking's measure: tokens, or API-equivalent value.
   // The data's own ranking, not the toggle: they differ while a new one loads.
   const shownRank = $derived(data?.rank ?? "tokens");
@@ -144,7 +150,7 @@
                 {#if e.top_model}<span class="mono model">{e.top_model}</span>{/if}
                 <span class="when"><i class="dot" class:recent={clock.now - e.last_active < RECENT_SEC}></i>{fmtAgo(e.last_active, clock.now)}</span>
               {:else}
-                <span>No usage {period === "all" ? "yet" : "in this period"}</span>
+                <span>No usage {data.range_days === null ? "yet" : "in this period"}</span>
               {/if}
             </div>
           </div>

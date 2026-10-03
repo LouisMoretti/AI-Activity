@@ -938,7 +938,9 @@ Components never branch on live vs demo: both sources map into the same
 - Lookup (`explainPrice`): a stored model resolves to provider and id
   (aliases first; `provider/model` as stored, else the tool's: Claude Code
   → anthropic, Codex → openai, Cursor and Antigravity by the id's prefix),
-  then the priority file, then the fallback catalog
+  then the priority file, then the fallback catalog (also when the
+  priority entry lacks the group's tier, region, long-context or cache
+  rate: a partial verified entry never hides a complete community one)
   (`server/lib/litellm.ts`: LiteLLM's list, provider-own entries only,
   usage flagged `unverified`), else unpriced with a reason. Every tool is
   priced this way; stored counts must stay disjoint (input without cache,
