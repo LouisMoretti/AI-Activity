@@ -101,6 +101,11 @@ describe("OpenAI rates", () => {
     assert.equal(priceGroup(group(codex({ model: "gpt-5.6-luna", input: M }), Date.parse("2026-07-29T00:00:00Z") / 1000)).fallback, true);
   });
 
+  test("a model recorded with a non-OpenAI provider never gets OpenAI's verified rate (#279)", () => {
+    assert.equal(usd(codex({ model: "gpt-5.4", input: M })), 2.5);
+    assert.deepEqual(explainPrice(group(codex({ model: "azure/gpt-5.4", input: M }))), { ok: false, reason: "no known rate" });
+  });
+
   test("subscription-only models and other providers' models are unpriced", () => {
     assert.equal(usd(codex({ model: "codex-auto-review", input: M })), null);
     assert.equal(usd(codex({ model: "gpt-5.3-codex-spark", input: M })), null);

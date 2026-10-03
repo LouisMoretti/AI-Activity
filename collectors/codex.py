@@ -56,7 +56,7 @@ CACHE = os.path.join(HOME, ".cache", "ai-activity")
 BATCH = 400
 # Bump when messages carry new fields: each target's history is sent once
 # more, so the server fills them in on the messages it already has.
-FIELDS = 2
+FIELDS = 3
 
 
 def when(ts):
@@ -111,13 +111,14 @@ def read(path, state):
     """New messages, rate limits and context of one rollout since its saved offset."""
     size = os.path.getsize(path)
     # [offset, session id, model, has token_usage_record lines, service tier,
-    # model provider]: what applies to the lines after the offset.
+    # model provider, the session's provider]: what applies to the lines
+    # after the offset.
     saved = state.get(path)
-    offset, session, model, records, tier, provider = (
-        (list(saved) + [None, None])[:6] if isinstance(saved, list) and len(saved) >= 4
-        else [0, None, None, False, None, None])
+    offset, session, model, records, tier, provider, session_provider = (
+        (list(saved) + [None, None, None])[:7] if isinstance(saved, list) and len(saved) >= 4
+        else [0, None, None, False, None, None, None])
     if offset > size:  # rewritten: start over
-        offset, session, model, records, tier, provider = 0, None, None, False, None, None
+        offset, session, model, records, tier, provider, session_provider = 0, None, None, False, None, None, None
     with open(path, "rb") as f:
         f.seek(offset)
         data = f.read(size - offset)
@@ -129,15 +130,20 @@ def read(path, state):
             continue
         if t == "session_meta":
             session = session or p.get("session_id") or p.get("id")
+            # Every rollout names its provider here; not every one has thread settings.
+            if isinstance(p.get("model_provider"), str):
+                session_provider = provider = p["model_provider"]
         elif t == "turn_context" and p.get("model"):
             model = p["model"]
         elif p.get("type") == "thread_settings_applied" and isinstance(p.get("thread_settings"), dict):
             # The tier (Fast mode) and the provider price the next responses.
             settings = p["thread_settings"]
             model = settings.get("model") or model
-            # The settings are a whole snapshot: no tier is the standard one.
+            # The settings are a whole snapshot: no tier is the standard one,
+            # no provider the session's.
             tier = settings.get("service_tier") if isinstance(settings.get("service_tier"), str) else None
-            provider = settings.get("model_provider_id") if isinstance(settings.get("model_provider_id"), str) else None
+            provider = (settings.get("model_provider_id") if isinstance(settings.get("model_provider_id"), str)
+                        else session_provider)
         elif t == "token_usage_record" and isinstance(p.get("usage"), dict) and ts:
             records = True
             messages.append({
@@ -184,7 +190,7 @@ def read(path, state):
             rl = limits_of(p)
             if rl:
                 limits = (rl, ts)
-    return messages, limits, context, [offset + end, session, model, records, tier, provider]
+    return messages, limits, context, [offset + end, session, model, records, tier, provider, session_provider]
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
