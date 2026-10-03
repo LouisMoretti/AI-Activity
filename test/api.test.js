@@ -532,6 +532,25 @@ describe("basics (signed in as the test admin)", () => {
     }
   });
 
+  test("hashed assets are immutable, pages are revalidated, the API is never cached", async () => {
+    const assets = fs.readdirSync(new URL("../web/dist/assets/", import.meta.url));
+    const fonts = assets.filter((f) => f.endsWith(".woff2"));
+    assert.ok(fonts.some((f) => f.startsWith("geist-latin-")) && fonts.some((f) => f.startsWith("geist-mono-latin-")));
+    for (const f of [assets.find((a) => a.endsWith(".js")), assets.find((a) => a.endsWith(".css")), ...fonts]) {
+      const r = await req(srv.base, "GET", `/assets/${f}`);
+      assert.equal(r.status, 200, f);
+      assert.equal(r.headers.get("cache-control"), "public, max-age=31536000, immutable", f);
+    }
+    for (const p of ["/", "/index.html", "/some/client/route", "/u/admin", "/tool-logos/claude.svg"]) {
+      const r = await req(srv.base, "GET", p);
+      assert.equal(r.status, 200, p);
+      assert.equal(r.headers.get("cache-control"), "no-cache", p);
+    }
+    for (const p of ["/api/health", "/api/u/admin/stats", "/api/nope", "/install.sh"]) {
+      assert.equal((await req(srv.base, "GET", p)).headers.get("cache-control"), "no-store", p);
+    }
+  });
+
   test("static serving never escapes the web root", async () => {
     for (const p of ["/%2e%2e/package.json", "/..%2fpackage.json", "/%2e%2e%2f.env.example"]) {
       const r = await req(srv.base, "GET", p);

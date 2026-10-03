@@ -223,6 +223,11 @@ Upgrades are normally deployed from GitHub (Continuous deployment below).
   is the CSP enforced: `test/api.test.js` checks `web/dist` has no inline
   script, `<style>` or `style=""`). Gravatar's `d` default is dropped from
   pictures (it redirects off the list). Do not add them in Caddy too.
+- Caching (`server/app.ts`): `web/dist/assets/*` (Vite's content-hashed
+  bundles and fonts) is `public, max-age=31536000, immutable`; every other
+  static file, `index.html` and the SPA fallback are `no-cache`, so a
+  deploy shows up at once; `/api` and the install scripts are `no-store`.
+  Only content-hashed files may go under `assets/`.
 - Logs rotate (`x-logging` in `compose.yaml`: 3 × 10 MB per container);
   Docker keeps them forever otherwise.
 
