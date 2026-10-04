@@ -164,7 +164,10 @@ once in `App.svelte`, outside the pages. The footer, like the top of
 README.md, says the project is not affiliated with or endorsed by the
 makers of the tools it measures (their names are trademarks, used only to
 identify them): keep both, and name any newly supported tool's owner in
-them.
+them. Above it, one line tells every visitor about the site analytics
+(counted on this server for its admins only, no cookie, nothing sent to
+third parties, a random browser id kept 13 months) and links to
+README.md's "Site analytics": keep it true to what is collected.
 Clicking the avatar opens Your profile / Leaderboard / Friends / Settings / Admin
 panel (admins) / Sign out. `/settings` (signed in) holds Account (the
 profile from GitHub, read-only), Devices and a Danger zone
