@@ -287,11 +287,22 @@
     if (!drag?.pointer) return;
     const { x, y } = drag.pointer;
     const band = touchDrag ? 70 : 40;
-    // The drawer sticks to the bottom: the lower scroll zone sits just above it.
     const drawer = tray?.getBoundingClientRect();
-    const bottom = drawer && drawer.top < innerHeight ? drawer.top : innerHeight;
+    // The lower zone sits at the window's bottom, or just above the drawer
+    // while it is stuck there (sticky, 12 px up); never above a drawer in
+    // the middle of the page, which the pointer must be able to reach.
+    const stuck = drawer && drawer.bottom >= innerHeight - 14 && drawer.top < innerHeight;
+    const bottom = stuck ? drawer.top : innerHeight;
     const overDrawer = drawer && inside(drawer, x, y, 0);
-    const depth = overDrawer ? 0 : y < band ? -(band - y) / band : y > bottom - band ? (y - bottom + band) / band : 0;
+    // Only towards cards still out of view, and only while the page can scroll.
+    const grid = root?.getBoundingClientRect();
+    const more = {
+      up: !!grid && grid.top < 0 && scrollY > 0,
+      down: !!grid && grid.bottom > bottom && scrollY + innerHeight < document.documentElement.scrollHeight - 1,
+    };
+    const depth = overDrawer ? 0
+      : y < band && more.up ? -(band - y) / band
+      : y > bottom - band && y < bottom && more.down ? (y - bottom + band) / band : 0;
     const now = performance.now();
     if (!depth) edgeSince = 0;
     else if (!edgeSince) edgeSince = now;

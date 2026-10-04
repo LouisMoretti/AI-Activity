@@ -54,8 +54,10 @@ panels not shown sticks to the bottom of the window: drag one onto the
 dashboard to add it; while a card is held it becomes "Drop here to remove".
 The bar between two cards snaps their widths live to half and thirds. The
 page scrolls once the pointer has stayed 300 ms within 40 px of the
-window's top or bottom (70 px for touch; just above the drawer), faster
-closer to the edge. Touch: a long press (350 ms) lifts a
+window's top or bottom (70 px for touch; just above the drawer only while
+it is stuck there), faster closer to the edge, and only towards cards still
+out of view while the page can scroll: aiming at the drawer never scrolls
+it away. Touch: a long press (350 ms) lifts a
 card, a quick swipe scrolls. Keyboard, with nothing visible: Tab to a card
 (or a drawer tile), Space or Enter lifts it, the arrows move it through every
 possible place (Up / Down across rows and new-row slots), Space drops it,
