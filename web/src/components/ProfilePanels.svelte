@@ -4,8 +4,7 @@
   import { PANEL_OPTIONS, TOOLS, ratioFor,
     type PanelId, type PanelView, type PanelRow, type ProfilePanel, type RowRatio, type Tool, type Widget } from "../../../shared/types.ts";
   import { api } from "../lib/api.ts";
-  import { clock } from "../lib/clock.svelte.ts";
-  import { hasLiveWindow, toolName, TOOL_META, type DashboardVM } from "../lib/view-model.ts";
+  import { toolName, TOOL_META, type DashboardVM } from "../lib/view-model.ts";
   import ActivityToolCard from "./ActivityToolCard.svelte";
   import ProfileWidget from "./ProfileWidget.svelte";
   import QuotaCard from "./QuotaCard.svelte";
@@ -197,6 +196,7 @@
     }
     drag = d;
     changedAt = null;
+    edgeSince = 0;
     overTray = !at;
     announcement = `Picked up ${optionName(fromKey(key))}. ${pointer ? "" : "Arrow keys move it, Space drops it, Escape cancels."}`;
   }
@@ -252,21 +252,32 @@
     // A touch drag follows the touch events (see the effect below), not the pointer.
     touchDrag = pending.touch;
     pending = null;
+    window.addEventListener("keydown", escapeDrag);
     scrollFrame = requestAnimationFrame(autoScroll);
   }
-  /** Near the top or bottom of the window, the page scrolls (faster closer to the edge). */
-  const EDGE = 70;
+  /**
+   * Near the top or bottom of the window, the page scrolls: after the
+   * pointer stays there a moment (so carrying a card down does not scroll
+   * at once), faster closer to the edge. Touch gets a wider band.
+   */
+  const SCROLL_DELAY_MS = 300;
   let scrollFrame = 0;
+  let edgeSince = 0;
   function autoScroll(): void {
     if (!drag?.pointer) return;
     const { x, y } = drag.pointer;
+    const band = touchDrag ? 70 : 40;
     // The drawer sticks to the bottom: the lower scroll zone sits just above it.
     const drawer = tray?.getBoundingClientRect();
     const bottom = drawer && drawer.top < innerHeight ? drawer.top : innerHeight;
     const overDrawer = drawer && inside(drawer, x, y, 0);
-    const speed = overDrawer ? 0 : y < EDGE ? -(EDGE - y) / 3 : y > bottom - EDGE ? (y - bottom + EDGE) / 3 : 0;
+    const depth = overDrawer ? 0 : y < band ? -(band - y) / band : y > bottom - band ? (y - bottom + band) / band : 0;
+    const now = performance.now();
+    if (!depth) edgeSince = 0;
+    else if (!edgeSince) edgeSince = now;
+    const speed = depth && now - edgeSince > SCROLL_DELAY_MS ? Math.sign(depth) * Math.min(1, depth * depth) * 20 : 0;
     if (speed) {
-      scrollBy(0, Math.max(-24, Math.min(24, speed)));
+      scrollBy(0, speed);
       hitTest();
     }
     scrollFrame = requestAnimationFrame(autoScroll);
@@ -332,6 +343,12 @@
   function touchEnd(e: TouchEvent): void {
     if (drag?.pointer && touchDrag) endDrag(e.type === "touchend");
   }
+  /** Escape puts a card carried by the pointer back too. */
+  function escapeDrag(e: KeyboardEvent): void {
+    if (e.key !== "Escape" || !drag?.pointer) return;
+    e.preventDefault();
+    endDrag(false);
+  }
   function cancelPending(): void {
     if (pending?.timer) clearTimeout(pending.timer);
     pending = null;
@@ -343,6 +360,7 @@
     window.removeEventListener("pointercancel", pointerCancel);
     touchDrag = false;
     cancelAnimationFrame(scrollFrame);
+    window.removeEventListener("keydown", escapeDrag);
     if (settleTimer) clearTimeout(settleTimer);
     settleTimer = null;
   }
@@ -378,15 +396,22 @@
     const base = baseOf(drag);
     const rowEls = [...root!.querySelectorAll<HTMLElement>("[data-row]")];
     if (!rowEls.length) return { kind: "new", at: 0 };
-    for (const rowEl of rowEls) {
+    for (const [n, rowEl] of rowEls.entries()) {
       const rect = rowEl.getBoundingClientRect();
       if (y < rect.top - 9 || y > rect.bottom + 9) continue;
-      const keys = (rowEl.dataset.keys ?? "").split(",").filter((k) => k && k !== drag!.key);
-      // A row holding only the placeholder: already where the pointer is.
-      if (!keys.length) return null;
+      const keys = keysOf(rowEl);
+      if (!keys.length) {
+        // The placeholder's own new row: near its bottom (top), the card joins
+        // the row below (above) before the pointer leaves it, not another new row.
+        const edge = rect.height * 0.3;
+        const next = y > rect.bottom - edge ? rowEls[n + 1] : y < rect.top + edge ? rowEls[n - 1] : null;
+        const index = next ? base.findIndex((r) => r.keys.includes(keysOf(next)[0])) : -1;
+        return next && index >= 0 ? cardPlacement(next, base, index, x) : null;
+      }
       const index = base.findIndex((r) => r.keys.includes(keys[0]));
       if (index < 0) return null;
-      const band = Math.min(48, rect.height * 0.22);
+      // A thin band at a row's top or bottom edge starts a new row; the rest joins it.
+      const band = Math.min(28, rect.height * 0.12);
       if (y < rect.top + band) return { kind: "new", at: index };
       if (y > rect.bottom - band) return { kind: "new", at: index + 1 };
       return cardPlacement(rowEl, base, index, x);
@@ -398,6 +423,8 @@
     if (y > last.bottom && y < last.bottom + 80) return { kind: "new", at: base.length };
     return null;
   }
+  /** The cards of a row element, without the held one. */
+  const keysOf = (rowEl: HTMLElement) => (rowEl.dataset.keys ?? "").split(",").filter((k) => k && k !== drag?.key);
   function cardPlacement(rowEl: HTMLElement, base: DraftRow[], row: number, x: number): Placement | null {
     if (!drag) return null;
     const cells = [...rowEl.querySelectorAll<HTMLElement>("[data-key]")];
@@ -536,7 +563,7 @@
   {@const tool = isTool(panel.id) ? panel.id : null}
   {@const quota = tool ? quotaFor(d, tool) : null}
   {#if tool}
-    {#if panel.view === "quota" && quota && (tool !== "antigravity" || hasLiveWindow(quota, clock.now))}
+    {#if panel.view === "quota" && quota}
       <QuotaCard vm={quota} />
     {:else}
       <ActivityToolCard {tool} vm={activityFor(d, tool)} />

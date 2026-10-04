@@ -190,7 +190,6 @@ export function demoDashboard(provider: Provider): DashboardVM {
         pool(POOL_LABELS["claude-gpt"], [19, now + 4 * 3600 + 10 * 60], [32, now + 5 * 86400]),
       ],
     },
-    // Shown only if the fictional quota windows above were all over.
     antigravityActivity: {
       recent: sessions.filter((s) => s.tool === "antigravity"),
       today: { tokens: last.antigravity, sessions: 1, calls: 24, models: 1, providers: null },

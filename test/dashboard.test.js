@@ -243,7 +243,8 @@ describe("dashboard state", () => {
 
   test("card reads are per tool and a failed card refresh preserves measured data", async () => {
     const { dash, stop, tick } = await open("/u/me", profileRoutes("me"));
-    assert.equal(calls.filter(c => c.startsWith("/api/u/")).length, 11);
+    assert.equal(calls.filter(c => c.startsWith("/api/u/")).length, 9);
+    assert.ok(!calls.some((c) => c.includes("tool=antigravity")), "a quota panel reads no conversations");
     assert.equal(calls.filter(c => c.includes("tool-activity")).length, 0);
     assert.equal(dash.vm.cursor.available, true);
     // Only the Cursor card's reads fail: the profile stays up and keeps

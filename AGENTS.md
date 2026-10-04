@@ -13,8 +13,9 @@ now (a reply in the last 10 minutes; listed in creation order so parallel
 ones never swap places), else the last one, on the right; today's tokens, conversations,
 calls, models and providers on the left. Antigravity has two quota pools
 (Gemini, Claude/GPT), each shown with its own 5-hour and weekly windows;
-quotas are opt-in, and while no window is running its card shows the same
-activity view as OpenCode (`ActivityToolCard`).
+quotas are opt-in. Like Claude Code and Codex, it has a quota panel and a
+details panel (the same activity view as OpenCode, `ActivityToolCard`); the
+owner picks either or both, and a quota panel never switches to details.
 
 Layout, top to bottom: token activity (centered year calendar, readout shows
 today unless a day is hovered; the Weekly and Cumulative tabs likewise show
@@ -40,20 +41,23 @@ on the cards: while editing, every card shows the fictional `/demo` data
 A held card follows the pointer; where it will land, an empty dashed box of
 its final size opens and the other cards slide aside (180 ms, translation
 only, none with reduced motion). Next to a card (its left or right half)
-shares that row (the widths follow the count: `ratioFor`), the top or bottom
-band of a row starts a new row, and over a card of a full row (three) the
+shares that row (the widths follow the count: `ratioFor`), a thin band at a
+row's top or bottom edge (at most 28 px) starts a new row, from a new row
+the card joins the row below or above as soon as it nears that edge (no
+second new row), and over a card of a full row (three) the
 two swap (the hovered card takes the held one's old place). A drawer of the
 panels not shown sticks to the bottom of the window: drag one onto the
 dashboard to add it; while a card is held it becomes "Drop here to remove".
 The bar between two cards snaps their widths live to half and thirds. The
-page scrolls near the window's edges. Touch: a long press (350 ms) lifts a
+page scrolls once the pointer has stayed 300 ms within 40 px of the
+window's top or bottom (70 px for touch; just above the drawer), faster
+closer to the edge. Touch: a long press (350 ms) lifts a
 card, a quick swipe scrolls. Keyboard, with nothing visible: Tab to a card
 (or a drawer tile), Space or Enter lifts it, the arrows move it through every
 possible place (Up / Down across rows and new-row slots), Space drops it,
-Escape puts it back; a live region says each step. Card content is inert
+Escape puts it back (also during a pointer drag); a live region says each step. Card content is inert
 while editing. Visitors see the saved layout read-only.
-Hidden tool cards trigger no tool-specific reads. Antigravity's quota card
-still falls back to its activity view while no window is running. On your own
+Hidden tool cards trigger no tool-specific reads. On your own
 page, a one-line box under the rows says how to add a tool (the install
 command, Settings → Devices). No cost or
 subscription tracking (removed on purpose): no plans, invoices or money
@@ -1588,10 +1592,10 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   `Retry-After`:
   - public reads (`/api/u/…`, `/api/leaderboard`, `/api/profiles`): 300
     per client (the client address above), refill 5/s. With the default
-    layout a dashboard polls eleven of them every 5 s, in one round trip
+    layout a dashboard polls nine of them every 5 s, in one round trip
     (the profile with its layout, summary, activity, conversations, quotas
-    while a quota card is shown, plus a summary and sessions per activity
-    card), so about two tabs fit behind one address. Hidden panels read
+    while a quota card is shown, plus a summary and sessions per details
+    card), so two tabs fit behind one address. Hidden panels read
     nothing. Every panel at once polls fifteen (Today by hour and the rank
     are read at most once a minute): one tab fits; two such tabs behind one
     address run out after about five minutes. A

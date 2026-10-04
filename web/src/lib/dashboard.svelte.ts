@@ -262,9 +262,7 @@ export class Dashboard {
       ?? await core.then(([p]) => (p.status === "fulfilled" ? p.value.panels : []));
     const flat = layout.flatMap((r) => r.panels);
     const selected = (id: string, view?: string) => flat.some((p) => p.id === id && (!view || p.view === view));
-    // Antigravity's quota panel falls back to its activity view while no window runs.
-    const activityView = (tool: Tool) => selected(tool, "activity") ||
-      (tool === "antigravity" && selected(tool, "quota"));
+    const activityView = (tool: Tool) => selected(tool, "activity");
     const toolSummary = (tool: Tool) => activityView(tool) ? api.summary(username, tool) : Promise.resolve(null);
     const toolSessions = (tool: Tool) => activityView(tool) ? api.sessions(username, 10, tool, 0) : Promise.resolve(null);
     // Today by hour and the seven-day rank barely move in 5 s: read at most
