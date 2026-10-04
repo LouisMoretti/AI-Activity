@@ -978,11 +978,14 @@ Components never branch on live vs demo: both sources map into the same
 - `settings` — server-wide key/value settings set from the admin panel
   (`signup_open`: `0` closes account creation; absent means open).
 - `collector_versions` — per device, tool and collector version (`0`: from
-  before versions), when it last posted (`seen_at`). Written for a new
-  version, else at most hourly (every post comes here, and a write empties
-  the public read cache). Settings → Devices shows the lowest version seen
-  within a day of the tool's last post, so an old copy still posting next
-  to an updated one stays flagged.
+  before versions), when it first posted (`first_seen_at`, never changed)
+  and last posted (`seen_at`). Written for a new version, else at most
+  hourly (every post comes here, and a write empties the public read
+  cache). Settings → Devices shows the lowest version still posting: seen
+  within a day of the tool's last post, and after every higher version
+  first appeared (10 minutes of slack for uploads in flight during an
+  update). A normal update is therefore not flagged, while an old copy
+  still posting next to an updated one is, within an hour (issue #280).
 
 - `usage_events` — one row per **Anthropic message id** (`event_id`,
   `source = 'message'`): that API response's tokens, model, session,
@@ -1052,6 +1055,8 @@ Components never branch on live vs demo: both sources map into the same
   `site_analytics_api_clients`, `site_analytics_rate_limited` (day, scope,
   hits) and `site_analytics_rate_limited_clients`.
 - Migration 8 adds `users.panels` (NULL: the default layout).
+- Migration 9 adds `collector_versions.first_seen_at` (rebuilt, NOT
+  NULL); rows from before get their `seen_at`.
 
 ### API-equivalent value (`shared/pricing.ts`, issues #113, #268)
 
@@ -1658,8 +1663,9 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
     for paging)
 - `GET /api/devices` (never the keys, only `key_prefix` and `has_key`;
   `collectors`: per tool it posted for, `{tool, version, seen_at, newest,
-  latest, outdated}` (`version`: the lowest still posting, §4; `newest`:
-  that of the last post), which Settings → Devices shows, outdated ones
+  latest, outdated}` (`version`: the lowest still posting, §4, not one an
+  update replaced; `seen_at`: when it last posted; `newest`: that of the
+  last post), which Settings → Devices shows, outdated ones
   in warning color with how to update),
   `POST /api/devices {name}` (returns the key), `GET /api/devices/:id/key`
   → `{key}` (one key per request, own live devices only, `404` otherwise),

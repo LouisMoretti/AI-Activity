@@ -18,7 +18,34 @@ export const MIGRATIONS: ((db: DB) => void)[] = [
   apiValueInputs,
   siteAnalytics,
   profilePanels,
+  collectorFirstSeen,
 ];
+
+/**
+ * 9: when each collector version was first seen on a device and tool
+ * (`first_seen_at`, issue #280), so an old version that last posted before
+ * a newer one appeared (a normal update) is no longer flagged, while one
+ * still posting after it is. `seen_at` is refreshed at most hourly and
+ * cannot serve. Rows from before get their `seen_at`, the closest known
+ * value (later than the real first post: an update already done counts as
+ * one, and a copy still posting shows again at its next hourly write).
+ */
+function collectorFirstSeen(db: DB): void {
+  db.exec(`
+    CREATE TABLE collector_versions_new (
+      device_id INTEGER NOT NULL REFERENCES devices(id),
+      tool TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      first_seen_at INTEGER NOT NULL,
+      seen_at INTEGER NOT NULL,
+      PRIMARY KEY (device_id, tool, version)
+    ) WITHOUT ROWID;
+    INSERT INTO collector_versions_new (device_id, tool, version, first_seen_at, seen_at)
+      SELECT device_id, tool, version, seen_at, seen_at FROM collector_versions;
+    DROP TABLE collector_versions;
+    ALTER TABLE collector_versions_new RENAME TO collector_versions;
+  `);
+}
 
 /**
  * 8: each account's dashboard layout, `users.panels`: JSON rows of panels

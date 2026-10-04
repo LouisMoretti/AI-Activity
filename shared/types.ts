@@ -189,7 +189,9 @@ export interface DeviceCollector {
   tool: Tool;
   /**
    * The lowest version still posting (seen within a day of the tool's last
-   * post), so an old copy next to an updated one shows. 0: from before versions.
+   * post, and after every higher version first appeared, give or take the
+   * 10 minutes of an update), so an old copy next to an updated one shows
+   * but a plain update does not. 0: from before versions.
    */
   version: number;
   /** When `version` last posted (at most an hour stale: refreshed hourly). */

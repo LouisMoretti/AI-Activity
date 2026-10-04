@@ -82,8 +82,8 @@ describe("basics (signed in as the test admin)", () => {
     assert.deepEqual(rows.map((c) => [c.tool, c.version, c.outdated]), [["claude-code", 0, true], ["codex", 0, true]]);
     assert.equal(rows[0].latest, COLLECTOR_VERSIONS["claude-code"]);
     assert.ok(Math.abs(rows[0].seen_at - Date.now() / 1000) < 60);
-    // The current collector: no hint. The old copy posted within a day, so
-    // the device still shows it: an old copy next to an updated one.
+    // The current collector: no hint. The old copy last posted before the
+    // current one first appeared: a normal update, nothing flagged.
     for (const tool of ["claude-code", "codex"]) {
       const r = await post(tool, { messages: [], collector: collector(tool) });
       assert.equal(r.status, 200);
@@ -91,19 +91,48 @@ describe("basics (signed in as the test admin)", () => {
     }
     rows = await listed();
     assert.deepEqual(rows.map((c) => [c.tool, c.version, c.newest, c.outdated]),
-      [["claude-code", 0, COLLECTOR_VERSIONS["claude-code"], true], ["codex", 0, COLLECTOR_VERSIONS.codex, true]]);
-    // Once the old copy has not posted for over a day before the last post, it is gone.
+      [["claude-code", COLLECTOR_VERSIONS["claude-code"], COLLECTOR_VERSIONS["claude-code"], false],
+        ["codex", COLLECTOR_VERSIONS.codex, COLLECTOR_VERSIONS.codex, false]]);
+    // One flat event carries the hint too.
+    assert.ok((await post("claude-code", event({ collector: undefined }))).json.update);
+  });
+
+  test("collector versions: an update is not flagged, an old copy still posting after it is", async () => {
+    const d = await newDevice(srv.base, "versions-stale");
+    const post = (version) => req(srv.base, "POST", "/api/ingest/codex",
+      { body: { messages: [], collector: { name: "codex", version } }, key: d.key });
+    const listed = async () => (await req(srv.base, "GET", "/api/devices")).json.devices.find((x) => x.id === d.id).collectors;
+    const latest = COLLECTOR_VERSIONS.codex;
     const db = new Database(srv.dbPath);
+    // Moves every row of the device back in time, as if posted that long ago.
+    const age = (sec) => db.prepare("UPDATE collector_versions SET seen_at = seen_at - ?, first_seen_at = first_seen_at - ? WHERE device_id = ?").run(sec, sec, d.id);
     try {
+      // The old copy (version 0) posted 36 minutes ago, then the device was
+      // updated: the old version's last post is before the new one first
+      // appeared, so nothing is flagged.
+      assert.equal((await post(0)).status, 200);
+      age(2160);
+      assert.equal((await post(latest)).status, 200);
+      let [row] = await listed();
+      assert.deepEqual([row.version, row.newest, row.outdated], [latest, latest, false]);
+      // A post of the old one already running during the update (within the slack): still an update.
+      db.prepare("UPDATE collector_versions SET seen_at = seen_at + 2280 WHERE device_id = ? AND version = 0").run(d.id);
+      [row] = await listed();
+      assert.deepEqual([row.version, row.outdated], [latest, false]);
+      // Two hours on, the old copy posts again: a stale copy next to the updated one.
+      age(7200);
+      assert.equal((await post(0)).status, 200);
+      assert.equal((await post(latest)).status, 200);
+      [row] = await listed();
+      assert.deepEqual([row.version, row.newest, row.outdated], [0, latest, true]);
+      assert.ok(Math.abs(row.seen_at - Date.now() / 1000) < 60);
+      // Once it has not posted for a day before the tool's last post, it is gone.
       db.prepare("UPDATE collector_versions SET seen_at = seen_at - 90000 WHERE device_id = ? AND version = 0").run(d.id);
+      [row] = await listed();
+      assert.deepEqual([row.version, row.outdated], [latest, false]);
     } finally {
       db.close();
     }
-    rows = await listed();
-    assert.deepEqual(rows.map((c) => [c.tool, c.version, c.outdated]),
-      [["claude-code", COLLECTOR_VERSIONS["claude-code"], false], ["codex", COLLECTOR_VERSIONS.codex, false]]);
-    // One flat event carries the hint too.
-    assert.ok((await post("claude-code", event({ collector: undefined }))).json.update);
   });
 
   test("a known collector version is written at most hourly (a write empties the read cache)", async () => {
