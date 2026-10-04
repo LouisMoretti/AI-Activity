@@ -925,9 +925,10 @@ checks the upload format, retry, deduplication and dashboard totals. No model
 API or external account is needed.
 
 The **Collector CLI smoke** workflow runs on relevant collector changes, on
-pull requests and pushes to `main`, and can be started manually from Actions.
-Its Linux x64, Linux ARM64, Windows x64 and macOS jobs install pinned Claude Code,
-Codex and OpenCode CLIs, point each at a local fake model API, complete one
+pull requests and pushes to `main`, every Monday against the latest CLI
+releases, and can be started manually from Actions (pinned or latest
+versions). Its Linux x64, Linux ARM64, Windows x64 and macOS jobs install the
+Claude Code, Codex and OpenCode CLIs, point each at a local fake model API, complete one
 chat, and check that the installed integration reaches the real app. Windows
 uses a temporary ConPTY for Claude Code's interactive status line; macOS uses
 a pseudo-terminal through `node-pty` for the same check and exercises Codex without
@@ -937,4 +938,7 @@ Antigravity section above. `agy` stays in its own steps because it is a
 native binary rather than a Node CLI: it cannot be pinned with the rest and
 intentionally tracks the latest release, and its chat is headless (`agy -p`
 print mode, no TUI). No model API key or external account is needed. This
-path-filtered workflow is not a required check on unrelated PRs.
+path-filtered workflow is not a required check on unrelated PRs. Each run's
+summary lists, per platform, the CLI version tested and the result per tool;
+a failed weekly run opens or updates an issue naming the failing tool and
+platform.

@@ -1,7 +1,17 @@
 name: Collector CLI smoke
 
 on:
+  # Weekly against the latest release of every CLI (issue #248): a new CLI
+  # version that breaks a collector shows up here, not as missing usage.
+  schedule:
+    - cron: "23 6 * * 1" # Mondays, 06:23 UTC
   workflow_dispatch:
+    inputs:
+      cli_versions:
+        description: "CLI versions: pinned (in this file) or the latest releases"
+        type: choice
+        options: [pinned, latest]
+        default: pinned
   pull_request:
     paths:
       - "collectors/**"
@@ -15,6 +25,7 @@ on:
       - "test/helpers.js"
       - "test/real-cli-smoke.mjs"
       - "test/real-antigravity-smoke.mjs"
+      - "test/run-cli-smoke.ps1"
       - ".github/workflows/collector-cli-smoke.yml"
   push:
     branches: [main]
@@ -30,6 +41,7 @@ on:
       - "test/helpers.js"
       - "test/real-cli-smoke.mjs"
       - "test/real-antigravity-smoke.mjs"
+      - "test/run-cli-smoke.ps1"
       - ".github/workflows/collector-cli-smoke.yml"
 
 # This path-filtered workflow is intentionally not a required branch check:
@@ -37,19 +49,63 @@ on:
 permissions:
   contents: read
 
-env:
-  CLAUDE_CLI_VERSION: "2.1.283"
-  CODEX_CLI_VERSION: "0.157.1"
-  OPENCODE_CLI_VERSION: "1.18.33"
-  PTY_VERSION: "1.1.0"
-
 concurrency:
-  group: collector-cli-smoke-${{ github.ref }}
+  # The weekly run is on main too: a push there must not cancel it.
+  group: collector-cli-smoke-${{ github.event_name == 'schedule' && 'schedule' || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  versions:
+    name: CLI versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      channel: ${{ steps.resolve.outputs.channel }}
+      claude: ${{ steps.resolve.outputs.claude }}
+      codex: ${{ steps.resolve.outputs.codex }}
+      opencode: ${{ steps.resolve.outputs.opencode }}
+    steps:
+      - name: Resolve the CLI versions to test
+        id: resolve
+        env:
+          # Pinned versions, tested by pushes, pull requests and manual runs.
+          CLAUDE_CLI_VERSION: "2.1.283"
+          CODEX_CLI_VERSION: "0.157.1"
+          OPENCODE_CLI_VERSION: "1.18.33"
+          CHANNEL: ${{ (github.event_name == 'schedule' || inputs.cli_versions == 'latest') && 'latest' || 'pinned' }}
+        run: |
+          resolve() { # package pinned-version
+            if [ "$CHANNEL" = pinned ]; then echo "$2"; return; fi
+            local v
+            v=$(npm view "$1@latest" version) || { echo "::error title=CLI version::npm view $1@latest failed" >&2; return 1; }
+            if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+              echo "::error title=CLI version::npm gave '$v' as the latest $1" >&2; return 1
+            fi
+            echo "$v"
+          }
+          claude=$(resolve @anthropic-ai/claude-code "$CLAUDE_CLI_VERSION")
+          codex=$(resolve @openai/codex "$CODEX_CLI_VERSION")
+          opencode=$(resolve opencode-ai "$OPENCODE_CLI_VERSION")
+          {
+            echo "channel=$CHANNEL"
+            echo "claude=$claude"
+            echo "codex=$codex"
+            echo "opencode=$opencode"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### CLI versions under test ($CHANNEL)"
+            echo
+            echo "| Tool | Source | Version |"
+            echo "| --- | --- | --- |"
+            echo "| Claude Code | npm \`@anthropic-ai/claude-code\` | $claude |"
+            echo "| Codex | npm \`@openai/codex\` | $codex |"
+            echo "| OpenCode | npm \`opencode-ai\` | $opencode |"
+            echo "| Antigravity | install script | latest release (per platform below) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   smoke:
-    name: smoke (${{ matrix.name }})
+    name: smoke (${{ matrix.name }}, ${{ needs.versions.outputs.channel }} CLIs)
+    needs: versions
     strategy:
       fail-fast: false
       matrix:
@@ -59,7 +115,12 @@ jobs:
           - { runner: windows-latest, name: windows x64, platform: windows-x64 }
           - { runner: macos-latest, name: macos, platform: macos }
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
+    timeout-minutes: 20
+    env:
+      CLAUDE_CLI_VERSION: ${{ needs.versions.outputs.claude }}
+      CODEX_CLI_VERSION: ${{ needs.versions.outputs.codex }}
+      OPENCODE_CLI_VERSION: ${{ needs.versions.outputs.opencode }}
+      PTY_VERSION: "1.1.0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -77,7 +138,7 @@ jobs:
         with:
           path: ${{ runner.temp }}/collector-clis
           key: collector-clis-${{ matrix.platform }}-claude-${{ env.CLAUDE_CLI_VERSION }}-codex-${{ env.CODEX_CLI_VERSION }}-opencode-${{ env.OPENCODE_CLI_VERSION }}-pty-${{ env.PTY_VERSION }}
-      - name: Install pinned real CLIs (Linux and macOS)
+      - name: Install real CLIs (Linux and macOS)
         if: runner.os != 'Windows' && steps.cli-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p "$RUNNER_TEMP/collector-clis"
@@ -85,7 +146,7 @@ jobs:
             "@openai/codex@$CODEX_CLI_VERSION" "opencode-ai@$OPENCODE_CLI_VERSION")
           if [ "$RUNNER_OS" = macOS ]; then packages+=("node-pty@$PTY_VERSION"); fi
           npm install --prefix "$RUNNER_TEMP/collector-clis" --no-save "${packages[@]}"
-      - name: Install pinned real CLIs and ConPTY (Windows)
+      - name: Install real CLIs and ConPTY (Windows)
         if: runner.os == 'Windows' && steps.cli-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
@@ -108,8 +169,12 @@ jobs:
             chmod +x "$helper"
           done
       - name: Report CLI cache
+        id: ready
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.cli-cache.outputs.cache-hit }}
         run: |
-          echo "CLI cache hit (warm run): ${{ steps.cli-cache.outputs.cache-hit }}"
+          echo "CLI cache hit (warm run): $CACHE_HIT"
       # Antigravity runs in its own steps below, separate from the three Node
       # CLIs above, because agy is different in kind: a native binary, not an
       # npm package, so it cannot be pinned or cached with the rest. It
@@ -121,76 +186,168 @@ jobs:
       # interactive status line, and a Gemini event-stream stub instead of
       # the Anthropic/OpenAI fake model API.
       - name: Install Antigravity CLI (Linux and macOS)
-        if: runner.os != 'Windows'
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' && runner.os != 'Windows' }}
         shell: bash
         run: |
           curl -fsSL --compressed https://antigravity.google/cli/install.sh | bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Install Antigravity CLI (Windows)
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' && runner.os == 'Windows' }}
         shell: pwsh
         run: |
           irm https://antigravity.google/cli/install.ps1 | iex
           Add-Content $env:GITHUB_PATH "$env:LOCALAPPDATA\agy\bin"
-      - name: Chat with local model APIs and verify installed collectors (Linux and macOS)
+      # One step per tool, each run even when another one failed, so a
+      # failure names its tool in the step list, the summary and the report.
+      - name: "Claude Code: chat with a local model API, verify the installed collector"
+        id: claude-unix
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' && runner.os != 'Windows' }}
         env:
           CLI_ROOT: ${{ runner.temp }}/collector-clis/node_modules
           PYTHON: python
         shell: bash
-        if: runner.os != 'Windows'
-        run: |
-          node --test test/real-cli-smoke.mjs
-      - name: Chat with local model APIs and verify installed collectors (Windows)
-        if: runner.os == 'Windows'
+        run: node --test --test-name-pattern=Claude test/real-cli-smoke.mjs
+      - name: "Claude Code: chat with a local model API, verify the installed collector"
+        id: claude-windows
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' && runner.os == 'Windows' }}
         env:
           CLI_ROOT: ${{ runner.temp }}/collector-clis/node_modules
           PYTHON: python
         shell: pwsh
-        run: |
-          $start = Get-Date
-          foreach ($tool in @('Claude', 'Codex', 'OpenCode')) {
-            $stdout = Join-Path $env:RUNNER_TEMP "cli-$tool.out"
-            $stderr = Join-Path $env:RUNNER_TEMP "cli-$tool.err"
-            $test = Start-Process node -PassThru -NoNewWindow `
-              -ArgumentList @('--test', '--test-force-exit', "--test-name-pattern=$tool", 'test/real-cli-smoke.mjs') `
-              -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-            $finished = $test.WaitForExit(120000)
-            if (-not $finished) {
-              taskkill /PID $test.Id /T /F | Out-Null
-            }
-            Get-Content $stdout
-            Get-Content $stderr
-            if (-not $finished) { throw "$tool CLI smoke timed out after 120 seconds" }
-            if ($test.ExitCode -ne 0) { exit $test.ExitCode }
-          }
-          Write-Output "CLI smoke elapsed: $((Get-Date) - $start)"
+        run: ./test/run-cli-smoke.ps1 -Tool Claude -File test/real-cli-smoke.mjs
+      - name: "Codex: chat with a local model API, verify the installed collector"
+        id: codex-unix
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' && runner.os != 'Windows' }}
+        env:
+          CLI_ROOT: ${{ runner.temp }}/collector-clis/node_modules
+          PYTHON: python
+        shell: bash
+        run: node --test --test-name-pattern=Codex test/real-cli-smoke.mjs
+      - name: "Codex: chat with a local model API, verify the installed collector"
+        id: codex-windows
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' && runner.os == 'Windows' }}
+        env:
+          CLI_ROOT: ${{ runner.temp }}/collector-clis/node_modules
+          PYTHON: python
+        shell: pwsh
+        run: ./test/run-cli-smoke.ps1 -Tool Codex -File test/real-cli-smoke.mjs
+      - name: "OpenCode: chat with a local model API, verify the installed plugin"
+        id: opencode-unix
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' && runner.os != 'Windows' }}
+        env:
+          CLI_ROOT: ${{ runner.temp }}/collector-clis/node_modules
+          PYTHON: python
+        shell: bash
+        run: node --test --test-name-pattern=OpenCode test/real-cli-smoke.mjs
+      - name: "OpenCode: chat with a local model API, verify the installed plugin"
+        id: opencode-windows
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' && runner.os == 'Windows' }}
+        env:
+          CLI_ROOT: ${{ runner.temp }}/collector-clis/node_modules
+          PYTHON: python
+        shell: pwsh
+        run: ./test/run-cli-smoke.ps1 -Tool OpenCode -File test/real-cli-smoke.mjs
       # Same headless agy chat on every platform of the matrix: agy --version
       # fails the step when the binary is missing, so the test below can never
       # pass as a silent skip.
-      - name: Chat with a local Gemini stub and verify the Antigravity hook (Linux and macOS)
-        if: runner.os != 'Windows'
+      - name: "Antigravity: chat with a local Gemini stub, verify the installed hook"
+        id: antigravity-unix
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' && runner.os != 'Windows' }}
         shell: bash
         run: |
           agy --version
           node --test test/real-antigravity-smoke.mjs
-      - name: Chat with a local Gemini stub and verify the Antigravity hook (Windows)
-        if: runner.os == 'Windows'
+      - name: "Antigravity: chat with a local Gemini stub, verify the installed hook"
+        id: antigravity-windows
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' && runner.os == 'Windows' }}
         shell: pwsh
         run: |
-          $start = Get-Date
           agy --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $stdout = Join-Path $env:RUNNER_TEMP "cli-Antigravity.out"
-          $stderr = Join-Path $env:RUNNER_TEMP "cli-Antigravity.err"
-          $test = Start-Process node -PassThru -NoNewWindow `
-            -ArgumentList @('--test', '--test-force-exit', '--test-name-pattern=Antigravity', 'test/real-antigravity-smoke.mjs') `
-            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-          $finished = $test.WaitForExit(120000)
-          if (-not $finished) {
-            taskkill /PID $test.Id /T /F | Out-Null
+          ./test/run-cli-smoke.ps1 -Tool Antigravity -File test/real-antigravity-smoke.mjs
+      - name: Summarize tools, versions and results
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.name }}
+          CHANNEL: ${{ needs.versions.outputs.channel }}
+          CLI_ROOT: ${{ runner.temp }}/collector-clis/node_modules
+          CLAUDE: ${{ steps.claude-unix.outcome }}${{ steps.claude-windows.outcome }}
+          CODEX: ${{ steps.codex-unix.outcome }}${{ steps.codex-windows.outcome }}
+          OPENCODE: ${{ steps.opencode-unix.outcome }}${{ steps.opencode-windows.outcome }}
+          ANTIGRAVITY: ${{ steps.antigravity-unix.outcome }}${{ steps.antigravity-windows.outcome }}
+        run: |
+          # Each tool ran in one of its two steps; the other one is "skipped".
+          result() { local r=${1//skipped/}; echo "${r:-not run}"; }
+          # The version actually installed (cache or npm), not only the one asked for.
+          installed() {
+            node -p 'require(process.argv[1]).version' "$CLI_ROOT/$1/package.json" 2>/dev/null || echo "not installed"
           }
-          Get-Content $stdout
-          Get-Content $stderr
-          if (-not $finished) { throw "Antigravity CLI smoke timed out after 120 seconds" }
-          if ($test.ExitCode -ne 0) { exit $test.ExitCode }
-          Write-Output "Antigravity smoke elapsed: $((Get-Date) - $start)"
+          agy=$( (agy --version 2>/dev/null || echo "not installed") | head -n 1 | tr -d '\r')
+          rows=(
+            "Claude Code|$(installed @anthropic-ai/claude-code)|$(result "$CLAUDE")"
+            "Codex|$(installed @openai/codex)|$(result "$CODEX")"
+            "OpenCode|$(installed opencode-ai)|$(result "$OPENCODE")"
+            "Antigravity|$agy|$(result "$ANTIGRAVITY")"
+          )
+          {
+            echo "### $PLATFORM ($CHANNEL CLIs)"
+            echo
+            echo "| Tool | CLI version | Result |"
+            echo "| --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for row in "${rows[@]}"; do
+            IFS='|' read -r tool version outcome <<< "$row"
+            echo "| $tool | $version | $outcome |" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$outcome" = failure ]; then
+              echo "::error title=$tool collector smoke failed::$tool CLI $version on $PLATFORM ($CHANNEL CLIs): see the \"$tool:\" step's log"
+            fi
+          done
+
+  report:
+    # Only the weekly run against the latest CLIs files an issue: a failing
+    # push or pull request already shows on its commit or PR.
+    name: report scheduled failure
+    needs: [versions, smoke]
+    if: ${{ always() && github.event_name == 'schedule' && (needs.versions.result == 'failure' || needs.smoke.result == 'failure') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      issues: write
+    steps:
+      - name: Open or update the collector smoke issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CLAUDE: ${{ needs.versions.outputs.claude }}
+          CODEX: ${{ needs.versions.outputs.codex }}
+          OPENCODE: ${{ needs.versions.outputs.opencode }}
+        run: |
+          title="Collector CLI smoke fails against the latest CLIs"
+          # Failed steps as "job: step": the job names the platform, the step the tool.
+          # shellcheck disable=SC2016 # $job is jq's, not the shell's
+          failed=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs" --paginate \
+            --jq '.jobs[] | select(.conclusion == "failure") | .name as $job
+              | ([.steps[] | select(.conclusion == "failure") | .name]
+                | if length == 0 then ["(failed outside a step)"] else . end)[]
+              | "- `\($job)`: \(.)"')
+          body="Weekly run $RUN_URL failed.
+
+          Failed (job = platform, step = tool):
+          ${failed:-- no failed step found, see the run}
+
+          npm CLIs tested: Claude Code ${CLAUDE:-?}, Codex ${CODEX:-?}, OpenCode ${OPENCODE:-?}. Antigravity: its latest release (version per platform in the run's summary).
+
+          A new CLI release may have changed what a collector reads. Reproduce with Actions → Collector CLI smoke → Run workflow, CLI versions: latest."
+          number=$(gh issue list --state open --search "\"$title\" in:title" --json number,title \
+            --jq "map(select(.title == \"$title\"))[0].number // empty")
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+            echo "Commented on #$number" >> "$GITHUB_STEP_SUMMARY"
+          else
+            url=$(gh issue create --title "$title" --label bug --label collectors --body "$body")
+            echo "Opened $url" >> "$GITHUB_STEP_SUMMARY"
+          fi

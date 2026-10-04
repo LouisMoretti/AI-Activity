@@ -312,10 +312,10 @@ env_key = "MOCK_API_KEY"
       `${result.output.slice(-3000)}\nOpenCode log: ${logs}`);
     assert.ok(await waitFor(async () => (await summary()).events === 1),
       `real ${tool} produced no collector upload; CLI output: ${result.output.slice(-1200)}`);
-    assert.ok(await processesGone(home));
-    assert.equal((await summary()).tokens, 19);
+    assert.ok(await processesGone(home), `real ${tool}: collector processes still running after the upload`);
+    assert.equal((await summary()).tokens, 19, `real ${tool}: stored tokens differ from the stub's 12 in + 7 out`);
     assert.ok(ingest.uploads.some((body) => body.messages?.some((message) => message.usage.input_tokens === 12 &&
-      message.usage.output_tokens === 7)));
+      message.usage.output_tokens === 7)), `real ${tool}: no upload carried the stub's usage (12 in, 7 out)`);
     console.log(`${tool}: real CLI, hook, collector and ingestion passed in ${Date.now() - before} ms`);
   } finally {
     await processesGone(home);
