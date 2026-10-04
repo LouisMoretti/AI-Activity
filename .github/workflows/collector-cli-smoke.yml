@@ -24,6 +24,7 @@ on:
       - "test/installed-collectors.test.js"
       - "test/helpers.js"
       - "test/real-cli-smoke.mjs"
+      - "test/cli-env.mjs"
       - "test/real-antigravity-smoke.mjs"
       - "test/run-cli-smoke.ps1"
       - ".github/workflows/collector-cli-smoke.yml"
@@ -40,6 +41,7 @@ on:
       - "test/installed-collectors.test.js"
       - "test/helpers.js"
       - "test/real-cli-smoke.mjs"
+      - "test/cli-env.mjs"
       - "test/real-antigravity-smoke.mjs"
       - "test/run-cli-smoke.ps1"
       - ".github/workflows/collector-cli-smoke.yml"
@@ -65,6 +67,8 @@ jobs:
       codex: ${{ steps.resolve.outputs.codex }}
       opencode: ${{ steps.resolve.outputs.opencode }}
     steps:
+      # The runner's preinstalled npm is enough here: `npm view` only reads
+      # the registry, whatever npm version the image ships.
       - name: Resolve the CLI versions to test
         id: resolve
         env:
@@ -78,7 +82,7 @@ jobs:
             if [ "$CHANNEL" = pinned ]; then echo "$2"; return; fi
             local v
             v=$(npm view "$1@latest" version) || { echo "::error title=CLI version::npm view $1@latest failed" >&2; return 1; }
-            if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
               echo "::error title=CLI version::npm gave '$v' as the latest $1" >&2; return 1
             fi
             echo "$v"
@@ -115,6 +119,8 @@ jobs:
           - { runner: windows-latest, name: windows x64, platform: windows-x64 }
           - { runner: macos-latest, name: macos, platform: macos }
     runs-on: ${{ matrix.runner }}
+    # Four tools one after the other, plus a cold install of the latest CLIs
+    # (the weekly run's cache key changes with every release).
     timeout-minutes: 20
     env:
       CLAUDE_CLI_VERSION: ${{ needs.versions.outputs.claude }}
@@ -123,6 +129,9 @@ jobs:
       PTY_VERSION: "1.1.0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The latest CLIs run in this checkout: leave no git token behind.
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
@@ -333,7 +342,7 @@ jobs:
             --jq '.jobs[] | select(.conclusion == "failure") | .name as $job
               | ([.steps[] | select(.conclusion == "failure") | .name]
                 | if length == 0 then ["(failed outside a step)"] else . end)[]
-              | "- `\($job)`: \(.)"')
+              | "- `\($job)`: \(.)"') || failed="" # a GitHub API hiccup must not stop the issue
           body="Weekly run $RUN_URL failed.
 
           Failed (job = platform, step = tool):

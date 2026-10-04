@@ -2,9 +2,9 @@
 # The test can leave CLI child processes holding its output open, so it runs
 # with a hard timeout and its whole process tree is killed when it expires.
 param(
-  [Parameter(Mandatory)][string]$Tool,
-  [Parameter(Mandatory)][string]$File,
-  [int]$TimeoutSec = 120
+  [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Tool,
+  [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$File,
+  [ValidateRange(1, 3600)][int]$TimeoutSec = 120
 )
 $start = Get-Date
 $stdout = Join-Path $env:RUNNER_TEMP "cli-$Tool.out"
