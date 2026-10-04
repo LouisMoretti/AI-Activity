@@ -95,7 +95,8 @@
   /* Centered when it fits; on narrow screens the chart scrolls while the
      readout below stays in view. */
   .area { width: fit-content; max-width: 100%; margin-inline: auto; }
-  .scroller { overflow-x: auto; padding: 4px 2px; }
+  .scroller { overflow-x: auto; scrollbar-width: none; padding: 4px 2px; }
+  .scroller::-webkit-scrollbar { display: none; }
   .stack { position: relative; width: max-content; }
   .trend { position: absolute; inset: 0; }
   .hidden { visibility: hidden; }
