@@ -1,12 +1,15 @@
 <script lang="ts">
   import type { ApiValue, Session } from "../../../shared/types.ts";
   import { fmtCompact, fmtUsd } from "../lib/format.ts";
+  import { Tooltip } from "../lib/tooltip.svelte.ts";
 
   // A conversation's API-equivalent value, inline ("≈ $1.20"). Nothing when
   // none of its tokens is priced. An info icon explains the same caveats as
-  // the API value stat (StatsRow) on hover or keyboard focus.
+  // the API value stat (StatsRow) on hover, keyboard focus or a tap; Escape
+  // closes it, and it stays inside the viewport (Tooltip).
   let { value, unpriced }: { value: ApiValue; unpriced: Session["unpriced"] } = $props();
   const id = $props.id();
+  const tip = new Tooltip();
   const caveat = $derived(value.unpriced_tokens > 0 || value.lower_bound || value.current_rate_fallback);
 </script>
 
@@ -14,15 +17,15 @@
   <span class="value">
     <span class="num" title="API-equivalent value (estimate)">{value.lower_bound ? "≥" : "≈"} {fmtUsd(value.usd)}</span>
     {#if caveat}
-      <span class="explain">
-        <button type="button" aria-label="About this API value" aria-describedby={id}>
+      <span class="explain" class:open={tip.open} {@attach tip.root} {...tip.wrap}>
+        <button type="button" {...tip.trigger} aria-label="About this API value" aria-describedby={id}>
           <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
             <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.3" />
             <path d="M8 7.2v4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
             <circle cx="8" cy="4.9" r=".9" fill="currentColor" />
           </svg>
         </button>
-        <span class="tip" role="tooltip" {id}>
+        <span class="tip" class:above={tip.above} role="tooltip" {id} style:--dx="{tip.dx}px" style:--max-h={tip.maxHeight === null ? null : `${tip.maxHeight}px`} {@attach tip.tip}>
           <span>At retail API rates: an estimate, not what was paid.</span>
           {#if value.unpriced_tokens > 0}
             <span class="warn">Leaves out {fmtCompact(value.unpriced_tokens)} tokens:</span>
@@ -49,19 +52,22 @@
   .value { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
   .num { color: inherit; }
   .explain { position: relative; display: inline-flex; }
-  button { display: inline-flex; padding: 0; color: var(--faint); cursor: help; }
-  button:hover, button:focus-visible { color: var(--text); }
+  /* A 25 px target around the 13 px icon, without moving it. */
+  button { display: inline-flex; padding: 6px; margin: -6px; border-radius: 50%; color: var(--faint); cursor: help; }
+  button:hover, button:focus-visible, .open button { color: var(--text); }
   .tip {
-    position: absolute; z-index: 20; top: calc(100% + 8px); right: -6px;
+    max-height: var(--max-h, none); overflow-y: auto; overscroll-behavior: contain;
+    position: absolute; z-index: 20; top: calc(100% + 8px); right: -6px; translate: var(--dx, 0px) 0;
     width: max-content; max-width: min(300px, calc(100vw - 32px)); padding: 10px 12px;
     background: var(--raised); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px #0007;
     color: var(--muted); font-size: 12px; line-height: 1.45; white-space: normal; text-align: left;
     opacity: 0; visibility: hidden; transition: opacity .12s ease;
   }
+  .tip.above { top: auto; bottom: calc(100% + 8px); }
   .tip > span { display: block; }
   .tip > span + span { margin-top: 4px; }
   .warn { color: var(--warn); }
   .reason { padding-left: 8px; }
-  .model { font-family: var(--mono); font-size: 11px; }
-  .explain:hover .tip, .explain:focus-within .tip { opacity: 1; visibility: visible; }
+  .model { font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; }
+  .open .tip { opacity: 1; visibility: visible; }
 </style>

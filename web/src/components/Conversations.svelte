@@ -47,10 +47,11 @@
   .session + .session { border-top: 1px solid var(--line); }
   .empty { flex-direction: column; align-items: flex-start; gap: 2px; }
   .name { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  .name > div { min-width: 0; }
   .icon { width: 20px; height: 20px; display: grid; place-items: center; color: var(--tool); }
   strong { font-size: 14px; font-weight: 500; display: block; }
   small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
-  .model { font-family: var(--mono); font-size: 11px; }
+  .model { font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; }
   .side { width: 260px; flex-shrink: 0; display: grid; gap: 7px; }
   .line { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 12px; }
   .tokens { color: var(--text); display: inline-flex; align-items: center; white-space: nowrap; }

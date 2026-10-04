@@ -233,7 +233,7 @@ npm run build               # → web/dist (the default STATIC_DIR)
 CI (`.github/workflows/ci.yml`) runs typecheck, the web build and tests
 (tests serve `web/dist`, so the build comes first) on
 every PR and push to main, on x64 and ARM64 runners (`better-sqlite3` is
-native). It also builds the Docker image on both and smoke-tests it
+native), and the browser tests in their own `browser` job (x64 Chromium). It also builds the Docker image on both and smoke-tests it
 (healthy, setup code, first account, device key, backup, clean stop), then
 as a pull request preview (`deploy/compose.preview.yaml`: hardened, its
 alias on the preview network), and
@@ -447,6 +447,15 @@ README's Codex Stop hook; `test/opencode-collector.test.js` runs
 synthetic Antigravity databases; `test/cursor-collector.test.js` covers
 synthetic Cursor hooks, ingestion, retries and privacy; `test/install.test.js` runs `/install.sh`
 (and, on Windows, `/install.ps1`) in a temporary home.
+Browser tests: `npm run test:browser` (after `npm run build`) runs
+`test/browser/*.test.js` in a real Chromium through Playwright (the
+`playwright` library under `node --test`, no other runner), against a test
+server holding fictional usage (`test/browser/fixture.js`): at 320, 390
+and 768 px, the OpenCode card's models stay whole inside the card, and the
+API-value tooltips and stat popovers open by keyboard, hover and tap,
+inside the viewport, and close on Escape. Not part of `npm test`: they
+need a browser (`npx playwright install chromium`; or set `CHROMIUM_PATH`
+to a local Chromium, e.g. `nix-shell -p chromium` on NixOS).
 Types: `npm run typecheck` (tsc for server, svelte-check for web). The
 server is checked by TypeScript 7 (the native compiler, installed as the
 `typescript-7` alias); `typescript` stays on 6 for `svelte-check`, which

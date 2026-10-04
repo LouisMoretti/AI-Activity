@@ -1,17 +1,20 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
+  import { Tooltip } from "../lib/tooltip.svelte.ts";
 
-  // Shows its detail in a popover on hover or keyboard focus (tap on touch).
+  // Shows its detail in a popover on hover or keyboard focus (tap on touch);
+  // Escape closes it, and it stays inside the viewport (Tooltip).
   let { label, value, detail }: { label: string; value: string; detail: Snippet } = $props();
   const id = $props.id();
+  const tip = new Tooltip();
 </script>
 
-<div class="stat">
-  <button type="button" class="trigger" aria-describedby={id}>
+<div class="stat" class:open={tip.open} {@attach tip.root} {...tip.wrap}>
+  <button type="button" class="trigger" {...tip.trigger} aria-describedby={id}>
     <strong class="num">{value}</strong>
     <span>{label}</span>
   </button>
-  <div class="pop" role="tooltip" {id}>{@render detail()}</div>
+  <div class="pop" class:above={tip.above} role="tooltip" {id} style:--dx="{tip.dx}px" style:--max-h={tip.maxHeight === null ? null : `${tip.maxHeight}px`} {@attach tip.tip}>{@render detail()}</div>
 </div>
 
 <style>
@@ -20,11 +23,13 @@
   strong { display: block; font-size: 19px; font-weight: 500; letter-spacing: -.02em; }
   span { display: block; color: var(--muted); font-size: 13px; margin-top: 2px; }
   .pop {
-    position: absolute; z-index: 10; top: calc(100% + 10px); left: 50%; translate: -50% 0;
+    max-height: var(--max-h, none); overflow-y: auto; overscroll-behavior: contain;
+    position: absolute; z-index: 10; top: calc(100% + 10px); left: 50%; translate: calc(var(--dx, 0px) - 50%) 0;
     width: max-content; min-width: 200px; max-width: min(360px, calc(100vw - 32px)); text-align: left;
     background: var(--raised); border: 1px solid var(--line); border-radius: 10px;
     padding: 12px 14px; box-shadow: 0 8px 24px #0007;
     opacity: 0; visibility: hidden; transition: opacity .12s ease;
   }
-  .stat:hover .pop, .stat:focus-within .pop { opacity: 1; visibility: visible; }
+  .pop.above { top: auto; bottom: calc(100% + 10px); }
+  .open .pop { opacity: 1; visibility: visible; }
 </style>
