@@ -240,13 +240,32 @@
   const LONG_PRESS_MS = 350;
   let pending: { key: string; id: number; x: number; y: number; el: HTMLElement; timer: number | null; touch: boolean } | null = null;
   /**
-   * Hit tests wait for the cards to finish sliding, and for the pointer to
-   * move after a change: a layout that shifts under a still pointer never
-   * moves the card again (no flicker between two places).
+   * After a change, the pointer has to move a little before the next one:
+   * a layout that shifts under a still pointer never moves the card again
+   * (no flicker between two places). Hit tests never wait for the slide:
+   * they measure where the cards end up (`layoutRect`).
    */
-  let settleUntil = 0;
   let changedAt: { x: number; y: number } | null = null;
-  let settleTimer: number | null = null;
+
+  /**
+   * Where an element ends up once the slide finishes: its box without the
+   * translation an animation adds to it or to its row right now (the idea
+   * of dnd-kit, which measures layout rather than painted positions).
+   */
+  function layoutRect(el: HTMLElement): DOMRect {
+    const r = el.getBoundingClientRect();
+    let dx = 0;
+    let dy = 0;
+    for (let n: HTMLElement | null = el; n && n !== root; n = n.parentElement) {
+      const t = getComputedStyle(n).transform;
+      if (t && t !== "none") {
+        const m = new DOMMatrixReadOnly(t);
+        dx += m.m41;
+        dy += m.m42;
+      }
+    }
+    return new DOMRect(r.x - dx, r.y - dy, r.width, r.height);
+  }
 
   function pointerDown(e: PointerEvent, key: string): void {
     if (!edit || drag || e.button !== 0 || saving) return;
@@ -392,8 +411,6 @@
     touchDrag = false;
     cancelAnimationFrame(scrollFrame);
     window.removeEventListener("keydown", escapeDrag);
-    if (settleTimer) clearTimeout(settleTimer);
-    settleTimer = null;
   }
   onDestroy(() => { cancelPending(); stopPointer(); });
 
@@ -408,18 +425,10 @@
     const { x, y } = drag.pointer;
     // Page coordinates: scrolling moves the pointer over the layout too.
     if (changedAt && Math.hypot(x + scrollX - changedAt.x, y + scrollY - changedAt.y) < 8) return;
-    const now = performance.now();
-    if (now < settleUntil) {
-      if (!settleTimer) settleTimer = window.setTimeout(() => { settleTimer = null; hitTest(); }, settleUntil - now);
-      return;
-    }
     const before = drag.placement;
     const p = placementAt(x, y);
     if (p) place(p);
-    if (drag && !same(before, drag.placement)) {
-      settleUntil = performance.now() + SLIDE_MS;
-      changedAt = { x: x + scrollX, y: y + scrollY };
-    }
+    if (drag && !same(before, drag.placement)) changedAt = { x: x + scrollX, y: y + scrollY };
   }
   function placementAt(x: number, y: number): Placement | null {
     if (!drag) return null;
@@ -428,7 +437,7 @@
     const rowEls = [...root!.querySelectorAll<HTMLElement>("[data-row]")];
     if (!rowEls.length) return { kind: "new", at: 0 };
     for (const [n, rowEl] of rowEls.entries()) {
-      const rect = rowEl.getBoundingClientRect();
+      const rect = layoutRect(rowEl);
       if (y < rect.top - 9 || y > rect.bottom + 9) continue;
       const keys = keysOf(rowEl);
       if (!keys.length) {
@@ -443,15 +452,18 @@
       if (y > rect.bottom - band) return { kind: "new", at: index + 1 };
       return cardPlacement(rowEl, base, index, x);
     }
-    const first = rowEls[0].getBoundingClientRect();
+    const first = layoutRect(rowEls[0]);
     if (y < first.top) return { kind: "new", at: 0 };
     // Just below the last row: a new row at the end (further down, nothing changes).
-    const last = rowEls[rowEls.length - 1].getBoundingClientRect();
+    const last = layoutRect(rowEls[rowEls.length - 1]);
     if (y > last.bottom && y < last.bottom + 80) return { kind: "new", at: base.length };
     return null;
   }
-  /** How far over a neighbouring card the pointer goes to move past it. */
-  const PASS = 0.66;
+  /**
+   * How far over a neighbouring card the pointer goes to move past it: just
+   * past its middle, a small margin so a card never flips back on the spot.
+   */
+  const PASS = 0.55;
   /** The cards of a row element, without the held one. */
   const keysOf = (rowEl: HTMLElement) => (rowEl.dataset.keys ?? "").split(",").filter((k) => k && k !== drag?.key);
   function cardPlacement(rowEl: HTMLElement, base: DraftRow[], row: number, x: number): Placement | null {
@@ -461,19 +473,19 @@
     let hit: HTMLElement | null = null;
     let best = Infinity;
     for (const cell of cells) {
-      const r = cell.getBoundingClientRect();
+      const r = layoutRect(cell);
       const distance = x < r.left ? r.left - x : x > r.right ? x - r.right : 0;
       if (distance < best) { best = distance; hit = cell; }
     }
     if (!hit || hit.dataset.key === drag.key) return null;
-    const rect = hit.getBoundingClientRect();
+    const rect = layoutRect(hit);
     const index = base[row].keys.indexOf(hit.dataset.key!);
     if (index < 0) return null;
     if (base[row].keys.length >= 3) return drag.from ? { kind: "swap", row, index } : null;
     // Inverted zones (SortableJS's idea): in the row holding the placeholder,
-    // passing a card takes two thirds of it, and coming back the same from
-    // the other side, so a card that just moved aside never flips back
-    // under a pointer that barely moved. Elsewhere, its halves decide.
+    // passing a card takes a little more than half of it, and coming back
+    // the same from the other side, so a card that just moved aside never
+    // flips back under a pointer that barely moved. Elsewhere, its halves decide.
     const at = (x - rect.left) / rect.width;
     const cur = drag.placement;
     const after = cur.kind === "row" && cur.row === row

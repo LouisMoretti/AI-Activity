@@ -42,9 +42,10 @@ A held card follows the pointer; where it will land in a row, an empty
 dashed box of its final size opens and the other cards slide aside (180 ms,
 translation only, none with reduced motion). Next to a card shares that row
 (the widths follow the count: `ratioFor`); in the row holding the box,
-moving past a neighbour takes two thirds of it, coming back the same from
-the other side (inverted zones, as in SortableJS), so cards never flip back
-and forth. A thin band at a row's top or bottom edge (at most 28 px, and
+moving past a neighbour takes 55 % of it, coming back the same from the
+other side (inverted zones, as in SortableJS), so cards never flip back and
+forth. Hit tests measure where cards end up, without the slide's current
+translation (as dnd-kit measures layout), so they never wait for it. A thin band at a row's top or bottom edge (at most 28 px, and
 the gap) shows a glowing line where a new row would open, the layout
 without the held card around it: nothing shifts until the drop (as in
 Notion or Atlassian's drop indicators; the keyboard shows the new row
