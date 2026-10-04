@@ -17,7 +17,18 @@ export const MIGRATIONS: ((db: DB) => void)[] = [
   githubAccounts,
   apiValueInputs,
   siteAnalytics,
+  profilePanels,
 ];
+
+/**
+ * 8: each account's dashboard layout, `users.panels`: JSON rows of panels
+ * (`validLayout` in queries.ts). NULL, the value of every account until it
+ * saves another layout, means the default layout of the code that runs
+ * (`DEFAULT_ROWS`), so a new default or a new tool reaches those accounts.
+ */
+function profilePanels(db: DB): void {
+  db.exec("ALTER TABLE users ADD COLUMN panels TEXT");
+}
 
 /**
  * 7: privacy-first site analytics, kept apart from measured AI activity:

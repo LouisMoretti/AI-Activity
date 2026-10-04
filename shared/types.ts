@@ -9,6 +9,57 @@ export type { ApiValue } from "./pricing.ts";
 export const TOOLS = ["claude-code", "codex", "cursor", "antigravity", "opencode"] as const;
 export type Tool = (typeof TOOLS)[number];
 
+/** Optional profile panels, stored in display order. */
+export const WIDGETS = ["today-by-tool", "today-by-hour", "best-day", "leaderboard"] as const;
+export type Widget = (typeof WIDGETS)[number];
+export type PanelId = Tool | Widget;
+export type PanelView = "quota" | "activity";
+export interface ProfilePanel { id: PanelId; view?: PanelView }
+/** Each quota-capable tool can appear in both modes at once. */
+export const PANEL_OPTIONS: { id: PanelId; view?: PanelView }[] = [
+  { id: "claude-code", view: "quota" }, { id: "claude-code", view: "activity" },
+  { id: "codex", view: "quota" }, { id: "codex", view: "activity" },
+  { id: "cursor", view: "activity" },
+  { id: "antigravity", view: "quota" }, { id: "antigravity", view: "activity" },
+  { id: "opencode", view: "activity" },
+  ...WIDGETS.map((id) => ({ id })),
+];
+/**
+ * Dashboard rows: the row's ratio sets its cards' widths, so cards carry
+ * no size. `full` holds one card; `half`, `wide-left` (⅔ · ⅓) and
+ * `wide-right` (⅓ · ⅔) two (one stretches full width); `thirds` three.
+ */
+export type RowRatio = "full" | "half" | "wide-left" | "wide-right" | "thirds";
+export interface PanelRow {
+  ratio: RowRatio;
+  panels: [ProfilePanel] | [ProfilePanel, ProfilePanel] | [ProfilePanel, ProfilePanel, ProfilePanel];
+}
+/** The ratio a row of `count` cards takes, keeping a two-card row's widths when it had two. */
+export function ratioFor(count: number, previous: RowRatio): RowRatio {
+  if (count >= 3) return "thirds";
+  if (count === 2) return previous === "half" || previous === "wide-left" || previous === "wide-right" ? previous : "half";
+  return "full";
+}
+export const DEFAULT_ROWS: PanelRow[] = [
+  { ratio: "wide-left", panels: [{ id: "claude-code", view: "quota" }, { id: "codex", view: "quota" }] },
+  { ratio: "full", panels: [{ id: "cursor", view: "activity" }] },
+  { ratio: "full", panels: [{ id: "antigravity", view: "quota" }] },
+  { ratio: "wide-left", panels: [{ id: "opencode", view: "activity" }, { id: "today-by-tool" }] },
+];
+/** A deep copy: layouts are edited in place on the client. */
+export const copyRows = (rows: PanelRow[]): PanelRow[] =>
+  rows.map((r) => ({ ratio: r.ratio, panels: r.panels.map((p) => ({ ...p })) as PanelRow["panels"] }));
+export interface PanelSettings { rows: PanelRow[] }
+export interface HourBucket { hour: number; tool: Tool; tokens: number }
+export interface HoursResponse { day: string; current_hour: number; hours: HourBucket[]; provenance: string }
+export interface RankResponse {
+  rank: number;
+  accounts: number;
+  tokens: number;
+  neighbor: { username: string; tokens: number; direction: "behind" | "ahead of" } | null;
+  provenance: string;
+}
+
 /** Rows kept separate in dashboard breakdown lists (the last is the fold). */
 export const BREAKDOWN_DISPLAY_ROWS = 8;
 
@@ -279,6 +330,11 @@ export interface Profile {
   username: string;
   display_name: string;
   avatar_url: string | null;
+}
+
+/** `GET /api/u/:username`: the profile and its dashboard layout, read with every refresh. */
+export interface ProfilePage extends Profile {
+  panels: PanelRow[];
 }
 
 export interface ProfilesResponse {

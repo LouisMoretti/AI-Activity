@@ -3,7 +3,7 @@
 // Time-relative text (countdowns, "x ago") is derived in components from
 // timestamps here plus the shared clock.
 import type { QUOTA_POOLS, QuotaWindowType } from "../../../shared/quota-pools.ts";
-import { TOOLS, type ApiValue, type Session, type Tool } from "../../../shared/types.ts";
+import { TOOLS, type ApiValue, type HourBucket, type Session, type Tool } from "../../../shared/types.ts";
 import type { DayPoint } from "./series.ts";
 
 export type ToolKey = Tool;
@@ -90,6 +90,22 @@ export interface SessionVM {
 }
 
 
+/** "Today by hour": today's tokens per local hour and tool. */
+export interface HoursVM {
+  day: string; // YYYY-MM-DD, the owner's today
+  currentHour: number;
+  hours: HourBucket[];
+}
+
+/** "Leaderboard · 7 days": the profile's rank by tokens and its nearest account. */
+export interface RankVM {
+  rank: number;
+  accounts: number;
+  tokens: number;
+  /** `name` is shown as is ("@login" for a real account). */
+  neighbor: { name: string; tokens: number; direction: "behind" | "ahead of" } | null;
+}
+
 export interface DashboardVM {
   demo: boolean;
   today: string; // YYYY-MM-DD, the highlighted calendar day
@@ -98,15 +114,19 @@ export interface DashboardVM {
   stats: StatsVM;
   tools: ToolKey[]; // cards to show for the current filter
   claude: QuotaToolVM;
+  claudeActivity: ActivityToolVM;
   codex: QuotaToolVM;
+  codexActivity: ActivityToolVM;
   cursor: ActivityToolVM;
   opencode: ActivityToolVM;
   antigravity: QuotaToolVM;
-  // Shown instead of the quota windows while none is running (quotas are
-  // optional for Antigravity: they need the signed-in agy CLI).
+  // Antigravity's details panel (its quota panel is `antigravity`).
   antigravityActivity: ActivityToolVM;
   sessions: SessionVM[];
   sessionsTotal: number;
+  /** Null when not read (the panel is not shown) or unavailable. */
+  hours: HoursVM | null;
+  rank: RankVM | null;
 }
 
 // color: the tool's design token, set as `--tool` on its elements.
@@ -131,6 +151,3 @@ export const toolsFor = (p: Provider): ToolKey[] =>
 /** Labels of the quota windows, in display order (spans: QUOTA_WINDOW_SEC). */
 export const WINDOW_LABELS: Record<QuotaWindowType, string> = { five_hour: "5-hour window", seven_day: "This week" };
 
-/** Whether a quota card has a measured window still running at `now`. */
-export const hasLiveWindow = (q: QuotaToolVM, now: number): boolean =>
-  q.pools.some((p) => p.windows.some((w) => w.pct !== null && (w.resetsAt === null || w.resetsAt > now)));

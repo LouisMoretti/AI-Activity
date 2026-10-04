@@ -1,7 +1,7 @@
 // Typed client for the dashboard JSON API (same origin, cookie session).
 import type {
   ActivityResponse, AdminOverview, AdminPricing, AdminSettings, AdminUser, AuthStatus, DeletedAccount, DeletedActivity, LeaderboardRank, LeaderboardResponse, Profile, Device, QuotasResponse,
-  SessionsResponse, SummaryResponse, FriendsResponse, PreviewSeedConfig, SiteAnalyticsOverview,
+  SessionsResponse, SummaryResponse, FriendsResponse, PreviewSeedConfig, SiteAnalyticsOverview, HoursResponse, PanelSettings, PanelRow, ProfilePage, RankResponse,
 } from "../../../shared/types.ts";
 import { visitorId } from "./visitor.ts";
 
@@ -111,8 +111,12 @@ export const api = {
   leaderboard: (days: number | null, rank: LeaderboardRank = "tokens") =>
     get<LeaderboardResponse>(`/api/leaderboard?days=${days ?? "all"}&rank=${rank}`),
   friends: () => get<FriendsResponse>("/api/friends"),
+  savePanels: (rows: PanelRow[]) => post<PanelSettings>("/api/account/panels", { rows }),
   // A profile's usage, public by username (the viewer's own page uses it too).
-  profile: (username: string) => get<Profile>(profileBase(username)),
+  /** The profile and its dashboard layout. */
+  profile: (username: string) => get<ProfilePage>(profileBase(username)),
+  hours: (username: string) => get<HoursResponse>(`${profileBase(username)}/hours`),
+  rank: (username: string) => get<RankResponse>(`${profileBase(username)}/rank`),
   activity: (username: string, days: number, tool: string | null) =>
     get<ActivityResponse>(`${profileBase(username)}/activity?days=${days}${toolQuery(tool)}`),
   quotas: (username: string) => get<QuotasResponse>(`${profileBase(username)}/quotas`),

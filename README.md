@@ -90,6 +90,27 @@ you; no plan, invoice or key is needed.
 - **Leaderboard:** rank by tokens (the default) or by API value over the
   same period; accounts with nothing priced rank last.
 
+## Dashboard panels
+
+On your own profile, use **Edit layout** at the top right of Dashboard panels.
+While you edit, every card shows sample data (the fictional `/demo` data), so
+you see how the dashboard will look. Arrange it by dragging the cards: drop a
+card next to another to share its row (up to three cards per row), above or
+below a row to start a new one, or onto a card of a full row to swap them.
+An empty box shows where the card will land, and the other cards move aside.
+Drag the bar between two cards to set their widths (half, ⅔ · ⅓ or ⅓ · ⅔).
+The drawer at the bottom holds the panels not shown (every tool and four
+usage cards: Today by tool, Today by hour, Best day and Leaderboard · 7
+days): drag one onto the dashboard to add it, or drag a card onto the drawer
+to remove it. Claude Code, Codex and Antigravity each have a quotas and a
+details panel, which can be shown together. On a touch screen, press and
+hold a card to pick it up. With a keyboard, focus a card, press Space, move
+it with the arrow keys and press Space again (Escape cancels). **Save
+layout** publishes it on your public profile; visitors see it but cannot
+change it. Until you save one, your profile follows the default layout, new
+tools included. The public `/demo` page shows every panel with fictional,
+labeled data.
+
 ## One-command install
 
 Create a device key (**Settings → Devices**),

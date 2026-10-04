@@ -102,6 +102,20 @@ function freshSchema() {
 }
 
 describe("versioned migrations", () => {
+  test("version 8 adds dashboard layouts, NULL (the default) for every account, usage untouched", () => {
+    const t = tmpDb();
+    const old = upgradeTo(t.file, 7);
+    old.prepare("INSERT INTO users (id, github_id, username, created_at) VALUES (1, 42, 'alice', 0)").run();
+    old.prepare("INSERT INTO devices (id, user_id, name, key_hash, created_at) VALUES (1, 1, 'laptop', 'key', 0)").run();
+    old.prepare("INSERT INTO usage_events (event_id, device_id, user_id, tool, input_tokens, occurred_at, received_at) VALUES ('msg_a', 1, 1, 'codex', 7, 0, 0)").run();
+    old.close();
+    const db = openDb(t.file);
+    try {
+      assert.equal(schemaVersion(db), LATEST);
+      assert.deepEqual(db.prepare("SELECT username, panels FROM users").get(), { username: "alice", panels: null });
+      assert.equal(db.prepare("SELECT input_tokens FROM usage_events WHERE event_id = 'msg_a'").get().input_tokens, 7);
+    } finally { db.close(); fs.rmSync(t.dir, { recursive: true, force: true }); }
+  });
   test("a new database runs every migration and ends at the latest version", () => {
     const t = tmpDb();
     const db = openDb(t.file);
