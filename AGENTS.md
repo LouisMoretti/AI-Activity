@@ -1075,13 +1075,15 @@ Components never branch on live vs demo: both sources map into the same
 - Cursor's own model names (`cursorModel`, issue #271) are undone before
   the lookup, only where the name certainly is the provider's model:
   `claude-<version>-<opus|sonnet|haiku>` → `claude-<family>-<version>`,
-  and the reasoning effort (`-none` … `-xhigh`, Claude's `-max`),
+  and the reasoning effort (GPT's `-none` … `-xhigh`, Claude's `-low` …
+  `-max`),
   `-thinking` and `-1m` dropped (none changes the per-token rate;
   long-context rates follow the measured prompt); `-fast` prices the
   provider's Fast tier when no tier was recorded (unpriced where none is
   published). Cursor's own models (`composer-…`), `auto`, `default` and
-  any other name stay as they are (unpriced unless already a provider's
-  id). Sources: https://cursor.com/docs/models and Cursor's
+  any other name are not rewritten (unpriced unless already a provider's
+  id); a GPT name without a published rate (Codex Spark) loses its effort
+  and stays unpriced. Sources: https://cursor.com/docs/models and Cursor's
   `agent --list-models`.
 - Long context: `longContextAbove` is a list of thresholds, ascending, and
   each tier's `long` one rate (or null: none published, unpriced) per

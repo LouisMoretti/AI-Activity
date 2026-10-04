@@ -140,11 +140,12 @@ export function parsePricingFile(raw: unknown): PricingFile {
       throw new Error(`${where}.longContextAbove must list token counts in ascending order`);
     }
     for (const tier of ["standard", "fast", "flex", "ultrafast"]) {
-      if (tier === "standard" || p[tier] !== undefined) checkTier(p[tier], `${where}.${tier}`, Array.isArray(above) ? above.length : 0);
-    }
-    // A threshold needs the rates above it (null: none published), or it would price long requests as short ones.
-    if (p.longContextAbove !== undefined && (!isObj(p.standard) || p.standard.long === undefined)) {
-      throw new Error(`${where}.standard.long is required with longContextAbove (null: no published rate)`);
+      if (tier !== "standard" && p[tier] === undefined) continue;
+      checkTier(p[tier], `${where}.${tier}`, Array.isArray(above) ? above.length : 0);
+      // A threshold needs every tier's rates above it (null: none published), or it would price long requests as short ones.
+      if (above !== undefined && (p[tier] as { long?: unknown }).long === undefined) {
+        throw new Error(`${where}.${tier}.long is required with longContextAbove (null: no published rate)`);
+      }
     }
     if (p.usMultiplier !== undefined && !(typeof p.usMultiplier === "number" && p.usMultiplier >= 1 && p.usMultiplier < 2)) {
       throw new Error(`${where}.usMultiplier must be a multiplier`);
@@ -346,7 +347,8 @@ function priceAt(g: PriceGroup, entry: PriceEntry, fallback: boolean, unverified
   const exceeded = longContextThresholds(catalog).slice(0, g.band);
   const top = exceeded.length ? exceeded[exceeded.length - 1] : 0;
   const level = (entry.longContextAbove ?? []).filter((t) => t <= top).length;
-  const rates = level === 0 || tier.long === undefined ? tier.rates : tier.long[level - 1];
+  // A tier without long-context rates (a catalog entry) is unpriced above the threshold, never priced as short.
+  const rates = level === 0 ? tier.rates : tier.long?.[level - 1];
   if (!rates) return { ok: false, reason: "no rate above the long-context threshold" };
   const geo = (g.inference_geo ?? "").toLowerCase();
   let region = 1;

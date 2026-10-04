@@ -62,10 +62,11 @@ export function toEntry(key: string, raw: unknown): PriceEntry | null {
   if (!provider || (r.mode !== undefined && !MODES.has(String(r.mode)))) return null;
   const standard = ratesOf(r, "", provider);
   if (!standard) return null;
-  // Every long-context threshold with its own input rate (Gemini: above 128K
-  // and above 200K), ascending; the highest one a prompt exceeds applies to
-  // the whole request. A level without its rates is unpriced, never guessed.
-  const above = [...new Set(Object.keys(r).flatMap((k) => /^input_cost_per_token_above_(\d+)k_tokens$/.exec(k)?.[1] ?? [])
+  // Every long-context threshold with its own input or output rate (Gemini:
+  // above 128K and above 200K), ascending; the highest one a prompt exceeds
+  // applies to the whole request. A level without both rates is unpriced,
+  // never guessed.
+  const above = [...new Set(Object.keys(r).flatMap((k) => /^(?:input|output)_cost_per_token_above_(\d+)k_tokens$/.exec(k)?.[1] ?? [])
     .map(Number))].filter((n) => n > 0).sort((a, b) => a - b);
   const tier = (suffix: string): TierRates | undefined => {
     const rates = ratesOf(r, suffix, provider);

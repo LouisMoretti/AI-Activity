@@ -161,6 +161,8 @@ describe("the priority file (shared/pricing.json)", () => {
     assert.throws(broken((f) => { f.aliases.push({ ...f.aliases[0] }); }), /aliased twice/);
     assert.throws(broken((f) => { f.prices[0].standard.long = [f.prices[0].standard.rates]; }), /longContextAbove/);
     assert.throws(broken((f) => { f.prices[0].longContextAbove = [200000]; }), /standard\.long is required/);
+    // Every tier, not only standard: a Fast tier without long rates would price long Fast requests as short.
+    assert.throws(broken((f) => { delete f.prices.find((p) => p.longContextAbove && p.fast).fast.long; }), /fast\.long is required/);
     // Thresholds are a list in ascending order, with one rate (or null) per threshold in every tier.
     assert.throws(broken((f) => { f.prices[0].longContextAbove = 200000; f.prices[0].standard.long = [null]; }), /ascending/);
     assert.throws(broken((f) => { f.prices[0].longContextAbove = [272000, 200000]; f.prices[0].standard.long = [null, null]; }), /ascending/);
@@ -233,6 +235,22 @@ describe("the LiteLLM fallback (server/lib/litellm.ts)", () => {
     assert.deepEqual(toEntry("claude-next", LIST["claude-next"]).standard.rates,
       { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75, cacheWrite1h: 6 });
     assert.deepEqual(catalog.thresholds, [128000, 200000, 272000]);
+  });
+
+  test("a LiteLLM tier missing a rate above a threshold is unpriced there, not priced at the tier below", () => {
+    const flash = (prompt) => priced({ tool: "opencode", model: "google/gemini-9-flash", band: contextBandOf(prompt, catalog), input: M });
+    close(flash(100_000).usd, 0.5);
+    close(flash(150_000).usd, 1);
+    assert.equal(flash(250_000), null);
+    // A threshold LiteLLM gives only an output rate for is still found (and unpriced, its input rate missing).
+    const entry = toEntry("x", e(1, 2, { litellm_provider: "gemini", output_cost_per_token_above_200k_tokens: 4 / M }));
+    assert.deepEqual(entry.longContextAbove, [200000]);
+    assert.deepEqual(entry.standard.long, [null]);
+  });
+
+  test("a catalog tier without long-context rates is unpriced above the threshold", () => {
+    // gpt-9 has a long-context standard rate but no long-context priority rate.
+    assert.equal(priced({ tool: "codex", model: "gpt-9", service_tier: "priority", band: contextBandOf(300_000, catalog), input: M }), null);
   });
 
   test("OpenCode's free Muse Spark is priced at Meta's contributor rate through its alias, unverified", () => {
@@ -377,8 +395,9 @@ describe("Cursor model names (#271)", () => {
     // `-fast` is the provider's Fast (priority) tier.
     close(value("gpt-5.5-fast", { input: M, output: M }), 12.5 + 75);
     close(value("gpt-5.2-fast", { input: M }), 3.5);
-    // A recorded tier wins over the name.
+    // A recorded tier wins over the name, standard included.
     close(value("gpt-5.2-fast", { service_tier: "flex", input: M }), 0.875);
+    close(value("gpt-5.2-fast", { service_tier: "default", input: M }), 1.75);
   });
 
   test("a Fast name without a published Fast rate is unpriced, never priced as standard", () => {
@@ -396,6 +415,12 @@ describe("Cursor model names (#271)", () => {
     assert.equal(value("gpt-5.3-codex-spark-preview-high", { input: M }), null);
     // A family Cursor's naming does not cover is left as it is.
     assert.equal(value("claude-4.6-opus-ultra", { input: M }), null);
+    // Claude names take -low … -max efforts (Cursor lists no -none / -minimal for them).
+    assert.equal(value("claude-4.6-opus-none", { input: M }), null);
+    // Names of other shapes or families stay unpriced.
+    for (const model of ["gpt-4o-mini-high", "o3-medium", "gemini-3.1-pro", "gemini-3-flash"]) assert.equal(value(model, { input: M }), null, model);
+    // A provider-prefixed id is looked up as it is, never rewritten (not sent by Cursor today).
+    assert.equal(value("anthropic/claude-4.6-opus-high", { input: M }), null);
     // Other tools' names are never rewritten.
     assert.equal(value("claude-4.6-opus-high", { tool: "antigravity", input: M }), null);
   });
