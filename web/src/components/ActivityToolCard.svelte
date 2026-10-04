@@ -42,7 +42,7 @@
       {#if vm.today.calls === 0}
         <div class="unused">Not used yet today</div>
       {:else}
-        <div class="value">{fmtCompact(vm.today.tokens)}<small> tokens</small></div>
+        <div class="value">{fmtCompact(vm.today.tokens)} <small>tokens</small></div>
         <div class="meta">{plural(vm.today.sessions, "conversation")} · {plural(vm.today.calls, callNoun)}</div>
         {#if vm.today.models}
           <div class="meta">{plural(vm.today.models, "model")}{#if vm.today.providers !== null} · {plural(vm.today.providers, "provider")}{/if}</div>
