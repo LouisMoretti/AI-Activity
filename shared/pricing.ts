@@ -36,11 +36,15 @@ export interface Rates {
   cacheWrite1h?: number;
 }
 
-/** The rates of one processing tier, and above the long-context threshold when they differ. */
+/** The rates of one processing tier, and above each long-context threshold when they differ. */
 export interface TierRates {
   rates: Rates;
-  /** Prompts above `longContextAbove`; null: such requests have no published rate (unpriced). */
-  long?: Rates | null;
+  /**
+   * Prompts above each of the entry's `longContextAbove` thresholds, in the
+   * same order (the highest one a prompt exceeds applies); null: such
+   * requests have no published rate (unpriced). Absent: `rates` at every size.
+   */
+  long?: (Rates | null)[];
 }
 
 export interface PriceEntry {
@@ -51,8 +55,11 @@ export interface PriceEntry {
   /** First UTC day these rates apply (YYYY-MM-DD); absent: since the model's release. */
   from?: string;
   standard: TierRates;
-  /** Prompt size (input + cache read + cache write) above which `long` rates apply to the whole request. */
-  longContextAbove?: number;
+  /**
+   * Prompt sizes (input + cache read + cache write), ascending, above which
+   * the matching `long` rates apply to the whole request.
+   */
+  longContextAbove?: number[];
   fast?: TierRates;
   flex?: TierRates;
   ultrafast?: TierRates;
@@ -97,11 +104,15 @@ function checkRates(r: unknown, where: string): void {
   if (r.input === undefined || r.output === undefined) throw new Error(`${where}: input and output rates are required`);
 }
 
-function checkTier(t: unknown, where: string, hasLong: boolean): void {
+function checkTier(t: unknown, where: string, thresholds: number): void {
   if (!isObj(t)) throw new Error(`${where} must be an object`);
   checkRates(t.rates, `${where}.rates`);
-  if (t.long !== undefined && t.long !== null) checkRates(t.long, `${where}.long`);
-  if (t.long !== undefined && !hasLong) throw new Error(`${where}.long needs longContextAbove`);
+  if (t.long === undefined) return;
+  if (!thresholds) throw new Error(`${where}.long needs longContextAbove`);
+  if (!Array.isArray(t.long) || t.long.length !== thresholds) {
+    throw new Error(`${where}.long must list one rate (or null) per longContextAbove threshold`);
+  }
+  t.long.forEach((r: unknown, i: number) => { if (r !== null) checkRates(r, `${where}.long[${i}]`); });
 }
 
 /**
@@ -123,11 +134,13 @@ export function parsePricingFile(raw: unknown): PricingFile {
     if (!Array.isArray(p.models) || !p.models.length) throw new Error(`${where}.models must list model ids`);
     if (typeof p.source !== "string" || !OFFICIAL_SOURCE.test(p.source)) throw new Error(`${where}.source must be an official https pricing page`);
     if (p.from !== undefined && (typeof p.from !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(p.from))) throw new Error(`${where}.from must be YYYY-MM-DD`);
-    if (p.longContextAbove !== undefined && !(typeof p.longContextAbove === "number" && p.longContextAbove > 0)) {
-      throw new Error(`${where}.longContextAbove must be a token count`);
+    const above = p.longContextAbove;
+    if (above !== undefined && !(Array.isArray(above) && above.length &&
+      above.every((n: unknown, i: number) => Number.isInteger(n) && (n as number) > 0 && (i === 0 || (n as number) > above[i - 1])))) {
+      throw new Error(`${where}.longContextAbove must list token counts in ascending order`);
     }
     for (const tier of ["standard", "fast", "flex", "ultrafast"]) {
-      if (tier === "standard" || p[tier] !== undefined) checkTier(p[tier], `${where}.${tier}`, p.longContextAbove !== undefined);
+      if (tier === "standard" || p[tier] !== undefined) checkTier(p[tier], `${where}.${tier}`, Array.isArray(above) ? above.length : 0);
     }
     // A threshold needs the rates above it (null: none published), or it would price long requests as short ones.
     if (p.longContextAbove !== undefined && (!isObj(p.standard) || p.standard.long === undefined)) {
@@ -198,13 +211,38 @@ function defaultProvider(tool: string, id: string): string | null {
   return null;
 }
 
-/** The provider and model id a stored model is priced as (aliases applied). */
-export function resolveModel(tool: string, model: string): { provider: string | null; id: string } {
+/**
+ * A Cursor model name as the provider's own model id, and the Fast tier when
+ * the name asks for it (issue #271). Only Cursor's naming is undone, never a
+ * model guessed: Cursor's names put the version before the family
+ * (`claude-4.6-opus` is Anthropic's `claude-opus-4-6`) and add the
+ * reasoning effort (`-low` … `-xhigh`, `-max`), extended thinking
+ * (`-thinking`, billed as output tokens) and the context window (`-1m`;
+ * long-context rates follow the measured prompt size), none of which changes
+ * the per-token rate; `-fast` is the provider's Fast / priority tier (Cursor
+ * lists "GPT-5 Fast" at OpenAI's priority rates and Opus fast mode at
+ * Anthropic's). Names from https://cursor.com/docs/models and Cursor's
+ * `agent --list-models`. Anything else is returned as it is: Cursor's own
+ * models (`composer-…`), `auto`, `default` and names of unknown shape stay
+ * unpriced unless they already are a provider's id.
+ */
+export function cursorModel(name: string): { id: string; tier: "fast" | null } {
+  const id = priceModelId(name);
+  const claude = /^claude-(\d+(?:\.\d+)?)-(opus|sonnet|haiku)(?:-1m)?(?:-(?:low|medium|high|xhigh|max))?(?:-thinking)?(-fast)?$/.exec(id);
+  if (claude) return { id: `claude-${claude[2]}-${claude[1].replace(".", "-")}`, tier: claude[3] ? "fast" : null };
+  const gpt = /^(gpt-\d+(?:\.\d+)?(?:-[a-z]+)*?)(?:-(?:none|minimal|low|medium|high|xhigh))?(-fast)?$/.exec(id);
+  if (gpt) return { id: gpt[1], tier: gpt[2] ? "fast" : null };
+  return { id: name, tier: null };
+}
+
+/** The provider and model id a stored model is priced as (aliases applied), and a tier its name implies. */
+export function resolveModel(tool: string, model: string): { provider: string | null; id: string; tier: string | null } {
   const alias = PRICE_ALIASES.find((a) => a.model === model);
   const name = alias ? alias.price_as : model;
   const slash = name.indexOf("/");
-  if (slash > 0) return { provider: name.slice(0, slash).toLowerCase(), id: name.slice(slash + 1) };
-  return { provider: defaultProvider(tool, priceModelId(name)), id: name };
+  if (slash > 0) return { provider: name.slice(0, slash).toLowerCase(), id: name.slice(slash + 1), tier: null };
+  const { id, tier } = tool === "cursor" && !alias ? cursorModel(name) : { id: name, tier: null };
+  return { provider: defaultProvider(tool, priceModelId(id)), id, tier };
 }
 
 const dayOf = (sec: number) => new Date(sec * 1000).toISOString().slice(0, 10);
@@ -218,7 +256,7 @@ export const PRICE_BOUNDARIES: number[] = [...new Set(PRICES.flatMap((p) => (p.f
 
 /** Prompt sizes above which some model has long-context rates, ascending (a catalog's included). */
 export function longContextThresholds(catalog?: Catalog | null): number[] {
-  const own = PRICES.flatMap((p) => (p.longContextAbove ? [p.longContextAbove] : []));
+  const own = PRICES.flatMap((p) => p.longContextAbove ?? []);
   return [...new Set([...own, ...(catalog?.thresholds ?? [])])].sort((a, b) => a - b);
 }
 
@@ -302,9 +340,13 @@ function priceAt(g: PriceGroup, entry: PriceEntry, fallback: boolean, unverified
   const tierName = tierOf(entry.provider, g.service_tier);
   const tier = tierName ? entry[tierName] : undefined;
   if (!tier) return { ok: false, reason: `no rate for the ${g.service_tier} tier` };
-  const long = entry.longContextAbove !== undefined &&
-    longContextThresholds(catalog).slice(0, g.band).some((t) => t >= entry.longContextAbove!);
-  const rates = long ? tier.long === undefined ? tier.rates : tier.long : tier.rates;
+  // The band counts every known threshold the prompt exceeded (the SQL
+  // grouping, from the same list): the entry's level is how many of its own
+  // thresholds are at or below the largest one exceeded.
+  const exceeded = longContextThresholds(catalog).slice(0, g.band);
+  const top = exceeded.length ? exceeded[exceeded.length - 1] : 0;
+  const level = (entry.longContextAbove ?? []).filter((t) => t <= top).length;
+  const rates = level === 0 || tier.long === undefined ? tier.rates : tier.long[level - 1];
   if (!rates) return { ok: false, reason: "no rate above the long-context threshold" };
   const geo = (g.inference_geo ?? "").toLowerCase();
   let region = 1;
@@ -329,7 +371,9 @@ function priceAt(g: PriceGroup, entry: PriceEntry, fallback: boolean, unverified
  */
 export function explainPrice(g: PriceGroup, catalog?: Catalog | null): PriceResult {
   if (!g.model) return { ok: false, reason: "no model recorded" };
-  const { provider, id } = resolveModel(g.tool, g.model);
+  const { provider, id, tier } = resolveModel(g.tool, g.model);
+  // A tier the model name implies (Cursor's `-fast`), unless one was recorded.
+  if (tier && !g.service_tier) g = { ...g, service_tier: tier };
   const own = provider ? entryFor(provider, priceModelId(id), g.period) : null;
   const first = own ? priceAt(g, own.entry, own.fallback, false, catalog) : null;
   if (first?.ok) return first;

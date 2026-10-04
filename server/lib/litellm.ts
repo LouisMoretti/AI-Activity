@@ -62,19 +62,20 @@ export function toEntry(key: string, raw: unknown): PriceEntry | null {
   if (!provider || (r.mode !== undefined && !MODES.has(String(r.mode)))) return null;
   const standard = ratesOf(r, "", provider);
   if (!standard) return null;
-  // The smallest long-context threshold with its own input rate applies to the whole request.
-  const above = Object.keys(r).flatMap((k) => /^input_cost_per_token_above_(\d+)k_tokens$/.exec(k)?.[1] ?? [])
-    .map(Number).sort((a, b) => a - b)[0];
-  const longSuffix = above ? `_above_${above}k_tokens` : null;
+  // Every long-context threshold with its own input rate (Gemini: above 128K
+  // and above 200K), ascending; the highest one a prompt exceeds applies to
+  // the whole request. A level without its rates is unpriced, never guessed.
+  const above = [...new Set(Object.keys(r).flatMap((k) => /^input_cost_per_token_above_(\d+)k_tokens$/.exec(k)?.[1] ?? [])
+    .map(Number))].filter((n) => n > 0).sort((a, b) => a - b);
   const tier = (suffix: string): TierRates | undefined => {
     const rates = ratesOf(r, suffix, provider);
     if (!rates) return undefined;
-    return longSuffix ? { rates, long: ratesOf(r, longSuffix + suffix, provider) } : { rates };
+    return above.length ? { rates, long: above.map((n) => ratesOf(r, `_above_${n}k_tokens${suffix}`, provider)) } : { rates };
   };
   const entry: PriceEntry = {
     provider, models: [key], standard: tier("")!, source: `litellm:${key}`,
   };
-  if (longSuffix) entry.longContextAbove = above * 1000;
+  if (above.length) entry.longContextAbove = above.map((n) => n * 1000);
   const fast = tier("_priority");
   const flex = tier("_flex");
   if (fast) entry.fast = fast;
@@ -89,7 +90,7 @@ export function catalogOf(list: Record<string, unknown>): Catalog & { size: numb
     const entry = toEntry(key, raw);
     if (entry) byKey.set(key.toLowerCase(), entry);
   }
-  const thresholds = [...new Set([...byKey.values()].flatMap((e) => (e.longContextAbove ? [e.longContextAbove] : [])))]
+  const thresholds = [...new Set([...byKey.values()].flatMap((e) => e.longContextAbove ?? []))]
     .sort((a, b) => a - b);
   return {
     size: byKey.size,

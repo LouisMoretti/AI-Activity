@@ -1072,6 +1072,21 @@ Components never branch on live vs demo: both sources map into the same
   usage flagged `unverified`), else unpriced with a reason. Every tool is
   priced this way; stored counts must stay disjoint (input without cache,
   output with reasoning).
+- Cursor's own model names (`cursorModel`, issue #271) are undone before
+  the lookup, only where the name certainly is the provider's model:
+  `claude-<version>-<opus|sonnet|haiku>` → `claude-<family>-<version>`,
+  and the reasoning effort (`-none` … `-xhigh`, Claude's `-max`),
+  `-thinking` and `-1m` dropped (none changes the per-token rate;
+  long-context rates follow the measured prompt); `-fast` prices the
+  provider's Fast tier when no tier was recorded (unpriced where none is
+  published). Cursor's own models (`composer-…`), `auto`, `default` and
+  any other name stay as they are (unpriced unless already a provider's
+  id). Sources: https://cursor.com/docs/models and Cursor's
+  `agent --list-models`.
+- Long context: `longContextAbove` is a list of thresholds, ascending, and
+  each tier's `long` one rate (or null: none published, unpriced) per
+  threshold. A request is priced at the highest threshold its prompt
+  exceeds, for the whole request.
 - LiteLLM (`LITELLM_PRICES_URL`, default its GitHub raw file; empty: off;
   tests set it empty): downloaded in the background at start when the
   copy is missing or a day old, rechecked hourly, kept trimmed in
@@ -1080,7 +1095,8 @@ Components never branch on live vs demo: both sources map into the same
   admin panel. Text models with input and output rates only, per-token
   costs above $1,000 per million dropped; its `_priority` / `_flex` /
   `_above_<N>k_tokens` / `_above_1hr` fields map to Fast, Flex, long
-  context and 1-hour cache writes. No effective dates: current rates.
+  context (every `<N>` of a model, e.g. Gemini's 128K and 200K) and 1-hour
+  cache writes. No effective dates: current rates.
 - Reads group usage by tool, model, tier, region, context band (how many
   `longContextThresholds(catalog)` a message's prompt `input + cache read + cache
   write` exceeds: long-context rates apply to the whole request) and
