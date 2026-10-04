@@ -33,8 +33,8 @@ stretches full width) or three (`thirds`). Any tool (as its quota card,
 its activity card, or both at once for Claude Code, Codex and Antigravity) and
 any widget ("Today by tool": today's tokens split by tool, "Today by hour",
 "Best day", "Leaderboard · 7 days") can go in any row, in any order; the
-default (`DEFAULT_ROWS`, `shared/types.ts`) is Claude Code + Codex, Cursor,
-Antigravity, then OpenCode + Today by tool. The owner edits it in place
+default (`DEFAULT_ROWS`, `shared/types.ts`) is Claude Code + Codex quotas
+(`half`), then OpenCode + Today by tool (`wide-left`). The owner edits it in place
 (Edit layout, then Save layout or Cancel), by drag and drop only, no button
 on the cards: while editing, every card shows the fictional `/demo` data
 (labeled "Sample data"), so the owner sees the final look, not their data.
@@ -1599,7 +1599,7 @@ Viewer (cookie session after a GitHub sign-in; every viewer API answers
   `Retry-After`:
   - public reads (`/api/u/…`, `/api/leaderboard`, `/api/profiles`): 300
     per client (the client address above), refill 5/s. With the default
-    layout a dashboard polls nine of them every 5 s, in one round trip
+    layout a dashboard polls seven of them every 5 s, in one round trip
     (the profile with its layout, summary, activity, conversations, quotas
     while a quota card is shown, plus a summary and sessions per details
     card), so two tabs fit behind one address. Hidden panels read

@@ -41,9 +41,7 @@ export function ratioFor(count: number, previous: RowRatio): RowRatio {
   return "full";
 }
 export const DEFAULT_ROWS: PanelRow[] = [
-  { ratio: "wide-left", panels: [{ id: "claude-code", view: "quota" }, { id: "codex", view: "quota" }] },
-  { ratio: "full", panels: [{ id: "cursor", view: "activity" }] },
-  { ratio: "full", panels: [{ id: "antigravity", view: "quota" }] },
+  { ratio: "half", panels: [{ id: "claude-code", view: "quota" }, { id: "codex", view: "quota" }] },
   { ratio: "wide-left", panels: [{ id: "opencode", view: "activity" }, { id: "today-by-tool" }] },
 ];
 /** A deep copy: layouts are edited in place on the client. */
