@@ -38,15 +38,17 @@ Antigravity, then OpenCode + Today by tool. The owner edits it in place
 (Edit layout, then Save layout or Cancel), by drag and drop only, no button
 on the cards: while editing, every card shows the fictional `/demo` data
 (labeled "Sample data"), so the owner sees the final look, not their data.
-A held card follows the pointer; where it will land, an empty dashed box of
-its final size opens and the other cards slide aside (180 ms, translation
-only, none with reduced motion). Next to a card (its left or right half)
-shares that row (the widths follow the count: `ratioFor`), a thin band at a
-row's top or bottom edge (at most 28 px) starts a new row, which stays
-until the pointer has travelled two thirds of its height from where it
-entered (measured from that point, not from the rows, which shift as the
-card leaves its old row); further on, the card joins the next row (never a
-second new row), and over a card of a full row (three) the
+A held card follows the pointer; where it will land in a row, an empty
+dashed box of its final size opens and the other cards slide aside (180 ms,
+translation only, none with reduced motion). Next to a card shares that row
+(the widths follow the count: `ratioFor`); in the row holding the box,
+moving past a neighbour takes two thirds of it, coming back the same from
+the other side (inverted zones, as in SortableJS), so cards never flip back
+and forth. A thin band at a row's top or bottom edge (at most 28 px, and
+the gap) shows a glowing line where a new row would open, the layout
+without the held card around it: nothing shifts until the drop (as in
+Notion or Atlassian's drop indicators; the keyboard shows the new row
+itself). Over a card of a full row (three) the
 two swap (the hovered card takes the held one's old place). A drawer of the
 panels not shown sticks to the bottom of the window: drag one onto the
 dashboard to add it; while a card is held it becomes "Drop here to remove".

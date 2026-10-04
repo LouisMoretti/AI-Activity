@@ -65,6 +65,8 @@
     /** Where the card was: its row id and position, null from the drawer. */
     from: { row: number; index: number } | null;
     placement: Placement;
+    /** Where the card was when lifted (shown in place, never as a line). */
+    start: Placement;
     pointer: { id: number; dx: number; dy: number; x: number; y: number; width: number; height: number } | null;
   }
 
@@ -171,14 +173,27 @@
     return `${name}: row ${at.row + 1} of ${list.length}${where}${swapped}`;
   }
 
+  /**
+   * A new row under a pointer drag is shown as a line in the gap where it
+   * would open (`lineBefore`: that row's id, or "end"), the layout without
+   * the held card around it: nothing shifts until the drop. The keyboard
+   * shows the new row itself (the held card stays on screen and focused).
+   */
+  let lineBefore = $state<number | "end" | null>(null);
   function place(p: Placement): void {
     if (!drag || same(drag.placement, p)) return;
-    // Which side the pointer comes from when a new row opens (see placementAt).
-    newRowEntry = p.kind === "new" && drag.pointer ? { fromTop: movingDown, y: drag.pointer.y + scrollY } : null;
     drag.placement = p;
-    draft = apply(drag, p);
+    const result = apply(drag, p);
+    if (drag.pointer && p.kind === "new" && !same(p, drag.start)) {
+      const base = tidy(clone(baseOf(drag)));
+      draft = base;
+      lineBefore = p.at < base.length ? base[p.at].id : "end";
+    } else {
+      draft = result;
+      lineBefore = null;
+    }
     overTray = p.kind === "remove";
-    announcement = describe(drag, p, draft);
+    announcement = describe(drag, p, result);
   }
 
   function beginDrag(key: string, pointer: Drag["pointer"]): void {
@@ -188,6 +203,7 @@
       key, origin, pointer,
       from: at ? { row: origin[at.row].id, index: at.index } : null,
       placement: at ? { kind: "row", row: 0, index: 0 } : { kind: "remove" },
+      start: { kind: "remove" },
     };
     // The starting placement: where the card already is (or nowhere, from the drawer).
     if (at) {
@@ -196,11 +212,10 @@
       d.placement = kept >= 0 ? { kind: "row", row: kept, index: at.index }
         : { kind: "new", at: origin.slice(0, at.row).filter((r) => base.some((b) => b.id === r.id)).length };
     }
+    d.start = d.placement;
     drag = d;
     changedAt = null;
     edgeSince = 0;
-    newRowEntry = null;
-    lastPageY = (pointer?.y ?? 0) + scrollY;
     overTray = !at;
     announcement = `Picked up ${optionName(fromKey(key))}. ${pointer ? "" : "Arrow keys move it, Space drops it, Escape cancels."}`;
   }
@@ -208,7 +223,8 @@
   function endDrag(keep: boolean): void {
     if (!drag) return;
     const d = drag;
-    if (!keep) draft = clone(d.origin);
+    draft = keep ? apply(d, d.placement) : clone(d.origin);
+    lineBefore = null;
     drag = null;
     overTray = false;
     stopPointer();
@@ -230,13 +246,6 @@
    */
   let settleUntil = 0;
   let changedAt: { x: number; y: number } | null = null;
-  /** The share of a new row, from the side the pointer entered it, that keeps it a new row. */
-  const KEEP_NEW_ROW = 0.66;
-  /** Where the pointer entered the open new row (page y) and from which side. */
-  let newRowEntry: { fromTop: boolean; y: number } | null = null;
-  /** The pointer's vertical direction, in page coordinates (scrolling counts). */
-  let movingDown = true;
-  let lastPageY = 0;
   let settleTimer: number | null = null;
 
   function pointerDown(e: PointerEvent, key: string): void {
@@ -386,10 +395,6 @@
   function hitTest(): void {
     if (!drag?.pointer || !root) return;
     const { x, y } = drag.pointer;
-    if (y + scrollY !== lastPageY) {
-      movingDown = y + scrollY > lastPageY;
-      lastPageY = y + scrollY;
-    }
     // Page coordinates: scrolling moves the pointer over the layout too.
     if (changedAt && Math.hypot(x + scrollX - changedAt.x, y + scrollY - changedAt.y) < 8) return;
     const now = performance.now();
@@ -411,33 +416,12 @@
     const base = baseOf(drag);
     const rowEls = [...root!.querySelectorAll<HTMLElement>("[data-row]")];
     if (!rowEls.length) return { kind: "new", at: 0 };
-    const own = drag.placement.kind === "new" ? rowEls.find((r) => !keysOf(r).length) : undefined;
-    if (own) {
-      // An open new row is judged by how far the pointer went from where it
-      // entered, not by where the rows are now: leaving a row can resize it
-      // and shift everything under a still pointer. From the top, two thirds
-      // of the new row's height keep it; further down, the card joins the
-      // row below. From the bottom, the same upward. Going back out the way
-      // it came, the usual rules apply.
-      const rect = own.getBoundingClientRect();
-      newRowEntry ??= movingDown ? { fromTop: true, y: rect.top + scrollY } : { fromTop: false, y: rect.bottom + scrollY };
-      const travelled = newRowEntry.fromTop ? y + scrollY - newRowEntry.y : newRowEntry.y - y - scrollY;
-      const keep = rect.height * KEEP_NEW_ROW;
-      if (travelled >= -8 && travelled <= keep) return null;
-      if (travelled > keep) {
-        const next = rowEls[rowEls.indexOf(own) + (newRowEntry.fromTop ? 1 : -1)];
-        const index = next ? base.findIndex((r) => r.keys.includes(keysOf(next)[0])) : -1;
-        const joined = next && index >= 0 ? cardPlacement(next, base, index, x) : null;
-        // A next row that cannot take the card (full, from the drawer): the usual rules decide.
-        if (joined) return joined;
-      }
-    }
     for (const [n, rowEl] of rowEls.entries()) {
       const rect = rowEl.getBoundingClientRect();
       if (y < rect.top - 9 || y > rect.bottom + 9) continue;
       const keys = keysOf(rowEl);
       if (!keys.length) {
-        // The placeholder's own new row (handled above): stay.
+        // The held card's own row (alone where it was lifted): stay.
         return null;
       }
       const index = base.findIndex((r) => r.keys.includes(keys[0]));
@@ -455,6 +439,8 @@
     if (y > last.bottom && y < last.bottom + 80) return { kind: "new", at: base.length };
     return null;
   }
+  /** How far over a neighbouring card the pointer goes to move past it. */
+  const PASS = 0.66;
   /** The cards of a row element, without the held one. */
   const keysOf = (rowEl: HTMLElement) => (rowEl.dataset.keys ?? "").split(",").filter((k) => k && k !== drag?.key);
   function cardPlacement(rowEl: HTMLElement, base: DraftRow[], row: number, x: number): Placement | null {
@@ -473,7 +459,16 @@
     const index = base[row].keys.indexOf(hit.dataset.key!);
     if (index < 0) return null;
     if (base[row].keys.length >= 3) return drag.from ? { kind: "swap", row, index } : null;
-    return { kind: "row", row, index: x < rect.left + rect.width / 2 ? index : index + 1 };
+    // Inverted zones (SortableJS's idea): in the row holding the placeholder,
+    // passing a card takes two thirds of it, and coming back the same from
+    // the other side, so a card that just moved aside never flips back
+    // under a pointer that barely moved. Elsewhere, its halves decide.
+    const at = (x - rect.left) / rect.width;
+    const cur = drag.placement;
+    const after = cur.kind === "row" && cur.row === row
+      ? (cur.index > index ? at > 1 - PASS : at > PASS)
+      : at >= 0.5;
+    return { kind: "row", row, index: after ? index + 1 : index };
   }
   const inside = (r: DOMRect, x: number, y: number, pad: number) =>
     x >= r.left - pad && x <= r.right + pad && y >= r.top - pad && y <= r.bottom + pad;
@@ -628,7 +623,9 @@
 
   <div class="rows" class:editing={edit} class:dragging={drag?.pointer} bind:this={root}>
     {#each shown as row (row.id)}
-      <div class="row {row.ratio}" data-row data-keys={row.keys.join(",")} animate:slide>
+      <div class="row {row.ratio}" class:line-before={lineBefore === row.id}
+        class:line-after={lineBefore === "end" && row === shown[shown.length - 1]}
+        data-row data-keys={row.keys.join(",")} animate:slide>
         <div class="cells">
           {#each row.keys as key (key)}
             {@const panel = fromKey(key)}
@@ -700,7 +697,12 @@
   .error { color: var(--warn); margin-bottom: 12px; }
   .empty { color: var(--muted); }
   .rows { display: flex; flex-direction: column; gap: 16px; }
-  .row { min-width: 0; }
+  .row { position: relative; min-width: 0; }
+  /* Where a new row would open: a glowing line in the gap, taking no room. */
+  .row.line-before::before, .row.line-after::after { content: ""; position: absolute; left: 0; right: 0; height: 3px; border-radius: 2px;
+    background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); pointer-events: none; z-index: 4; }
+  .row.line-before::before { top: -9.5px; }
+  .row.line-after::after { bottom: -9.5px; }
   /* The grid holds exactly the cards; the bar floats in the gap between two, with no footprint.
      A gap g shifts the gap's middle by ±g/6 off the bare thirds. */
   .cells { position: relative; display: grid; gap: 16px; grid-template-columns: 1fr; }
