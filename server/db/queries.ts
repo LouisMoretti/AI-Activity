@@ -439,10 +439,10 @@ export function listDevices(db: DB, userId: number): Device[] {
     .all(userId) as (Omit<Device, "has_key" | "collectors"> & { has_key: number })[];
   const seen = db
     .prepare(
-      `SELECT c.device_id, c.tool, c.version, c.seen_at FROM collector_versions c
+      `SELECT c.device_id, c.tool, c.version, c.first_seen_at, c.seen_at FROM collector_versions c
        JOIN devices d ON d.id = c.device_id WHERE d.user_id = ?`
     )
-    .all(userId) as { device_id: number; tool: string; version: number; seen_at: number }[];
+    .all(userId) as { device_id: number; tool: string; version: number; first_seen_at: number; seen_at: number }[];
   return rows.map((d) => ({
     ...d,
     has_key: Boolean(d.has_key),
@@ -451,11 +451,15 @@ export function listDevices(db: DB, userId: number): Device[] {
       if (!mine.length) return [];
       const last = mine.reduce((a, b) => (b.seen_at > a.seen_at || (b.seen_at === a.seen_at && b.version > a.version) ? b : a));
       // The lowest version still posting: a copy seen within a day of the
-      // tool's last post. An old copy left next to an updated one (a hook
-      // running a stale script) stays flagged; one replaced stops a day later.
-      const shown = mine
-        .filter((s) => s.seen_at >= last.seen_at - COLLECTOR_STILL_POSTING_SEC)
-        .reduce((a, b) => (b.version < a.version ? b : a));
+      // tool's last post that has not been superseded. A version is
+      // superseded once a higher one first appeared after its last recorded
+      // post (a normal update; the slack covers posts in flight during it).
+      // An old copy left next to an updated one (a hook running a stale
+      // script) posts again later and stays flagged; seen_at being
+      // refreshed hourly, it shows within an hour of the update.
+      const live = mine.filter((s) => s.seen_at >= last.seen_at - COLLECTOR_STILL_POSTING_SEC &&
+        !mine.some((h) => h.version > s.version && s.seen_at <= h.first_seen_at + COLLECTOR_UPDATE_SLACK_SEC));
+      const shown = (live.length ? live : [last]).reduce((a, b) => (b.version < a.version ? b : a));
       const latest = COLLECTOR_VERSIONS[tool];
       return [{
         tool, version: shown.version, seen_at: shown.seen_at, newest: last.version, latest,
@@ -469,16 +473,23 @@ export function listDevices(db: DB, userId: number): Device[] {
 const COLLECTOR_STILL_POSTING_SEC = 86400;
 
 /**
+ * How long after a newer collector version first posted an older one may
+ * still post without being flagged: uploads already running during the update.
+ */
+const COLLECTOR_UPDATE_SLACK_SEC = 600;
+
+/**
  * A device posted with this collector version. Written when the version is
- * new for the device and tool, else at most hourly (seen_at): every post
+ * new for the device and tool (first_seen_at, never changed after), else
+ * at most hourly (seen_at): every post
  * comes here, and a write would also empty the public read cache.
  */
 export function recordCollectorVersion(db: DB, deviceId: number, tool: string, version: number, now: number): void {
   db.prepare(
-    `INSERT INTO collector_versions (device_id, tool, version, seen_at) VALUES (?, ?, ?, ?)
+    `INSERT INTO collector_versions (device_id, tool, version, first_seen_at, seen_at) VALUES (?, ?, ?, ?, ?)
      ON CONFLICT (device_id, tool, version) DO UPDATE SET seen_at = excluded.seen_at
      WHERE seen_at < excluded.seen_at - 3600`
-  ).run(deviceId, tool, version, now);
+  ).run(deviceId, tool, version, now, now);
 }
 
 export type UpsertResult = "stored" | "updated" | "deduped";

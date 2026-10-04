@@ -195,7 +195,7 @@
             <small><span class="mono">{d.key_prefix}…</span> · added {fmtDate(d.created_at)}{#if !d.revoked}{#each collectors(d).filter((c) => !c.outdated) as c (c.tool)}{" · "}{TOOL_META[c.tool].name} v{c.version}{/each}{/if}</small>
             {#if !d.revoked}
               {#each collectors(d).filter((c) => c.outdated) as c (c.tool)}
-                {@const old = `${c.version ? `v${c.version}` : "a version from before versions"}, posted ${fmtAgo(c.seen_at, Date.now() / 1000)}`}
+                {@const old = `${c.version ? `v${c.version}` : "a version from before versions"} last posted ${fmtAgo(c.seen_at, Date.now() / 1000)}`}
                 <p class="outdated">
                   {#if c.newest >= c.latest}
                     An old {TOOL_META[c.tool].name} collector still posts from this device ({old}; latest v{c.latest}).

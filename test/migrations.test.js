@@ -116,6 +116,24 @@ describe("versioned migrations", () => {
       assert.equal(db.prepare("SELECT input_tokens FROM usage_events WHERE event_id = 'msg_a'").get().input_tokens, 7);
     } finally { db.close(); fs.rmSync(t.dir, { recursive: true, force: true }); }
   });
+  test("version 9 records when each collector version was first seen, its last post for older rows", () => {
+    const t = tmpDb();
+    const old = upgradeTo(t.file, 8);
+    old.prepare("INSERT INTO users (id, github_id, username, created_at) VALUES (1, 42, 'alice', 0)").run();
+    old.prepare("INSERT INTO devices (id, user_id, name, key_hash, created_at) VALUES (1, 1, 'laptop', 'key', 0)").run();
+    old.prepare("INSERT INTO collector_versions (device_id, tool, version, seen_at) VALUES (1, 'codex', 2, 1000), (1, 'codex', 3, 2000)").run();
+    old.close();
+    const db = openDb(t.file);
+    try {
+      assert.equal(schemaVersion(db), LATEST);
+      assert.deepEqual(db.prepare("SELECT tool, version, first_seen_at, seen_at FROM collector_versions ORDER BY version").all(), [
+        { tool: "codex", version: 2, first_seen_at: 1000, seen_at: 1000 },
+        { tool: "codex", version: 3, first_seen_at: 2000, seen_at: 2000 },
+      ]);
+      assert.throws(() => db.prepare("INSERT INTO collector_versions (device_id, tool, version, seen_at) VALUES (1, 'codex', 4, 0)").run(), /NOT NULL/);
+    } finally { db.close(); fs.rmSync(t.dir, { recursive: true, force: true }); }
+  });
+
   test("a new database runs every migration and ends at the latest version", () => {
     const t = tmpDb();
     const db = openDb(t.file);
