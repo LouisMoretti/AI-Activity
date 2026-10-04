@@ -42,8 +42,10 @@ A held card follows the pointer; where it will land, an empty dashed box of
 its final size opens and the other cards slide aside (180 ms, translation
 only, none with reduced motion). Next to a card (its left or right half)
 shares that row (the widths follow the count: `ratioFor`), a thin band at a
-row's top or bottom edge (at most 28 px) starts a new row, from a new row
-the card joins the row below or above as soon as it nears that edge (no
+row's top or bottom edge (at most 28 px) starts a new row, which stays
+until the pointer has travelled two thirds of its height from where it
+entered (measured from that point, not from the rows, which shift as the
+card leaves its old row); further on, the card joins the next row (never a
 second new row), and over a card of a full row (three) the
 two swap (the hovered card takes the held one's old place). A drawer of the
 panels not shown sticks to the bottom of the window: drag one onto the

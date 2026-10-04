@@ -173,6 +173,8 @@
 
   function place(p: Placement): void {
     if (!drag || same(drag.placement, p)) return;
+    // Which side the pointer comes from when a new row opens (see placementAt).
+    newRowEntry = p.kind === "new" && drag.pointer ? { fromTop: movingDown, y: drag.pointer.y + scrollY } : null;
     drag.placement = p;
     draft = apply(drag, p);
     overTray = p.kind === "remove";
@@ -197,6 +199,8 @@
     drag = d;
     changedAt = null;
     edgeSince = 0;
+    newRowEntry = null;
+    lastPageY = (pointer?.y ?? 0) + scrollY;
     overTray = !at;
     announcement = `Picked up ${optionName(fromKey(key))}. ${pointer ? "" : "Arrow keys move it, Space drops it, Escape cancels."}`;
   }
@@ -226,6 +230,13 @@
    */
   let settleUntil = 0;
   let changedAt: { x: number; y: number } | null = null;
+  /** The share of a new row, from the side the pointer entered it, that keeps it a new row. */
+  const KEEP_NEW_ROW = 0.66;
+  /** Where the pointer entered the open new row (page y) and from which side. */
+  let newRowEntry: { fromTop: boolean; y: number } | null = null;
+  /** The pointer's vertical direction, in page coordinates (scrolling counts). */
+  let movingDown = true;
+  let lastPageY = 0;
   let settleTimer: number | null = null;
 
   function pointerDown(e: PointerEvent, key: string): void {
@@ -375,6 +386,10 @@
   function hitTest(): void {
     if (!drag?.pointer || !root) return;
     const { x, y } = drag.pointer;
+    if (y + scrollY !== lastPageY) {
+      movingDown = y + scrollY > lastPageY;
+      lastPageY = y + scrollY;
+    }
     // Page coordinates: scrolling moves the pointer over the layout too.
     if (changedAt && Math.hypot(x + scrollX - changedAt.x, y + scrollY - changedAt.y) < 8) return;
     const now = performance.now();
@@ -396,17 +411,34 @@
     const base = baseOf(drag);
     const rowEls = [...root!.querySelectorAll<HTMLElement>("[data-row]")];
     if (!rowEls.length) return { kind: "new", at: 0 };
+    const own = drag.placement.kind === "new" ? rowEls.find((r) => !keysOf(r).length) : undefined;
+    if (own) {
+      // An open new row is judged by how far the pointer went from where it
+      // entered, not by where the rows are now: leaving a row can resize it
+      // and shift everything under a still pointer. From the top, two thirds
+      // of the new row's height keep it; further down, the card joins the
+      // row below. From the bottom, the same upward. Going back out the way
+      // it came, the usual rules apply.
+      const rect = own.getBoundingClientRect();
+      newRowEntry ??= movingDown ? { fromTop: true, y: rect.top + scrollY } : { fromTop: false, y: rect.bottom + scrollY };
+      const travelled = newRowEntry.fromTop ? y + scrollY - newRowEntry.y : newRowEntry.y - y - scrollY;
+      const keep = rect.height * KEEP_NEW_ROW;
+      if (travelled >= -8 && travelled <= keep) return null;
+      if (travelled > keep) {
+        const next = rowEls[rowEls.indexOf(own) + (newRowEntry.fromTop ? 1 : -1)];
+        const index = next ? base.findIndex((r) => r.keys.includes(keysOf(next)[0])) : -1;
+        const joined = next && index >= 0 ? cardPlacement(next, base, index, x) : null;
+        // A next row that cannot take the card (full, from the drawer): the usual rules decide.
+        if (joined) return joined;
+      }
+    }
     for (const [n, rowEl] of rowEls.entries()) {
       const rect = rowEl.getBoundingClientRect();
       if (y < rect.top - 9 || y > rect.bottom + 9) continue;
       const keys = keysOf(rowEl);
       if (!keys.length) {
-        // The placeholder's own new row: near its bottom (top), the card joins
-        // the row below (above) before the pointer leaves it, not another new row.
-        const edge = rect.height * 0.3;
-        const next = y > rect.bottom - edge ? rowEls[n + 1] : y < rect.top + edge ? rowEls[n - 1] : null;
-        const index = next ? base.findIndex((r) => r.keys.includes(keysOf(next)[0])) : -1;
-        return next && index >= 0 ? cardPlacement(next, base, index, x) : null;
+        // The placeholder's own new row (handled above): stay.
+        return null;
       }
       const index = base.findIndex((r) => r.keys.includes(keys[0]));
       if (index < 0) return null;
