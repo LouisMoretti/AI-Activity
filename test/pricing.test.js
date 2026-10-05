@@ -4,7 +4,8 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
-  contextBandOf, explainPrice, parsePricingFile, periodOf, priceGroup, priceModelId, PRICES, valueOf,
+  contextBandOf, cursorModel, explainPrice, longContextThresholds, parsePricingFile, periodOf, priceGroup, priceModelId,
+  PRICES, valueOf,
 } from "../shared/pricing.ts";
 import { catalogOf, toEntry } from "../server/lib/litellm.ts";
 
@@ -134,7 +135,7 @@ test("every rate has an official https source and each model one rate per effect
       assert.ok(!seen.has(key), `${key} listed twice`);
       seen.add(key);
     }
-    for (const r of [p.standard.rates, p.standard.long].filter(Boolean)) {
+    for (const r of [p.standard.rates, ...(p.standard.long ?? [])].filter(Boolean)) {
       for (const n of Object.values(r)) assert.ok(Number.isFinite(n) && n >= 0, p.models.join());
     }
   }
@@ -158,8 +159,19 @@ describe("the priority file (shared/pricing.json)", () => {
     assert.throws(broken((f) => { f.prices.push(f.prices[0]); }), /twice/);
     assert.throws(broken((f) => { f.aliases.push({ model: "a/b", price_as: "a/b", note: "" }); }), /another model/);
     assert.throws(broken((f) => { f.aliases.push({ ...f.aliases[0] }); }), /aliased twice/);
-    assert.throws(broken((f) => { f.prices[0].standard.long = f.prices[0].standard.rates; }), /longContextAbove/);
-    assert.throws(broken((f) => { f.prices[0].longContextAbove = 200000; }), /standard\.long is required/);
+    assert.throws(broken((f) => { f.prices[0].standard.long = [f.prices[0].standard.rates]; }), /longContextAbove/);
+    assert.throws(broken((f) => { f.prices[0].longContextAbove = [200000]; }), /standard\.long is required/);
+    // Every tier, not only standard: a Fast tier without long rates would price long Fast requests as short.
+    assert.throws(broken((f) => { delete f.prices.find((p) => p.longContextAbove && p.fast).fast.long; }), /fast\.long is required/);
+    // Thresholds are a list in ascending order, with one rate (or null) per threshold in every tier.
+    assert.throws(broken((f) => { f.prices[0].longContextAbove = 200000; f.prices[0].standard.long = [null]; }), /ascending/);
+    assert.throws(broken((f) => { f.prices[0].longContextAbove = [272000, 200000]; f.prices[0].standard.long = [null, null]; }), /ascending/);
+    assert.throws(broken((f) => { f.prices[0].longContextAbove = [128000, 200000]; f.prices[0].standard.long = [null]; }), /one rate/);
+    assert.throws(broken((f) => { f.prices[0].longContextAbove = [200000]; f.prices[0].standard.long = f.prices[0].standard.rates; }), /one rate/);
+    assert.doesNotThrow(broken((f) => {
+      f.prices[0].longContextAbove = [128000, 200000];
+      f.prices[0].standard.long = [{ input: 1, output: 2 }, null];
+    }));
     assert.throws(broken((f) => { f.aliases[0].price_as = "muse-spark-1.3-contributor"; }), /provider\/model/);
     assert.throws(broken((f) => { f.prices[0].standard.rates.output = 5000; }), /rate/);
   });
@@ -188,6 +200,20 @@ describe("the LiteLLM fallback (server/lib/litellm.ts)", () => {
       input_cost_per_token_priority: 2 / M, output_cost_per_token_priority: 16 / M,
       input_cost_per_token_above_272k_tokens: 2 / M, output_cost_per_token_above_272k_tokens: 12 / M,
     }),
+    // Two long-context tiers on one model (#270), as LiteLLM lists Gemini's.
+    "gemini/gemini-9-pro": e(1, 10, {
+      litellm_provider: "gemini", cache_read_input_token_cost: 0.1 / M,
+      input_cost_per_token_above_128k_tokens: 2 / M, output_cost_per_token_above_128k_tokens: 15 / M,
+      cache_read_input_token_cost_above_128k_tokens: 0.2 / M,
+      input_cost_per_token_above_200k_tokens: 4 / M, output_cost_per_token_above_200k_tokens: 20 / M,
+      cache_read_input_token_cost_above_200k_tokens: 0.4 / M,
+    }),
+    // Its second tier has no output rate: requests above it are unpriced, not priced at the first tier.
+    "gemini/gemini-9-flash": e(0.5, 3, {
+      litellm_provider: "gemini",
+      input_cost_per_token_above_128k_tokens: 1 / M, output_cost_per_token_above_128k_tokens: 6 / M,
+      input_cost_per_token_above_200k_tokens: 2 / M,
+    }),
     "claude-opus-5-5": e(40, 200, { litellm_provider: "anthropic" }), // the priority file wins
     // Fast mode the priority file has no rate for (Opus 4.6).
     "claude-opus-4-6": e(5, 25, { litellm_provider: "anthropic", input_cost_per_token_priority: 30 / M, output_cost_per_token_priority: 150 / M }),
@@ -202,13 +228,29 @@ describe("the LiteLLM fallback (server/lib/litellm.ts)", () => {
   const priced = (over) => priceGroup(group(over), catalog);
 
   test("text models with input and output rates only, in USD per million tokens", () => {
-    assert.equal(catalog.size, 9);
+    assert.equal(catalog.size, 11);
     assert.equal(toEntry("dall-e-9", LIST["dall-e-9"]), null);
     assert.equal(toEntry("typo-model", LIST["typo-model"]), null);
     assert.equal(toEntry("half-model", LIST["half-model"]), null);
     assert.deepEqual(toEntry("claude-next", LIST["claude-next"]).standard.rates,
       { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75, cacheWrite1h: 6 });
-    assert.deepEqual(catalog.thresholds, [272000]);
+    assert.deepEqual(catalog.thresholds, [128000, 200000, 272000]);
+  });
+
+  test("a LiteLLM tier missing a rate above a threshold is unpriced there, not priced at the tier below", () => {
+    const flash = (prompt) => priced({ tool: "opencode", model: "google/gemini-9-flash", band: contextBandOf(prompt, catalog), input: M });
+    close(flash(100_000).usd, 0.5);
+    close(flash(150_000).usd, 1);
+    assert.equal(flash(250_000), null);
+    // A threshold LiteLLM gives only an output rate for is still found (and unpriced, its input rate missing).
+    const entry = toEntry("x", e(1, 2, { litellm_provider: "gemini", output_cost_per_token_above_200k_tokens: 4 / M }));
+    assert.deepEqual(entry.longContextAbove, [200000]);
+    assert.deepEqual(entry.standard.long, [null]);
+  });
+
+  test("a catalog tier without long-context rates is unpriced above the threshold", () => {
+    // gpt-9 has a long-context standard rate but no long-context priority rate.
+    assert.equal(priced({ tool: "codex", model: "gpt-9", service_tier: "priority", band: contextBandOf(300_000, catalog), input: M }), null);
   });
 
   test("OpenCode's free Muse Spark is priced at Meta's contributor rate through its alias, unverified", () => {
@@ -259,5 +301,127 @@ describe("the LiteLLM fallback (server/lib/litellm.ts)", () => {
     assert.deepEqual(explainPrice(group({ tool: "opencode", model: "mistral/no-cache-model", input: M, cache_read: 1 }), catalog),
       { ok: false, reason: "no cache read rate" });
     close(priced({ tool: "opencode", model: "mistral/no-cache-model", input: M }).usd, 1);
+  });
+});
+
+describe("several long-context tiers per model (#270)", () => {
+  const catalog = catalogOf({
+    "gemini/gemini-9-pro": {
+      litellm_provider: "gemini", mode: "chat", input_cost_per_token: 1 / M, output_cost_per_token: 10 / M,
+      cache_read_input_token_cost: 0.1 / M,
+      input_cost_per_token_above_200k_tokens: 4 / M, output_cost_per_token_above_200k_tokens: 20 / M,
+      cache_read_input_token_cost_above_200k_tokens: 0.4 / M,
+      input_cost_per_token_above_128k_tokens: 2 / M, output_cost_per_token_above_128k_tokens: 15 / M,
+      cache_read_input_token_cost_above_128k_tokens: 0.2 / M,
+      input_cost_per_token_priority: 2 / M, output_cost_per_token_priority: 20 / M,
+      input_cost_per_token_above_128k_tokens_priority: 4 / M, output_cost_per_token_above_128k_tokens_priority: 30 / M,
+    },
+  });
+  /** A Gemini group whose requests' prompts (input + cache read + cache write) were `prompt` tokens. */
+  const gemini = (prompt, over = {}) => group({
+    tool: "opencode", model: "google/gemini-9-pro", band: contextBandOf(prompt, catalog), input: M, output: M, cache_read: M, ...over,
+  });
+  const value = (prompt, over) => priceGroup(gemini(prompt, over), catalog)?.usd ?? null;
+
+  test("every threshold is kept, in ascending order, each with its own rates", () => {
+    const entry = toEntry("gemini/gemini-9-pro", { litellm_provider: "gemini", mode: "chat",
+      input_cost_per_token: 1 / M, output_cost_per_token: 10 / M,
+      input_cost_per_token_above_200k_tokens: 4 / M, output_cost_per_token_above_200k_tokens: 20 / M,
+      input_cost_per_token_above_128k_tokens: 2 / M, output_cost_per_token_above_128k_tokens: 15 / M });
+    assert.deepEqual(entry.longContextAbove, [128000, 200000]);
+    assert.deepEqual(entry.standard.long, [{ input: 2, output: 15 }, { input: 4, output: 20 }]);
+    assert.deepEqual(catalog.thresholds, [128000, 200000]);
+    // The SQL band counts the catalog's thresholds and the priority file's (200K, 272K) alike.
+    assert.deepEqual(longContextThresholds(catalog), [128000, 200000, 272000]);
+  });
+
+  test("each request is priced at the highest tier its prompt exceeds, for the whole request", () => {
+    close(value(100_000), 1 + 10 + 0.1);
+    close(value(128_000), 1 + 10 + 0.1); // at the threshold, not above it
+    close(value(150_000), 2 + 15 + 0.2);
+    close(value(200_001), 4 + 20 + 0.4);
+    // Above 272K (another model's threshold): still Gemini's top tier.
+    close(value(900_000), 4 + 20 + 0.4);
+  });
+
+  test("a tier without a rate at that level is unpriced there, never priced at a lower one", () => {
+    close(value(150_000, { service_tier: "priority", cache_read: 0 }), 4 + 30);
+    assert.equal(value(250_000, { service_tier: "priority", cache_read: 0 }), null);
+    assert.deepEqual(explainPrice(gemini(250_000, { service_tier: "priority", cache_read: 0 }), catalog),
+      { ok: false, reason: "no rate above the long-context threshold" });
+  });
+
+  test("a model with one threshold is not moved by other models' thresholds", () => {
+    // Sonnet 4.5 (above 200K only): a 150K prompt exceeds the catalog's 128K, not its own threshold.
+    close(priceGroup(group({ model: "claude-sonnet-4-5", band: contextBandOf(150_000, catalog), input: M }), catalog).usd, 3);
+    close(priceGroup(group({ model: "claude-sonnet-4-5", band: contextBandOf(250_000, catalog), input: M }), catalog).usd, 6);
+    // GPT-6 Sol (above 272K only): standard below, long above.
+    close(priceGroup(group({ tool: "codex", model: "gpt-6-sol", band: contextBandOf(250_000, catalog), input: M }), catalog).usd, 2);
+    close(priceGroup(group({ tool: "codex", model: "gpt-6-sol", band: contextBandOf(300_000, catalog), input: M }), catalog).usd, 4);
+  });
+});
+
+describe("Cursor model names (#271)", () => {
+  const cursor = (model, over = {}) => group({ tool: "cursor", model, ...over });
+  const value = (model, over) => priceGroup(cursor(model, over))?.usd ?? null;
+
+  test("Cursor's names map to the provider's model id, effort and thinking dropped", () => {
+    assert.deepEqual(cursorModel("claude-4.6-opus-high-thinking"), { id: "claude-opus-4-6", tier: null });
+    assert.deepEqual(cursorModel("claude-4.6-opus-max-thinking"), { id: "claude-opus-4-6", tier: null });
+    assert.deepEqual(cursorModel("claude-4.6-sonnet-medium"), { id: "claude-sonnet-4-6", tier: null });
+    assert.deepEqual(cursorModel("claude-4.5-opus-high"), { id: "claude-opus-4-5", tier: null });
+    assert.deepEqual(cursorModel("claude-4.5-sonnet-thinking"), { id: "claude-sonnet-4-5", tier: null });
+    assert.deepEqual(cursorModel("claude-4-sonnet-1m-thinking"), { id: "claude-sonnet-4", tier: null });
+    assert.deepEqual(cursorModel("gpt-5.5-fast"), { id: "gpt-5.5", tier: "fast" });
+    assert.deepEqual(cursorModel("gpt-5.4-medium-fast"), { id: "gpt-5.4", tier: "fast" });
+    assert.deepEqual(cursorModel("gpt-5.1-codex-max-xhigh"), { id: "gpt-5.1-codex-max", tier: null });
+    assert.deepEqual(cursorModel("gpt-5.1-codex-max"), { id: "gpt-5.1-codex-max", tier: null });
+    assert.deepEqual(cursorModel("gpt-5.3-codex-high-fast"), { id: "gpt-5.3-codex", tier: "fast" });
+    assert.deepEqual(cursorModel("gpt-5.4-mini-none"), { id: "gpt-5.4-mini", tier: null });
+    assert.deepEqual(cursorModel("gpt-5-mini"), { id: "gpt-5-mini", tier: null });
+    // Already a provider id (Cursor 3.2+ sends the model group): unchanged.
+    assert.deepEqual(cursorModel("claude-opus-4-6"), { id: "claude-opus-4-6", tier: null });
+  });
+
+  test("mapped names are priced at the provider's rates", () => {
+    close(value("claude-4.6-opus-high-thinking", { input: M, output: M }), 5 + 25);
+    close(value("claude-4.5-sonnet-thinking", { input: M }), 3);
+    // Sonnet 4 1M: Anthropic's long-context rate follows the measured prompt, not the name.
+    close(value("claude-4-sonnet-1m", { input: M, band: contextBandOf(250_000) }), 6);
+    close(value("claude-4-sonnet-1m", { input: M }), 3);
+    close(value("gpt-5.2-high", { input: M, output: M }), 1.75 + 14);
+    close(value("gpt-5.1-codex-max-medium", { input: M }), 1.25);
+    close(value("gpt-5.4-mini-low", { input: M }), 0.75);
+    // `-fast` is the provider's Fast (priority) tier.
+    close(value("gpt-5.5-fast", { input: M, output: M }), 12.5 + 75);
+    close(value("gpt-5.2-fast", { input: M }), 3.5);
+    // A recorded tier wins over the name, standard included.
+    close(value("gpt-5.2-fast", { service_tier: "flex", input: M }), 0.875);
+    close(value("gpt-5.2-fast", { service_tier: "default", input: M }), 1.75);
+  });
+
+  test("a Fast name without a published Fast rate is unpriced, never priced as standard", () => {
+    // GPT-5.2 Codex has no Fast rate in the priority file.
+    assert.deepEqual(explainPrice(cursor("gpt-5.2-codex-fast", { input: M })), { ok: false, reason: "no rate for the fast tier" });
+    // Nor does Anthropic for Opus 4.6 there.
+    assert.equal(value("claude-4.6-opus-high-thinking-fast", { input: M }), null);
+  });
+
+  test("Cursor's own models, routers and unknown names stay unpriced", () => {
+    for (const model of ["composer-2.5", "composer-2-fast", "composer-1.5", "auto", "default", "grok-4-20-thinking", "kimi-k2.5"]) {
+      assert.deepEqual(explainPrice(cursor(model, { input: M })), { ok: false, reason: "provider unknown" }, model);
+    }
+    // Subscription-only Codex Spark: no API rate, whatever the effort.
+    assert.equal(value("gpt-5.3-codex-spark-preview-high", { input: M }), null);
+    // A family Cursor's naming does not cover is left as it is.
+    assert.equal(value("claude-4.6-opus-ultra", { input: M }), null);
+    // Claude names take -low … -max efforts (Cursor lists no -none / -minimal for them).
+    assert.equal(value("claude-4.6-opus-none", { input: M }), null);
+    // Names of other shapes or families stay unpriced.
+    for (const model of ["gpt-4o-mini-high", "o3-medium", "gemini-3.1-pro", "gemini-3-flash"]) assert.equal(value(model, { input: M }), null, model);
+    // A provider-prefixed id is looked up as it is, never rewritten (not sent by Cursor today).
+    assert.equal(value("anthropic/claude-4.6-opus-high", { input: M }), null);
+    // Other tools' names are never rewritten.
+    assert.equal(value("claude-4.6-opus-high", { tool: "antigravity", input: M }), null);
   });
 });
