@@ -13,6 +13,16 @@ async function ingest(srv, key, tool, body) {
 /** Starts a server with the fixture; resolves with it (`stop()` when done). */
 export async function fixtureServer() {
   const srv = await startServer();
+  try {
+    await seed(srv);
+  } catch (e) {
+    await srv.stop(); // the caller never gets it to stop
+    throw e;
+  }
+  return srv;
+}
+
+async function seed(srv) {
   const { key } = await newDevice(srv.base, "browser-test");
   const t = now();
 
@@ -43,5 +53,4 @@ export async function fixtureServer() {
     session_id: "ses_fixture_long", provider_id: "fictional-provider-with-long-name", model_id: "fictional-model-extended-preview-20991231", occurred_at: t - 20,
   });
   await ingest(srv, key, "opencode", { messages: [...gpt, long] });
-  return srv;
 }

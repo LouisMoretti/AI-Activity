@@ -453,9 +453,11 @@ Browser tests: `npm run test:browser` (after `npm run build`) runs
 server holding fictional usage (`test/browser/fixture.js`): at 320, 390
 and 768 px, the OpenCode card's models stay whole inside the card, and the
 API-value tooltips and stat popovers open by keyboard, hover and tap,
-inside the viewport, and close on Escape. Not part of `npm test`: they
-need a browser (`npx playwright install chromium`; or set `CHROMIUM_PATH`
-to a local Chromium, e.g. `nix-shell -p chromium` on NixOS).
+inside the viewport, close on Escape and stay open through a swipe. Not
+part of `npm test`: they need a browser (`npx playwright install chromium`,
+`npx playwright install --with-deps chromium` on a bare Linux, as CI does;
+or set `CHROMIUM_PATH` to a local Chromium, e.g. `nix-shell -p chromium` on
+NixOS). CI runs them in the `browser` job.
 Types: `npm run typecheck` (tsc for server, svelte-check for web). The
 server is checked by TypeScript 7 (the native compiler, installed as the
 `typescript-7` alias); `typescript` stays on 6 for `svelte-check`, which

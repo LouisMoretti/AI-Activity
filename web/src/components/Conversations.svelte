@@ -53,7 +53,7 @@
   small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
   .model { font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; }
   .side { width: 260px; flex-shrink: 0; display: grid; gap: 7px; }
-  .line { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 12px; }
+  .line { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 4px 12px; font-size: 12px; }
   .tokens { color: var(--text); display: inline-flex; align-items: center; white-space: nowrap; }
   .when { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); white-space: nowrap; }
   .ctx { font-size: 11px; color: var(--faint); }
