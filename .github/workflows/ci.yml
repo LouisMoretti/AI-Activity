@@ -37,6 +37,24 @@ jobs:
       - run: npm run build
       - run: npm test
 
+  browser:
+    # Rendered layout and interaction checks (issue #284): Playwright's
+    # Chromium against a test server with fictional usage. Its own job, so
+    # the required check names above stay as they are.
+    name: browser
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run build
+      - run: npm run test:browser
+
   windows:
     # Every collector through its documented Windows command: msvcrt locks,
     # detached workers, agy.cmd, python instead of python3; and /install.ps1

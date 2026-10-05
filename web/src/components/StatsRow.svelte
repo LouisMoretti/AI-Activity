@@ -78,9 +78,6 @@
 <style>
   .stats { display: grid; grid-template-columns: repeat(5, 1fr); margin-top: 28px; border: 1px solid var(--line); border-radius: 15px; padding: 16px 8px; }
   .stats > :global(.stat + .stat)::before { content: ""; position: absolute; left: -1px; top: 8%; bottom: 8%; border-left: 1px solid var(--line); }
-  /* Keep edge popovers on screen. */
-  .stats > :global(.stat:first-child .pop) { left: 0; translate: 0 0; }
-  .stats > :global(.stat:last-child .pop) { left: auto; right: 0; translate: 0 0; }
   .note { font-size: 13px; color: var(--muted); max-width: 26ch; }
   .value { max-width: 34ch; }
   .value .note { max-width: none; font-size: 12px; margin-top: 10px; }
@@ -91,8 +88,5 @@
     .stats { grid-template-columns: repeat(2, 1fr); row-gap: 18px; }
     .stats > :global(.stat:nth-child(odd))::before { display: none; }
     .stats > :global(.stat:last-child) { grid-column: 1 / -1; }
-    .stats > :global(.stat:nth-child(odd) .pop) { left: 0; right: auto; translate: 0 0; }
-    .stats > :global(.stat:nth-child(even) .pop) { left: auto; right: 0; translate: 0 0; }
-    .stats > :global(.stat:last-child .pop) { left: 50%; right: auto; translate: -50% 0; }
   }
 </style>

@@ -60,8 +60,10 @@
         {#each rows as s (s.id)}
           {@const m = modelOf(s)}
           <div class="row">
-            {#if active.length}<i class="dot recent" aria-hidden="true"></i>{/if}
-            <span class="model" title={s.model ?? ""}><i>{m.provider}</i>{m.name}</span>
+            <span class="who">
+              {#if active.length}<i class="dot recent" aria-hidden="true"></i>{/if}
+              <span class="model"><i>{m.provider}</i>{m.name}</span>
+            </span>
             <span class="meta">{plural(s.calls, callNoun)} · {fmtCompact(s.tokens)} tokens{#if s.value.usd !== null}&nbsp;·&nbsp;{/if}<SessionValue value={s.value} unpriced={s.unpriced} /></span>
           </div>
         {/each}
@@ -79,17 +81,21 @@
   .today { padding-right: 24px; }
   .today .label { margin: 22px 0 8px; }
   .conversations { padding-left: 28px; border-left: 1px solid var(--line); }
-  .head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; min-height: 31px; }
+  .head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-bottom: 14px; min-height: 31px; }
   .label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); }
   .status { margin-left: auto; display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; white-space: nowrap; }
   .value { font-size: 22px; font-weight: 550; font-variant-numeric: tabular-nums; line-height: 1.1; margin-bottom: 6px; }
   .unused { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
   small { color: var(--muted); font-size: 12px; font-weight: 400; }
   .rows { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
-  .row { display: flex; align-items: center; gap: 10px; min-width: 0; }
-  .model { font-family: var(--mono); font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The model is never cut: the figures move to their own line when both
+     do not fit, and a name longer than the row wraps (issue #284). */
+  .row { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; min-width: 0; }
+  .who { display: flex; align-items: flex-start; gap: 10px; min-width: 0; font-family: var(--mono); font-size: 13px; }
+  .who .dot { margin-top: calc(.5lh - 3px); }
+  .model { min-width: 0; overflow-wrap: anywhere; }
   .model i { font-style: normal; color: var(--faint); }
-  .row .meta { margin-left: auto; flex-shrink: 0; display: inline-flex; align-items: center; white-space: nowrap; }
+  .row .meta { margin-left: auto; display: inline-flex; align-items: center; white-space: nowrap; }
   .meta { color: var(--muted); font-size: 12px; }
   .today .meta + .meta { margin-top: 4px; }
   @container (max-width: 560px) {
@@ -97,9 +103,12 @@
     .today { padding-right: 0; }
     .conversations { padding-left: 0; border-left: 0; border-top: 1px solid var(--line); padding-top: 18px; margin-top: 18px; }
   }
-  @container (max-width: 350px) {
-    .head, .row { flex-wrap: wrap; }
-    .status, .row .meta { margin-left: 0; white-space: normal; }
+  /* Narrow: the figures always under the model, left-aligned, and free to
+     wrap (large figures). */
+  @container (max-width: 420px) {
+    .status { margin-left: 0; }
+    .row .meta { flex-basis: 100%; margin-left: 0; flex-wrap: wrap; white-space: normal; }
+    .row:has(.who .dot) .meta { padding-left: 16px; }
   }
   @media (max-width: 720px) {
     .card { grid-template-columns: 1fr; }
