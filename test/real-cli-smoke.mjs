@@ -9,20 +9,10 @@ import { createRequire } from "node:module";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startServer, newDevice, req, processesGone, tempHome } from "./helpers.js";
+import { runtimeEnv } from "./cli-env.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const require = createRequire(import.meta.url);
-// Real CLIs run in an isolated home. Pass only OS/runtime settings from the
-// caller so a manual smoke cannot inherit provider credentials or endpoints.
-const RUNTIME_ENV = new Set([
-  "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "TMPDIR",
-  "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432", "PROGRAMDATA", "PSMODULEPATH",
-  "OS", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS", "LANG", "LC_ALL",
-  "LC_CTYPE", "TERM", "COLORTERM", "SHELL", "USER", "USERNAME", "CI",
-  "GITHUB_ACTIONS", "TZ",
-]);
-const runtimeEnv = (source = process.env) => Object.fromEntries(Object.entries(source)
-  .filter(([name]) => RUNTIME_ENV.has(name.toUpperCase())));
 async function waitFor(check, ms = 30000) {
   const end = Date.now() + ms;
   do {
@@ -312,10 +302,10 @@ env_key = "MOCK_API_KEY"
       `${result.output.slice(-3000)}\nOpenCode log: ${logs}`);
     assert.ok(await waitFor(async () => (await summary()).events === 1),
       `real ${tool} produced no collector upload; CLI output: ${result.output.slice(-1200)}`);
-    assert.ok(await processesGone(home));
-    assert.equal((await summary()).tokens, 19);
+    assert.ok(await processesGone(home), `real ${tool}: collector processes still running after the upload`);
+    assert.equal((await summary()).tokens, 19, `real ${tool}: stored tokens differ from the stub's 12 in + 7 out`);
     assert.ok(ingest.uploads.some((body) => body.messages?.some((message) => message.usage.input_tokens === 12 &&
-      message.usage.output_tokens === 7)));
+      message.usage.output_tokens === 7)), `real ${tool}: no upload carried the stub's usage (12 in, 7 out)`);
     console.log(`${tool}: real CLI, hook, collector and ingestion passed in ${Date.now() - before} ms`);
   } finally {
     await processesGone(home);
@@ -327,12 +317,6 @@ env_key = "MOCK_API_KEY"
 }
 
 const cliRoot = process.env.CLI_ROOT;
-test("real CLI child environment excludes inherited provider settings", () => {
-  assert.deepEqual(runtimeEnv({
-    PATH: "/test/bin", ANTHROPIC_AUTH_TOKEN: "private", GOOGLE_API_KEY: "private",
-    AWS_ACCESS_KEY_ID: "private", OPENAI_BASE_URL: "https://example.invalid",
-  }), { PATH: "/test/bin" });
-});
 test("real Claude Code CLI calls the installed hook after a local chat", () =>
   smoke("claude-code", process.env.CLAUDE_CLI || (cliRoot
     ? path.join(cliRoot, "@anthropic-ai", "claude-code", "bin", "claude.exe") : "claude")));

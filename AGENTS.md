@@ -244,7 +244,16 @@ runs every collector test on Windows (`collectors (windows)`, through the
 README's Windows commands) and macOS (`collectors (macos)`, through
 `/install.sh` and the native hooks). The path-filtered Collector CLI smoke
 workflow also runs the real Claude Code, Codex, OpenCode and Antigravity CLIs
-on macOS, Linux and Windows against local model stubs.
+on macOS, Linux and Windows against local model stubs: pinned npm CLIs on
+pushes and pull requests (a manual run picks pinned or latest), the latest
+releases every Monday (`schedule`, issue #248). Its `CLI versions` job
+resolves the versions once for every platform; each platform's job runs one
+step per tool (named after it, the others still run when one fails) and
+writes a summary table of tool, installed version and result, with an error
+annotation per failure. A failed scheduled run opens, or comments on, the
+issue "Collector CLI smoke fails against the latest CLIs" (`bug`,
+`collectors`) listing each failing platform and tool; only that `report` job
+gets `issues: write` and `actions: read`. No secret is used.
 Every action is pinned by commit SHA, its version in a comment
 (`uses: actions/checkout@<sha> # v7.0.1`): a moved tag cannot change the
 action code that runs next to the deploy keys or `preview-fork.yml`'s
