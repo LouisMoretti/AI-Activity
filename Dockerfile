@@ -3,7 +3,7 @@
 # Node 24 LTS on Debian (glibc): better-sqlite3 ships N-API prebuilt binaries
 # for amd64 and arm64, so nothing is compiled. Node 24 runs server/*.ts as is.
 # Pinned by digest (multi-arch index); Dependabot moves it when the tag does.
-FROM node:24-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS base
+FROM node:24-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS base
 
 FROM base AS build
 WORKDIR /app
